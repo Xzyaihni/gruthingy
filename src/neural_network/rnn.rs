@@ -3,12 +3,12 @@ use serde::{Serialize, Deserialize};
 use crate::neural_network::{
     LayerContainer,
     WeightsContainer,
-    SoftmaxedLayer
+    SoftmaxedLayer,
+    HIDDEN_AMOUNT
 };
 
 
 const MAX_BPTT: usize = 10;
-const HIDDEN_AMOUNT: usize = 5;
 
 #[derive(Debug)]
 pub struct RNNOutput
@@ -18,6 +18,7 @@ pub struct RNNOutput
     pub outputs: Vec<SoftmaxedLayer>
 }
 
+#[derive(Debug)]
 pub struct RNNGradients
 {
     pub input_gradients: WeightsContainer,
@@ -25,7 +26,7 @@ pub struct RNNGradients
     pub output_gradients: WeightsContainer
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RNN
 {
     input_weights: WeightsContainer,
@@ -51,7 +52,7 @@ impl RNN
                 || weights_init(word_vector_size as f64)
             ),
             hidden_weights: WeightsContainer::new_with(
-                HIDDEN_AMOUNT,
+                HIDDEN_AMOUNT + 1,
                 HIDDEN_AMOUNT,
                 || weights_init(HIDDEN_AMOUNT as f64)
             ),
@@ -86,22 +87,22 @@ impl RNN
     #[inline(always)]
     fn activation_function(value: f64) -> f64
     {
-        value.tanh()
+        // value.tanh()
         // this is a leaky relu, look at it
-        /*if value > 0.0
+        if value > 0.0
         {
             value
         } else
         {
             0.01 * value
-        }*/
+        }
     }
 
     #[inline(always)]
     fn activation_derivative(value: f64) -> f64
     {
-        1.0 - value.tanh().powi(2)
-        // if value > 0.0 {1.0} else {0.01}
+        // 1.0 - value.tanh().powi(2)
+        if value > 0.0 {1.0} else {0.01}
     }
 
     pub fn average_loss(&self, input: &[Vec<LayerContainer>], output: &[Vec<LayerContainer>]) -> f64
@@ -172,18 +173,18 @@ impl RNN
                 }
             }
 
-            let mut start_g: LayerContainer = (0..hidden.len()).map(|y|
+            let mut start_g: LayerContainer = (0..HIDDEN_AMOUNT).map(|y|
             {
                 let s = Self::activation_derivative(unsafe{ *hidden_ut.get_unchecked(y) });
 
-                diff.dot(self.output_weights.this(y)) * s
+                diff.dot(unsafe{ self.output_weights.this_unchecked(y) }) * s
             }).collect();
 
             let range_min = 0_i32.max(i as i32 - MAX_BPTT as i32) as usize;
             for b_i in (range_min..i+1).rev()
             {
                 let this_input = &input[b_i];
-                for y in 0..hidden.len()
+                for y in 0..HIDDEN_AMOUNT
                 {
                     for x in 0..expected_output.len()
                     {
@@ -193,16 +194,19 @@ impl RNN
                             start_g.get_unchecked(y) * this_input.get_unchecked(x)
                         };
                     }
-                }
 
+                    let weight = unsafe{ hidden_gradients.weight_unchecked_mut(HIDDEN_AMOUNT, y) };
+                    *weight += unsafe{ start_g.get_unchecked(y) };
+                }
+                
                 if b_i != 0
                 {
                     let previous_hiddens = unsafe{ hiddens.get_unchecked(b_i - 1) };
                     let previous_hiddens_ut = unsafe{ hiddens_ut.get_unchecked(b_i - 1) };
 
-                    for y in 0..hidden.len()
+                    for y in 0..HIDDEN_AMOUNT
                     {
-                        for x in 0..hidden.len()
+                        for x in 0..HIDDEN_AMOUNT
                         {
                             let weight = unsafe{ hidden_gradients.weight_unchecked_mut(x, y) };
 
@@ -212,7 +216,7 @@ impl RNN
                         }
                     }
 
-                    start_g = (0..hidden.len()).map(|y|
+                    start_g = (0..HIDDEN_AMOUNT).map(|y|
                     {
                         let s = Self::activation_derivative(
                             unsafe{ *previous_hiddens_ut.get_unchecked(y) }
@@ -222,9 +226,10 @@ impl RNN
                     }).collect();
                 } else
                 {
-                    start_g = (0..hidden.len()).map(|y|
+                    start_g = (0..HIDDEN_AMOUNT).map(|y|
                     {
-                        start_g.dot(unsafe{ self.hidden_weights.this_unchecked(y) })
+                        let s = Self::activation_derivative(0.0);
+                        start_g.dot(unsafe{ self.hidden_weights.this_unchecked(y) }) * s
                     }).collect();
                 }
             }
@@ -259,10 +264,17 @@ impl RNN
 
             let this_input = unsafe{ input.get_unchecked(t) };
 
+            let bias = unsafe{ self.hidden_weights.this_unchecked(HIDDEN_AMOUNT) };
             let mut hidden =
-                self.input_weights.mul(this_input) + self.hidden_weights.mul(previous_hidden);
+                self.hidden_weights.mul(previous_hidden)
+                + self.input_weights.mul(this_input)
+                + bias;
 
-            hiddens_ut.push(hidden.clone());
+            {
+                let hidden = hidden.clone();
+                hiddens_ut.push(hidden);
+            }
+
             hidden.map(Self::activation_function);
 
             let output = SoftmaxedLayer::new(self.output_weights.mul(&hidden));
@@ -288,6 +300,100 @@ pub mod tests
 
     use std::slice;
 
+    #[allow(dead_code)]
+    pub fn debug_biases(
+        network: &RNN,
+        input: &Vec<LayerContainer>,
+        output: &Vec<LayerContainer>
+    ) -> String
+    {
+        let f_output = network.feedforward(input);
+        let mut s = String::new();
+
+        s += "hidden_weights: [\n";
+        network.hidden_weights.this(HIDDEN_AMOUNT).for_each(|w|
+        {
+            s += "    ";
+            s += &w.to_string();
+            s += ",\n";
+        });
+
+        s += "]\noutput weights: [\n";
+
+        network.output_weights.this(HIDDEN_AMOUNT).for_each(|w|
+        {
+            s += "    ";
+            s += &w.to_string();
+            s += ",\n";
+        });
+        s += "]\n";
+
+        for t in 0..f_output.outputs.len()
+        {
+            for _ in 0..t
+            {
+                s += "    ";
+            }
+
+            s += "t: ";
+            s += &t.to_string();
+            s.push('\n');
+
+            for _ in 0..t
+            {
+                s += "    ";
+            }
+
+            s += "hiddens: [\n";
+            f_output.hiddens[t].iter().for_each(|h|
+            {
+                for _ in 0..=t
+                {
+                    s += "    ";
+                }
+
+                s += &h.to_string();
+                s += ",\n";
+            });
+
+            for _ in 0..t
+            {
+                s += "    ";
+            }
+
+            s += "]\n";
+
+            for _ in 0..t
+            {
+                s += "    ";
+            }
+
+            s += "diff: [\n";
+
+            f_output.outputs[t].0.iter().zip(output[t].iter()).for_each(|(predicted, real_output)|
+            {
+                let d = predicted - real_output;
+
+                for _ in 0..=t
+                {
+                    s += "    ";
+                }
+
+                s += &d.to_string();
+                s += ",\n";
+            });
+            
+            for _ in 0..t
+            {
+                s += "    ";
+            }
+
+            s += "]\n";
+        }
+
+        s
+    }
+
     pub fn output_gradient_check(
         network: &mut RNN,
         input: &Vec<LayerContainer>,
@@ -297,7 +403,7 @@ pub mod tests
         let output_weights = network.output_weights.iter_pos().map(|weight|
         {
             weight.to_owned()
-        }).collect::<Vec<WeightsIterValue>>();
+        }).collect::<Vec<WeightsIterValue<_>>>();
 
         let weights = output_weights.into_iter().map(|weight|
         {
@@ -337,7 +443,7 @@ pub mod tests
         let hidden_weights = network.hidden_weights.iter_pos().map(|weight|
         {
             weight.to_owned()
-        }).collect::<Vec<WeightsIterValue>>();
+        }).collect::<Vec<WeightsIterValue<_>>>();
 
         let weights = hidden_weights.into_iter().map(|weight|
         {
@@ -377,7 +483,7 @@ pub mod tests
         let input_weights = network.input_weights.iter_pos().map(|weight|
         {
             weight.to_owned()
-        }).collect::<Vec<WeightsIterValue>>();
+        }).collect::<Vec<WeightsIterValue<_>>>();
 
         let weights = input_weights.into_iter().map(|weight|
         {

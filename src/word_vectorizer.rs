@@ -122,7 +122,18 @@ impl WordDictionary
             vec![i].into_boxed_slice()
         }).collect::<HashSet<_>>();
 
-        let all_words = Self::unique_words(default_words, words);
+        Self::build_inner(default_words, words)
+    }
+
+    #[allow(dead_code)]
+    pub fn no_defaults(words: impl Read) -> Self
+    {
+        Self::build_inner(HashSet::new(), words)
+    }
+
+    fn build_inner(defaults: HashSet<Box<[u8]>>, words: impl Read) -> Self
+    {
+        let all_words = Self::unique_words(defaults, words);
         let words_amount = all_words.len();
 
         let dictionary = all_words.into_iter().enumerate().map(|(i, bytes)|
@@ -199,7 +210,7 @@ impl WordDictionary
 
         layer[word.index()] = 1.0;
 
-        layer.into_boxed_slice().into()
+        layer.into()
     }
 
     #[allow(dead_code)]
