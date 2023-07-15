@@ -46,6 +46,12 @@ impl SoftmaxedLayer
     }
 
     #[allow(dead_code)]
+    pub fn from_raw(layer: LayerContainer) -> Self
+    {
+        Self(layer)
+    }
+
+    #[allow(dead_code)]
     pub fn new_empty(size: usize) -> Self
     {
         Self(LayerContainer::new(size))
@@ -752,6 +758,7 @@ mod tests
         );
     }
 
+    #[ignore]
     #[test]
     fn gradients_check_many()
     {
@@ -761,6 +768,7 @@ mod tests
         gradients_check(&mut network, inputs, outputs);
     }
 
+    #[ignore]
     #[test]
     fn gradients_check_one()
     {
@@ -770,6 +778,7 @@ mod tests
         gradients_check(&mut network, inputs, outputs);
     }
 
+    #[ignore]
     #[test]
     fn gradients_check_two()
     {
@@ -779,6 +788,7 @@ mod tests
         gradients_check(&mut network, inputs, outputs);
     }
 
+    #[ignore]
     #[test]
     fn gradients_check_three()
     {

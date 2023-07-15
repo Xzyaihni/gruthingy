@@ -110,7 +110,8 @@ where
 pub struct WordDictionary
 {
     dictionary: Bimap<Box<[u8]>, VectorWord>,
-    words_amount: usize
+    words_amount: usize,
+    longest_word: usize
 }
 
 impl WordDictionary
@@ -136,12 +137,18 @@ impl WordDictionary
         let all_words = Self::unique_words(defaults, words);
         let words_amount = all_words.len();
 
+        let mut longest_word = 1;
         let dictionary = all_words.into_iter().enumerate().map(|(i, bytes)|
         {
+            if bytes.len() > longest_word
+            {
+                longest_word = bytes.len();
+            }
+
             (bytes, VectorWord::new(i as usize))
         }).collect::<Bimap<_, _>>();
 
-        Self{dictionary, words_amount}
+        Self{dictionary, words_amount, longest_word}
     }
 
     fn unique_words(default_words: HashSet<Box<[u8]>>, words: impl Read) -> HashSet<Box<[u8]>>
@@ -246,38 +253,64 @@ impl<'a, R: Read> WordVectorizer<'a, R>
         Self{bytes, dictionary, word: Vec::new()}
     }
 
+    fn part_bytes_to_word(
+        dictionary: &WordDictionary,
+        container: &mut Vec<u8>,
+        matched_word: &[u8]
+    ) -> VectorWord
+    {
+        for i in 1..matched_word.len()
+        {
+            let new_len = matched_word.len() - i;
+            
+            let word_part = &matched_word[..new_len];
+            let part_matched = dictionary.bytes_to_word(word_part);
+
+            if let Some(part_matched) = part_matched
+            {
+                *container = container[new_len..].to_vec();
+
+                return part_matched;
+            }
+        }
+
+        unreachable!()
+    }
+
     fn next_word(&mut self) -> Option<VectorWord>
     {
-        let buffer = self.bytes.fill_buf().expect("io error, tough luck lmao");
+        let mut consume_amount = 0;
+        if self.word.len() < self.dictionary.longest_word
+        {
+            let buffer = self.bytes.fill_buf().expect("io error, tough luck lmao");
+            self.word.extend_from_slice(buffer);
+            
+            consume_amount = buffer.len();
+        }
 
-        let word = self.word.iter().chain(buffer.iter());
+        let matched_word = WordDictionary::read_word(self.word.iter().cloned().peekable())?;
+        
+        self.bytes.consume(consume_amount);
 
-        let matched_word = WordDictionary::read_word(word.cloned().peekable())?;
-
-        self.bytes.consume(matched_word.len());
         let vector_word = match self.dictionary.bytes_to_word(&matched_word)
         {
             Some(vector_word) => vector_word,
             None =>
             {
-                for i in 1..matched_word.len()
-                {
-                    let word_part = &matched_word[..(matched_word.len() - i)];
-                    let part_matched = self.dictionary.bytes_to_word(word_part);
-
-                    if part_matched.is_some()
-                    {
-                        self.word = matched_word[(matched_word.len() - i)..].to_vec();
-
-                        return part_matched;
-                    }
-                }
-
-                unreachable!()
+                let word =
+                    Self::part_bytes_to_word(&self.dictionary, &mut self.word, &matched_word);
+                return Some(word);
             }
         };
 
-        self.word = Vec::new();
+        if matched_word.len() >= self.word.len()
+        {
+            self.word = Vec::new();
+        } else
+        {
+            self.word = self.word[matched_word.len()..].to_vec();
+        }
+
         Some(vector_word)
     }
 }
@@ -293,5 +326,37 @@ impl<'a, R: Read> Iterator for WordVectorizer<'a, R>
         // word.map(|word| eprintln!("word: {}", self.dictionary.print_vector_word(word)));
 
         word
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    #[test]
+    fn encodes_decodes()
+    {
+        let dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
+
+        let original_bytes = "hello world im testing a COOL encoder (not rly) fake and gay";
+
+        let vectorizer = WordVectorizer::new(&dictionary, original_bytes.as_bytes());
+
+        let decoded_bytes = vectorizer.flat_map(|word|
+        {
+            let layer = dictionary.word_to_layer(word);
+            let word = dictionary.layer_to_word(&SoftmaxedLayer::from_raw(layer), 1.0);
+
+            dictionary.word_to_bytes(word).unwrap().into_vec().into_iter()
+        }).collect::<Vec<u8>>();
+
+        assert_eq!(
+            decoded_bytes,
+            original_bytes.bytes().collect::<Vec<u8>>(),
+            "decoded: {}, original: {}",
+            &String::from_utf8_lossy(&decoded_bytes),
+            original_bytes
+        );
     }
 }
