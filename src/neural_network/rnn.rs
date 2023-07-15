@@ -87,22 +87,22 @@ impl RNN
     #[inline(always)]
     fn activation_function(value: f64) -> f64
     {
-        // value.tanh()
+        value.tanh()
         // this is a leaky relu, look at it
-        if value > 0.0
+        /*if value > 0.0
         {
             value
         } else
         {
             0.01 * value
-        }
+        }*/
     }
 
     #[inline(always)]
     fn activation_derivative(value: f64) -> f64
     {
-        // 1.0 - value.tanh().powi(2)
-        if value > 0.0 {1.0} else {0.01}
+        1.0 - value.tanh().powi(2)
+        // if value > 0.0 {1.0} else {0.01}
     }
 
     pub fn average_loss(&self, input: &[Vec<LayerContainer>], output: &[Vec<LayerContainer>]) -> f64
