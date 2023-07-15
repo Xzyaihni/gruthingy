@@ -466,7 +466,7 @@ impl GradientInfo
             },
             Ordering::Less =>
             {
-                self.learning_rate = (self.learning_rate * 0.5).max(0.000001);
+                self.learning_rate = (self.learning_rate * 0.5).max(0.0000000001);
 
                 self.previous_sign = 0;
 
