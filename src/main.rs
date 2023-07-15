@@ -72,22 +72,76 @@ fn train(epochs: usize, mut args: impl Iterator<Item=String>)
     network.save(network_path);
 }
 
+struct RunConfig
+{
+    tokens_amount: usize,
+    temperature: f64,
+    network_path: String
+}
+
+impl RunConfig
+{
+    pub fn parse(mut args: impl Iterator<Item=String>) -> Self
+    {
+        let mut tokens_amount = 25;
+        let mut temperature = 1.0;
+        let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
+
+        while let Some(arg) = args.next()
+        {
+            match arg.as_str()
+            {
+                "-n" =>
+                {
+                    tokens_amount = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }).parse()
+                        .unwrap_or_else(|err|
+                        {
+                            complain(&format!("cant parse the amount: {err:?}"))
+                        });
+                },
+                "-t" | "--temperature" =>
+                {
+                    temperature = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }).parse()
+                        .unwrap_or_else(|err|
+                        {
+                            complain(&format!("cant parse the temperature: {err:?}"))
+                        });
+                },
+                "-p" | "--path" =>
+                {
+                    network_path = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        });
+                },
+                x => complain(&format!("cant parse arg: {x}"))
+            }
+        }
+
+        Self{
+            tokens_amount,
+            temperature,
+            network_path
+        }
+    }
+}
+
 fn run(mut args: impl Iterator<Item=String>)
 {
     let text = args.next()
         .unwrap_or_else(|| complain("pls give the text to predict"));
 
-    let amount = args.next().map(|s|
-    {
-        s.parse().unwrap_or_else(|err| complain(&format!("cant parse the amount: {err:?}")))
-    }).unwrap_or(5);
+    let config = RunConfig::parse(args);
 
-    let network_path = args.next()
-        .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
-
-    let network = NeuralNetwork::load(network_path).unwrap();
+    let network = NeuralNetwork::load(config.network_path).unwrap();
     
-    let predicted = network.predict(&text, amount);
+    let predicted = network.predict(&text, config.tokens_amount, config.temperature);
 
     println!("{predicted}");
 }

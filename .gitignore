@@ -2,3 +2,4 @@
 callgrind.*
 network*
 test
+/backup_networks

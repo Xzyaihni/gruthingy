@@ -214,9 +214,9 @@ impl WordDictionary
     }
 
     #[allow(dead_code)]
-    pub fn layer_to_word(&self, layer: &SoftmaxedLayer) -> VectorWord
+    pub fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f64) -> VectorWord
     {
-        let index = layer.pick_weighed();
+        let index = layer.pick_weighed(temperature);
 
         VectorWord::new(index)
     }

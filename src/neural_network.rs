@@ -51,16 +51,29 @@ impl SoftmaxedLayer
         Self(LayerContainer::new(size))
     }
 
-    pub fn pick_weighed(&self) -> usize
+    pub fn pick_weighed(&self, temperature: f64) -> usize
     {
-        let mut c = fastrand::f64();
+        let mut c = fastrand::f64() / temperature;
 
         let index = self.0.iter().position(|v|
         {
             c -= v;
 
             c <= 0.0
-        }).unwrap();
+        }).unwrap_or_else(||
+        {
+            // value above 1, just pick the highest
+            self.0.iter().cloned().enumerate().reduce(|acc, (i, v)|
+            {
+                if v > acc.1
+                {
+                    (i, v)
+                } else
+                {
+                    acc
+                }
+            }).unwrap().0
+        });
 
         index
     }
@@ -606,7 +619,7 @@ impl NeuralNetwork
     }
 
     #[allow(dead_code)]
-    pub fn predict(&self, text: &str, amount: usize) -> String
+    pub fn predict(&self, text: &str, amount: usize, temperature: f64) -> String
     {
         let word_vectorizer = WordVectorizer::new(&self.dictionary, text.as_bytes());
 
@@ -627,7 +640,7 @@ impl NeuralNetwork
                 None => return String::new()
             };
 
-            let word = self.dictionary.layer_to_word(output);
+            let word = self.dictionary.layer_to_word(output, temperature);
             words.push(self.dictionary.word_to_layer(word));
 
             let bytes = self.dictionary.word_to_bytes(word).unwrap();
