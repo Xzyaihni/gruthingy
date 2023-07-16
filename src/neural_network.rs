@@ -22,7 +22,7 @@ mod rnn;
 mod gru;
 
 
-pub const HIDDEN_AMOUNT: usize = 3;
+pub const HIDDEN_AMOUNT: usize = 100;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SoftmaxedLayer(LayerContainer);
