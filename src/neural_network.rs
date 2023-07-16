@@ -22,7 +22,7 @@ mod rnn;
 mod gru;
 
 
-pub const HIDDEN_AMOUNT: usize = 100;
+pub const HIDDEN_AMOUNT: usize = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SoftmaxedLayer(LayerContainer);
@@ -674,6 +674,10 @@ impl NeuralNetwork
             self.apply_gradients(gradients);
 
             batch_start += batch_size;
+            if batch_start >= inputs.len()
+            {
+                batch_start = 0;
+            }
         }
     }
 
@@ -828,10 +832,11 @@ mod tests
         let network = test_network();
         let inputs = test_input_outputs(test_texts_many(), &network);
 
+        let len = inputs.len();
         let this_loss = inputs.into_iter().map(|input|
         {
             network.network.average_loss(input.iter())
-        }).sum();
+        }).sum::<f64>() / len as f64;
 
         let predicted_loss = (network.dictionary.words_amount() as f64).ln();
 
