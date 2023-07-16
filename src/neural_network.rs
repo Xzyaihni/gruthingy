@@ -58,27 +58,17 @@ impl SoftmaxedLayer
 
     pub fn pick_weighed(&self, temperature: f64) -> usize
     {
-        let mut c = fastrand::f64() / temperature;
+        let mut values = self.0.clone();
+        values.map(|v| v / temperature);
 
-        let index = self.0.iter().position(|v|
+        let mut c = fastrand::f64();
+
+        let index = values.iter().position(|v|
         {
             c -= v;
 
             c <= 0.0
-        }).unwrap_or_else(||
-        {
-            // value above 1, just pick the highest
-            self.0.iter().cloned().enumerate().reduce(|acc, (i, v)|
-            {
-                if v > acc.1
-                {
-                    (i, v)
-                } else
-                {
-                    acc
-                }
-            }).unwrap().0
-        });
+        }).unwrap();
 
         index
     }
