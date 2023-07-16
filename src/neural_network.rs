@@ -653,10 +653,25 @@ impl NeuralNetwork
         let inputs = self.input_expected_from_text(text);
         println!("batch size: {batch_size}");
         
+        let epochs_per_input = inputs.len() / epochs;
+        println!("calculate loss every {epochs_per_input} epochs");
+
+        let output_loss = |network: &RNN, batch: InputOutputIter|
+        {
+            let loss = network.average_loss(batch);
+
+            println!("loss: {loss}");
+        };
+        
         let new_batch_start = ||
         {
             let max_length = inputs.len() - batch_size;
             fastrand::usize(0..max_length)
+        };
+
+        let input_vectorizer = |dictionary: &WordDictionary, word: &VectorWord|
+        {
+            dictionary.word_to_layer(*word)
         };
 
         let mut batch_start = new_batch_start();
@@ -664,20 +679,17 @@ impl NeuralNetwork
         // whats an epoch? cool word is wut it is
         for epoch in 0..epochs
         {
-            let input_vectorizer = |word: &VectorWord|
-            {
-                self.dictionary.word_to_layer(*word)
-            };
+            let batch = InputOutput::batch(
+                &inputs,
+                |word| input_vectorizer(&self.dictionary, word),
+                batch_start,
+                batch_size
+            );
 
-            let batch = InputOutput::batch(&inputs, input_vectorizer, batch_start, batch_size);
-
-            let epochs_per_input = inputs.len() / epochs;
             let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
             if print_loss
             {
-                let loss = self.network.average_loss(batch.iter());
-
-                println!("epoch {}: loss: {loss}", epoch + 1);
+                output_loss(&self.network, batch.iter());
             }
 
             let gradients = self.network.gradients(batch.iter());
@@ -686,6 +698,15 @@ impl NeuralNetwork
 
             batch_start = new_batch_start();
         }
+
+        let batch = InputOutput::batch(
+            &inputs, 
+            |word| input_vectorizer(&self.dictionary, word),
+            0,
+            batch_size
+        );
+
+        output_loss(&self.network, batch.iter());
     }
 
     fn apply_gradients(&mut self, mut gradients: RNNGradients)
