@@ -653,7 +653,7 @@ impl NeuralNetwork
         let inputs = self.input_expected_from_text(text);
         println!("batch size: {batch_size}");
         
-        let epochs_per_input = inputs.len() / epochs;
+        let epochs_per_input = inputs.len() / batch_size;
         println!("calculate loss every {epochs_per_input} epochs");
 
         let output_loss = |network: &RNN, batch: InputOutputIter|
