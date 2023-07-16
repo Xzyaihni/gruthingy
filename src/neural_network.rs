@@ -1,7 +1,6 @@
 use std::{
     f64,
     cmp::Ordering,
-    slice,
     borrow::Borrow,
     io::{self, Read},
     fs::File,
@@ -17,7 +16,7 @@ use rnn::{RNN, RNNGradients};
 #[allow(unused_imports)]
 use gru::GRU;
 
-use super::word_vectorizer::{WordVectorizer, WordDictionary};
+use super::word_vectorizer::{WordVectorizer, VectorWord, WordDictionary};
 
 mod rnn;
 mod gru;
@@ -518,6 +517,87 @@ impl GradientsInfo
     }
 }
 
+pub struct InputOutput
+{
+    container: Vec<LayerContainer>
+}
+
+impl InputOutput
+{
+    pub fn batch<V, F>(
+        values: &[V],
+        f: F,
+        batch_start: usize,
+        batch_size: usize
+    ) -> Self
+    where
+        F: FnMut(&V) -> LayerContainer
+    {
+        let batch_end = (batch_start + batch_size).min(values.len());
+        let batch = &values[batch_start..batch_end];
+
+        Self::new(batch.iter().map(f).collect())
+    }
+
+    pub fn new(container: Vec<LayerContainer>) -> Self
+    {
+        Self{container}
+    }
+
+    pub fn iter<'a>(&'a self) -> InputOutputIter<'a>
+    {
+        InputOutputIter{
+            container: &self.container,
+            current_index: 1
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize
+    {
+        self.container.len() - 1
+    }
+}
+
+#[derive(Clone)]
+pub struct InputOutputIter<'a>
+{
+    container: &'a [LayerContainer],
+    current_index: usize
+}
+
+impl InputOutputIter<'_>
+{
+    pub fn len(&self) -> usize
+    {
+        self.container.len() - 1
+    }
+}
+
+impl<'a> Iterator for InputOutputIter<'a>
+{
+    type Item = (&'a LayerContainer, &'a LayerContainer);
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        if self.container.len() == self.current_index
+        {
+            None
+        } else
+        {
+            debug_assert!((0..self.container.len()).contains(&(self.current_index - 1)));
+            let previous = unsafe{ self.container.get_unchecked(self.current_index - 1) };
+            
+            debug_assert!((0..self.container.len()).contains(&self.current_index));
+            let this = unsafe{ self.container.get_unchecked(self.current_index) };
+            
+            self.current_index += 1;
+
+            Some((previous, this))
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct NeuralNetwork
 {
@@ -561,43 +641,39 @@ impl NeuralNetwork
     pub fn input_expected_from_text(
         &self,
         text: impl Read
-    ) -> (Vec<LayerContainer>, Vec<LayerContainer>)
+    ) -> Vec<VectorWord>
     {
         let word_vectorizer = WordVectorizer::new(&self.dictionary, text);
 
-        let mut words = word_vectorizer.map(|v|
-        {
-            self.dictionary.word_to_layer(v)
-        });
-
-        let mut previous = words.next().expect("text file must not be empty");
-        let words = words.skip(1).map(|word|
-        {
-            let mapped = (previous.clone(), word.clone());
-
-            previous = word;
-
-            mapped
-        });
-
-        words.unzip()
+        word_vectorizer.collect()
     }
 
-    pub fn train(&mut self, epochs: usize, text: impl Read)
+    pub fn train(&mut self, epochs: usize, batch_size: usize, text: impl Read)
     {
-        let (inputs, outputs) = self.input_expected_from_text(text);
+        let inputs = self.input_expected_from_text(text);
+        println!("batch size: {batch_size}");
         
+        let mut batch_start = 0;
+
         // whats an epoch? cool word is wut it is
         for epoch in 0..epochs
         {
-            let loss =
-                self.network.average_loss(slice::from_ref(&inputs), slice::from_ref(&outputs));
+            let input_vectorizer = |word: &VectorWord|
+            {
+                self.dictionary.word_to_layer(*word)
+            };
+
+            let batch = InputOutput::batch(&inputs, input_vectorizer, batch_start, batch_size);
+
+            let loss = self.network.average_loss(batch.iter());
 
             println!("epoch {}: loss: {loss}", epoch + 1);
 
-            let gradients = self.network.gradients(&inputs, &outputs);
+            let gradients = self.network.gradients(batch.iter());
 
             self.apply_gradients(gradients);
+
+            batch_start += batch_size;
         }
     }
 
@@ -715,14 +791,17 @@ mod tests
     fn test_input_outputs(
         test_texts: Vec<&'static str>,
         network: &NeuralNetwork
-    ) -> (Vec<Vec<LayerContainer>>, Vec<Vec<LayerContainer>>)
+    ) -> Vec<InputOutput>
     {
         test_texts.into_iter().map(|text|
         {
-            let (inputs, outputs) = network.input_expected_from_text(text.as_bytes());
+            let inputs = network.input_expected_from_text(text.as_bytes());
 
-            (inputs, outputs)
-        }).unzip()
+            InputOutput::new(inputs.iter().map(|word: &VectorWord|
+            {
+                network.dictionary.word_to_layer(*word)
+            }).collect())
+        }).collect()
     }
 
     #[test]
@@ -747,9 +826,13 @@ mod tests
     fn loss()
     {
         let network = test_network();
-        let (inputs, outputs) = test_input_outputs(test_texts_many(), &network);
+        let inputs = test_input_outputs(test_texts_many(), &network);
 
-        let this_loss = network.network.average_loss(&inputs, &outputs);
+        let this_loss = inputs.into_iter().map(|input|
+        {
+            network.network.average_loss(input.iter())
+        }).sum();
+
         let predicted_loss = (network.dictionary.words_amount() as f64).ln();
 
         assert!(
@@ -763,9 +846,9 @@ mod tests
     fn gradients_check_many()
     {
         let mut network = test_network();
-        let (inputs, outputs) = test_input_outputs(test_texts_many(), &network);
+        let inputs = test_input_outputs(test_texts_many(), &network);
 
-        gradients_check(&mut network, inputs, outputs);
+        gradients_check(&mut network, inputs);
     }
 
     #[ignore]
@@ -773,9 +856,9 @@ mod tests
     fn gradients_check_one()
     {
         let mut network = test_network();
-        let (inputs, outputs) = test_input_outputs(test_texts_one(), &network);
+        let inputs = test_input_outputs(test_texts_one(), &network);
 
-        gradients_check(&mut network, inputs, outputs);
+        gradients_check(&mut network, inputs);
     }
 
     #[ignore]
@@ -783,9 +866,9 @@ mod tests
     fn gradients_check_two()
     {
         let mut network = test_network();
-        let (inputs, outputs) = test_input_outputs(test_texts_two(), &network);
+        let inputs = test_input_outputs(test_texts_two(), &network);
 
-        gradients_check(&mut network, inputs, outputs);
+        gradients_check(&mut network, inputs);
     }
 
     #[ignore]
@@ -793,36 +876,34 @@ mod tests
     fn gradients_check_three()
     {
         let mut network = test_network();
-        let (inputs, outputs) = test_input_outputs(test_texts_three(), &network);
+        let inputs = test_input_outputs(test_texts_three(), &network);
 
-        gradients_check(&mut network, inputs, outputs);
+        gradients_check(&mut network, inputs);
     }
 
     fn gradients_check(
         network: &mut NeuralNetwork,
-        inputs: Vec<Vec<LayerContainer>>,
-        outputs: Vec<Vec<LayerContainer>>
+        inputs: Vec<InputOutput>
     )
     {
-        inputs.iter().zip(outputs.iter()).for_each(|(input, output)|
+        inputs.into_iter().for_each(|input|
         {
             println!("checking output gradients");
-            output_gradients_check(network, input, output);
+            output_gradients_check(network, input.iter());
             println!("checking hidden gradients");
-            hidden_gradients_check(network, input, output);
+            hidden_gradients_check(network, input.iter());
             println!("checking input gradients");
-            input_gradients_check(network, input, output);
+            input_gradients_check(network, input.iter());
         });
     }
 
     fn output_gradients_check(
         network: &mut NeuralNetwork,
-        input: &Vec<LayerContainer>,
-        output: &Vec<LayerContainer>
+        input: InputOutputIter 
     )
     {
-        let true_gradient = rnn::tests::output_gradient_check(&mut network.network, input, output);
-        let calculated_gradient = network.network.gradients(input, output);
+        let true_gradient = rnn::tests::output_gradient_check(&mut network.network, input.clone());
+        let calculated_gradient = network.network.gradients(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.output_gradients.iter_pos())
             .for_each(|(true_gradient, calculated_gradient)|
@@ -841,12 +922,15 @@ mod tests
 
     fn hidden_gradients_check(
         network: &mut NeuralNetwork,
-        input: &Vec<LayerContainer>,
-        output: &Vec<LayerContainer>
+        input: InputOutputIter 
     )
     {
-        let f_true_gradient = rnn::tests::hidden_gradient_check(&mut network.network, input, output);
-        let f_calculated_gradient = network.network.gradients(input, output);
+        let f_true_gradient = rnn::tests::hidden_gradient_check(
+            &mut network.network,
+            input.clone()
+        );
+
+        let f_calculated_gradient = network.network.gradients(input);
 
         f_true_gradient.iter_pos().zip(f_calculated_gradient.hidden_gradients.iter_pos())
             .for_each(|(true_gradient, calculated_gradient)|
@@ -856,13 +940,13 @@ mod tests
                 let true_gradient = true_gradient.value;
                 let calculated_gradient = calculated_gradient.value;
 
-                if !close_enough(true_gradient, calculated_gradient, 0.01)
+                /*if !close_enough(true_gradient, calculated_gradient, 0.01)
                 {
                     dbg!(&network.network);
                     dbg!(&f_calculated_gradient, &f_true_gradient);
                     dbg!(input, output);
                     dbg!(network.network.feedforward(input));
-                }
+                }*/
 
                 assert!(
                     close_enough(true_gradient, calculated_gradient, 0.01),
@@ -874,12 +958,15 @@ mod tests
 
     fn input_gradients_check(
         network: &mut NeuralNetwork,
-        input: &Vec<LayerContainer>,
-        output: &Vec<LayerContainer>
+        input: InputOutputIter 
     )
     {
-        let true_gradient = rnn::tests::input_gradient_check(&mut network.network, input, output);
-        let calculated_gradient = network.network.gradients(input, output);
+        let true_gradient = rnn::tests::input_gradient_check(
+            &mut network.network,
+            input.clone()
+        );
+
+        let calculated_gradient = network.network.gradients(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_gradients.iter_pos())
             .for_each(|(true_gradient, calculated_gradient)|

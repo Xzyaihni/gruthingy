@@ -20,7 +20,67 @@ fn complain(message: &str) -> !
     process::exit(1)
 }
 
-fn train_new(epochs: usize, mut args: impl Iterator<Item=String>)
+struct TrainConfig
+{
+    epochs: usize,
+    batch_size: usize,
+    network_path: String
+}
+
+impl TrainConfig
+{
+    pub fn parse(mut args: impl Iterator<Item=String>) -> Self
+    {
+        let mut epochs = 1;
+        let mut batch_size = 2_usize.pow(14);
+        let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
+
+        while let Some(arg) = args.next()
+        {
+            match arg.as_str()
+            {
+                "-e" | "--epochs" =>
+                {
+                    epochs = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }).parse()
+                        .unwrap_or_else(|err|
+                        {
+                            complain(&format!("cant parse the epochs: {err:?}"))
+                        });
+                },
+                "-b" | "--batch" =>
+                {
+                    batch_size = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }).parse()
+                        .unwrap_or_else(|err|
+                        {
+                            complain(&format!("cant parse the batch size: {err:?}"))
+                        });
+                },
+                "-p" | "--path" =>
+                {
+                    network_path = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        });
+                },
+                x => complain(&format!("cant parse arg: {x}"))
+            }
+        }
+
+        Self{
+            epochs,
+            batch_size,
+            network_path
+        }
+    }
+}
+
+fn train_new(mut args: impl Iterator<Item=String>)
 {
     let dictionary_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text for a dictionary"));
@@ -38,19 +98,18 @@ fn train_new(epochs: usize, mut args: impl Iterator<Item=String>)
             complain(&err_msg)
         });
     
-    let network_path = args.next()
-        .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+    let config = TrainConfig::parse(args);
 
     let dictionary = WordDictionary::build(dictionary_file);
 
     let mut network = NeuralNetwork::new(dictionary);
 
-    network.train(epochs, text_file);
+    network.train(config.epochs, config.batch_size, text_file);
 
-    network.save(network_path);
+    network.save(config.network_path);
 }
 
-fn train(epochs: usize, mut args: impl Iterator<Item=String>)
+fn train(mut args: impl Iterator<Item=String>)
 {
     let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text training data"));
@@ -62,14 +121,13 @@ fn train(epochs: usize, mut args: impl Iterator<Item=String>)
             complain(&err_msg)
         });
     
-    let network_path = args.next()
-        .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+    let config = TrainConfig::parse(args);
     
-    let mut network = NeuralNetwork::load(&network_path).unwrap();
+    let mut network = NeuralNetwork::load(&config.network_path).unwrap();
 
-    network.train(epochs, text_file);
+    network.train(config.epochs, config.batch_size, text_file);
 
-    network.save(network_path);
+    network.save(config.network_path);
 }
 
 struct RunConfig
@@ -154,15 +212,10 @@ fn main()
         .unwrap_or_else(|| complain("pls give a mode"))
         .trim().to_lowercase();
 
-    let epochs = env::var("YANYA_EPOCHS").map(|v|
-    {
-        v.parse().unwrap_or_else(|err| complain(&format!("cant parse the epochs: {err:?}")))
-    }).unwrap_or(1);
-
     match mode.as_str()
     {
-        "train_new" => train_new(epochs, args),
-        "train" => train(epochs, args),
+        "train_new" => train_new(args),
+        "train" => train(args),
         "run" => run(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }

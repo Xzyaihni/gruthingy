@@ -1,9 +1,12 @@
+use std::borrow::Borrow;
+
 use serde::{Serialize, Deserialize};
 
 use crate::neural_network::{
     LayerContainer,
     WeightsContainer,
     SoftmaxedLayer,
+    InputOutputIter,
     HIDDEN_AMOUNT
 };
 
@@ -105,36 +108,34 @@ impl RNN
         // if value > 0.0 {1.0} else {0.01}
     }
 
-    pub fn average_loss(&self, input: &[Vec<LayerContainer>], output: &[Vec<LayerContainer>]) -> f64
+    pub fn average_loss(&self, input: InputOutputIter) -> f64
     {
-        let n: usize = input.iter().map(|i| i.len()).sum();
-
-        self.loss(input, output) / n as f64
+        let len = input.len();
+        self.loss(input) / len as f64
     }
 
-    fn loss(&self, input: &[Vec<LayerContainer>], output: &[Vec<LayerContainer>]) -> f64
+    fn loss(&self, input: InputOutputIter) -> f64
     {
-        input.iter().zip(output.iter()).map(|(input, output)|
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+        let f_output = self.feedforward(&input);
+
+        let predicted = f_output.outputs;
+        
+        let s: f64 = predicted.into_iter().zip(output.into_iter()).map(|(p, o)|
         {
-            let f_output = self.feedforward(input);
+            let mut p = p.0;
+            p.map(|v| v.ln());
 
-            let predicted = f_output.outputs;
-            
-            let s: f64 = predicted.into_iter().zip(output.iter()).map(|(p, o)|
-            {
-                let mut p = p.0;
-                p.map(|v| v.ln());
+            p.dot(o.iter())
+        }).sum();
 
-                p.dot(o.iter())
-            }).sum();
-
-            -s
-        }).sum()
+        -s
     }
 
-    pub fn gradients(&self, input: &[LayerContainer], output: &[LayerContainer]) -> RNNGradients
+    pub fn gradients(&self, input: InputOutputIter) -> RNNGradients
     {
-        let f_output = self.feedforward(input);
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+        let f_output = self.feedforward(&input);
 
         let mut output_gradients = WeightsContainer::new(
             self.output_weights.previous_size(), self.output_weights.this_size()
@@ -154,7 +155,7 @@ impl RNN
         // confusing..
         for (i, predicted_output) in (0..output.len()).zip(f_outputs.into_iter()).rev()
         {
-            let expected_output = unsafe{ output.get_unchecked(i) };
+            let expected_output = unsafe{ *output.get_unchecked(i) };
             let hidden = unsafe{ hiddens.get_unchecked(i) };
             let hidden_ut = unsafe{ hiddens_ut.get_unchecked(i) };
 
@@ -242,7 +243,9 @@ impl RNN
         }
     }
 
-    pub fn feedforward(&self, input: &[LayerContainer]) -> RNNOutput
+    pub fn feedforward<L>(&self, input: &[L]) -> RNNOutput
+    where
+        L: Borrow<LayerContainer>
     {
         let time_total = input.len();
 
@@ -262,7 +265,7 @@ impl RNN
                 unsafe{ hiddens.get_unchecked(t - 1) }
             };
 
-            let this_input = unsafe{ input.get_unchecked(t) };
+            let this_input = unsafe{ input.get_unchecked(t).borrow() };
 
             let bias = unsafe{ self.hidden_weights.this_unchecked(HIDDEN_AMOUNT) };
             let mut hidden =
@@ -297,8 +300,6 @@ pub mod tests
 {
     use super::*;
     use crate::neural_network::WeightsIterValue;
-
-    use std::slice;
 
     #[allow(dead_code)]
     pub fn debug_biases(
@@ -396,8 +397,7 @@ pub mod tests
 
     pub fn output_gradient_check(
         network: &mut RNN,
-        input: &Vec<LayerContainer>,
-        output: &Vec<LayerContainer>
+        input: InputOutputIter
     ) -> WeightsContainer
     {
         let output_weights = network.output_weights.iter_pos().map(|weight|
@@ -417,10 +417,10 @@ pub mod tests
 
             // ; ;
             set_this_weight(network, weight - epsilon);
-            let under_loss = network.loss(slice::from_ref(input), slice::from_ref(output));
+            let under_loss = network.loss(input.clone());
             
             set_this_weight(network, weight + epsilon);
-            let over_loss = network.loss(slice::from_ref(input), slice::from_ref(output));
+            let over_loss = network.loss(input.clone());
 
             set_this_weight(network, weight);
 
@@ -436,8 +436,7 @@ pub mod tests
 
     pub fn hidden_gradient_check(
         network: &mut RNN,
-        input: &Vec<LayerContainer>,
-        output: &Vec<LayerContainer>
+        input: InputOutputIter
     ) -> WeightsContainer
     {
         let hidden_weights = network.hidden_weights.iter_pos().map(|weight|
@@ -457,10 +456,10 @@ pub mod tests
 
             // ; ;
             set_this_weight(network, weight - epsilon);
-            let under_loss = network.loss(slice::from_ref(input), slice::from_ref(output));
+            let under_loss = network.loss(input.clone());
             
             set_this_weight(network, weight + epsilon);
-            let over_loss = network.loss(slice::from_ref(input), slice::from_ref(output));
+            let over_loss = network.loss(input.clone());
 
             set_this_weight(network, weight);
 
@@ -476,8 +475,7 @@ pub mod tests
 
     pub fn input_gradient_check(
         network: &mut RNN,
-        input: &Vec<LayerContainer>,
-        output: &Vec<LayerContainer>
+        input: InputOutputIter
     ) -> WeightsContainer
     {
         let input_weights = network.input_weights.iter_pos().map(|weight|
@@ -497,10 +495,10 @@ pub mod tests
 
             // ; ;
             set_this_weight(network, weight - epsilon);
-            let under_loss = network.loss(slice::from_ref(input), slice::from_ref(output));
+            let under_loss = network.loss(input.clone());
             
             set_this_weight(network, weight + epsilon);
-            let over_loss = network.loss(slice::from_ref(input), slice::from_ref(output));
+            let over_loss = network.loss(input.clone());
 
             set_this_weight(network, weight);
 
