@@ -653,7 +653,13 @@ impl NeuralNetwork
         let inputs = self.input_expected_from_text(text);
         println!("batch size: {batch_size}");
         
-        let mut batch_start = 0;
+        let new_batch_start = ||
+        {
+            let max_length = inputs.len() - batch_size;
+            fastrand::usize(0..max_length)
+        };
+
+        let mut batch_start = new_batch_start();
 
         // whats an epoch? cool word is wut it is
         for epoch in 0..epochs
@@ -665,19 +671,20 @@ impl NeuralNetwork
 
             let batch = InputOutput::batch(&inputs, input_vectorizer, batch_start, batch_size);
 
-            let loss = self.network.average_loss(batch.iter());
+            let epochs_per_input = inputs.len() / epochs;
+            let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
+            if print_loss
+            {
+                let loss = self.network.average_loss(batch.iter());
 
-            println!("epoch {}: loss: {loss}", epoch + 1);
+                println!("epoch {}: loss: {loss}", epoch + 1);
+            }
 
             let gradients = self.network.gradients(batch.iter());
 
             self.apply_gradients(gradients);
 
-            batch_start += batch_size;
-            if batch_start >= inputs.len()
-            {
-                batch_start = 0;
-            }
+            batch_start = new_batch_start();
         }
     }
 
