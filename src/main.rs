@@ -26,6 +26,7 @@ struct TrainConfig
 {
     epochs: usize,
     batch_size: usize,
+    ignore_loss: bool,
     network_path: String
 }
 
@@ -35,6 +36,7 @@ impl TrainConfig
     {
         let mut epochs = 1;
         let mut batch_size = 2_usize.pow(14);
+        let mut ignore_loss = false;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
         while let Some(arg) = args.next()
@@ -70,6 +72,10 @@ impl TrainConfig
                             complain(&format!("expected value after {arg}"))
                         });
                 },
+                "-i" | "--ignore-loss" =>
+                {
+                    ignore_loss = true;
+                },
                 x => complain(&format!("cant parse arg: {x}"))
             }
         }
@@ -77,6 +83,7 @@ impl TrainConfig
         Self{
             epochs,
             batch_size,
+            ignore_loss,
             network_path
         }
     }
@@ -107,7 +114,7 @@ fn train_new(mut args: impl Iterator<Item=String>)
 
     let mut network = NeuralNetwork::new(dictionary);
 
-    network.train(config.epochs, config.batch_size, text_file);
+    network.train(config.epochs, config.batch_size, config.ignore_loss, text_file);
 
     network.save(config.network_path);
 }
@@ -129,7 +136,7 @@ fn train(mut args: impl Iterator<Item=String>)
     let mut network: NeuralNetwork<CharDictionary> =
         NeuralNetwork::load(&config.network_path).unwrap();
 
-    network.train(config.epochs, config.batch_size, text_file);
+    network.train(config.epochs, config.batch_size, config.ignore_loss, text_file);
 
     network.save(config.network_path);
 }

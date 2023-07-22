@@ -869,7 +869,13 @@ where
         word_vectorizer.collect()
     }
 
-    pub fn train(&mut self, epochs: usize, batch_size: usize, text: impl Read)
+    pub fn train(
+        &mut self,
+        epochs: usize,
+        batch_size: usize,
+        ignore_loss: bool,
+        text: impl Read
+    )
     {
         let inputs = self.input_expected_from_text(text);
         println!("batch size: {batch_size}");
@@ -884,6 +890,11 @@ where
 
         let output_loss = |network: &GRU, dictionary: &_|
         {
+            if ignore_loss
+            {
+                return;
+            }
+
             let mut total_batches = 0;
             let mut loss = 0.0;
 
