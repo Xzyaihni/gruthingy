@@ -77,18 +77,34 @@ impl SoftmaxedLayer
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LayerContainer
+pub struct LayerContainer<T=f64>
 {
-    values: Vec<f64>
+    values: Vec<T>
 }
 
-impl LayerContainer
+impl<T> LayerContainer<T>
+where
+    T: Default + Copy
 {
     pub fn new(size: usize) -> Self
     {
-        let values = vec![0.0; size];
+        let values = vec![T::default(); size];
 
         Self{values}
+    }
+}
+
+impl<T> LayerContainer<T>
+{
+    pub fn iter(&self) -> impl Iterator<Item=&T>
+    {
+        self.values.iter()
+    }
+
+    #[allow(dead_code)]
+    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
+    {
+        self.values.iter_mut()
     }
 
     #[allow(dead_code)]
@@ -98,14 +114,8 @@ impl LayerContainer
     }
 
     #[allow(dead_code)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut f64>
-    {
-        self.values.iter_mut()
-    }
-
-    #[allow(dead_code)]
     #[inline(always)]
-    pub unsafe fn get_unchecked(&self, index: usize) -> &f64
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T
     {
         debug_assert!(
             (0..self.values.len()).contains(&index),
@@ -119,7 +129,7 @@ impl LayerContainer
 
     #[allow(dead_code)]
     #[inline(always)]
-    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut f64
+    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T
     {
         debug_assert!(
             (0..self.values.len()).contains(&index),
@@ -130,12 +140,10 @@ impl LayerContainer
 
         self.values.get_unchecked_mut(index)
     }
+}
 
-    pub fn iter(&self) -> impl Iterator<Item=&f64>
-    {
-        self.values.iter()
-    }
-
+impl LayerContainer
+{
     #[inline(always)]
     pub fn outer_product(&self, other: impl Borrow<Self>) -> WeightsContainer
     {
@@ -709,6 +717,9 @@ struct GradientsInfo
     pub hidden_update_gradients: WeightsContainer<GradientInfo>,
     pub hidden_reset_gradients: WeightsContainer<GradientInfo>,
     pub hidden_activation_gradients: WeightsContainer<GradientInfo>,
+    pub update_bias_gradients: LayerContainer<GradientInfo>,
+    pub reset_bias_gradients: LayerContainer<GradientInfo>,
+    pub activation_bias_gradients: LayerContainer<GradientInfo>,
     pub output_gradients: WeightsContainer<GradientInfo>
 }
 
@@ -720,9 +731,12 @@ impl GradientsInfo
         	input_update_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
         	input_reset_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
         	input_activation_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
-        	hidden_update_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
-        	hidden_reset_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
-        	hidden_activation_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
+        	hidden_update_gradients: WeightsContainer::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        	hidden_reset_gradients: WeightsContainer::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        	hidden_activation_gradients: WeightsContainer::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+            update_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
+            reset_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
+            activation_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
             output_gradients: WeightsContainer::new(HIDDEN_AMOUNT, word_vector_size)
         }
     }
@@ -979,6 +993,13 @@ where
 
         gradients.hidden_activation_gradients.iter_mut()
             .zip(self.gradients_info.hidden_activation_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
+        gradients.update_bias_gradients.iter_mut()
+            .zip(self.gradients_info.update_bias_gradients.iter_mut())
             .for_each(|(g, tg)|
             {
                 *g = tg.update(*g);

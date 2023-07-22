@@ -135,6 +135,7 @@ pub struct CharDictionary
 
 impl CharDictionary
 {
+    #[allow(dead_code)]
     pub fn new() -> Self
     {
         Self{}

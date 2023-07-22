@@ -5,7 +5,9 @@ use std::{
 };
 
 use neural_network::NeuralNetwork;
-use word_vectorizer::CharDictionary;
+
+#[allow(unused_imports)]
+use word_vectorizer::{CharDictionary, WordDictionary};
 
 mod neural_network;
 mod word_vectorizer;
@@ -100,6 +102,7 @@ fn train_new(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
 
+    // let dictionary = WordDictionary::build(dictionary_file);
     let dictionary = CharDictionary::new();
 
     let mut network = NeuralNetwork::new(dictionary);
