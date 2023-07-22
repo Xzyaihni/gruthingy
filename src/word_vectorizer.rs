@@ -371,8 +371,21 @@ mod tests
     #[test]
     fn encodes_decodes()
     {
-        let mut dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
+        let dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
 
+        encode_decode_test(dictionary);
+    }
+
+    #[test]
+    fn encodes_decodes_char()
+    {
+        let dictionary = CharDictionary::new();
+
+        encode_decode_test(dictionary);
+    }
+
+    fn encode_decode_test(mut dictionary: impl NetworkDictionary)
+    {
         let original_bytes = "hello world im testing a COOL encoder (not rly) fake and gay";
 
         let vectorizer = WordVectorizer::new(&mut dictionary, original_bytes.as_bytes());
