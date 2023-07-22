@@ -1,28 +1,30 @@
 use std::{
     f64,
+    vec,
+    slice,
     cmp::Ordering,
     borrow::Borrow,
     io::{self, Read},
     fs::File,
     path::Path,
-    ops::{Index, Add, Sub, Mul}
+    ops::{Index, Add, Sub, Mul, AddAssign}
 };
 
 use serde::{Serialize, Deserialize};
 
-#[allow(unused_imports)]
-use rnn::{RNN, RNNGradients};
+// #[allow(unused_imports)]
+// use rnn::{RNN, RNNGradients};
 
 #[allow(unused_imports)]
-use gru::GRU;
+use gru::{GRU, GRUGradients};
 
 use super::word_vectorizer::{WordVectorizer, VectorWord, WordDictionary};
 
-mod rnn;
+// mod rnn;
 mod gru;
 
 
-pub const HIDDEN_AMOUNT: usize = 100;
+pub const HIDDEN_AMOUNT: usize = 10;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SoftmaxedLayer(LayerContainer);
@@ -74,7 +76,7 @@ impl SoftmaxedLayer
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayerContainer
 {
     values: Vec<f64>
@@ -134,11 +136,35 @@ impl LayerContainer
         self.values.iter()
     }
 
-    pub fn dot<T>(&self, other: impl Iterator<Item=T>) -> f64
-    where
-        T: Borrow<f64>
+    pub fn outer_product(&self, other: impl Borrow<Self>) -> WeightsContainer
     {
-        self.values.iter().zip(other).map(|(this, other)| this * other.borrow()).sum()
+        let other = other.borrow();
+
+        let raw_weights = (0..self.len()).flat_map(|y|
+        {
+            (0..other.len()).map(move |x|
+            {
+                unsafe{ other.get_unchecked(x) * self.get_unchecked(y) }
+            })
+        }).collect();
+
+        WeightsContainer::from_raw(raw_weights, other.len(), self.len())
+    }
+
+    pub fn dot(&self, other: impl Borrow<Self>) -> f64
+    {
+        self.values.iter().zip(other.borrow().values.iter())
+            .map(|(this, other)| this * other).sum()
+    }
+
+    pub fn powi(self, pow: i32) -> Self
+    {
+        Self{
+            values: self.values.into_iter().map(|v|
+            {
+                v.powi(pow)
+            }).collect()
+        }
     }
 
     pub fn map<F>(&mut self, mut f: F)
@@ -164,11 +190,22 @@ impl FromIterator<f64> for LayerContainer
 impl IntoIterator for LayerContainer
 {
     type Item = f64;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter
     {
         self.values.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a LayerContainer
+{
+    type Item = &'a f64;
+    type IntoIter = slice::Iter<'a, f64>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        self.values.iter()
     }
 }
 
@@ -191,19 +228,40 @@ impl Index<usize> for LayerContainer
     }
 }
 
-impl<I, T> Add<I> for LayerContainer
-where
-    I: IntoIterator<Item=T>,
-    T: Borrow<f64>
+impl Add<f64> for LayerContainer
 {
     type Output = Self;
 
-    fn add(self, rhs: I) -> Self::Output
+    fn add(self, rhs: f64) -> Self::Output
     {
         Self{
-            values: self.values.into_iter().zip(rhs.into_iter()).map(|(v, rv)|
+            values: self.values.into_iter().map(|v|
             {
-                v + rv.borrow()
+                v + rhs
+            }).collect()
+        }
+    }
+}
+
+impl<T> Add<T> for LayerContainer
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn add(self, rhs: T) -> Self::Output
+    {
+        debug_assert!(
+            rhs.borrow().len() == self.len(),
+            "{} != {}",
+            rhs.borrow().len(),
+            self.len()
+        );
+
+        Self{
+            values: self.values.into_iter().zip(rhs.borrow().values.iter()).map(|(v, rv)|
+            {
+                v + rv
             }).collect()
         }
     }
@@ -217,6 +275,13 @@ where
 
     fn sub(self, rhs: T) -> Self::Output
     {
+        debug_assert!(
+            rhs.borrow().len() == self.len(),
+            "{} != {}",
+            rhs.borrow().len(),
+            self.len()
+        );
+
         Self{
             values: self.values.into_iter().zip(rhs.borrow().values.iter()).map(|(v, rv)|
             {
@@ -234,6 +299,30 @@ impl Mul<f64> for LayerContainer
     {
         Self{
             values: self.values.into_iter().map(|v|
+            {
+                v * rhs
+            }).collect()
+        }
+    }
+}
+
+impl<T> Mul<T> for LayerContainer
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        debug_assert!(
+            rhs.borrow().len() == self.len(),
+            "{} != {}",
+            rhs.borrow().len(),
+            self.len()
+        );
+
+        Self{
+            values: self.values.into_iter().zip(rhs.borrow().values.iter()).map(|(v, rhs)|
             {
                 v * rhs
             }).collect()
@@ -405,18 +494,98 @@ where
 
 impl WeightsContainer<f64>
 {
-    pub fn mul(&self, rhs: &LayerContainer) -> LayerContainer
+    pub fn mul(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
     {
-        let layer = (0..self.this_size).map(|i|
+        let rhs = rhs.borrow();
+
+        debug_assert!(
+            // checks if theyre both equal, or rhs is shorter by 1
+            // (weights might have a bias unused in multiplication)
+            (rhs.len() == self.previous_size) || (rhs.len() == (self.previous_size - 1)),
+            "{} != {}",
+            rhs.len(),
+            self.previous_size
+        );
+
+        (0..self.this_size).map(|i|
         {
             (0..rhs.len()).map(|p|
             {
                 // no bounds checking, if i messed something up let it burn
                 unsafe{ self.weight_unchecked(p, i) * rhs.get_unchecked(p) }
             }).sum()
-        }).collect();
+        }).collect()
+    }
 
-        layer
+    pub fn mul_transposed(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
+    {
+        let rhs = rhs.borrow();
+
+        debug_assert!(
+            rhs.len() == self.this_size,
+            "{} != {}",
+            rhs.len(),
+            self.this_size
+        );
+
+        (0..self.previous_size).map(|i|
+        {
+            (0..rhs.len()).map(|p|
+            {
+                // no bounds checking, if i messed something up let it burn
+                unsafe{ self.weight_unchecked(i, p) * rhs.get_unchecked(p) }
+            }).sum()
+        }).collect()
+    }
+
+    pub fn mul_transposed_skip_last(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
+    {
+        let rhs = rhs.borrow();
+
+        debug_assert!(
+            rhs.len() == self.this_size,
+            "{} != {}",
+            rhs.len(),
+            self.this_size
+        );
+
+        (0..(self.previous_size - 1)).map(|i|
+        {
+            (0..rhs.len()).map(|p|
+            {
+                // no bounds checking, if i messed something up let it burn
+                unsafe{ self.weight_unchecked(i, p) * rhs.get_unchecked(p) }
+            }).sum()
+        }).collect()
+    }
+}
+
+impl<R> AddAssign<R> for WeightsContainer<f64>
+where
+    R: Borrow<Self>
+{
+    fn add_assign(&mut self, rhs: R)
+    {
+        let rhs = rhs.borrow();
+
+        debug_assert!(
+            ((self.previous_size == rhs.previous_size)
+            || (self.previous_size - 1 == rhs.previous_size))
+            &&
+            ((self.this_size == rhs.this_size)
+            || (self.this_size - 1 == rhs.this_size))
+        );
+
+        for y in 0..rhs.this_size
+        {
+            for x in 0..rhs.previous_size
+            {
+                let this = unsafe{ self.weight_unchecked_mut(x, y) };
+                let other = unsafe{ rhs.weight_unchecked(x, y) };
+
+                *this = *this + other;
+            }
+        }
     }
 }
 
@@ -461,7 +630,7 @@ impl GradientInfo
             },
             Ordering::Less =>
             {
-                self.learning_rate = (self.learning_rate * 0.5).max(0.0000000001);
+                self.learning_rate = (self.learning_rate * 0.5).max(f64::MIN_POSITIVE);
 
                 self.previous_sign = 0;
 
@@ -490,8 +659,12 @@ impl Default for GradientInfo
 #[derive(Serialize, Deserialize)]
 struct GradientsInfo
 {
-    pub input_gradients: WeightsContainer<GradientInfo>,
-    pub hidden_gradients: WeightsContainer<GradientInfo>,
+    pub input_update_gradients: WeightsContainer<GradientInfo>,
+    pub input_reset_gradients: WeightsContainer<GradientInfo>,
+    pub input_activation_gradients: WeightsContainer<GradientInfo>,
+    pub hidden_update_gradients: WeightsContainer<GradientInfo>,
+    pub hidden_reset_gradients: WeightsContainer<GradientInfo>,
+    pub hidden_activation_gradients: WeightsContainer<GradientInfo>,
     pub output_gradients: WeightsContainer<GradientInfo>
 }
 
@@ -500,8 +673,12 @@ impl GradientsInfo
     pub fn new(word_vector_size: usize) -> Self
     {
         Self{
-            input_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
-            hidden_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
+        	input_update_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
+        	input_reset_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
+        	input_activation_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
+        	hidden_update_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
+        	hidden_reset_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
+        	hidden_activation_gradients: WeightsContainer::new(HIDDEN_AMOUNT + 1, HIDDEN_AMOUNT),
             output_gradients: WeightsContainer::new(HIDDEN_AMOUNT, word_vector_size)
         }
     }
@@ -592,7 +769,7 @@ impl<'a> Iterator for InputOutputIter<'a>
 pub struct NeuralNetwork
 {
     dictionary: WordDictionary,
-    network: RNN,
+    network: GRU,
     gradients_info: GradientsInfo
 }
 
@@ -601,7 +778,7 @@ impl NeuralNetwork
     pub fn new(dictionary: WordDictionary) -> Self
     {
         let words_vector_size = dictionary.words_amount();
-        let network = RNN::new(words_vector_size);
+        let network = GRU::new(words_vector_size);
 
         let gradients_info = GradientsInfo::new(words_vector_size);
 
@@ -643,25 +820,56 @@ impl NeuralNetwork
         let inputs = self.input_expected_from_text(text);
         println!("batch size: {batch_size}");
         
-        let epochs_per_input = inputs.len() / batch_size;
+        let epochs_per_input = (inputs.len() / batch_size).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let output_loss = |network: &RNN, batch: InputOutputIter|
+        let input_vectorizer = |dictionary: &WordDictionary, word: &VectorWord|
         {
-            let loss = network.average_loss(batch);
+            dictionary.word_to_layer(*word)
+        };
+
+        let output_loss = |network: &GRU, dictionary: &WordDictionary|
+        {
+            let mut total_batches = 0;
+            let mut loss = 0.0;
+
+            let mut batch_start = 0;
+
+            loop
+            {
+                let batch = InputOutput::batch(
+                    &inputs,
+                    |word| input_vectorizer(dictionary, word),
+                    batch_start,
+                    batch_size
+                );
+
+                loss += network.average_loss(batch.iter());
+                total_batches += 1;
+
+                batch_start += batch_size;
+                if batch_start >= inputs.len()
+                {
+                    break;
+                }
+            }
+
+            loss /= total_batches as f64;
 
             println!("loss: {loss}");
         };
         
         let new_batch_start = ||
         {
-            let max_length = inputs.len() - batch_size;
-            fastrand::usize(0..max_length)
-        };
+            let max_length = inputs.len().saturating_sub(batch_size);
 
-        let input_vectorizer = |dictionary: &WordDictionary, word: &VectorWord|
-        {
-            dictionary.word_to_layer(*word)
+            if max_length != 0
+            {
+                fastrand::usize(0..max_length)
+            } else
+            {
+                0
+            }
         };
 
         let mut batch_start = new_batch_start();
@@ -679,7 +887,7 @@ impl NeuralNetwork
             let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
             if print_loss
             {
-                output_loss(&self.network, batch.iter());
+                output_loss(&self.network, &self.dictionary);
             }
 
             let gradients = self.network.gradients(batch.iter());
@@ -689,31 +897,55 @@ impl NeuralNetwork
             batch_start = new_batch_start();
         }
 
-        let batch = InputOutput::batch(
-            &inputs, 
-            |word| input_vectorizer(&self.dictionary, word),
-            0,
-            batch_size
-        );
-
-        output_loss(&self.network, batch.iter());
+        output_loss(&self.network, &self.dictionary);
     }
 
-    fn apply_gradients(&mut self, mut gradients: RNNGradients)
+    fn apply_gradients(&mut self, mut gradients: GRUGradients)
     {
-        gradients.input_gradients.iter_mut().zip(self.gradients_info.input_gradients.iter_mut())
+        gradients.input_update_gradients.iter_mut()
+            .zip(self.gradients_info.input_update_gradients.iter_mut())
             .for_each(|(g, tg)|
             {
                 *g = tg.update(*g);
             });
 
-        gradients.hidden_gradients.iter_mut().zip(self.gradients_info.hidden_gradients.iter_mut())
+        gradients.input_reset_gradients.iter_mut()
+            .zip(self.gradients_info.input_reset_gradients.iter_mut())
             .for_each(|(g, tg)|
             {
                 *g = tg.update(*g);
             });
 
-        gradients.output_gradients.iter_mut().zip(self.gradients_info.output_gradients.iter_mut())
+        gradients.input_activation_gradients.iter_mut()
+            .zip(self.gradients_info.input_activation_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
+        gradients.hidden_update_gradients.iter_mut()
+            .zip(self.gradients_info.hidden_update_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
+        gradients.hidden_reset_gradients.iter_mut()
+            .zip(self.gradients_info.hidden_reset_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
+        gradients.hidden_activation_gradients.iter_mut()
+            .zip(self.gradients_info.hidden_activation_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
+        gradients.output_gradients.iter_mut()
+            .zip(self.gradients_info.output_gradients.iter_mut())
             .for_each(|(g, tg)|
             {
                 *g = tg.update(*g);
@@ -827,6 +1059,29 @@ mod tests
     }
 
     #[test]
+    fn matrix_multiplication()
+    {
+        let v = LayerContainer::from(vec![5.0, 0.0, 5.0, 7.0]);
+
+        let m = WeightsContainer::from_raw(vec![
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+            9.0, 10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0
+        ].into_boxed_slice(), 4, 4);
+
+        assert_eq!(
+            m.mul(&v),
+            LayerContainer::from(vec![48.0, 116.0, 184.0, 252.0])
+        );
+
+        assert_eq!(
+            m.mul_transposed(&v),
+            LayerContainer::from(vec![141.0, 158.0, 175.0, 192.0])
+        );
+    }
+
+    #[test]
     fn softmax()
     {
         let test_layer = LayerContainer::from_iter([1.0, 2.0, 8.0].iter().cloned());
@@ -904,105 +1159,55 @@ mod tests
         gradients_check(&mut network, inputs);
     }
 
+    fn print_status(description: &str, f: impl FnOnce())
+    {
+        print!("checking {description}: ⛔ ");
+        f();
+        println!("\rchecking {description}: ✔️");
+    }
+
     fn gradients_check(
         network: &mut NeuralNetwork,
         inputs: Vec<InputOutput>
     )
     {
+        let network = &mut network.network;
         inputs.into_iter().for_each(|input|
         {
-            println!("checking output gradients");
-            output_gradients_check(network, input.iter());
-            println!("checking hidden gradients");
-            hidden_gradients_check(network, input.iter());
-            println!("checking input gradients");
-            input_gradients_check(network, input.iter());
+            print_status("output gradients", ||
+            {
+                gru::tests::output_gradients_check(network, input.iter())
+            });
+
+            print_status("hidden update gradients", ||
+            {
+                gru::tests::hidden_update_gradients_check(network, input.iter())
+            });
+
+            print_status("hidden reset gradients", ||
+            {
+                gru::tests::hidden_reset_gradients_check(network, input.iter())
+            });
+
+            print_status("hidden activation gradients", ||
+            {
+                gru::tests::hidden_activation_gradients_check(network, input.iter())
+            });
+
+            print_status("input update gradients", ||
+            {
+                gru::tests::input_update_gradients_check(network, input.iter())
+            });
+
+            print_status("input reset gradients", ||
+            {
+                gru::tests::input_reset_gradients_check(network, input.iter())
+            });
+
+            print_status("input activation gradients", ||
+            {
+                gru::tests::input_activation_gradients_check(network, input.iter())
+            });
         });
-    }
-
-    fn output_gradients_check(
-        network: &mut NeuralNetwork,
-        input: InputOutputIter 
-    )
-    {
-        let true_gradient = rnn::tests::output_gradient_check(&mut network.network, input.clone());
-        let calculated_gradient = network.network.gradients(input);
-
-        true_gradient.iter_pos().zip(calculated_gradient.output_gradients.iter_pos())
-            .for_each(|(true_gradient, calculated_gradient)|
-            {
-                let (previous, this) = (true_gradient.previous, true_gradient.this);
-
-                let true_gradient = true_gradient.value;
-                let calculated_gradient = calculated_gradient.value;
-
-                assert!(
-                    close_enough(true_gradient, calculated_gradient, 0.01),
-                    "true_gradient: {true_gradient}, calculated_gradient: {calculated_gradient}, previous_index: {previous}, this_index: {this}"
-                );
-            });
-    }
-
-    fn hidden_gradients_check(
-        network: &mut NeuralNetwork,
-        input: InputOutputIter 
-    )
-    {
-        let f_true_gradient = rnn::tests::hidden_gradient_check(
-            &mut network.network,
-            input.clone()
-        );
-
-        let f_calculated_gradient = network.network.gradients(input);
-
-        f_true_gradient.iter_pos().zip(f_calculated_gradient.hidden_gradients.iter_pos())
-            .for_each(|(true_gradient, calculated_gradient)|
-            {
-                let (previous, this) = (true_gradient.previous, true_gradient.this);
-                
-                let true_gradient = true_gradient.value;
-                let calculated_gradient = calculated_gradient.value;
-
-                /*if !close_enough(true_gradient, calculated_gradient, 0.01)
-                {
-                    dbg!(&network.network);
-                    dbg!(&f_calculated_gradient, &f_true_gradient);
-                    dbg!(input, output);
-                    dbg!(network.network.feedforward(input));
-                }*/
-
-                assert!(
-                    close_enough(true_gradient, calculated_gradient, 0.01),
-                    "true_gradient: {true_gradient}, calculated_gradient: {calculated_gradient}, previous_index: {previous}, this_index: {this}",
-                    //rnn::tests::debug_biases(&network.network, input, output)
-                );
-            });
-    }
-
-    fn input_gradients_check(
-        network: &mut NeuralNetwork,
-        input: InputOutputIter 
-    )
-    {
-        let true_gradient = rnn::tests::input_gradient_check(
-            &mut network.network,
-            input.clone()
-        );
-
-        let calculated_gradient = network.network.gradients(input);
-
-        true_gradient.iter_pos().zip(calculated_gradient.input_gradients.iter_pos())
-            .for_each(|(true_gradient, calculated_gradient)|
-            {
-                let (previous, this) = (true_gradient.previous, true_gradient.this);
-
-                let true_gradient = true_gradient.value;
-                let calculated_gradient = calculated_gradient.value;
-
-                assert!(
-                    close_enough(true_gradient, calculated_gradient, 0.01),
-                    "true_gradient: {true_gradient}, calculated_gradient: {calculated_gradient}, previous_index: {previous}, this_index: {this}"
-                );
-            });
     }
 }
