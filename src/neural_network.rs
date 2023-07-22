@@ -136,6 +136,7 @@ impl LayerContainer
         self.values.iter()
     }
 
+    #[inline(always)]
     pub fn outer_product(&self, other: impl Borrow<Self>) -> WeightsContainer
     {
         let other = other.borrow();
@@ -157,6 +158,7 @@ impl LayerContainer
             .map(|(this, other)| this * other).sum()
     }
 
+    #[inline(always)]
     pub fn powi(self, pow: i32) -> Self
     {
         Self{
@@ -165,6 +167,17 @@ impl LayerContainer
                 v.powi(pow)
             }).collect()
         }
+    }
+
+    #[inline(always)]
+    pub fn one_minus_this(mut self) -> Self
+    {
+        self.values.iter_mut().for_each(|v|
+        {
+            *v = 1.0 - *v;
+        });
+
+        self
     }
 
     pub fn map<F>(&mut self, mut f: F)
@@ -494,6 +507,7 @@ where
 
 impl WeightsContainer<f64>
 {
+    #[inline(always)]
     pub fn mul(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
     {
         let rhs = rhs.borrow();
@@ -517,6 +531,7 @@ impl WeightsContainer<f64>
         }).collect()
     }
 
+    #[inline(always)]
     pub fn mul_transposed(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
     {
         let rhs = rhs.borrow();
@@ -538,6 +553,7 @@ impl WeightsContainer<f64>
         }).collect()
     }
 
+    #[inline(always)]
     pub fn mul_transposed_skip_last(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
     {
         let rhs = rhs.borrow();
@@ -564,6 +580,7 @@ impl<R> AddAssign<R> for WeightsContainer<f64>
 where
     R: Borrow<Self>
 {
+    #[inline(always)]
     fn add_assign(&mut self, rhs: R)
     {
         let rhs = rhs.borrow();

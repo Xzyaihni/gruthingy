@@ -238,7 +238,7 @@ impl GRU
 
     fn d4(info: D4Info) -> LayerContainer
     {
-        (info.update_gate * -1.0 + 1.0) * info.d3
+        info.update_gate.one_minus_this() * info.d3
     }
 
     fn d6(info: D6Info) -> LayerContainer
@@ -256,7 +256,7 @@ impl GRU
     // d10
     fn activation_gate_derivative(info: ActivationGateDerivativeInfo) -> LayerContainer
     {
-        (info.activation_gate.powi(2) * -1.0 + 1.0) * info.d8
+        info.activation_gate.powi(2).one_minus_this() * info.d8
     }
 
     // d11
@@ -265,7 +265,7 @@ impl GRU
         let d7 = info.activation_gate * info.d3;
         let d9 = d7 + info.d6;
 
-        d9 * (info.update_gate.clone() * (info.update_gate * -1.0 + 1.0))
+        d9 * (info.update_gate.clone() * info.update_gate.one_minus_this())
     }
 
     fn d13(&self, info: D13Info) -> LayerContainer
@@ -278,7 +278,7 @@ impl GRU
     {
         let d16 = info.previous_hidden * info.d13;
 
-        (info.reset_gate.clone() * (info.reset_gate * -1.0 + 1.0)) * &d16
+        (info.reset_gate.clone() * info.reset_gate.one_minus_this()) * &d16
     }
 
     // d23
