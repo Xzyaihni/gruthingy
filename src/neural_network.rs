@@ -7,7 +7,7 @@ use std::{
     io::{self, Read},
     fs::File,
     path::Path,
-    ops::{Index, Add, Sub, Mul, AddAssign}
+    ops::{Index, IndexMut, Add, Sub, Mul, AddAssign}
 };
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -241,6 +241,15 @@ impl Index<usize> for LayerContainer
     }
 }
 
+impl IndexMut<usize> for LayerContainer
+{
+    #[inline(always)]
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output
+    {
+        &mut self.values[index]
+    }
+}
+
 impl Add<f64> for LayerContainer
 {
     type Output = Self;
@@ -277,6 +286,24 @@ where
                 v + rv
             }).collect()
         }
+    }
+}
+
+impl<R> AddAssign<R> for LayerContainer
+where
+    R: Borrow<Self>
+{
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: R)
+    {
+        let rhs = rhs.borrow();
+
+        debug_assert!(self.len() == rhs.len());
+
+        self.iter_mut().zip(rhs.iter()).for_each(|(this, other)|
+        {
+            *this = *this + other;
+        });
     }
 }
 
@@ -513,9 +540,7 @@ impl WeightsContainer<f64>
         let rhs = rhs.borrow();
 
         debug_assert!(
-            // checks if theyre both equal, or rhs is shorter by 1
-            // (weights might have a bias unused in multiplication)
-            (rhs.len() == self.previous_size) || (rhs.len() == (self.previous_size - 1)),
+            rhs.len() == self.previous_size,
             "{} != {}",
             rhs.len(),
             self.previous_size
@@ -553,26 +578,36 @@ impl WeightsContainer<f64>
         }).collect()
     }
 
+    // ballin
     #[inline(always)]
-    pub fn mul_transposed_skip_last(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
+    pub fn add_outer_product(
+        &mut self,
+        lhs: impl Borrow<LayerContainer>,
+        rhs: impl Borrow<LayerContainer>
+    )
     {
+        let lhs = lhs.borrow();
         let rhs = rhs.borrow();
-
+        
         debug_assert!(
-            rhs.len() == self.this_size,
-            "{} != {}",
-            rhs.len(),
-            self.this_size
+            (lhs.len() == self.this_size)
+            &&
+            (rhs.len() == self.previous_size)
         );
 
-        (0..(self.previous_size - 1)).map(|i|
+        let this_size = self.this_size;
+        let previous_size = self.previous_size;
+
+        let mut weights = self.iter_mut();
+        for y in 0..this_size
         {
-            (0..rhs.len()).map(|p|
+            for x in 0..previous_size
             {
-                // no bounds checking, if i messed something up let it burn
-                unsafe{ self.weight_unchecked(i, p) * rhs.get_unchecked(p) }
-            }).sum()
-        }).collect()
+                unsafe{
+                    *weights.next().unwrap_unchecked() += lhs.get_unchecked(y) * rhs.get_unchecked(x);
+                }
+            }
+        }
     }
 }
 
@@ -586,23 +621,15 @@ where
         let rhs = rhs.borrow();
 
         debug_assert!(
-            ((self.previous_size == rhs.previous_size)
-            || (self.previous_size - 1 == rhs.previous_size))
+            (self.previous_size == rhs.previous_size)
             &&
-            ((self.this_size == rhs.this_size)
-            || (self.this_size - 1 == rhs.this_size))
+            (self.this_size == rhs.this_size)
         );
 
-        for y in 0..rhs.this_size
+        self.iter_mut().zip(rhs.iter()).for_each(|(this, other)|
         {
-            for x in 0..rhs.previous_size
-            {
-                let this = unsafe{ self.weight_unchecked_mut(x, y) };
-                let other = unsafe{ rhs.weight_unchecked(x, y) };
-
-                *this = *this + other;
-            }
-        }
+            *this = *this + other;
+        });
     }
 }
 
@@ -1206,6 +1233,21 @@ mod tests
             print_status("hidden activation gradients", ||
             {
                 gru::tests::hidden_activation_gradients_check(network, input.iter())
+            });
+
+            print_status("update bias gradients", ||
+            {
+                gru::tests::update_bias_gradients_check(network, input.iter())
+            });
+
+            print_status("reset bias gradients", ||
+            {
+                gru::tests::reset_bias_gradients_check(network, input.iter())
+            });
+
+            print_status("activation bias gradients", ||
+            {
+                gru::tests::activation_bias_gradients_check(network, input.iter())
             });
 
             print_status("input update gradients", ||
