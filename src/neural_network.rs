@@ -1005,6 +1005,20 @@ where
                 *g = tg.update(*g);
             });
 
+        gradients.reset_bias_gradients.iter_mut()
+            .zip(self.gradients_info.reset_bias_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
+        gradients.activation_bias_gradients.iter_mut()
+            .zip(self.gradients_info.activation_bias_gradients.iter_mut())
+            .for_each(|(g, tg)|
+            {
+                *g = tg.update(*g);
+            });
+
         gradients.output_gradients.iter_mut()
             .zip(self.gradients_info.output_gradients.iter_mut())
             .for_each(|(g, tg)|
