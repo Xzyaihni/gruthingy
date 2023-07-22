@@ -34,21 +34,18 @@ fn debug_bytes(bytes: &[u8]) -> String
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VectorWord
-{
-    index: usize
-}
+pub struct VectorWord(usize);
 
 impl VectorWord
 {
     fn new(index: usize) -> Self
     {
-        Self{index}
+        Self(index)
     }
 
     pub fn index(&self) -> usize
     {
-        self.index
+        self.0
     }
 }
 
@@ -106,16 +103,75 @@ where
     }
 }
 
+pub trait NetworkDictionary
+{
+    fn word_to_layer(&self, word: VectorWord) -> LayerContainer;
+    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
+    fn words_amount(&self) -> usize;
+    
+    fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
+    
+    fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f64) -> VectorWord
+    {
+        let index = layer.pick_weighed(temperature);
+
+        VectorWord::new(index)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CharDictionary
+{
+
+}
+
+impl CharDictionary
+{
+    pub fn new() -> Self
+    {
+        Self{}
+    }
+}
+
+impl NetworkDictionary for CharDictionary
+{
+    fn word_to_layer(&self, word: VectorWord) -> LayerContainer
+    {
+        let mut layer = vec![0.0; u8::MAX as usize];
+
+        layer[word.index()] = 1.0;
+
+        layer.into()
+    }
+
+    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    {
+        Box::new([word.index() as u8])
+    }
+
+    fn words_amount(&self) -> usize
+    {
+        u8::MAX as usize
+    }
+
+    fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>
+    {
+        bytes.bytes().next().map(|b| VectorWord::new(b.expect("io error? wow") as usize))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordDictionary
 {
     dictionary: Bimap<Box<[u8]>, VectorWord>,
     words_amount: usize,
-    longest_word: usize
+    longest_word: usize,
+    c_word: Vec<u8>
 }
 
 impl WordDictionary
 {
+    #[allow(dead_code)]
     pub fn build(words: impl Read) -> Self
     {
         let default_words = (0..u8::MAX).map(|i|
@@ -148,7 +204,7 @@ impl WordDictionary
             (bytes, VectorWord::new(i as usize))
         }).collect::<Bimap<_, _>>();
 
-        Self{dictionary, words_amount, longest_word}
+        Self{dictionary, words_amount, longest_word, c_word: Vec::new()}
     }
 
     fn unique_words(default_words: HashSet<Box<[u8]>>, words: impl Read) -> HashSet<Box<[u8]>>
@@ -163,11 +219,6 @@ impl WordDictionary
         }
 
         unique_words
-    }
-
-    pub fn words_amount(&self) -> usize
-    {
-        self.words_amount
     }
 
     pub fn read_word<I>(mut bytes: Peekable<I>) -> Option<Box<[u8]>>
@@ -200,75 +251,18 @@ impl WordDictionary
         (!word.is_empty()).then(|| word.into_boxed_slice())
     }
 
-    pub fn bytes_to_word(&self, bytes: &[u8]) -> Option<VectorWord>
-    {
-        self.dictionary.by_key(bytes).cloned()
-    }
-
-    pub fn word_to_bytes(&self, word: VectorWord) -> Option<Box<[u8]>>
-    {
-        self.dictionary.by_value(&word).cloned()
-    }
-
-    #[allow(dead_code)]
-    pub fn word_to_layer(&self, word: VectorWord) -> LayerContainer
-    {
-        let mut layer = vec![0.0; self.words_amount];
-
-        layer[word.index()] = 1.0;
-
-        layer.into()
-    }
-
-    #[allow(dead_code)]
-    pub fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f64) -> VectorWord
-    {
-        let index = layer.pick_weighed(temperature);
-
-        VectorWord::new(index)
-    }
-
-    #[allow(dead_code)]
-    pub fn print_vector_word(&self, word: VectorWord) -> String
-    {
-        let display_bytes = self.word_to_bytes(word).unwrap();
-
-        String::from_utf8_lossy(&display_bytes).to_string()
-    }
-}
-
-pub struct WordVectorizer<'a, R: Read>
-{
-    bytes: BufReader<R>,
-    dictionary: &'a WordDictionary,
-    word: Vec<u8>
-}
-
-impl<'a, R: Read> WordVectorizer<'a, R>
-{
-    pub fn new(dictionary: &'a WordDictionary, reader: R) -> Self
-    {
-        let bytes = BufReader::new(reader);
-
-        Self{bytes, dictionary, word: Vec::new()}
-    }
-
-    fn part_bytes_to_word(
-        dictionary: &WordDictionary,
-        container: &mut Vec<u8>,
-        matched_word: &[u8]
-    ) -> VectorWord
+    fn part_bytes_to_word(&mut self, matched_word: &[u8]) -> VectorWord
     {
         for i in 1..matched_word.len()
         {
             let new_len = matched_word.len() - i;
             
             let word_part = &matched_word[..new_len];
-            let part_matched = dictionary.bytes_to_word(word_part);
+            let part_matched = self.bytes_to_word(word_part);
 
             if let Some(part_matched) = part_matched
             {
-                *container = container[new_len..].to_vec();
+                self.c_word = self.c_word[new_len..].to_vec();
 
                 return part_matched;
             }
@@ -277,51 +271,101 @@ impl<'a, R: Read> WordVectorizer<'a, R>
         unreachable!()
     }
 
-    fn next_word(&mut self) -> Option<VectorWord>
+    pub fn bytes_to_word(&self, bytes: &[u8]) -> Option<VectorWord>
+    {
+        self.dictionary.by_key(bytes).cloned()
+    }
+
+    #[allow(dead_code)]
+    pub fn print_vector_word(&self, word: VectorWord) -> String
+    {
+        let display_bytes = self.word_to_bytes(word);
+
+        String::from_utf8_lossy(&display_bytes).to_string()
+    }
+}
+
+impl NetworkDictionary for WordDictionary
+{
+    fn word_to_layer(&self, word: VectorWord) -> LayerContainer
+    {
+        let mut layer = vec![0.0; self.words_amount];
+
+        layer[word.index()] = 1.0;
+
+        layer.into()
+    }
+
+    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    {
+        self.dictionary.by_value(&word).cloned().unwrap()
+    }
+
+    fn words_amount(&self) -> usize
+    {
+        self.words_amount
+    }
+
+    fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>
     {
         let mut consume_amount = 0;
-        if self.word.len() < self.dictionary.longest_word
+        if self.c_word.len() < self.longest_word
         {
-            let buffer = self.bytes.fill_buf().expect("io error, tough luck lmao");
-            self.word.extend_from_slice(buffer);
+            let buffer = bytes.fill_buf().expect("io error, tough luck lmao");
+            self.c_word.extend_from_slice(buffer);
             
             consume_amount = buffer.len();
         }
 
-        let matched_word = WordDictionary::read_word(self.word.iter().cloned().peekable())?;
+        let matched_word = WordDictionary::read_word(self.c_word.iter().cloned().peekable())?;
         
-        self.bytes.consume(consume_amount);
+        bytes.consume(consume_amount);
 
-        let vector_word = match self.dictionary.bytes_to_word(&matched_word)
+        let vector_word = match self.bytes_to_word(&matched_word)
         {
             Some(vector_word) => vector_word,
             None =>
             {
-                let word =
-                    Self::part_bytes_to_word(&self.dictionary, &mut self.word, &matched_word);
+                let word = self.part_bytes_to_word(&matched_word);
                 return Some(word);
             }
         };
 
-        if matched_word.len() >= self.word.len()
+        if matched_word.len() >= self.c_word.len()
         {
-            self.word = Vec::new();
+            self.c_word = Vec::new();
         } else
         {
-            self.word = self.word[matched_word.len()..].to_vec();
+            self.c_word = self.c_word[matched_word.len()..].to_vec();
         }
 
         Some(vector_word)
     }
 }
 
-impl<'a, R: Read> Iterator for WordVectorizer<'a, R>
+pub struct WordVectorizer<'a, R: Read, D: NetworkDictionary>
+{
+    bytes: BufReader<R>,
+    dictionary: &'a mut D
+}
+
+impl<'a, R: Read, D: NetworkDictionary> WordVectorizer<'a, R, D>
+{
+    pub fn new(dictionary: &'a mut D, reader: R) -> Self
+    {
+        let bytes = BufReader::new(reader);
+
+        Self{bytes, dictionary}
+    }
+}
+
+impl<'a, R: Read, D: NetworkDictionary> Iterator for WordVectorizer<'a, R, D>
 {
     type Item = VectorWord;
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        let word = self.next_word();
+        let word = self.dictionary.next_word(&mut self.bytes);
 
         // word.map(|word| eprintln!("word: {}", self.dictionary.print_vector_word(word)));
 
@@ -337,18 +381,19 @@ mod tests
     #[test]
     fn encodes_decodes()
     {
-        let dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
+        let mut dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
 
         let original_bytes = "hello world im testing a COOL encoder (not rly) fake and gay";
 
-        let vectorizer = WordVectorizer::new(&dictionary, original_bytes.as_bytes());
+        let vectorizer = WordVectorizer::new(&mut dictionary, original_bytes.as_bytes());
 
-        let decoded_bytes = vectorizer.flat_map(|word|
+        let decoded_bytes = vectorizer.collect::<Vec<_>>();
+        let decoded_bytes = decoded_bytes.into_iter().flat_map(|word|
         {
             let layer = dictionary.word_to_layer(word);
             let word = dictionary.layer_to_word(&SoftmaxedLayer::from_raw(layer), 1.0);
 
-            dictionary.word_to_bytes(word).unwrap().into_vec().into_iter()
+            dictionary.word_to_bytes(word).into_vec().into_iter()
         }).collect::<Vec<u8>>();
 
         assert_eq!(

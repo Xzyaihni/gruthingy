@@ -10,7 +10,7 @@ use std::{
     ops::{Index, Add, Sub, Mul, AddAssign}
 };
 
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 // #[allow(unused_imports)]
 // use rnn::{RNN, RNNGradients};
@@ -18,13 +18,13 @@ use serde::{Serialize, Deserialize};
 #[allow(unused_imports)]
 use gru::{GRU, GRUGradients};
 
-use super::word_vectorizer::{WordVectorizer, VectorWord, WordDictionary};
+use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
 // mod rnn;
 mod gru;
 
 
-pub const HIDDEN_AMOUNT: usize = 10;
+pub const HIDDEN_AMOUNT: usize = 100;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SoftmaxedLayer(LayerContainer);
@@ -766,16 +766,18 @@ impl<'a> Iterator for InputOutputIter<'a>
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NeuralNetwork
+pub struct NeuralNetwork<D=WordDictionary>
 {
-    dictionary: WordDictionary,
+    dictionary: D,
     network: GRU,
     gradients_info: GradientsInfo
 }
 
-impl NeuralNetwork
+impl<D: NetworkDictionary> NeuralNetwork<D>
+where
+    D: Serialize + DeserializeOwned
 {
-    pub fn new(dictionary: WordDictionary) -> Self
+    pub fn new(dictionary: D) -> Self
     {
         let words_vector_size = dictionary.words_amount();
         let network = GRU::new(words_vector_size);
@@ -799,18 +801,12 @@ impl NeuralNetwork
         ciborium::from_reader(reader)
     }
 
-    #[allow(dead_code)]
-    pub fn dictionary(&self) -> &WordDictionary
-    {
-        &self.dictionary
-    }
-
     pub fn input_expected_from_text(
-        &self,
+        &mut self,
         text: impl Read
     ) -> Vec<VectorWord>
     {
-        let word_vectorizer = WordVectorizer::new(&self.dictionary, text);
+        let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text);
 
         word_vectorizer.collect()
     }
@@ -823,12 +819,12 @@ impl NeuralNetwork
         let epochs_per_input = (inputs.len() / batch_size).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let input_vectorizer = |dictionary: &WordDictionary, word: &VectorWord|
+        let input_vectorizer = |dictionary: &D, word: &VectorWord|
         {
             dictionary.word_to_layer(*word)
         };
 
-        let output_loss = |network: &GRU, dictionary: &WordDictionary|
+        let output_loss = |network: &GRU, dictionary: &_|
         {
             let mut total_batches = 0;
             let mut loss = 0.0;
@@ -955,11 +951,12 @@ impl NeuralNetwork
     }
 
     #[allow(dead_code)]
-    pub fn predict(&self, text: &str, amount: usize, temperature: f64) -> String
+    pub fn predict(&mut self, text: &str, amount: usize, temperature: f64) -> String
     {
-        let word_vectorizer = WordVectorizer::new(&self.dictionary, text.as_bytes());
+        let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text.as_bytes());
 
-        let mut words = word_vectorizer.map(|v|
+        let words = word_vectorizer.collect::<Vec<_>>();
+        let mut words = words.into_iter().map(|v|
         {
             self.dictionary.word_to_layer(v)
         }).collect::<Vec<_>>();
@@ -979,7 +976,7 @@ impl NeuralNetwork
             let word = self.dictionary.layer_to_word(output, temperature);
             words.push(self.dictionary.word_to_layer(word));
 
-            let bytes = self.dictionary.word_to_bytes(word).unwrap();
+            let bytes = self.dictionary.word_to_bytes(word);
             total_bytes.extend(bytes.iter());
         }
         
@@ -1044,7 +1041,7 @@ mod tests
 
     fn test_input_outputs(
         test_texts: Vec<&'static str>,
-        network: &NeuralNetwork
+        network: &mut NeuralNetwork
     ) -> Vec<InputOutput>
     {
         test_texts.into_iter().map(|text|
@@ -1102,8 +1099,8 @@ mod tests
     #[test]
     fn loss()
     {
-        let network = test_network();
-        let inputs = test_input_outputs(test_texts_many(), &network);
+        let mut network = test_network();
+        let inputs = test_input_outputs(test_texts_many(), &mut network);
 
         let len = inputs.len();
         let this_loss = inputs.into_iter().map(|input|
@@ -1124,7 +1121,7 @@ mod tests
     fn gradients_check_many()
     {
         let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_many(), &network);
+        let inputs = test_input_outputs(test_texts_many(), &mut network);
 
         gradients_check(&mut network, inputs);
     }
@@ -1134,7 +1131,7 @@ mod tests
     fn gradients_check_one()
     {
         let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_one(), &network);
+        let inputs = test_input_outputs(test_texts_one(), &mut network);
 
         gradients_check(&mut network, inputs);
     }
@@ -1144,7 +1141,7 @@ mod tests
     fn gradients_check_two()
     {
         let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_two(), &network);
+        let inputs = test_input_outputs(test_texts_two(), &mut network);
 
         gradients_check(&mut network, inputs);
     }
@@ -1154,7 +1151,7 @@ mod tests
     fn gradients_check_three()
     {
         let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_three(), &network);
+        let inputs = test_input_outputs(test_texts_three(), &mut network);
 
         gradients_check(&mut network, inputs);
     }

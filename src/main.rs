@@ -5,7 +5,7 @@ use std::{
 };
 
 use neural_network::NeuralNetwork;
-use word_vectorizer::WordDictionary;
+use word_vectorizer::CharDictionary;
 
 mod neural_network;
 mod word_vectorizer;
@@ -82,11 +82,11 @@ impl TrainConfig
 
 fn train_new(mut args: impl Iterator<Item=String>)
 {
-    let dictionary_path = args.next()
+    /*let dictionary_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text for a dictionary"));
 
     let dictionary_file = File::open(dictionary_path)
-        .unwrap_or_else(|err| complain(&format!("give a valid file plz ({err})")));
+        .unwrap_or_else(|err| complain(&format!("give a valid file plz ({err})")));*/
 
     let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text training data"));
@@ -100,7 +100,7 @@ fn train_new(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
 
-    let dictionary = WordDictionary::build(dictionary_file);
+    let dictionary = CharDictionary::new();
 
     let mut network = NeuralNetwork::new(dictionary);
 
@@ -123,7 +123,8 @@ fn train(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
     
-    let mut network = NeuralNetwork::load(&config.network_path).unwrap();
+    let mut network: NeuralNetwork<CharDictionary> =
+        NeuralNetwork::load(&config.network_path).unwrap();
 
     network.train(config.epochs, config.batch_size, text_file);
 
@@ -197,7 +198,8 @@ fn run(mut args: impl Iterator<Item=String>)
 
     let config = RunConfig::parse(args);
 
-    let network = NeuralNetwork::load(config.network_path).unwrap();
+    let mut network: NeuralNetwork<CharDictionary> =
+        NeuralNetwork::load(config.network_path).unwrap();
     
     let predicted = network.predict(&text, config.tokens_amount, config.temperature);
 
