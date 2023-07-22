@@ -105,11 +105,19 @@ where
 
 pub trait NetworkDictionary
 {
-    fn word_to_layer(&self, word: VectorWord) -> LayerContainer;
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
     fn words_amount(&self) -> usize;
     
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
+    
+    fn word_to_layer(&self, word: VectorWord) -> LayerContainer
+    {
+        let mut layer = vec![0.0; self.words_amount()];
+
+        layer[word.index()] = 1.0;
+
+        layer.into()
+    }
     
     fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f64) -> VectorWord
     {
@@ -135,15 +143,6 @@ impl CharDictionary
 
 impl NetworkDictionary for CharDictionary
 {
-    fn word_to_layer(&self, word: VectorWord) -> LayerContainer
-    {
-        let mut layer = vec![0.0; u8::MAX as usize];
-
-        layer[word.index()] = 1.0;
-
-        layer.into()
-    }
-
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
         Box::new([word.index() as u8])
@@ -151,7 +150,7 @@ impl NetworkDictionary for CharDictionary
 
     fn words_amount(&self) -> usize
     {
-        u8::MAX as usize
+        u8::MAX as usize + 1
     }
 
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>
@@ -287,15 +286,6 @@ impl WordDictionary
 
 impl NetworkDictionary for WordDictionary
 {
-    fn word_to_layer(&self, word: VectorWord) -> LayerContainer
-    {
-        let mut layer = vec![0.0; self.words_amount];
-
-        layer[word.index()] = 1.0;
-
-        layer.into()
-    }
-
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
         self.dictionary.by_value(&word).cloned().unwrap()
