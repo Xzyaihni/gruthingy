@@ -1065,7 +1065,7 @@ where
             network.test_loss_inner(&testing_inputs, calculate_accuracy);
         };
 
-        let latest_start = inputs.len() - batch_size;
+        let latest_start = inputs.len().saturating_sub(batch_size);
         let mut batch_start: usize = if latest_start == 0
         {
             0
