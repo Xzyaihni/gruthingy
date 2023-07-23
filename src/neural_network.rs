@@ -71,7 +71,7 @@ impl SoftmaxedLayer
             c -= v;
 
             c <= 0.0
-        }).unwrap();
+        }).unwrap_or(values.len() - 1);
 
         index
     }
@@ -769,7 +769,7 @@ impl InputOutput
     where
         F: FnMut(&V) -> LayerContainer
     {
-        let batch_end = (batch_start + batch_size).min(values.len());
+        let batch_end = (batch_start + batch_size + 1).min(values.len());
         let batch = &values[batch_start..batch_end];
 
         debug_assert!(batch.len() > 1);
@@ -872,7 +872,7 @@ impl<'a> Iterator for InputOutputIter<'a>
             
             debug_assert!((0..self.container.len()).contains(&self.current_index));
             let this = unsafe{ self.container.get_unchecked(self.current_index) };
-            
+ 
             self.current_index += 1;
 
             Some((previous, this))
@@ -1064,24 +1064,13 @@ where
 
             network.test_loss_inner(&testing_inputs, calculate_accuracy);
         };
-        
-        let new_batch_start = ||
-        {
-            // min length is 2
-            let max_length = inputs.len().saturating_sub(batch_size + 1);
 
-            if max_length != 0
-            {
-                fastrand::usize(0..max_length)
-            } else
-            {
-                0
-            }
-        };
-
-        let mut batch_start = new_batch_start();
+        let mut batch_start: usize = 0;
+        let mut previous_hidden: LayerContainer<f64> = LayerContainer::new(HIDDEN_AMOUNT);
 
         // whats an epoch? cool word is wut it is
+        // at some point i found out wut it was (going over the whole training data once)
+        // but i dont rly feel like changing a silly thing like that
         for epoch in 0..epochs
         {
             let input_vectorizer = |dictionary: &D, word: &VectorWord|
@@ -1102,11 +1091,19 @@ where
                 output_loss(self);
             }
 
-            let gradients = self.network.gradients(batch.iter());
+            let (final_hidden, gradients) =
+                self.network.gradients_with_hidden(previous_hidden.clone(), batch.iter());
+
+            previous_hidden = final_hidden;
 
             self.apply_gradients(gradients);
 
-            batch_start = new_batch_start();
+            batch_start += batch_size;
+            if batch_start >= (inputs.len() - 1)
+            {
+                batch_start = 0;
+                previous_hidden = LayerContainer::new(HIDDEN_AMOUNT);
+            }
         }
 
         output_loss(self);

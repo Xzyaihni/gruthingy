@@ -405,10 +405,21 @@ impl GRU
     // d18 isnt d17 * derivative of sigmoid(reset_gate), its instead d16 * derivative of sigmoid(reset_gate)
     // also the U and W letters r swapped in the derivatives compared to the picture
     // also derivatives of reset gate things use d18 not d10 (and actiavtions use d10)
+    #[allow(dead_code)]
     pub fn gradients(&self, input: InputOutputIter) -> GRUGradients
     {
+        self.gradients_with_hidden(LayerContainer::new(HIDDEN_AMOUNT), input).1
+    }
+
+    pub fn gradients_with_hidden(
+        &self,
+        starting_hidden: LayerContainer,
+        input: InputOutputIter
+    ) -> (LayerContainer, GRUGradients)
+    {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let f_output = self.feedforward(input.iter().map(|x| *x));
+        let f_output =
+            self.feedforward_with_hidden(starting_hidden.clone(), input.iter().map(|x| *x));
 
         let mut output_gradients = WeightsContainer::new(
             self.output_weights.previous_size(), self.output_weights.this_size()
@@ -486,7 +497,7 @@ impl GRU
             {
                 let previous_hidden = if b_t == 0
                 {
-                    LayerContainer::new(HIDDEN_AMOUNT)
+                    starting_hidden.clone()
                 } else
                 {
                     unsafe{ hiddens.get_unchecked(b_t - 1) }.clone()
@@ -570,7 +581,7 @@ impl GRU
             }
         }
 
-        GRUGradients{
+        let gradients = GRUGradients{
             input_update_gradients,
             input_reset_gradients,
             input_activation_gradients,
@@ -581,7 +592,11 @@ impl GRU
             reset_bias_gradients,
             activation_bias_gradients,
             output_gradients
-        }
+        };
+
+        let last_hidden = hiddens.last().unwrap().clone();
+
+        (last_hidden, gradients)
     }
 
     pub fn feedforward_single(
@@ -632,6 +647,17 @@ impl GRU
     {
         let first_hidden = LayerContainer::new(HIDDEN_AMOUNT);
 
+        self.feedforward_with_hidden(first_hidden, input)
+    }
+
+    pub fn feedforward_with_hidden<L>(
+        &self,
+        first_hidden: LayerContainer,
+        input: impl Iterator<Item=L>
+    ) -> GRUOutput
+    where
+        L: Borrow<LayerContainer>
+    {
         let (lower_bound, upper_bound) = input.size_hint();
         let time_total = upper_bound.unwrap_or(lower_bound);
 
