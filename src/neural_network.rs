@@ -1,6 +1,7 @@
 use std::{
     f64,
     vec,
+    mem,
     slice,
     cmp::Ordering,
     borrow::Borrow,
@@ -16,7 +17,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 // use rnn::{RNN, RNNGradients};
 
 #[allow(unused_imports)]
-use gru::{GRU, GRUGradients};
+use gru::{GRU, GRUGradients, GRUSingleOutput};
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
@@ -144,6 +145,16 @@ impl<T> LayerContainer<T>
 
 impl LayerContainer
 {
+    pub fn highest_index(&self) -> usize
+    {
+        let (highest_index, _highest_value) = self.values.iter().enumerate().max_by(|x, y|
+        {
+            x.1.partial_cmp(y.1).unwrap()
+        }).unwrap();
+
+        highest_index
+    }
+
     #[inline(always)]
     pub fn outer_product(&self, other: impl Borrow<Self>) -> WeightsContainer
     {
@@ -761,6 +772,8 @@ impl InputOutput
         let batch_end = (batch_start + batch_size).min(values.len());
         let batch = &values[batch_start..batch_end];
 
+        debug_assert!(batch.len() > 1);
+
         Self::new(batch.iter().map(f).collect())
     }
 
@@ -785,6 +798,49 @@ impl InputOutput
 }
 
 #[derive(Clone)]
+pub struct InputOutputConvIter<I>
+{
+    previous: LayerContainer,
+    inputs: I
+}
+
+impl<I> InputOutputConvIter<I>
+where
+    I: Iterator<Item=LayerContainer>
+{
+    pub fn new(mut inputs: I) -> Self
+    {
+        Self{
+            previous: inputs.next().expect("input must not be empty"),
+            inputs
+        }
+    }
+}
+
+impl<I> Iterator for InputOutputConvIter<I>
+where
+    I: Iterator<Item=LayerContainer>
+{
+    type Item = (LayerContainer, LayerContainer);
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        let input = self.inputs.next();
+
+        match input
+        {
+            None => None,
+            Some(input) =>
+            {
+                let out = (mem::replace(&mut self.previous, input.clone()), input);
+
+                Some(out)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct InputOutputIter<'a>
 {
     container: &'a [LayerContainer],
@@ -793,6 +849,7 @@ pub struct InputOutputIter<'a>
 
 impl InputOutputIter<'_>
 {
+    #[allow(dead_code)]
     pub fn len(&self) -> usize
     {
         self.container.len() - 1
@@ -821,6 +878,73 @@ impl<'a> Iterator for InputOutputIter<'a>
             Some((previous, this))
         }
     }
+}
+
+struct Predictor<'a, D>
+{
+    dictionary: &'a mut D,
+    words: Vec<LayerContainer>,
+    predicted: Vec<u8>,
+    temperature: f64,
+    predict_amount: usize
+}
+
+impl<'a, D> Predictor<'a, D>
+where
+    D: NetworkDictionary
+{
+    pub fn new(
+        dictionary: &'a mut D,
+        words: Vec<LayerContainer>,
+        temperature: f64,
+        predict_amount: usize
+    ) -> Self
+    {
+        Self{
+            dictionary,
+            words,
+            predicted: Vec::with_capacity(predict_amount),
+            temperature,
+            predict_amount
+        }
+    }
+
+    pub fn predict_bytes(mut self, network: &GRU) -> Box<[u8]>
+    {
+        let input_amount = self.words.len();
+
+        let mut previous_hidden = LayerContainer::new(self.dictionary.words_amount());
+        for i in 0..(input_amount + self.predict_amount)
+        {
+            debug_assert!(self.words.len() < i);
+            let this_input = unsafe{ self.words.get_unchecked(i) };
+
+            let GRUSingleOutput{
+                output,
+                hidden,
+                ..
+            } = network.feedforward_single(&previous_hidden, this_input);
+            previous_hidden = hidden;
+
+            if i >= (input_amount - 1)
+            {
+                let word = self.dictionary.layer_to_word(&output, self.temperature);
+                self.words.push(self.dictionary.word_to_layer(word));
+
+                self.predicted.extend(self.dictionary.word_to_bytes(word).into_iter());
+            }
+        }
+
+        self.predicted.into_boxed_slice()
+    }
+}
+
+pub struct TrainingInfo
+{
+    pub epochs: usize,
+    pub batch_size: usize,
+    pub calculate_accuracy: bool,
+    pub ignore_loss: bool
 }
 
 #[derive(Serialize, Deserialize)]
@@ -869,64 +993,82 @@ where
         word_vectorizer.collect()
     }
 
-    pub fn train(
+    pub fn test_loss(&mut self, file: impl Read, calculate_accuracy: bool)
+    {
+        let inputs = self.input_expected_from_text(file);
+        self.test_loss_inner(&inputs, calculate_accuracy);
+    }
+
+    fn test_loss_inner(
+        &self,
+        testing_inputs: &[VectorWord],
+        calculate_accuracy: bool
+    )
+    {
+        let input_outputs = InputOutputConvIter::new(
+            testing_inputs.iter().map(|word|
+            {
+                self.dictionary.word_to_layer(*word)
+            })
+        );
+
+        if calculate_accuracy
+        {
+            let accuracy = self.network.accuracy(input_outputs);
+
+            println!("accuracy: {}%", accuracy * 100.0);
+        } else
+        {
+            let loss = self.network.loss(input_outputs);
+
+            println!("loss: {loss}");
+        }
+    }
+
+    pub fn train<R: Read>(
         &mut self,
-        epochs: usize,
-        batch_size: usize,
-        ignore_loss: bool,
+        info: TrainingInfo,
+        testing_data: Option<R>,
         text: impl Read
     )
     {
+        let TrainingInfo{batch_size, epochs, calculate_accuracy, ignore_loss} = info;
+
         let inputs = self.input_expected_from_text(text);
+        let testing_inputs = if info.ignore_loss
+        {
+            Vec::new()
+        } else
+        {
+            match testing_data
+            {
+                None => inputs.clone(),
+                Some(testing_data) =>
+                {
+                    self.input_expected_from_text(testing_data)
+                }
+            }
+        };
+
         println!("batch size: {batch_size}");
         
         let epochs_per_input = (inputs.len() / batch_size).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let input_vectorizer = |dictionary: &D, word: &VectorWord|
-        {
-            dictionary.word_to_layer(*word)
-        };
-
-        let output_loss = |network: &GRU, dictionary: &_|
+        let output_loss = |network: &NeuralNetwork<D>|
         {
             if ignore_loss
             {
                 return;
             }
 
-            let mut total_batches = 0;
-            let mut loss = 0.0;
-
-            let mut batch_start = 0;
-
-            loop
-            {
-                let batch = InputOutput::batch(
-                    &inputs,
-                    |word| input_vectorizer(dictionary, word),
-                    batch_start,
-                    batch_size
-                );
-
-                loss += network.average_loss(batch.iter());
-                total_batches += 1;
-
-                batch_start += batch_size;
-                if batch_start >= inputs.len()
-                {
-                    break;
-                }
-            }
-
-            loss /= total_batches as f64;
-
-            println!("loss: {loss}");
+            network.test_loss_inner(&testing_inputs, calculate_accuracy);
         };
         
         let new_batch_start = ||
         {
-            let max_length = inputs.len().saturating_sub(batch_size);
+            // min length is 2
+            let max_length = inputs.len().saturating_sub(batch_size + 1);
 
             if max_length != 0
             {
@@ -942,6 +1084,11 @@ where
         // whats an epoch? cool word is wut it is
         for epoch in 0..epochs
         {
+            let input_vectorizer = |dictionary: &D, word: &VectorWord|
+            {
+                dictionary.word_to_layer(*word)
+            };
+
             let batch = InputOutput::batch(
                 &inputs,
                 |word| input_vectorizer(&self.dictionary, word),
@@ -952,7 +1099,7 @@ where
             let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
             if print_loss
             {
-                output_loss(&self.network, &self.dictionary);
+                output_loss(self);
             }
 
             let gradients = self.network.gradients(batch.iter());
@@ -962,7 +1109,7 @@ where
             batch_start = new_batch_start();
         }
 
-        output_loss(&self.network, &self.dictionary);
+        output_loss(self);
     }
 
     fn apply_gradients(&mut self, mut gradients: GRUGradients)
@@ -1045,32 +1192,20 @@ where
     {
         let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text.as_bytes());
 
-        let words = word_vectorizer.collect::<Vec<_>>();
-        let mut words = words.into_iter().map(|v|
-        {
-            self.dictionary.word_to_layer(v)
-        }).collect::<Vec<_>>();
+        let predictor = {
+            let words = word_vectorizer.collect::<Vec<_>>();
 
-        let mut total_bytes = Vec::new();
-
-        for _ in 0..amount
-        {
-            let output = self.network.feedforward(&words);
-
-            let output = match output.outputs.last()
+            let words = words.into_iter().map(|v|
             {
-                Some(x) => x,
-                None => return String::new()
-            };
+                self.dictionary.word_to_layer(v)
+            }).collect::<Vec<_>>();
 
-            let word = self.dictionary.layer_to_word(output, temperature);
-            words.push(self.dictionary.word_to_layer(word));
+            Predictor::new(&mut self.dictionary, words, temperature, amount)
+        };
 
-            let bytes = self.dictionary.word_to_bytes(word);
-            total_bytes.extend(bytes.iter());
-        }
+        let output = predictor.predict_bytes(&self.network);
         
-        String::from_utf8_lossy(&total_bytes).to_string()
+        String::from_utf8_lossy(&output).to_string()
     }
 }
 
@@ -1192,11 +1327,11 @@ mod tests
         let mut network = test_network();
         let inputs = test_input_outputs(test_texts_many(), &mut network);
 
-        let len = inputs.len();
+        let l = inputs.len() as f64;
         let this_loss = inputs.into_iter().map(|input|
         {
-            network.network.average_loss(input.iter())
-        }).sum::<f64>() / len as f64;
+            network.network.loss(input.iter())
+        }).sum::<f64>() / l;
 
         let predicted_loss = (network.dictionary.words_amount() as f64).ln();
 

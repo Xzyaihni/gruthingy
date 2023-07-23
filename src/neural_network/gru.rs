@@ -25,6 +25,16 @@ pub struct GRUOutput
 }
 
 #[derive(Debug)]
+pub struct GRUSingleOutput
+{
+    pub update: LayerContainer,
+    pub reset: LayerContainer,
+    pub activation: LayerContainer,
+    pub hidden: LayerContainer,
+    pub output: SoftmaxedLayer
+}
+
+#[derive(Debug)]
 pub struct GRUGradients
 {
     pub input_update_gradients: WeightsContainer,
@@ -235,28 +245,88 @@ impl GRU
         });
     }
 
-    pub fn average_loss(&self, input: InputOutputIter) -> f64
-    {
-        let len = input.len();
-        self.loss(input) / len as f64
-    }
-
-    fn loss(&self, input: InputOutputIter) -> f64
+    pub fn accuracy<B: Borrow<LayerContainer>>(
+        &self,
+        input: impl Iterator<Item=(B, B)>
+    ) -> f64
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let f_output = self.feedforward(&input);
+        let amount = input.len();
+
+        let f_output = self.feedforward(input.into_iter());
 
         let predicted = f_output.outputs;
-        
-        let s: f64 = predicted.into_iter().zip(output.into_iter()).map(|(p, o)|
-        {
-            let mut p = p.0;
-            p.map(|v| v.ln());
 
-            p.dot(o)
+        Self::correct_guesses(
+            predicted.into_iter(),
+            output.into_iter()
+        ) as f64 / amount as f64
+    }
+
+    fn correct_guesses<P, T>(
+        predicted: impl Iterator<Item=P>,
+        target: impl Iterator<Item=T>
+    ) -> usize
+    where
+        P: Borrow<SoftmaxedLayer>,
+        T: Borrow<LayerContainer>
+    {
+        predicted.zip(target).map(|(predicted, target)|
+        {
+            let target_index = target.borrow().highest_index();
+            if predicted.borrow().pick_weighed(1.0) == target_index
+            {
+                1
+            } else
+            {
+                0
+            }
+        }).sum()
+    }
+
+    pub fn loss<B: Borrow<LayerContainer>>(&self, input: impl Iterator<Item=(B, B)>) -> f64
+    {
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let f_output = self.feedforward(input.into_iter());
+
+        let predicted = f_output.outputs;
+
+        Self::cross_entropy(
+            predicted.into_iter().map(|v| v.0.into_iter()),
+            output.into_iter().map(|v| v.borrow().clone().into_iter())
+        )
+    }
+
+    fn cross_entropy<PIter, TIter>(
+        predicted: impl Iterator<Item=PIter>,
+        target: impl Iterator<Item=TIter>
+    ) -> f64
+    where
+        PIter: Iterator<Item=f64>,
+        TIter: Iterator<Item=f64>
+    {
+        let mut count = 0;
+
+        let s: f64 = predicted.zip(target).map(|(predicted, target)|
+        {
+            count += 1;
+
+            Self::cross_entropy_single(predicted, target)
         }).sum();
 
-        -s
+        -s / count as f64
+    }
+
+    fn cross_entropy_single(
+        predicted: impl Iterator<Item=f64>,
+        target: impl Iterator<Item=f64>
+    ) -> f64
+    {
+        predicted.into_iter().zip(target.into_iter()).map(|(p, t)|
+        {
+            t * p.ln()
+        }).sum()
     }
 
     fn d3(info: D3Info) -> LayerContainer
@@ -338,7 +408,7 @@ impl GRU
     pub fn gradients(&self, input: InputOutputIter) -> GRUGradients
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let f_output = self.feedforward(&input);
+        let f_output = self.feedforward(input.iter().map(|x| *x));
 
         let mut output_gradients = WeightsContainer::new(
             self.output_weights.previous_size(), self.output_weights.this_size()
@@ -514,13 +584,56 @@ impl GRU
         }
     }
 
-    pub fn feedforward<L>(&self, input: &[L]) -> GRUOutput
+    pub fn feedforward_single(
+        &self,
+        previous_hidden: &LayerContainer,
+        input: &LayerContainer
+    ) -> GRUSingleOutput
+    {
+        let mut update_gate =
+            self.hidden_update_weights.mul(previous_hidden)
+            + self.input_update_weights.mul(input)
+            + &self.update_biases;
+
+        update_gate.map(|x| 1.0 / (1.0 + f64::consts::E.powf(-x)));
+
+        let mut reset_gate =
+            self.hidden_reset_weights.mul(previous_hidden)
+            + self.input_reset_weights.mul(input)
+            + &self.reset_biases;
+
+        reset_gate.map(|x| 1.0 / (1.0 + f64::consts::E.powf(-x)));
+
+        let activation_v = reset_gate.clone() * previous_hidden;
+        let mut activation_gate =
+            self.hidden_activation_weights.mul(activation_v)
+            + self.input_activation_weights.mul(input)
+            + &self.activation_biases;
+
+        activation_gate.map(f64::tanh);
+
+        let this_activation = activation_gate.clone() * &update_gate;
+        let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
+
+        let output = SoftmaxedLayer::new(self.output_weights.mul(&hidden));
+
+        GRUSingleOutput{
+            update: update_gate,
+            reset: reset_gate,
+            activation: activation_gate,
+            hidden,
+            output
+        }
+    }
+
+    pub fn feedforward<L>(&self, input: impl Iterator<Item=L>) -> GRUOutput
     where
         L: Borrow<LayerContainer>
     {
-        let time_total = input.len();
-
         let first_hidden = LayerContainer::new(HIDDEN_AMOUNT);
+
+        let (lower_bound, upper_bound) = input.size_hint();
+        let time_total = upper_bound.unwrap_or(lower_bound);
 
         let mut update = Vec::with_capacity(time_total);
         let mut reset = Vec::with_capacity(time_total);
@@ -528,7 +641,7 @@ impl GRU
         let mut hiddens = Vec::with_capacity(time_total);
         let mut outputs = Vec::with_capacity(time_total);
 
-        for t in 0..time_total
+        for (t, this_input) in input.enumerate()
         {
             let previous_hidden = if t == 0
             {
@@ -538,41 +651,21 @@ impl GRU
                 unsafe{ hiddens.get_unchecked(t - 1) }
             };
 
-            let this_input = unsafe{ input.get_unchecked(t).borrow() };
+            let this_input = this_input.borrow();
 
-            let mut update_gate =
-                self.hidden_update_weights.mul(previous_hidden)
-                + self.input_update_weights.mul(this_input)
-                + &self.update_biases;
+            let GRUSingleOutput{
+                update: this_update,
+                reset: this_reset,
+                activation: this_activation,
+                hidden,
+                output
+            } = self.feedforward_single(previous_hidden, this_input);
 
-            update_gate.map(|x| 1.0 / (1.0 + f64::consts::E.powf(-x)));
-            update.push(update_gate.clone());
-
-            let mut reset_gate =
-                self.hidden_reset_weights.mul(previous_hidden)
-                + self.input_reset_weights.mul(this_input)
-                + &self.reset_biases;
-
-            reset_gate.map(|x| 1.0 / (1.0 + f64::consts::E.powf(-x)));
-            reset.push(reset_gate.clone());
-
-            let activation_v = reset_gate * previous_hidden;
-            let mut activation_gate =
-                self.hidden_activation_weights.mul(activation_v)
-                + self.input_activation_weights.mul(this_input)
-                + &self.activation_biases;
-
-            activation_gate.map(f64::tanh);
-            activation.push(activation_gate.clone());
-
-            let this_activation = activation_gate * &update_gate;
-            let hidden = update_gate.one_minus_this() * previous_hidden + this_activation;
-
-            let output = SoftmaxedLayer::new(self.output_weights.mul(&hidden));
-
-            outputs.push(output);
-
+            update.push(this_update);
+            reset.push(this_reset);
+            activation.push(this_activation);
             hiddens.push(hidden);
+            outputs.push(output);
         }
 
         GRUOutput{
@@ -588,6 +681,8 @@ impl GRU
 #[cfg(test)]
 pub mod tests
 {
+    use std::iter;
+
     use super::*;
     use crate::neural_network::WeightsIterValue;
 
@@ -668,7 +763,7 @@ pub mod tests
         };
 
         let input = LayerContainer::from(vec![-5.90, 1.78]);
-        let f_output = gru.feedforward(&[input]);
+        let f_output = gru.feedforward(iter::once(input));
 
         let output = &f_output.outputs[0];
 
@@ -701,6 +796,30 @@ pub mod tests
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {correct}, calculated: {calculated}"
+        );
+    }
+
+    #[test]
+    fn loss_correct()
+    {
+        let predicted = vec![
+            vec![0.25, 0.25, 0.25, 0.25],
+            vec![0.01, 0.01, 0.01, 0.96]
+        ];
+
+        let target = vec![
+            vec![0.0, 0.0, 0.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0]
+        ];
+
+        let loss = GRU::cross_entropy(
+            predicted.into_iter().map(|v| v.into_iter()),
+            target.into_iter().map(|v| v.into_iter())
+        );
+
+        assert!(
+            close_enough(loss, 0.71355817782, 0.000001),
+            "loss: {loss}"
         );
     }
 

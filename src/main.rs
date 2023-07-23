@@ -4,10 +4,12 @@ use std::{
     fs::File
 };
 
-use neural_network::NeuralNetwork;
+use serde::{Serialize, de::DeserializeOwned};
+
+use neural_network::{TrainingInfo, NeuralNetwork};
 
 #[allow(unused_imports)]
-use word_vectorizer::{CharDictionary, WordDictionary};
+use word_vectorizer::{NetworkDictionary, CharDictionary, WordDictionary};
 
 mod neural_network;
 mod word_vectorizer;
@@ -26,7 +28,9 @@ struct TrainConfig
 {
     epochs: usize,
     batch_size: usize,
+    calculate_accuracy: bool,
     ignore_loss: bool,
+    testing_data: Option<String>,
     network_path: String
 }
 
@@ -35,8 +39,10 @@ impl TrainConfig
     pub fn parse(mut args: impl Iterator<Item=String>) -> Self
     {
         let mut epochs = 1;
-        let mut batch_size = 2_usize.pow(14);
+        let mut batch_size = 2_usize.pow(6);
+        let mut calculate_accuracy = false;
         let mut ignore_loss = false;
+        let mut testing_data = None;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
         while let Some(arg) = args.next()
@@ -65,12 +71,23 @@ impl TrainConfig
                             complain(&format!("cant parse the batch size: {err:?}"))
                         });
                 },
+                "-t" | "--testing" =>
+                {
+                    testing_data = Some(args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }));
+                },
                 "-p" | "--path" =>
                 {
                     network_path = args.next().unwrap_or_else(||
                         {
                             complain(&format!("expected value after {arg}"))
                         });
+                },
+                "-a" | "--accuracy" =>
+                {
+                    calculate_accuracy = true;
                 },
                 "-i" | "--ignore-loss" =>
                 {
@@ -83,10 +100,32 @@ impl TrainConfig
         Self{
             epochs,
             batch_size,
+            calculate_accuracy,
             ignore_loss,
+            testing_data,
             network_path
         }
     }
+}
+
+fn test_loss(mut args: impl Iterator<Item=String>)
+{
+    let text_path = args.next()
+        .unwrap_or_else(|| complain("give path to a file with text testing data"));
+    
+    let text_file = File::open(&text_path)
+        .unwrap_or_else(|err|
+        {
+            let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
+            complain(&err_msg)
+        });
+    
+    let config = TrainConfig::parse(args);
+
+    let mut network: NeuralNetwork<CharDictionary> =
+        NeuralNetwork::load(&config.network_path).unwrap();
+
+    network.test_loss(text_file, config.calculate_accuracy);
 }
 
 fn train_new(mut args: impl Iterator<Item=String>)
@@ -99,22 +138,46 @@ fn train_new(mut args: impl Iterator<Item=String>)
 
     let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text training data"));
-
-    let text_file = File::open(&text_path)
-        .unwrap_or_else(|err|
-        {
-            let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
-            complain(&err_msg)
-        });
     
     let config = TrainConfig::parse(args);
 
     // let dictionary = WordDictionary::build(dictionary_file);
     let dictionary = CharDictionary::new();
 
-    let mut network = NeuralNetwork::new(dictionary);
+    let network = NeuralNetwork::new(dictionary);
 
-    network.train(config.epochs, config.batch_size, config.ignore_loss, text_file);
+    train_inner(network, text_path, config);
+}
+
+fn train_inner<D>(mut network: NeuralNetwork<D>, text_path: String, config: TrainConfig)
+where
+    D: NetworkDictionary + DeserializeOwned + Serialize
+{
+    let text_file = File::open(&text_path)
+        .unwrap_or_else(|err|
+        {
+            let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
+            complain(&err_msg)
+        });
+
+    let training_info = TrainingInfo{
+        epochs: config.epochs,
+        batch_size: config.batch_size,
+        calculate_accuracy: config.calculate_accuracy,
+        ignore_loss: config.ignore_loss
+    };
+
+    let test_file = config.testing_data.map(|test_path|
+    {
+        File::open(&test_path)
+            .unwrap_or_else(|err|
+            {
+                let err_msg = format!("give a valid file plz, cant open {test_path} ({err})");
+                complain(&err_msg)
+            })
+    });
+
+    network.train(training_info, test_file, text_file);
 
     network.save(config.network_path);
 }
@@ -123,22 +186,13 @@ fn train(mut args: impl Iterator<Item=String>)
 {
     let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text training data"));
-
-    let text_file = File::open(&text_path)
-        .unwrap_or_else(|err|
-        {
-            let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
-            complain(&err_msg)
-        });
     
     let config = TrainConfig::parse(args);
     
-    let mut network: NeuralNetwork<CharDictionary> =
+    let network: NeuralNetwork<CharDictionary> =
         NeuralNetwork::load(&config.network_path).unwrap();
 
-    network.train(config.epochs, config.batch_size, config.ignore_loss, text_file);
-
-    network.save(config.network_path);
+    train_inner(network, text_path, config);
 }
 
 struct RunConfig
@@ -229,6 +283,7 @@ fn main()
         "train_new" => train_new(args),
         "train" => train(args),
         "run" => run(args),
+        "test" => test_loss(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }
