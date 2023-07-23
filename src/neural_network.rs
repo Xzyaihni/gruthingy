@@ -1065,7 +1065,15 @@ where
             network.test_loss_inner(&testing_inputs, calculate_accuracy);
         };
 
-        let mut batch_start: usize = 0;
+        let latest_start = inputs.len() - batch_size;
+        let mut batch_start: usize = if latest_start == 0
+        {
+            0
+        } else
+        {
+            fastrand::usize(0..latest_start)
+        };
+
         let mut previous_hidden: LayerContainer<f64> = LayerContainer::new(HIDDEN_AMOUNT);
 
         // whats an epoch? cool word is wut it is
