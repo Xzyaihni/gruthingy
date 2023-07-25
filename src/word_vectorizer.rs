@@ -119,7 +119,7 @@ pub trait NetworkDictionary
         layer.into()
     }
     
-    fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f64) -> VectorWord
+    fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f32) -> VectorWord
     {
         let index = layer.pick_weighed(temperature);
 

@@ -1,6 +1,23 @@
 use std::{
-    f64,
+    f32,
+    sync::Arc,
     borrow::Borrow
+};
+
+use vulkano::{
+    VulkanLibrary,
+    buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    device::{
+        Device,
+        DeviceExtensions,
+        DeviceCreateInfo,
+        Queue,
+        QueueFlags,
+        QueueCreateInfo,
+        physical::{PhysicalDeviceType, PhysicalDevice}
+    },
+    instance::{Instance, InstanceCreateInfo},
+    memory::allocator::{AllocationCreateInfo, StandardMemoryAllocator, MemoryUsage}
 };
 
 use serde::{Serialize, Deserialize};
@@ -108,9 +125,97 @@ struct HiddenDerivativeInfo<'a>
     d18: &'a LayerContainer
 }
 
+#[derive(Debug)]
+struct GpuInfo
+{
+    memory_allocator: StandardMemoryAllocator
+}
+
+impl GpuInfo
+{
+    fn get_physical(
+        instance: Arc<Instance>,
+        device_extensions: &DeviceExtensions
+    ) -> (Arc<PhysicalDevice>, u32)
+    {
+        instance.enumerate_physical_devices()
+            .expect("cant enumerate devices,,,,")
+            .filter(|device| device.supported_extensions().contains(device_extensions))
+            .filter_map(|device|
+            {
+                device.queue_family_properties()
+                    .iter()
+                    .position(|queue|
+                    {
+                        queue.queue_flags.intersects(QueueFlags::COMPUTE)
+                    })
+                    .map(|index| (device, index as u32))
+            }).min_by_key(|(device, _)|
+            {
+                match device.properties().device_type
+                {
+                    PhysicalDeviceType::DiscreteGpu => 0,
+                    PhysicalDeviceType::IntegratedGpu => 1,
+                    PhysicalDeviceType::VirtualGpu => 2,
+                    PhysicalDeviceType::Cpu => 3,
+                    _ => 4
+                }
+            }).expect("guaranteed by vulkan specs")
+    }
+
+    fn create_device(
+        instance: Arc<Instance>
+    ) -> (Arc<Device>, impl Iterator<Item=Arc<Queue>> + ExactSizeIterator)
+    {
+        let enabled_extensions = DeviceExtensions{
+            khr_storage_buffer_storage_class: true,
+            ..DeviceExtensions::empty()
+        };
+
+        let (physical_device, queue_family_index) =
+            Self::get_physical(instance, &enabled_extensions);
+
+        let queue_create_info = QueueCreateInfo{
+            queue_family_index,
+            ..Default::default()
+        };
+        
+        Device::new(
+            physical_device,
+            DeviceCreateInfo{
+                enabled_extensions,
+                queue_create_infos: vec![queue_create_info],
+                ..Default::default()
+            }
+        ).expect("couldnt create the device ;-;")
+    }
+}
+
+impl Default for GpuInfo
+{
+    fn default() -> Self
+    {
+        let library = VulkanLibrary::new().expect("no vulkan? ;-;");
+
+        let instance = Instance::new(library, InstanceCreateInfo{
+            enumerate_portability: true,
+            ..Default::default()
+        }).expect("couldnt create the instance ; ;");
+
+        let (device, _queues) =
+            Self::create_device(instance);
+
+        Self{
+            memory_allocator: StandardMemoryAllocator::new_default(device.clone())
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GRU
 {
+    #[serde(skip)]
+    gpu_info: GpuInfo,
     input_update_weights: WeightsContainer,
     input_reset_weights: WeightsContainer,
     input_activation_weights: WeightsContainer,
@@ -127,43 +232,44 @@ impl GRU
 {
     pub fn new(word_vector_size: usize) -> Self
     {
-        let weights_init = |previous: f64|
+        let weights_init = |previous: f32|
         {
             let v = 1.0 / previous.sqrt();
 
-            (fastrand::f64() * 2.0 - 1.0) * v
+            (fastrand::f32() * 2.0 - 1.0) * v
         };
 
         Self{
+            gpu_info: GpuInfo::default(),
         	input_update_weights: WeightsContainer::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
-				|| weights_init(word_vector_size as f64)
+				|| weights_init(word_vector_size as f32)
 			),
         	input_reset_weights: WeightsContainer::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
-				|| weights_init(word_vector_size as f64)
+				|| weights_init(word_vector_size as f32)
 			),
         	input_activation_weights: WeightsContainer::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
-				|| weights_init(word_vector_size as f64)
+				|| weights_init(word_vector_size as f32)
 			),
         	hidden_update_weights: WeightsContainer::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f64)
+				|| weights_init(HIDDEN_AMOUNT as f32)
 			),
         	hidden_reset_weights: WeightsContainer::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f64)
+				|| weights_init(HIDDEN_AMOUNT as f32)
 			),
         	hidden_activation_weights: WeightsContainer::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f64)
+				|| weights_init(HIDDEN_AMOUNT as f32)
 			),
             // initialize biases to 0 cuz i read somewhere thats good
             update_biases: LayerContainer::new(HIDDEN_AMOUNT),
@@ -172,7 +278,7 @@ impl GRU
             output_weights: WeightsContainer::new_with(
                 HIDDEN_AMOUNT,
                 word_vector_size,
-                || weights_init(HIDDEN_AMOUNT as f64)
+                || weights_init(HIDDEN_AMOUNT as f32)
             )
         }
     }
@@ -245,10 +351,10 @@ impl GRU
         });
     }
 
-    pub fn accuracy<B: Borrow<LayerContainer>>(
+    pub fn accuracy(
         &self,
-        input: impl Iterator<Item=(B, B)>
-    ) -> f64
+        input: impl Iterator<Item=(LayerContainer, LayerContainer)>
+    ) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let amount = input.len();
@@ -260,7 +366,7 @@ impl GRU
         Self::correct_guesses(
             predicted.into_iter(),
             output.into_iter()
-        ) as f64 / amount as f64
+        ) as f32 / amount as f32
     }
 
     fn correct_guesses<P, T>(
@@ -284,7 +390,7 @@ impl GRU
         }).sum()
     }
 
-    pub fn loss<B: Borrow<LayerContainer>>(&self, input: impl Iterator<Item=(B, B)>) -> f64
+    pub fn loss(&self, input: impl Iterator<Item=(LayerContainer, LayerContainer)>) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
@@ -301,27 +407,27 @@ impl GRU
     fn cross_entropy<PIter, TIter>(
         predicted: impl Iterator<Item=PIter>,
         target: impl Iterator<Item=TIter>
-    ) -> f64
+    ) -> f32
     where
-        PIter: Iterator<Item=f64>,
-        TIter: Iterator<Item=f64>
+        PIter: Iterator<Item=f32>,
+        TIter: Iterator<Item=f32>
     {
         let mut count = 0;
 
-        let s: f64 = predicted.zip(target).map(|(predicted, target)|
+        let s: f32 = predicted.zip(target).map(|(predicted, target)|
         {
             count += 1;
 
             Self::cross_entropy_single(predicted, target)
         }).sum();
 
-        -s / count as f64
+        -s / count as f32
     }
 
     fn cross_entropy_single(
-        predicted: impl Iterator<Item=f64>,
-        target: impl Iterator<Item=f64>
-    ) -> f64
+        predicted: impl Iterator<Item=f32>,
+        target: impl Iterator<Item=f32>
+    ) -> f32
     {
         predicted.into_iter().zip(target.into_iter()).map(|(p, t)|
         {
@@ -418,8 +524,10 @@ impl GRU
     ) -> (LayerContainer, GRUGradients)
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let f_output =
-            self.feedforward_with_hidden(starting_hidden.clone(), input.iter().map(|x| *x));
+        let f_output = self.feedforward_with_hidden(
+            starting_hidden.clone(),
+            input.iter().map(|x| (*x).clone())
+        );
 
         let mut output_gradients = WeightsContainer::new(
             self.output_weights.previous_size(), self.output_weights.this_size()
@@ -468,7 +576,7 @@ impl GRU
             let expected_output = unsafe{ *output.get_unchecked(t) };
             let hidden = unsafe{ hiddens.get_unchecked(t) };
 
-            let expected_sum: f64 = expected_output.iter().sum();
+            let expected_sum: f32 = expected_output.iter().sum();
             let diff = predicted_output.0 * expected_sum - expected_output;
 
             for y in 0..expected_output.len()
@@ -599,7 +707,7 @@ impl GRU
         (last_hidden, gradients)
     }
 
-    pub fn feedforward_single(
+    pub fn feedforward_cpu_single(
         &self,
         previous_hidden: &LayerContainer,
         input: &LayerContainer
@@ -610,14 +718,14 @@ impl GRU
             + self.input_update_weights.mul(input)
             + &self.update_biases;
 
-        update_gate.map(|x| 1.0 / (1.0 + f64::consts::E.powf(-x)));
+        update_gate.map(|x| 1.0 / (1.0 + f32::consts::E.powf(-x)));
 
         let mut reset_gate =
             self.hidden_reset_weights.mul(previous_hidden)
             + self.input_reset_weights.mul(input)
             + &self.reset_biases;
 
-        reset_gate.map(|x| 1.0 / (1.0 + f64::consts::E.powf(-x)));
+        reset_gate.map(|x| 1.0 / (1.0 + f32::consts::E.powf(-x)));
 
         let activation_v = reset_gate.clone() * previous_hidden;
         let mut activation_gate =
@@ -625,7 +733,7 @@ impl GRU
             + self.input_activation_weights.mul(input)
             + &self.activation_biases;
 
-        activation_gate.map(f64::tanh);
+        activation_gate.map(f32::tanh);
 
         let this_activation = activation_gate.clone() * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
@@ -641,16 +749,18 @@ impl GRU
         }
     }
 
-    pub fn feedforward<L>(&self, input: impl Iterator<Item=L>) -> GRUOutput
+    #[allow(dead_code)]
+    pub fn feedforward_cpu<L>(&self, input: impl Iterator<Item=L>) -> GRUOutput
     where
         L: Borrow<LayerContainer>
     {
         let first_hidden = LayerContainer::new(HIDDEN_AMOUNT);
 
-        self.feedforward_with_hidden(first_hidden, input)
+        self.feedforward_cpu_with_hidden(first_hidden, input)
     }
 
-    pub fn feedforward_with_hidden<L>(
+    #[allow(dead_code)]
+    pub fn feedforward_cpu_with_hidden<L>(
         &self,
         first_hidden: LayerContainer,
         input: impl Iterator<Item=L>
@@ -685,7 +795,7 @@ impl GRU
                 activation: this_activation,
                 hidden,
                 output
-            } = self.feedforward_single(previous_hidden, this_input);
+            } = self.feedforward_cpu_single(previous_hidden, this_input);
 
             update.push(this_update);
             reset.push(this_reset);
@@ -702,6 +812,37 @@ impl GRU
             outputs
         }
     }
+
+    pub fn feedforward(&self, input: impl Iterator<Item=LayerContainer>) -> GRUOutput
+    {
+        let first_hidden = LayerContainer::new(HIDDEN_AMOUNT);
+
+        self.feedforward_with_hidden(first_hidden, input)
+    }
+
+    pub fn feedforward_with_hidden(
+        &self,
+        first_hidden: LayerContainer,
+        input: impl Iterator<Item=LayerContainer>
+    ) -> GRUOutput
+    {
+        Buffer::from_iter(
+            &self.gpu_info.memory_allocator,
+            BufferCreateInfo{
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo{
+                usage: MemoryUsage::Upload,
+                ..Default::default()
+            },
+            0..1024
+        ).unwrap();
+
+        
+
+        todo!();
+    }
 }
 
 #[cfg(test)]
@@ -712,7 +853,7 @@ pub mod tests
     use super::*;
     use crate::neural_network::WeightsIterValue;
 
-    fn close_enough(a: f64, b: f64, epsilon: f64) -> bool
+    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
         {
@@ -720,6 +861,47 @@ pub mod tests
         }
 
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
+    }
+
+    // check if cpu and gpu forwardprop gives the same results
+    #[test]
+    fn forwardprop_match()
+    {
+        let inputs_amount = 3;
+        // cool value 20 is a cool value
+        let input_output_size = 20;
+
+        let gru = GRU::new(input_output_size);
+
+        let inputs = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        }).collect::<Vec<_>>();
+
+        let cpu_output = gru.feedforward_cpu(inputs.clone().into_iter());
+        let gpu_output = gru.feedforward(inputs.into_iter());
+
+        let comparer = |(cpu_result, gpu_result): (&f32, &f32)|
+        {
+            assert!(
+                close_enough(*cpu_result, *gpu_result, 0.001),
+                "cpu_result: {cpu_result}, gpu_result: {gpu_result}"
+            );
+        };
+
+        let layer_comparer = |(cpu_layer, gpu_layer): (&LayerContainer, &LayerContainer)|
+        {
+            cpu_layer.into_iter().zip(gpu_layer.into_iter()).for_each(comparer);
+        };
+
+        cpu_output.update.iter().zip(gpu_output.update.iter()).for_each(layer_comparer);
+        cpu_output.reset.iter().zip(gpu_output.reset.iter()).for_each(layer_comparer);
+        cpu_output.activation.iter().zip(gpu_output.activation.iter()).for_each(layer_comparer);
+        cpu_output.hiddens.iter().zip(gpu_output.hiddens.iter()).for_each(layer_comparer);
+        cpu_output.outputs.iter().zip(gpu_output.outputs.iter()).for_each(|(c, g)|
+        {
+            layer_comparer((&c.0, &g.0));
+        });
     }
 
     #[ignore]
@@ -785,11 +967,12 @@ pub mod tests
             update_biases,
             reset_biases,
             activation_biases,
-            output_weights
+            output_weights,
+            gpu_info: Default::default()
         };
 
         let input = LayerContainer::from(vec![-5.90, 1.78]);
-        let f_output = gru.feedforward(iter::once(input));
+        let f_output = gru.feedforward_cpu(iter::once(input));
 
         let output = &f_output.outputs[0];
 
@@ -1022,7 +1205,7 @@ pub mod tests
             .for_each(check_single_gradient);
     }
 
-    fn check_single_gradient(pair: (WeightsIterValue<f64>, WeightsIterValue<f64>))
+    fn check_single_gradient(pair: (WeightsIterValue<f32>, WeightsIterValue<f32>))
     {
         let (true_gradient, calculated_gradient) = pair;
         let (previous, this) = (true_gradient.previous, true_gradient.this);
@@ -1036,7 +1219,7 @@ pub mod tests
         );
     }
 
-    fn check_single_bias_gradient(pair: ((usize, &f64), (usize, &f64)))
+    fn check_single_bias_gradient(pair: ((usize, &f32), (usize, &f32)))
     {
         let (true_gradient, calculated_gradient) = pair;
         let index = true_gradient.0;
@@ -1056,6 +1239,8 @@ pub mod tests
         input: InputOutputIter
     ) -> LayerContainer
     {
+        let input = input.map(|(a, b)| (a.clone(), b.clone()));
+
         let biases = bias_member(network).iter().enumerate().map(|(index, bias)|
         {
             (index, *bias)
@@ -1090,6 +1275,8 @@ pub mod tests
         input: InputOutputIter
     ) -> WeightsContainer
     {
+        let input = input.map(|(a, b)| (a.clone(), b.clone()));
+
         let weights = weights_member(network).iter_pos().map(|weight|
         {
             weight.to_owned()

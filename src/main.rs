@@ -198,7 +198,7 @@ fn train(mut args: impl Iterator<Item=String>)
 struct RunConfig
 {
     tokens_amount: usize,
-    temperature: f64,
+    temperature: f32,
     network_path: String
 }
 

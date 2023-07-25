@@ -1,5 +1,5 @@
 use std::{
-    f64,
+    f32,
     vec,
     mem,
     slice,
@@ -34,14 +34,14 @@ impl SoftmaxedLayer
 {
     pub fn new(mut layer: LayerContainer) -> Self
     {
-        let s: f64 = layer.iter().map(|v|
+        let s: f32 = layer.iter().map(|v|
         {
-            f64::consts::E.powf(*v)
+            f32::consts::E.powf(*v)
         }).sum();
 
         layer.map(|v|
         {
-            f64::consts::E.powf(v) / s
+            f32::consts::E.powf(v) / s
         });
 
         Self(layer)
@@ -59,12 +59,12 @@ impl SoftmaxedLayer
         Self(LayerContainer::new(size))
     }
 
-    pub fn pick_weighed(&self, temperature: f64) -> usize
+    pub fn pick_weighed(&self, temperature: f32) -> usize
     {
         let mut values = self.0.clone();
         values.map(|v| v / temperature);
 
-        let mut c = fastrand::f64();
+        let mut c = fastrand::f32();
 
         let index = values.iter().position(|v|
         {
@@ -78,7 +78,7 @@ impl SoftmaxedLayer
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LayerContainer<T=f64>
+pub struct LayerContainer<T=f32>
 {
     values: Vec<T>
 }
@@ -90,6 +90,18 @@ where
     pub fn new(size: usize) -> Self
     {
         let values = vec![T::default(); size];
+
+        Self{values}
+    }
+
+    pub fn new_with<F>(size: usize, mut f: F) -> Self
+    where
+        F: FnMut() -> T
+    {
+        let values = (0..size).map(|_|
+        {
+            f()
+        }).collect();
 
         Self{values}
     }
@@ -171,7 +183,7 @@ impl LayerContainer
         WeightsContainer::from_raw(raw_weights, other.len(), self.len())
     }
 
-    pub fn dot(&self, other: impl Borrow<Self>) -> f64
+    pub fn dot(&self, other: impl Borrow<Self>) -> f32
     {
         self.values.iter().zip(other.borrow().values.iter())
             .map(|(this, other)| this * other).sum()
@@ -201,27 +213,27 @@ impl LayerContainer
 
     pub fn map<F>(&mut self, mut f: F)
     where
-        F: FnMut(f64) -> f64
+        F: FnMut(f32) -> f32
     {
         self.values.iter_mut().for_each(|v| *v = f(*v));
     }
 }
 
-impl FromIterator<f64> for LayerContainer
+impl FromIterator<f32> for LayerContainer
 {
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item=f64>
+        I: IntoIterator<Item=f32>
     {
         Self{
-            values: Vec::<f64>::from_iter(iter)
+            values: Vec::<f32>::from_iter(iter)
         }
     }
 }
 
 impl IntoIterator for LayerContainer
 {
-    type Item = f64;
+    type Item = f32;
     type IntoIter = vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter
@@ -232,8 +244,8 @@ impl IntoIterator for LayerContainer
 
 impl<'a> IntoIterator for &'a LayerContainer
 {
-    type Item = &'a f64;
-    type IntoIter = slice::Iter<'a, f64>;
+    type Item = &'a f32;
+    type IntoIter = slice::Iter<'a, f32>;
 
     fn into_iter(self) -> Self::IntoIter
     {
@@ -241,9 +253,9 @@ impl<'a> IntoIterator for &'a LayerContainer
     }
 }
 
-impl From<Vec<f64>> for LayerContainer
+impl From<Vec<f32>> for LayerContainer
 {
-    fn from(values: Vec<f64>) -> Self
+    fn from(values: Vec<f32>) -> Self
     {
         Self{values}
     }
@@ -251,7 +263,7 @@ impl From<Vec<f64>> for LayerContainer
 
 impl Index<usize> for LayerContainer
 {
-    type Output = f64;
+    type Output = f32;
 
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output
@@ -269,11 +281,11 @@ impl IndexMut<usize> for LayerContainer
     }
 }
 
-impl Add<f64> for LayerContainer
+impl Add<f32> for LayerContainer
 {
     type Output = Self;
 
-    fn add(self, rhs: f64) -> Self::Output
+    fn add(self, rhs: f32) -> Self::Output
     {
         Self{
             values: self.values.into_iter().map(|v|
@@ -350,11 +362,11 @@ where
     }
 }
 
-impl Mul<f64> for LayerContainer
+impl Mul<f32> for LayerContainer
 {
     type Output = Self;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         Self{
             values: self.values.into_iter().map(|v|
@@ -398,7 +410,7 @@ pub struct WeightsIterValue<T>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WeightsContainer<T=f64>
+pub struct WeightsContainer<T=f32>
 {
     values: Box<[T]>,
     previous_size: usize,
@@ -551,7 +563,7 @@ where
     }
 }
 
-impl WeightsContainer<f64>
+impl WeightsContainer<f32>
 {
     #[inline(always)]
     pub fn mul(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
@@ -630,7 +642,7 @@ impl WeightsContainer<f64>
     }
 }
 
-impl<R> AddAssign<R> for WeightsContainer<f64>
+impl<R> AddAssign<R> for WeightsContainer<f32>
 where
     R: Borrow<Self>
 {
@@ -653,7 +665,7 @@ where
 }
 
 type Sign = i8;
-fn new_sign(num: f64) -> Sign
+fn new_sign(num: f32) -> Sign
 {
     if num==0.0
     {
@@ -670,13 +682,13 @@ fn new_sign(num: f64) -> Sign
 #[derive(Clone, Copy, Serialize, Deserialize)]
 struct GradientInfo
 {
-    learning_rate: f64,
+    learning_rate: f32,
     previous_sign: Sign
 }
 
 impl GradientInfo
 {
-    pub fn update(&mut self, gradient: f64) -> f64
+    pub fn update(&mut self, gradient: f32) -> f32
     {
         let current_sign = new_sign(gradient);
         
@@ -689,11 +701,11 @@ impl GradientInfo
 
                 self.previous_sign = current_sign;
 
-                -self.learning_rate * current_sign as f64
+                -self.learning_rate * current_sign as f32
             },
             Ordering::Less =>
             {
-                self.learning_rate = (self.learning_rate * 0.5).max(f64::MIN_POSITIVE);
+                self.learning_rate = (self.learning_rate * 0.5).max(f32::MIN_POSITIVE);
 
                 self.previous_sign = 0;
 
@@ -702,7 +714,7 @@ impl GradientInfo
             Ordering::Equal =>
             {
                 self.previous_sign = current_sign;
-                -self.learning_rate * current_sign as f64
+                -self.learning_rate * current_sign as f32
             }
         }
     }
@@ -885,7 +897,7 @@ struct Predictor<'a, D>
     dictionary: &'a mut D,
     words: Vec<LayerContainer>,
     predicted: Vec<u8>,
-    temperature: f64,
+    temperature: f32,
     predict_amount: usize
 }
 
@@ -896,7 +908,7 @@ where
     pub fn new(
         dictionary: &'a mut D,
         words: Vec<LayerContainer>,
-        temperature: f64,
+        temperature: f32,
         predict_amount: usize
     ) -> Self
     {
@@ -909,6 +921,7 @@ where
         }
     }
 
+    // uses the cpu
     pub fn predict_bytes(mut self, network: &GRU) -> Box<[u8]>
     {
         let input_amount = self.words.len();
@@ -923,7 +936,7 @@ where
                 output,
                 hidden,
                 ..
-            } = network.feedforward_single(&previous_hidden, this_input);
+            } = network.feedforward_cpu_single(&previous_hidden, this_input);
             previous_hidden = hidden;
 
             if i >= (input_amount - 1)
@@ -1074,7 +1087,7 @@ where
             fastrand::usize(0..latest_start)
         };
 
-        let mut previous_hidden: LayerContainer<f64> = LayerContainer::new(HIDDEN_AMOUNT);
+        let mut previous_hidden: LayerContainer<f32> = LayerContainer::new(HIDDEN_AMOUNT);
 
         // whats an epoch? cool word is wut it is
         // at some point i found out wut it was (going over the whole training data once)
@@ -1193,7 +1206,7 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn predict(&mut self, text: &str, amount: usize, temperature: f64) -> String
+    pub fn predict(&mut self, text: &str, amount: usize, temperature: f32) -> String
     {
         let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text.as_bytes());
 
@@ -1219,7 +1232,7 @@ mod tests
 {
     use super::*;
     
-    fn close_enough(a: f64, b: f64, epsilon: f64) -> bool
+    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
         {
@@ -1332,13 +1345,13 @@ mod tests
         let mut network = test_network();
         let inputs = test_input_outputs(test_texts_many(), &mut network);
 
-        let l = inputs.len() as f64;
+        let l = inputs.len() as f32;
         let this_loss = inputs.into_iter().map(|input|
         {
-            network.network.loss(input.iter())
-        }).sum::<f64>() / l;
+            network.network.loss(input.iter().map(|(a, b)| (a.clone(), b.clone())))
+        }).sum::<f32>() / l;
 
-        let predicted_loss = (network.dictionary.words_amount() as f64).ln();
+        let predicted_loss = (network.dictionary.words_amount() as f32).ln();
 
         assert!(
             close_enough(this_loss, predicted_loss, 0.1),
