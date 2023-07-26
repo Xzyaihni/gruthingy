@@ -1,11 +1,26 @@
 use std::{
     f32,
+    process,
     sync::Arc,
     borrow::Borrow
 };
 
 use vulkano::{
     VulkanLibrary,
+    sync::GpuFuture,
+    pipeline::{ComputePipeline, Pipeline, PipelineLayout, PipelineBindPoint},
+    descriptor_set::{
+        WriteDescriptorSet,
+        PersistentDescriptorSet,
+        layout::DescriptorSetLayout,
+        allocator::StandardDescriptorSetAllocator
+    },
+    command_buffer::{
+        CommandBufferUsage,
+        AutoCommandBufferBuilder,
+        allocator::StandardCommandBufferAllocator
+    },
+    shader::{ShaderModule, ShaderCreationError},
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     device::{
         Device,
@@ -128,7 +143,16 @@ struct HiddenDerivativeInfo<'a>
 #[derive(Debug)]
 struct GpuInfo
 {
-    memory_allocator: StandardMemoryAllocator
+    device: Arc<Device>,
+    memory_allocator: StandardMemoryAllocator,
+    descriptor_set_allocator: StandardDescriptorSetAllocator,
+    command_buffer_allocator: StandardCommandBufferAllocator,
+    feedforward_input_set: Arc<DescriptorSetLayout>,
+    feedforward_pipeline_layout: Arc<PipelineLayout>,
+    feedforward_pipeline: Arc<ComputePipeline>,
+    backprop_pipeline_layout: Arc<PipelineLayout>,
+    backprop_pipeline: Arc<ComputePipeline>,
+    queues: Vec<Arc<Queue>>
 }
 
 impl GpuInfo
@@ -175,6 +199,8 @@ impl GpuInfo
         let (physical_device, queue_family_index) =
             Self::get_physical(instance, &enabled_extensions);
 
+        eprintln!("using {}", physical_device.properties().device_name);
+
         let queue_create_info = QueueCreateInfo{
             queue_family_index,
             ..Default::default()
@@ -189,6 +215,35 @@ impl GpuInfo
             }
         ).expect("couldnt create the device ;-;")
     }
+
+    fn create_pipeline(
+        shader: Result<Arc<ShaderModule>, ShaderCreationError>,
+        device: Arc<Device>,
+        shader_name: &str
+    ) -> Arc<ComputePipeline>
+    {
+        let shader = shader.unwrap_or_else(|err|
+        {
+            eprintln!("error loading {shader_name}: {err}");
+            process::exit(1)
+        });
+
+        ComputePipeline::new(
+            device,
+            shader.entry_point("main").unwrap_or_else(||
+            {
+                eprintln!("couldnt find \"main\" entry point in {shader_name}");
+                process::exit(1)
+            }),
+            &(),
+            None,
+            |_| {}
+        ).unwrap_or_else(|err|
+        {
+            eprintln!("error creating compute pipeline in {shader_name}: {err}");
+            process::exit(1)
+        })
+    }
 }
 
 impl Default for GpuInfo
@@ -202,11 +257,55 @@ impl Default for GpuInfo
             ..Default::default()
         }).expect("couldnt create the instance ; ;");
 
-        let (device, _queues) =
+        let (device, queues) =
             Self::create_device(instance);
 
+        let queues = queues.collect::<Vec<_>>();
+
+        let feedforward_pipeline = {
+            mod cs
+            {
+                vulkano_shaders::shader!
+                {
+                    ty: "compute",
+                    path: "shaders/feedforward.comp"
+                }
+            }
+
+            Self::create_pipeline(cs::load(device.clone()), device.clone(), "feedforward")
+        };
+
+        let backprop_pipeline = {
+            mod cs
+            {
+                vulkano_shaders::shader!
+                {
+                    ty: "compute",
+                    path: "shaders/backprop.comp"
+                }
+            }
+
+            Self::create_pipeline(cs::load(device.clone()), device.clone(), "backprop")
+        };
+
+        let feedforward_pipeline_layout = feedforward_pipeline.layout().clone();
+        let feedforward_input_set =
+            feedforward_pipeline_layout.set_layouts().get(0).unwrap().clone();
+
+        let command_buffer_allocator =
+            StandardCommandBufferAllocator::new(device.clone(), Default::default());
+
         Self{
-            memory_allocator: StandardMemoryAllocator::new_default(device.clone())
+            memory_allocator: StandardMemoryAllocator::new_default(device.clone()),
+            descriptor_set_allocator: StandardDescriptorSetAllocator::new(device.clone()),
+            command_buffer_allocator,
+            feedforward_input_set,
+            feedforward_pipeline_layout,
+            feedforward_pipeline,
+            backprop_pipeline_layout: backprop_pipeline.layout().clone(),
+            backprop_pipeline,
+            queues,
+            device
         }
     }
 }
@@ -826,7 +925,7 @@ impl GRU
         input: impl Iterator<Item=LayerContainer>
     ) -> GRUOutput
     {
-        Buffer::from_iter(
+        let buffer = Buffer::from_iter(
             &self.gpu_info.memory_allocator,
             BufferCreateInfo{
                 usage: BufferUsage::STORAGE_BUFFER,
@@ -836,10 +935,42 @@ impl GRU
                 usage: MemoryUsage::Upload,
                 ..Default::default()
             },
-            0..1024
+            (0..1024).map(|i| i as f32)
         ).unwrap();
 
-        
+        let descriptor_set = PersistentDescriptorSet::new(
+            &self.gpu_info.descriptor_set_allocator,
+            self.gpu_info.feedforward_input_set.clone(),
+            [WriteDescriptorSet::buffer(0, buffer.clone())]
+        ).unwrap();
+
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &self.gpu_info.command_buffer_allocator,
+            self.gpu_info.queues[0].queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit
+        ).unwrap();
+
+        builder.bind_pipeline_compute(self.gpu_info.feedforward_pipeline.clone())
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                self.gpu_info.feedforward_pipeline_layout.clone(),
+                0,
+                descriptor_set
+            ).dispatch([16, 1, 1])
+            .unwrap();
+
+        let command_buffer = builder.build().unwrap();
+
+        let future = vulkano::sync::now(self.gpu_info.device.clone())
+            .then_execute(self.gpu_info.queues[0].clone(), command_buffer)
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap();
+
+        future.wait(None).unwrap();
+
+        let buffer = buffer.read().unwrap();
+        dbg!((0..1024).map(|i| buffer[i]).collect::<Vec<_>>());
 
         todo!();
     }
