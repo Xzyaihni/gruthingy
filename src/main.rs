@@ -45,7 +45,7 @@ impl TrainConfig
         let mut steps_num = 64;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
-        let mut use_gpu = false;
+        let mut use_gpu = true;
         let mut testing_data = None;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
