@@ -1248,7 +1248,7 @@ where
                 output_loss(self, &gpu_adapter);
             }
 
-            let mut batch_gradients = gpu_adapter.zeroed_gradients();
+            let mut batch_gradients = None;
             for _ in 0..batch_size
             {
                 let values = InputOutput::values_slice(
@@ -1266,10 +1266,17 @@ where
 
                 previous_hidden = final_hidden;
 
-                batch_gradients += gradients;
+                if batch_gradients.is_none()
+                {
+                    batch_gradients = Some(gradients);
+                } else
+                {
+                    batch_gradients.as_mut().map(|batch_gradients| *batch_gradients += gradients);
+                }
             }
 
-            gpu_adapter.apply_gradients(batch_gradients / batch_size as f32, &mut self.hyper);
+            let gradients = batch_gradients.unwrap() / batch_size as f32;
+            gpu_adapter.apply_gradients(gradients, &mut self.hyper);
 
             batch_start += steps_num;
             if batch_start >= (inputs.len() - 1)
