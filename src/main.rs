@@ -202,6 +202,9 @@ where
     if !config.use_gpu
     {
         arrayfire::set_backend(arrayfire::Backend::CPU);
+    } else
+    {
+        arrayfire::set_backend(arrayfire::Backend::DEFAULT);
     }
 
     network.train(training_info, test_file, text_file);
