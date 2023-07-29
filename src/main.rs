@@ -73,6 +73,17 @@ impl TrainConfig
                             complain(&format!("cant parse the batch size: {err:?}"))
                         });
                 },
+                "-s" | "--steps" =>
+                {
+                    steps_num = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }).parse()
+                        .unwrap_or_else(|err|
+                        {
+                            complain(&format!("cant parse the steps amount: {err:?}"))
+                        });
+                },
                 "-t" | "--testing" =>
                 {
                     testing_data = Some(args.next().unwrap_or_else(||
@@ -166,6 +177,7 @@ where
     let training_info = TrainingInfo{
         epochs: config.epochs,
         batch_size: config.batch_size,
+        steps_num: config.steps_num,
         calculate_accuracy: config.calculate_accuracy,
         ignore_loss: config.ignore_loss
     };

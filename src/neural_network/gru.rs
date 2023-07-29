@@ -1,6 +1,7 @@
 use std::{
     f32,
-    borrow::Borrow
+    borrow::Borrow,
+    ops::{Div, AddAssign}
 };
 
 use arrayfire::{Array, MatProp, dim4};
@@ -64,6 +65,44 @@ pub struct GPUGRUGradients
     pub reset_bias_gradients: Array<f32>,
     pub activation_bias_gradients: Array<f32>,
     pub output_gradients: Array<f32>
+}
+
+impl Div<f32> for GPUGRUGradients
+{
+    type Output = GPUGRUGradients;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        Self{
+			input_update_gradients: self.input_update_gradients / rhs,
+			input_reset_gradients: self.input_reset_gradients / rhs,
+			input_activation_gradients: self.input_activation_gradients / rhs,
+			hidden_update_gradients: self.hidden_update_gradients / rhs,
+			hidden_reset_gradients: self.hidden_reset_gradients / rhs,
+			hidden_activation_gradients: self.hidden_activation_gradients / rhs,
+			update_bias_gradients: self.update_bias_gradients / rhs,
+			reset_bias_gradients: self.reset_bias_gradients / rhs,
+			activation_bias_gradients: self.activation_bias_gradients / rhs,
+			output_gradients: self.output_gradients / rhs
+        }
+    }
+}
+
+impl AddAssign for GPUGRUGradients
+{
+    fn add_assign(&mut self, rhs: Self)
+    {
+		self.input_update_gradients += rhs.input_update_gradients;
+		self.input_reset_gradients += rhs.input_reset_gradients;
+		self.input_activation_gradients += rhs.input_activation_gradients;
+		self.hidden_update_gradients += rhs.hidden_update_gradients;
+		self.hidden_reset_gradients += rhs.hidden_reset_gradients;
+		self.hidden_activation_gradients += rhs.hidden_activation_gradients;
+		self.update_bias_gradients += rhs.update_bias_gradients;
+		self.reset_bias_gradients += rhs.reset_bias_gradients;
+		self.activation_bias_gradients += rhs.activation_bias_gradients;
+		self.output_gradients += rhs.output_gradients;
+    }
 }
 
 struct D3Info<'a>
@@ -202,10 +241,10 @@ impl GRU
         {
             arrayfire::info();
 
-            let device_info = arrayfire::device_info();
+            let (name, platform, toolkit, compute) = arrayfire::device_info();
             eprintln!(
                 "name: {}, platform: {}, toolkit: {}, compute: {}",
-                device_info.0, device_info.1, device_info.2, device_info.3
+                name, platform, toolkit, compute
             );
         }
 
@@ -846,6 +885,27 @@ impl GPUGRU
         &self.gradients
     }
 
+    pub fn zeroed_gradients(&self) -> GPUGRUGradients
+    {
+        let zeroed = |dims|
+        {
+            arrayfire::constant(0.0_f32, dims)
+        };
+
+        GPUGRUGradients{
+            output_gradients: zeroed(self.output_weights.dims()),
+            input_update_gradients: zeroed(self.input_update_weights.dims()),
+            input_reset_gradients: zeroed(self.input_reset_weights.dims()),
+            input_activation_gradients: zeroed(self.input_activation_weights.dims()),
+            hidden_update_gradients: zeroed(self.hidden_update_weights.dims()),
+            hidden_reset_gradients: zeroed(self.hidden_reset_weights.dims()),
+            hidden_activation_gradients: zeroed(self.hidden_activation_weights.dims()),
+            update_bias_gradients: zeroed(self.update_biases.dims()),
+            reset_bias_gradients: zeroed(self.reset_biases.dims()),
+            activation_bias_gradients: zeroed(self.activation_biases.dims())
+        }
+    }
+
     pub fn accuracy<T>(
         &self,
         input: impl Iterator<Item=(T, T)>
@@ -927,30 +987,7 @@ impl GPUGRU
             input.iter().map(|x| x.borrow())
         );
 
-        let mut output_gradients = arrayfire::constant(0.0_f32, self.output_weights.dims());
-
-        let mut input_update_gradients =
-            arrayfire::constant(0.0_f32, self.input_update_weights.dims());
-
-        let mut input_reset_gradients =
-            arrayfire::constant(0.0_f32, self.input_reset_weights.dims());
-
-        let mut input_activation_gradients =
-            arrayfire::constant(0.0_f32, self.input_activation_weights.dims());
-
-        let mut hidden_update_gradients =
-            arrayfire::constant(0.0_f32, self.hidden_update_weights.dims());
-
-        let mut hidden_reset_gradients =
-            arrayfire::constant(0.0_f32, self.hidden_reset_weights.dims());
-
-        let mut hidden_activation_gradients =
-            arrayfire::constant(0.0_f32, self.hidden_activation_weights.dims());
-
-        let mut update_bias_gradients = arrayfire::constant(0.0_f32, self.update_biases.dims());
-        let mut reset_bias_gradients = arrayfire::constant(0.0_f32, self.reset_biases.dims());
-        let mut activation_bias_gradients =
-            arrayfire::constant(0.0_f32, self.activation_biases.dims());
+        let mut gradients = self.zeroed_gradients();
 
         for t in (0..output.len()).rev()
         {
@@ -969,7 +1006,7 @@ impl GPUGRU
 
             let diff = &predicted_output.0 * expected_sum - expected_output;
 
-            output_gradients += Self::outer_product(&diff, hidden);
+            gradients.output_gradients += Self::outer_product(&diff, hidden);
 
             let mut d3 = arrayfire::matmul(
                 &self.output_weights,
@@ -1041,49 +1078,36 @@ impl GPUGRU
                 let d22 = &d21 + &d15;
 
 
-                hidden_update_gradients +=
+                gradients.hidden_update_gradients +=
                     Self::outer_product(&update_gate_derivative, previous_hidden);
 
-                hidden_reset_gradients +=
+                gradients.hidden_reset_gradients +=
                     Self::outer_product(&reset_gate_derivative, previous_hidden);
 
                 {
                     let combined_hidden = previous_hidden * this_reset;
-                    hidden_activation_gradients +=
+                    gradients.hidden_activation_gradients +=
                         Self::outer_product(&activation_gate_derivative, &combined_hidden);
                 }
 
                 let this_input = unsafe{ input.get_unchecked(b_t) }.borrow();
 
-                input_update_gradients +=
+                gradients.input_update_gradients +=
                     Self::outer_product(&update_gate_derivative, this_input);
 
-                input_reset_gradients +=
+                gradients.input_reset_gradients +=
                     Self::outer_product(&reset_gate_derivative, this_input);
 
-                input_activation_gradients +=
+                gradients.input_activation_gradients +=
                     Self::outer_product(&activation_gate_derivative, this_input);
 
-                update_bias_gradients += update_gate_derivative;
-                reset_bias_gradients += reset_gate_derivative;
-                activation_bias_gradients += activation_gate_derivative;
+                gradients.update_bias_gradients += update_gate_derivative;
+                gradients.reset_bias_gradients += reset_gate_derivative;
+                gradients.activation_bias_gradients += activation_gate_derivative;
 
                 d3 = &d19 + &d22;
             }
         }
-
-        let gradients = GPUGRUGradients{
-            input_update_gradients,
-            input_reset_gradients,
-            input_activation_gradients,
-            hidden_update_gradients,
-            hidden_reset_gradients,
-            hidden_activation_gradients,
-            update_bias_gradients,
-            reset_bias_gradients,
-            activation_bias_gradients,
-            output_gradients
-        };
 
         let last_hidden = f_output.last().unwrap().hidden.clone();
 

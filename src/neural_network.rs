@@ -898,21 +898,21 @@ pub struct InputOutput<T>
 
 impl<T> InputOutput<T>
 {
-    pub fn batch<V, F>(
+    pub fn values_slice<V, F>(
         values: &[V],
         f: F,
-        batch_start: usize,
-        batch_size: usize
+        start: usize,
+        size: usize
     ) -> Self
     where
         F: FnMut(&V) -> T
     {
-        let batch_end = (batch_start + batch_size + 1).min(values.len());
-        let batch = &values[batch_start..batch_end];
+        let slice_end = (start + size + 1).min(values.len());
+        let this_slice = &values[start..slice_end];
 
-        debug_assert!(batch.len() > 1);
+        debug_assert!(this_slice.len() > 1);
 
-        Self::new(batch.iter().map(f).collect())
+        Self::new(this_slice.iter().map(f).collect())
     }
 
     pub fn new(container: Vec<T>) -> Self
@@ -1040,6 +1040,7 @@ pub struct TrainingInfo
 {
     pub epochs: usize,
     pub batch_size: usize,
+    pub steps_num: usize,
     pub calculate_accuracy: bool,
     pub ignore_loss: bool
 }
@@ -1180,7 +1181,13 @@ where
         text: impl Read
     )
     {
-        let TrainingInfo{batch_size, epochs, calculate_accuracy, ignore_loss} = info;
+        let TrainingInfo{
+            batch_size,
+            steps_num,
+            epochs,
+            calculate_accuracy,
+            ignore_loss
+        } = info;
 
         let mut gpu_adapter = self.network.gpu_adapter(&self.gradients_info);
 
@@ -1201,8 +1208,9 @@ where
         };
 
         println!("batch size: {batch_size}");
+        println!("steps amount: {steps_num}");
         
-        let epochs_per_input = (inputs.len() / batch_size).max(1);
+        let epochs_per_input = (inputs.len() / steps_num).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
         let output_loss = |network: &NeuralNetwork<D>, gpu_adapter: &GPUGRU|
@@ -1234,30 +1242,36 @@ where
                 dictionary.word_to_array(*word)
             };
 
-            let batch = InputOutput::batch(
-                &inputs,
-                |word| input_vectorizer(&self.dictionary, word),
-                batch_start,
-                batch_size
-            );
-
             let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
             if print_loss
             {
                 output_loss(self, &gpu_adapter);
             }
 
-            let (final_hidden, gradients) = {
-                let inputs = batch.iter().map(|(a, b)| (a.clone(), b.clone()));
+            let mut batch_gradients = gpu_adapter.zeroed_gradients();
+            for _ in 0..batch_size
+            {
+                let values = InputOutput::values_slice(
+                    &inputs,
+                    |word| input_vectorizer(&self.dictionary, word),
+                    batch_start,
+                    steps_num
+                );
 
-                gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, inputs)
-            };
+                let (final_hidden, gradients) = {
+                    let inputs = values.iter().map(|(a, b)| (a.clone(), b.clone()));
 
-            previous_hidden = final_hidden;
+                    gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, inputs)
+                };
 
-            gpu_adapter.apply_gradients(gradients, &mut self.hyper);
+                previous_hidden = final_hidden;
 
-            batch_start += batch_size;
+                batch_gradients += gradients;
+            }
+
+            gpu_adapter.apply_gradients(batch_gradients / batch_size as f32, &mut self.hyper);
+
+            batch_start += steps_num;
             if batch_start >= (inputs.len() - 1)
             {
                 batch_start = 0;
