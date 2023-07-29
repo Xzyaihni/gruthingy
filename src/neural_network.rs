@@ -19,7 +19,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 // use rnn::{RNN, RNNGradients};
 
 #[allow(unused_imports)]
-use gru::{GRU, GRUGradients, GRUOutput};
+use gru::{GRU, GRUGradients, GRUOutput, GPUGRU};
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
@@ -1049,11 +1049,14 @@ where
     pub fn test_loss(&mut self, file: impl Read, calculate_accuracy: bool)
     {
         let inputs = self.input_expected_from_text(file);
-        self.test_loss_inner(&inputs, calculate_accuracy);
+
+        let gpu_adapter = self.network.gpu_adapter();
+        self.test_loss_inner(&gpu_adapter, &inputs, calculate_accuracy);
     }
 
     fn test_loss_inner(
         &self,
+        gpu_adapter: &GPUGRU,
         testing_inputs: &[VectorWord],
         calculate_accuracy: bool
     )
@@ -1064,8 +1067,6 @@ where
                 self.dictionary.word_to_array(*word)
             })
         );
-
-        let gpu_adapter = self.network.gpu_adapter();
 
         if calculate_accuracy
         {
@@ -1112,14 +1113,14 @@ where
         let epochs_per_input = (inputs.len() / batch_size).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let output_loss = |network: &NeuralNetwork<D>|
+        let output_loss = |network: &NeuralNetwork<D>, gpu_adapter: &GPUGRU|
         {
             if ignore_loss
             {
                 return;
             }
 
-            network.test_loss_inner(&testing_inputs, calculate_accuracy);
+            network.test_loss_inner(gpu_adapter, &testing_inputs, calculate_accuracy);
         };
 
         let latest_start = inputs.len().saturating_sub(batch_size);
@@ -1158,7 +1159,7 @@ where
             let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
             if print_loss
             {
-                output_loss(self);
+                output_loss(self, &gpu_adapter);
             }
 
             let (final_hidden, gradients) = {
@@ -1179,9 +1180,9 @@ where
             }
         }
 
-        self.network.transfer_weights(gpu_adapter);
+        output_loss(self, &gpu_adapter);
 
-        output_loss(self);
+        self.network.transfer_weights(gpu_adapter);
     }
 
     #[allow(dead_code)]
