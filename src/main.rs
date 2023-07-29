@@ -28,6 +28,7 @@ struct TrainConfig
 {
     epochs: usize,
     batch_size: usize,
+    steps_num: usize,
     calculate_accuracy: bool,
     ignore_loss: bool,
     testing_data: Option<String>,
@@ -40,6 +41,7 @@ impl TrainConfig
     {
         let mut epochs = 1;
         let mut batch_size = 2_usize.pow(6);
+        let mut steps_num = 64;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
         let mut testing_data = None;
@@ -100,6 +102,7 @@ impl TrainConfig
         Self{
             epochs,
             batch_size,
+            steps_num,
             calculate_accuracy,
             ignore_loss,
             testing_data,

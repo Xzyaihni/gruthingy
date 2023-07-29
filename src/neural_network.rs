@@ -3,7 +3,6 @@ use std::{
     vec,
     mem,
     slice,
-    cmp::Ordering,
     borrow::Borrow,
     io::{self, Read},
     fs::File,
@@ -19,7 +18,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 // use rnn::{RNN, RNNGradients};
 
 #[allow(unused_imports)]
-use gru::{GRU, GRUGradients, GRUOutput, GPUGRU};
+use gru::{GRU, GRUGradients, GPUGradientsInfo, GPUGradientInfo, GRUOutput, GPUGRU};
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
@@ -144,6 +143,11 @@ where
 
 impl<T> LayerContainer<T>
 {
+    pub fn dims(&self) -> arrayfire::Dim4
+    {
+        dim4!(self.values.len() as u64)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item=&T>
     {
         self.values.iter()
@@ -194,10 +198,7 @@ impl LayerContainer
 {
     pub fn as_arrayfire(&self) -> Array<f32>
     {
-        Array::new(
-            &self.values,
-            dim4!(self.values.len() as u64)
-        )
+        Array::new(&self.values, self.dims())
     }
 
     pub fn highest_index(&self) -> usize
@@ -455,6 +456,44 @@ where
     }
 }
 
+impl Into<GPUGradientInfo> for &LayerContainer<GradientInfo>
+{
+    fn into(self) -> GPUGradientInfo
+    {
+        let dimensions = self.dims();
+
+        let (m_data, v_data): (Vec<_>, Vec<_>) = self.iter().map(|v|
+        {
+            (v.m, v.v)
+        }).unzip();
+
+        let m = Array::new(&m_data, dimensions);
+        let v = Array::new(&v_data, dimensions);
+
+        GPUGradientInfo{m, v}
+    }
+}
+
+impl LayerContainer<GradientInfo>
+{
+    pub fn copy_gradients_from(&mut self, value: &GPUGradientInfo)
+    {
+        debug_assert!(self.values.len() == value.m.elements());
+        debug_assert!(self.values.len() == value.v.elements());
+
+        let mut m_values = vec![0.0_f32; self.values.len()];
+        let mut v_values = vec![0.0_f32; self.values.len()];
+
+        value.m.host(&mut m_values);
+        value.v.host(&mut v_values);
+
+        self.values = m_values.into_iter().zip(v_values.into_iter()).map(|(m, v)|
+        {
+            GradientInfo{m, v}
+        }).collect();
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct WeightsIterValue<T>
 {
@@ -485,6 +524,12 @@ impl<T> WeightsContainer<T>
             previous_size: self.previous_size,
             this_size: self.this_size
         }
+    }
+
+    #[inline(always)]
+    pub fn dims(&self) -> arrayfire::Dim4
+    {
+        dim4!(self.previous_size as u64, self.this_size as u64)
     }
 }
 
@@ -638,10 +683,7 @@ impl WeightsContainer<f32>
 {
     pub fn as_arrayfire(&self) -> Array<f32>
     {
-        Array::new(
-            &self.values,
-            dim4!(self.previous_size as u64, self.this_size as u64)
-        )
+        Array::new(&self.values, self.dims())
     }
 
     #[inline(always)]
@@ -721,6 +763,26 @@ impl WeightsContainer<f32>
     }
 }
 
+impl WeightsContainer<GradientInfo>
+{
+    pub fn copy_gradients_from(&mut self, value: &GPUGradientInfo)
+    {
+        debug_assert!(self.values.len() == value.m.elements());
+        debug_assert!(self.values.len() == value.v.elements());
+
+        let mut m_values = vec![0.0_f32; self.values.len()];
+        let mut v_values = vec![0.0_f32; self.values.len()];
+
+        value.m.host(&mut m_values);
+        value.v.host(&mut v_values);
+
+        self.values = m_values.into_iter().zip(v_values.into_iter()).map(|(m, v)|
+        {
+            GradientInfo{m, v}
+        }).collect();
+    }
+}
+
 impl<R> AddAssign<R> for WeightsContainer<f32>
 where
     R: Borrow<Self>
@@ -743,63 +805,29 @@ where
     }
 }
 
-type Sign = i8;
-
-#[allow(dead_code)]
-fn new_sign(num: f32) -> Sign
+impl Into<GPUGradientInfo> for &WeightsContainer<GradientInfo>
 {
-    if num==0.0
+    fn into(self) -> GPUGradientInfo
     {
-        0
-    } else if num>0.0
-    {
-        1
-    } else
-    {
-        -1
+        let dimensions = self.dims();
+
+        let (m_data, v_data): (Vec<_>, Vec<_>) = self.iter().map(|v|
+        {
+            (v.m, v.v)
+        }).unzip();
+
+        let m = Array::new(&m_data, dimensions);
+        let v = Array::new(&v_data, dimensions);
+
+        GPUGradientInfo{m, v}
     }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
-struct GradientInfo
+pub struct GradientInfo
 {
-    learning_rate: f32,
-    previous_sign: Sign
-}
-
-impl GradientInfo
-{
-    #[allow(dead_code)]
-    pub fn update(&mut self, gradient: f32) -> f32
-    {
-        let current_sign = new_sign(gradient);
-        
-        let combination = current_sign * self.previous_sign;
-        match combination.cmp(&0)
-        {
-            Ordering::Greater =>
-            {
-                self.learning_rate = (self.learning_rate * 1.2).min(0.01);
-
-                self.previous_sign = current_sign;
-
-                -self.learning_rate * current_sign as f32
-            },
-            Ordering::Less =>
-            {
-                self.learning_rate = (self.learning_rate * 0.5).max(f32::MIN_POSITIVE);
-
-                self.previous_sign = 0;
-
-                0.0
-            },
-            Ordering::Equal =>
-            {
-                self.previous_sign = current_sign;
-                -self.learning_rate * current_sign as f32
-            }
-        }
-    }
+    m: f32,
+    v: f32
 }
 
 impl Default for GradientInfo
@@ -807,14 +835,14 @@ impl Default for GradientInfo
     fn default() -> Self
     {
         Self{
-            learning_rate: 0.01,
-            previous_sign: 1
+            m: 0.0,
+            v: 0.0
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
-struct GradientsInfo
+pub struct GradientsInfo
 {
     pub input_update_gradients: WeightsContainer<GradientInfo>,
     pub input_reset_gradients: WeightsContainer<GradientInfo>,
@@ -843,6 +871,22 @@ impl GradientsInfo
             reset_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
             activation_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
             output_gradients: WeightsContainer::new(HIDDEN_AMOUNT, word_vector_size)
+        }
+    }
+
+    pub fn as_arrayfire(&self) -> GPUGradientsInfo
+    {
+        GPUGradientsInfo{
+			input_update_gradients: (&self.input_update_gradients).into(),
+			input_reset_gradients: (&self.input_reset_gradients).into(),
+			input_activation_gradients: (&self.input_activation_gradients).into(),
+			hidden_update_gradients: (&self.hidden_update_gradients).into(),
+			hidden_reset_gradients: (&self.hidden_reset_gradients).into(),
+			hidden_activation_gradients: (&self.hidden_activation_gradients).into(),
+			update_bias_gradients: (&self.update_bias_gradients).into(),
+			reset_bias_gradients: (&self.reset_bias_gradients).into(),
+			activation_bias_gradients: (&self.activation_bias_gradients).into(),
+			output_gradients: (&self.output_gradients).into()
         }
     }
 }
@@ -1001,11 +1045,34 @@ pub struct TrainingInfo
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct AdamHyperparams
+{
+    pub a: f32,
+    pub b1: f32,
+    pub b2: f32,
+    pub epsilon: f32
+}
+
+impl AdamHyperparams
+{
+    pub fn new() -> Self
+    {
+        Self{
+            a: 0.001,
+            b1: 0.9,
+            b2: 0.999,
+            epsilon: 10e-8
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct NeuralNetwork<D=WordDictionary>
 {
     dictionary: D,
     network: GRU,
-    gradients_info: GradientsInfo
+    gradients_info: GradientsInfo,
+    hyper: AdamHyperparams
 }
 
 impl<D: NetworkDictionary> NeuralNetwork<D>
@@ -1019,7 +1086,9 @@ where
 
         let gradients_info = GradientsInfo::new(words_vector_size);
 
-        Self{dictionary, network, gradients_info}
+        let hyper = AdamHyperparams::new();
+
+        Self{dictionary, network, gradients_info, hyper}
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P)
@@ -1050,7 +1119,8 @@ where
     {
         let inputs = self.input_expected_from_text(file);
 
-        let gpu_adapter = self.network.gpu_adapter();
+        let gpu_adapter = self.network.gpu_adapter(&self.gradients_info);
+
         self.test_loss_inner(&gpu_adapter, &inputs, calculate_accuracy);
     }
 
@@ -1090,7 +1160,7 @@ where
     {
         let TrainingInfo{batch_size, epochs, calculate_accuracy, ignore_loss} = info;
 
-        let mut gpu_adapter = self.network.gpu_adapter();
+        let mut gpu_adapter = self.network.gpu_adapter(&self.gradients_info);
 
         let inputs = self.input_expected_from_text(text);
         let testing_inputs = if info.ignore_loss
@@ -1170,7 +1240,7 @@ where
 
             previous_hidden = final_hidden;
 
-            gpu_adapter.apply_gradients(gradients);
+            gpu_adapter.apply_gradients(gradients, &mut self.hyper);
 
             batch_start += batch_size;
             if batch_start >= (inputs.len() - 1)
@@ -1182,83 +1252,53 @@ where
 
         output_loss(self, &gpu_adapter);
 
+        self.transfer_gradient_info(&gpu_adapter);
         self.network.transfer_weights(gpu_adapter);
     }
 
-    #[allow(dead_code)]
-    fn apply_gradients(&mut self, mut gradients: GRUGradients)
+    fn transfer_gradient_info(&mut self, gpugru: &GPUGRU)
     {
-        gradients.input_update_gradients.iter_mut()
-            .zip(self.gradients_info.input_update_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+        let gradients = gpugru.gradients_info();
 
-        gradients.input_reset_gradients.iter_mut()
-            .zip(self.gradients_info.input_reset_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.input_update_gradients.copy_gradients_from(
+			&gradients.input_update_gradients
+		);
 
-        gradients.input_activation_gradients.iter_mut()
-            .zip(self.gradients_info.input_activation_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.input_reset_gradients.copy_gradients_from(
+			&gradients.input_reset_gradients
+		);
 
-        gradients.hidden_update_gradients.iter_mut()
-            .zip(self.gradients_info.hidden_update_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.input_activation_gradients.copy_gradients_from(
+			&gradients.input_activation_gradients
+		);
 
-        gradients.hidden_reset_gradients.iter_mut()
-            .zip(self.gradients_info.hidden_reset_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.hidden_update_gradients.copy_gradients_from(
+			&gradients.hidden_update_gradients
+		);
 
-        gradients.hidden_activation_gradients.iter_mut()
-            .zip(self.gradients_info.hidden_activation_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.hidden_reset_gradients.copy_gradients_from(
+			&gradients.hidden_reset_gradients
+		);
 
-        gradients.update_bias_gradients.iter_mut()
-            .zip(self.gradients_info.update_bias_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.hidden_activation_gradients.copy_gradients_from(
+			&gradients.hidden_activation_gradients
+		);
 
-        gradients.reset_bias_gradients.iter_mut()
-            .zip(self.gradients_info.reset_bias_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.update_bias_gradients.copy_gradients_from(
+			&gradients.update_bias_gradients
+		);
 
-        gradients.activation_bias_gradients.iter_mut()
-            .zip(self.gradients_info.activation_bias_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
+		self.gradients_info.reset_bias_gradients.copy_gradients_from(
+			&gradients.reset_bias_gradients
+		);
 
-        gradients.output_gradients.iter_mut()
-            .zip(self.gradients_info.output_gradients.iter_mut())
-            .for_each(|(g, tg)|
-            {
-                *g = tg.update(*g);
-            });
-        
-        self.network.adjust_weights(gradients);
+		self.gradients_info.activation_bias_gradients.copy_gradients_from(
+			&gradients.activation_bias_gradients
+		);
+
+		self.gradients_info.output_gradients.copy_gradients_from(
+			&gradients.output_gradients
+		);
     }
 
     #[allow(dead_code)]

@@ -8,10 +8,12 @@ use arrayfire::{Array, MatProp, dim4};
 use serde::{Serialize, Deserialize};
 
 use crate::neural_network::{
+    AdamHyperparams,
     LayerContainer,
     WeightsContainer,
     SoftmaxedLayer,
     SoftmaxedArray,
+    GradientsInfo,
     HIDDEN_AMOUNT
 };
 
@@ -192,7 +194,7 @@ impl GRU
         }
     }
 
-    pub fn gpu_adapter(&self) -> GPUGRU
+    pub fn gpu_adapter(&self, gradients: &GradientsInfo) -> GPUGRU
     {
         #[cfg(not(test))]
         {
@@ -215,7 +217,8 @@ impl GRU
             output_weights: self.output_weights.as_arrayfire(),
             update_biases: self.update_biases.as_arrayfire(),
             reset_biases: self.reset_biases.as_arrayfire(),
-            activation_biases: self.activation_biases.as_arrayfire()
+            activation_biases: self.activation_biases.as_arrayfire(),
+            gradients: gradients.as_arrayfire()
         }
     }
 
@@ -232,6 +235,7 @@ impl GRU
             update_biases,
             reset_biases,
             activation_biases,
+            ..
         } = gpugru;
 
 		self.input_update_weights =
@@ -258,74 +262,6 @@ impl GRU
 
 		self.output_weights =
             self.output_weights.new_from(output_weights);
-    }
-
-    pub fn adjust_weights(&mut self, gradients: GRUGradients)
-    {
-        let GRUGradients{
-            input_update_gradients,
-            input_reset_gradients,
-            input_activation_gradients,
-            hidden_update_gradients,
-            hidden_reset_gradients,
-            hidden_activation_gradients,
-            update_bias_gradients,
-            reset_bias_gradients,
-            activation_bias_gradients,
-            output_gradients
-        } = gradients;
-        
-        self.input_update_weights.iter_mut().zip(input_update_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-        
-        self.input_reset_weights.iter_mut().zip(input_reset_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-        
-        self.input_activation_weights.iter_mut().zip(input_activation_gradients.iter())
-            .for_each(|(this, g)|
-            {
-                *this += g;
-            });
-
-        self.hidden_update_weights.iter_mut().zip(hidden_update_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-        
-        self.hidden_reset_weights.iter_mut().zip(hidden_reset_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-        
-        self.hidden_activation_weights.iter_mut().zip(hidden_activation_gradients.iter())
-            .for_each(|(this, g)|
-            {
-                *this += g;
-            });
-
-        self.update_biases.iter_mut().zip(update_bias_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-
-        self.reset_biases.iter_mut().zip(reset_bias_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-
-        self.activation_biases.iter_mut().zip(activation_bias_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
-        
-        self.output_weights.iter_mut().zip(output_gradients.iter()).for_each(|(this, g)|
-        {
-            *this += g;
-        });
     }
 
     #[allow(dead_code)]
@@ -770,6 +706,43 @@ impl GRU
     }
 }
 
+pub struct GPUGradientInfo
+{
+    pub m: Array<f32>,
+    pub v: Array<f32>
+}
+
+pub struct GPUGradientsInfo
+{
+    pub input_update_gradients: GPUGradientInfo,
+    pub input_reset_gradients: GPUGradientInfo,
+    pub input_activation_gradients: GPUGradientInfo,
+    pub hidden_update_gradients: GPUGradientInfo,
+    pub hidden_reset_gradients: GPUGradientInfo,
+    pub hidden_activation_gradients: GPUGradientInfo,
+    pub update_bias_gradients: GPUGradientInfo,
+    pub reset_bias_gradients: GPUGradientInfo,
+    pub activation_bias_gradients: GPUGradientInfo,
+    pub output_gradients: GPUGradientInfo
+}
+
+impl GPUGradientsInfo
+{
+    pub fn gradient_to_change(
+        gradient_info: &mut GPUGradientInfo,
+        gradient: Array<f32>,
+        hyper: &AdamHyperparams
+    ) -> Array<f32>
+    {
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+
+        let a_t = hyper.a * (1.0 - hyper.b2).sqrt() / (1.0 - hyper.b1);
+
+        -a_t * &gradient_info.m / (arrayfire::sqrt(&gradient_info.v) + hyper.epsilon)
+    }
+}
+
 pub struct GPUGRU
 {
     input_update_weights: Array<f32>,
@@ -781,12 +754,14 @@ pub struct GPUGRU
     output_weights: Array<f32>,
     update_biases: Array<f32>,
     reset_biases: Array<f32>,
-    activation_biases: Array<f32>
+    activation_biases: Array<f32>,
+    gradients: GPUGradientsInfo
 }
 
 impl GPUGRU
 {
-    pub fn apply_gradients(&mut self, gradients: GPUGRUGradients)
+    // this looks horrible, thanks regex for not making me type this manually
+    pub fn apply_gradients(&mut self, gradients: GPUGRUGradients, hyper: &mut AdamHyperparams)
     {
         let GPUGRUGradients{
             input_update_gradients,
@@ -801,41 +776,70 @@ impl GPUGRU
             output_gradients
         } = gradients;
 
-        self.input_update_weights +=
-            Self::gradient_to_change(input_update_gradients);
+        self.input_update_weights += GPUGradientsInfo::gradient_to_change(
+            &mut self.gradients.input_update_gradients,
+            input_update_gradients,
+            hyper
+        );
 
-        self.input_reset_weights +=
-            Self::gradient_to_change(input_reset_gradients);
+        self.input_reset_weights += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.input_reset_gradients,
+			input_reset_gradients,
+            hyper
+		);
         
-        self.input_activation_weights +=
-            Self::gradient_to_change(input_activation_gradients);
+        self.input_activation_weights += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.input_activation_gradients,
+			input_activation_gradients,
+            hyper
+		);
 
-        self.hidden_update_weights +=
-            Self::gradient_to_change(hidden_update_gradients);
+        self.hidden_update_weights += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.hidden_update_gradients,
+			hidden_update_gradients,
+            hyper
+		);
 
-        self.hidden_reset_weights +=
-            Self::gradient_to_change(hidden_reset_gradients);
+        self.hidden_reset_weights += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.hidden_reset_gradients,
+			hidden_reset_gradients,
+            hyper
+		);
         
-        self.hidden_activation_weights +=
-            Self::gradient_to_change(hidden_activation_gradients);
+        self.hidden_activation_weights += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.hidden_activation_gradients,
+			hidden_activation_gradients,
+            hyper
+		);
         
-        self.update_biases +=
-            Self::gradient_to_change(update_bias_gradients);
+        self.update_biases += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.update_bias_gradients,
+			update_bias_gradients,
+            hyper
+		);
         
-        self.reset_biases +=
-            Self::gradient_to_change(reset_bias_gradients);
+        self.reset_biases += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.reset_bias_gradients,
+			reset_bias_gradients,
+            hyper
+		);
         
-        self.activation_biases +=
-            Self::gradient_to_change(activation_bias_gradients);
+        self.activation_biases += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.activation_bias_gradients,
+			activation_bias_gradients,
+            hyper
+		);
         
-        self.output_weights +=
-            Self::gradient_to_change(output_gradients);
+        self.output_weights += GPUGradientsInfo::gradient_to_change(
+			&mut self.gradients.output_gradients,
+			output_gradients,
+            hyper
+		);
     }
 
-    fn gradient_to_change(gradient: Array<f32>) -> Array<f32>
+    pub fn gradients_info(&self) -> &GPUGradientsInfo
     {
-        dbg!("temp");
-        -gradient * 0.001_f32
+        &self.gradients
     }
 
     pub fn accuracy<T>(
@@ -1334,7 +1338,8 @@ pub mod tests
         fastrand::seed(12345);
         let cpu_accuracy = gru.accuracy(inputs.clone());
 
-        let gpu_adapter = gru.gpu_adapter();
+        let gradients_info = GradientsInfo::new(0);
+        let gpu_adapter = gru.gpu_adapter(&gradients_info);
         
         fastrand::seed(12345);
         let gpu_accuracy = gpu_adapter.accuracy(
@@ -1372,7 +1377,8 @@ pub mod tests
 
         let cpu_loss = gru.loss(inputs.clone());
 
-        let gpu_adapter = gru.gpu_adapter();
+        let gradients_info = GradientsInfo::new(0);
+        let gpu_adapter = gru.gpu_adapter(&gradients_info);
         let gpu_loss = gpu_adapter.loss(
             inputs.map(|(a, b)|
             {
@@ -1409,7 +1415,8 @@ pub mod tests
 
         let cpu_output = gru.gradients_cpu(inputs.iter().zip(expected.iter()));
 
-        let gpu_adapter = gru.gpu_adapter();
+        let gradients_info = GradientsInfo::new(0);
+        let gpu_adapter = gru.gpu_adapter(&gradients_info);
         let gpu_output = gpu_adapter.gradients::<false, _>(
             inputs.into_iter().map(|l| l.as_arrayfire())
                 .zip(expected.into_iter().map(|l| l.as_arrayfire()))
@@ -1493,7 +1500,8 @@ pub mod tests
 
         let cpu_output = gru.feedforward_cpu(inputs.clone().into_iter());
 
-        let gpu_adapter = gru.gpu_adapter();
+        let gradients_info = GradientsInfo::new(0);
+        let gpu_adapter = gru.gpu_adapter(&gradients_info);
         let gpu_output = gpu_adapter.feedforward(inputs.into_iter().map(|l| l.as_arrayfire()));
 
         let comparer = |(cpu_result, gpu_result): (f32, f32)|
