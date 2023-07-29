@@ -1366,7 +1366,7 @@ pub mod tests
         fastrand::seed(12345);
         let cpu_accuracy = gru.accuracy(inputs.clone());
 
-        let gradients_info = GradientsInfo::new(0);
+        let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
         
         fastrand::seed(12345);
@@ -1405,7 +1405,7 @@ pub mod tests
 
         let cpu_loss = gru.loss(inputs.clone());
 
-        let gradients_info = GradientsInfo::new(0);
+        let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
         let gpu_loss = gpu_adapter.loss(
             inputs.map(|(a, b)|
@@ -1443,7 +1443,7 @@ pub mod tests
 
         let cpu_output = gru.gradients_cpu(inputs.iter().zip(expected.iter()));
 
-        let gradients_info = GradientsInfo::new(0);
+        let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
         let gpu_output = gpu_adapter.gradients::<false, _>(
             inputs.into_iter().map(|l| l.as_arrayfire())
@@ -1528,7 +1528,7 @@ pub mod tests
 
         let cpu_output = gru.feedforward_cpu(inputs.clone().into_iter());
 
-        let gradients_info = GradientsInfo::new(0);
+        let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
         let gpu_output = gpu_adapter.feedforward(inputs.into_iter().map(|l| l.as_arrayfire()));
 
