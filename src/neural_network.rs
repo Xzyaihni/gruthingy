@@ -1063,7 +1063,7 @@ impl AdamHyperparams
     pub fn new() -> Self
     {
         let mut this = Self{
-            a: 0.005,
+            a: 0.001,
             b1: 0.9,
             b2: 0.999,
             epsilon: 10e-8,
@@ -1264,8 +1264,6 @@ where
                     gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, inputs)
                 };
 
-                previous_hidden = final_hidden;
-
                 if batch_gradients.is_none()
                 {
                     batch_gradients = Some(gradients);
@@ -1273,17 +1271,19 @@ where
                 {
                     batch_gradients.as_mut().map(|batch_gradients| *batch_gradients += gradients);
                 }
+
+                previous_hidden = final_hidden;
+
+                batch_start += steps_num;
+                if batch_start >= (inputs.len() - 1)
+                {
+                    batch_start = 0;
+                    previous_hidden = empty_hidden();
+                }
             }
 
             let gradients = batch_gradients.unwrap() / batch_size as f32;
             gpu_adapter.apply_gradients(gradients, &mut self.hyper);
-
-            batch_start += steps_num;
-            if batch_start >= (inputs.len() - 1)
-            {
-                batch_start = 0;
-                previous_hidden = empty_hidden();
-            }
         }
 
         output_loss(self, &gpu_adapter);
