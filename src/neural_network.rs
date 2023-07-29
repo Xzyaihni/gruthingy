@@ -1237,6 +1237,8 @@ where
         // but i dont rly feel like changing a silly thing like that
         for epoch in 0..epochs
         {
+            eprintln!("epoch: {epoch}");
+
             let input_vectorizer = |dictionary: &D, word: &VectorWord|
             {
                 dictionary.word_to_array(*word)

@@ -123,8 +123,6 @@ pub trait NetworkDictionary
 
     fn word_to_array(&self, word: VectorWord) -> Array<f32>
     {
-        arrayfire::set_device(0);
-
         let mut layer = vec![0.0; self.words_amount()];
 
         layer[word.index()] = 1.0;

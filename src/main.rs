@@ -31,6 +31,7 @@ struct TrainConfig
     steps_num: usize,
     calculate_accuracy: bool,
     ignore_loss: bool,
+    use_gpu: bool,
     testing_data: Option<String>,
     network_path: String
 }
@@ -44,6 +45,7 @@ impl TrainConfig
         let mut steps_num = 64;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
+        let mut use_gpu = false;
         let mut testing_data = None;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
@@ -98,6 +100,10 @@ impl TrainConfig
                             complain(&format!("expected value after {arg}"))
                         });
                 },
+                "-c" | "--cpu" =>
+                {
+                    use_gpu = false;
+                },
                 "-a" | "--accuracy" =>
                 {
                     calculate_accuracy = true;
@@ -116,6 +122,7 @@ impl TrainConfig
             steps_num,
             calculate_accuracy,
             ignore_loss,
+            use_gpu,
             testing_data,
             network_path
         }
@@ -191,6 +198,11 @@ where
                 complain(&err_msg)
             })
     });
+
+    if !config.use_gpu
+    {
+        arrayfire::set_backend(arrayfire::Backend::CPU);
+    }
 
     network.train(training_info, test_file, text_file);
 

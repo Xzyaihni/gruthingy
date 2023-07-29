@@ -660,6 +660,7 @@ impl GRU
         (last_hidden, gradients)
     }
 
+    #[inline(always)]
     pub fn feedforward_cpu_single(
         &self,
         previous_hidden: &LayerContainer,
@@ -967,6 +968,7 @@ impl GPUGRU
         self.gradients_with_hidden::<ONE_HOT_ENCODED, T>(&empty_hidden, input).1
     }
 
+    #[inline(always)]
     fn outer_product(a: &Array<f32>, b: &Array<f32>) -> Array<f32>
     {
         arrayfire::matmul(b, a, MatProp::NONE, MatProp::TRANS)
@@ -1164,6 +1166,7 @@ impl GPUGRU
         -s / predicted_len as f32
     }
 
+    #[inline(always)]
     pub fn feedforward_with_hidden<T>(
         &self,
         first_hidden: &Array<f32>,
@@ -1192,6 +1195,7 @@ impl GPUGRU
         outputs
     }
 
+    #[inline(always)]
     pub fn feedforward_single(
         &self,
         previous_hidden: &Array<f32>,
