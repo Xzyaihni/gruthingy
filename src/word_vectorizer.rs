@@ -10,6 +10,8 @@ use std::{
     }
 };
 
+use arrayfire::{Array, dim4};
+
 use serde::{Serialize, Deserialize};
 
 use super::neural_network::{SoftmaxedLayer, LayerContainer};
@@ -117,6 +119,15 @@ pub trait NetworkDictionary
         layer[word.index()] = 1.0;
 
         layer.into()
+    }
+
+    fn word_to_array(&self, word: VectorWord) -> Array<f32>
+    {
+        let mut layer = vec![0.0; self.words_amount()];
+
+        layer[word.index()] = 1.0;
+
+        Array::new(&layer, dim4!(self.words_amount() as u64))
     }
     
     fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f32) -> VectorWord

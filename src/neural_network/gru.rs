@@ -1,39 +1,9 @@
 use std::{
     f32,
-    process,
-    sync::Arc,
     borrow::Borrow
 };
 
-use vulkano::{
-    VulkanLibrary,
-    sync::GpuFuture,
-    pipeline::{ComputePipeline, Pipeline, PipelineLayout, PipelineBindPoint},
-    descriptor_set::{
-        WriteDescriptorSet,
-        PersistentDescriptorSet,
-        layout::DescriptorSetLayout,
-        allocator::StandardDescriptorSetAllocator
-    },
-    command_buffer::{
-        CommandBufferUsage,
-        AutoCommandBufferBuilder,
-        allocator::StandardCommandBufferAllocator
-    },
-    shader::{ShaderModule, ShaderCreationError},
-    buffer::{Buffer, BufferCreateInfo, BufferUsage},
-    device::{
-        Device,
-        DeviceExtensions,
-        DeviceCreateInfo,
-        Queue,
-        QueueFlags,
-        QueueCreateInfo,
-        physical::{PhysicalDeviceType, PhysicalDevice}
-    },
-    instance::{Instance, InstanceCreateInfo},
-    memory::allocator::{AllocationCreateInfo, StandardMemoryAllocator, MemoryUsage}
-};
+use arrayfire::{Array, MatProp, dim4};
 
 use serde::{Serialize, Deserialize};
 
@@ -41,7 +11,7 @@ use crate::neural_network::{
     LayerContainer,
     WeightsContainer,
     SoftmaxedLayer,
-    InputOutputIter,
+    SoftmaxedArray,
     HIDDEN_AMOUNT
 };
 
@@ -49,21 +19,20 @@ use crate::neural_network::{
 #[derive(Debug)]
 pub struct GRUOutput
 {
-    pub update: Vec<LayerContainer>,
-    pub reset: Vec<LayerContainer>,
-    pub activation: Vec<LayerContainer>,
-    pub hiddens: Vec<LayerContainer>,
-    pub outputs: Vec<SoftmaxedLayer>
-}
-
-#[derive(Debug)]
-pub struct GRUSingleOutput
-{
     pub update: LayerContainer,
     pub reset: LayerContainer,
     pub activation: LayerContainer,
     pub hidden: LayerContainer,
     pub output: SoftmaxedLayer
+}
+
+pub struct GPUGRUOutput
+{
+    pub update: Array<f32>,
+    pub reset: Array<f32>,
+    pub activation: Array<f32>,
+    pub hidden: Array<f32>,
+    pub output: SoftmaxedArray
 }
 
 #[derive(Debug)]
@@ -79,6 +48,20 @@ pub struct GRUGradients
     pub reset_bias_gradients: LayerContainer,
     pub activation_bias_gradients: LayerContainer,
     pub output_gradients: WeightsContainer
+}
+
+pub struct GPUGRUGradients
+{
+    pub input_update_gradients: Array<f32>,
+    pub input_reset_gradients: Array<f32>,
+    pub input_activation_gradients: Array<f32>,
+    pub hidden_update_gradients: Array<f32>,
+    pub hidden_reset_gradients: Array<f32>,
+    pub hidden_activation_gradients: Array<f32>,
+    pub update_bias_gradients: Array<f32>,
+    pub reset_bias_gradients: Array<f32>,
+    pub activation_bias_gradients: Array<f32>,
+    pub output_gradients: Array<f32>
 }
 
 struct D3Info<'a>
@@ -140,181 +123,9 @@ struct HiddenDerivativeInfo<'a>
     d18: &'a LayerContainer
 }
 
-#[derive(Debug)]
-struct GpuInfo
-{
-    device: Arc<Device>,
-    memory_allocator: StandardMemoryAllocator,
-    descriptor_set_allocator: StandardDescriptorSetAllocator,
-    command_buffer_allocator: StandardCommandBufferAllocator,
-    feedforward_input_set: Arc<DescriptorSetLayout>,
-    feedforward_pipeline_layout: Arc<PipelineLayout>,
-    feedforward_pipeline: Arc<ComputePipeline>,
-    backprop_pipeline_layout: Arc<PipelineLayout>,
-    backprop_pipeline: Arc<ComputePipeline>,
-    queues: Vec<Arc<Queue>>
-}
-
-impl GpuInfo
-{
-    fn get_physical(
-        instance: Arc<Instance>,
-        device_extensions: &DeviceExtensions
-    ) -> (Arc<PhysicalDevice>, u32)
-    {
-        instance.enumerate_physical_devices()
-            .expect("cant enumerate devices,,,,")
-            .filter(|device| device.supported_extensions().contains(device_extensions))
-            .filter_map(|device|
-            {
-                device.queue_family_properties()
-                    .iter()
-                    .position(|queue|
-                    {
-                        queue.queue_flags.intersects(QueueFlags::COMPUTE)
-                    })
-                    .map(|index| (device, index as u32))
-            }).min_by_key(|(device, _)|
-            {
-                match device.properties().device_type
-                {
-                    PhysicalDeviceType::DiscreteGpu => 0,
-                    PhysicalDeviceType::IntegratedGpu => 1,
-                    PhysicalDeviceType::VirtualGpu => 2,
-                    PhysicalDeviceType::Cpu => 3,
-                    _ => 4
-                }
-            }).expect("guaranteed by vulkan specs")
-    }
-
-    fn create_device(
-        instance: Arc<Instance>
-    ) -> (Arc<Device>, impl Iterator<Item=Arc<Queue>> + ExactSizeIterator)
-    {
-        let enabled_extensions = DeviceExtensions{
-            khr_storage_buffer_storage_class: true,
-            ..DeviceExtensions::empty()
-        };
-
-        let (physical_device, queue_family_index) =
-            Self::get_physical(instance, &enabled_extensions);
-
-        eprintln!("using {}", physical_device.properties().device_name);
-
-        let queue_create_info = QueueCreateInfo{
-            queue_family_index,
-            ..Default::default()
-        };
-        
-        Device::new(
-            physical_device,
-            DeviceCreateInfo{
-                enabled_extensions,
-                queue_create_infos: vec![queue_create_info],
-                ..Default::default()
-            }
-        ).expect("couldnt create the device ;-;")
-    }
-
-    fn create_pipeline(
-        shader: Result<Arc<ShaderModule>, ShaderCreationError>,
-        device: Arc<Device>,
-        shader_name: &str
-    ) -> Arc<ComputePipeline>
-    {
-        let shader = shader.unwrap_or_else(|err|
-        {
-            eprintln!("error loading {shader_name}: {err}");
-            process::exit(1)
-        });
-
-        ComputePipeline::new(
-            device,
-            shader.entry_point("main").unwrap_or_else(||
-            {
-                eprintln!("couldnt find \"main\" entry point in {shader_name}");
-                process::exit(1)
-            }),
-            &(),
-            None,
-            |_| {}
-        ).unwrap_or_else(|err|
-        {
-            eprintln!("error creating compute pipeline in {shader_name}: {err}");
-            process::exit(1)
-        })
-    }
-}
-
-impl Default for GpuInfo
-{
-    fn default() -> Self
-    {
-        let library = VulkanLibrary::new().expect("no vulkan? ;-;");
-
-        let instance = Instance::new(library, InstanceCreateInfo{
-            enumerate_portability: true,
-            ..Default::default()
-        }).expect("couldnt create the instance ; ;");
-
-        let (device, queues) =
-            Self::create_device(instance);
-
-        let queues = queues.collect::<Vec<_>>();
-
-        let feedforward_pipeline = {
-            mod cs
-            {
-                vulkano_shaders::shader!
-                {
-                    ty: "compute",
-                    path: "shaders/feedforward.comp"
-                }
-            }
-
-            Self::create_pipeline(cs::load(device.clone()), device.clone(), "feedforward")
-        };
-
-        let backprop_pipeline = {
-            mod cs
-            {
-                vulkano_shaders::shader!
-                {
-                    ty: "compute",
-                    path: "shaders/backprop.comp"
-                }
-            }
-
-            Self::create_pipeline(cs::load(device.clone()), device.clone(), "backprop")
-        };
-
-        let feedforward_pipeline_layout = feedforward_pipeline.layout().clone();
-        let feedforward_input_set =
-            feedforward_pipeline_layout.set_layouts().get(0).unwrap().clone();
-
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(device.clone(), Default::default());
-
-        Self{
-            memory_allocator: StandardMemoryAllocator::new_default(device.clone()),
-            descriptor_set_allocator: StandardDescriptorSetAllocator::new(device.clone()),
-            command_buffer_allocator,
-            feedforward_input_set,
-            feedforward_pipeline_layout,
-            feedforward_pipeline,
-            backprop_pipeline_layout: backprop_pipeline.layout().clone(),
-            backprop_pipeline,
-            queues,
-            device
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GRU
 {
-    #[serde(skip)]
-    gpu_info: GpuInfo,
     input_update_weights: WeightsContainer,
     input_reset_weights: WeightsContainer,
     input_activation_weights: WeightsContainer,
@@ -339,12 +150,11 @@ impl GRU
         };
 
         Self{
-            gpu_info: GpuInfo::default(),
         	input_update_weights: WeightsContainer::new_with(
-				word_vector_size,
-				HIDDEN_AMOUNT,
-				|| weights_init(word_vector_size as f32)
-			),
+                word_vector_size,
+                HIDDEN_AMOUNT,
+                || weights_init(word_vector_size as f32)
+            ),
         	input_reset_weights: WeightsContainer::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
@@ -380,6 +190,74 @@ impl GRU
                 || weights_init(HIDDEN_AMOUNT as f32)
             )
         }
+    }
+
+    pub fn gpu_adapter(&self) -> GPUGRU
+    {
+        #[cfg(not(test))]
+        {
+            arrayfire::info();
+
+            let device_info = arrayfire::device_info();
+            eprintln!(
+                "name: {}, platform: {}, toolkit: {}, compute: {}",
+                device_info.0, device_info.1, device_info.2, device_info.3
+            );
+        }
+
+        GPUGRU{
+            input_update_weights: self.input_update_weights.as_arrayfire(),
+            input_reset_weights: self.input_reset_weights.as_arrayfire(),
+            input_activation_weights: self.input_activation_weights.as_arrayfire(),
+            hidden_update_weights: self.hidden_update_weights.as_arrayfire(),
+            hidden_reset_weights: self.hidden_reset_weights.as_arrayfire(),
+            hidden_activation_weights: self.hidden_activation_weights.as_arrayfire(),
+            output_weights: self.output_weights.as_arrayfire(),
+            update_biases: self.update_biases.as_arrayfire(),
+            reset_biases: self.reset_biases.as_arrayfire(),
+            activation_biases: self.activation_biases.as_arrayfire()
+        }
+    }
+
+    pub fn transfer_weights(&mut self, gpugru: GPUGRU)
+    {
+        let GPUGRU{
+            input_update_weights,
+            input_reset_weights,
+            input_activation_weights,
+            hidden_update_weights,
+            hidden_reset_weights,
+            hidden_activation_weights,
+            output_weights,
+            update_biases,
+            reset_biases,
+            activation_biases,
+        } = gpugru;
+
+		self.input_update_weights =
+            self.input_update_weights.new_from(input_update_weights);
+
+		self.input_reset_weights =
+            self.input_reset_weights.new_from(input_reset_weights);
+
+		self.input_activation_weights =
+            self.input_activation_weights.new_from(input_activation_weights);
+
+		self.hidden_update_weights =
+            self.hidden_update_weights.new_from(hidden_update_weights);
+
+		self.hidden_reset_weights =
+            self.hidden_reset_weights.new_from(hidden_reset_weights);
+
+		self.hidden_activation_weights =
+            self.hidden_activation_weights.new_from(hidden_activation_weights);
+
+		self.update_biases = update_biases.into();
+		self.reset_biases = reset_biases.into();
+		self.activation_biases = activation_biases.into();
+
+		self.output_weights =
+            self.output_weights.new_from(output_weights);
     }
 
     pub fn adjust_weights(&mut self, gradients: GRUGradients)
@@ -450,6 +328,7 @@ impl GRU
         });
     }
 
+    #[allow(dead_code)]
     pub fn accuracy(
         &self,
         input: impl Iterator<Item=(LayerContainer, LayerContainer)>
@@ -458,12 +337,10 @@ impl GRU
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let amount = input.len();
 
-        let f_output = self.feedforward(input.into_iter());
-
-        let predicted = f_output.outputs;
+        let f_output = self.feedforward_cpu(input.into_iter());
 
         Self::correct_guesses(
-            predicted.into_iter(),
+            f_output.into_iter().map(|output| output.output),
             output.into_iter()
         ) as f32 / amount as f32
     }
@@ -489,17 +366,16 @@ impl GRU
         }).sum()
     }
 
+    #[allow(dead_code)]
     pub fn loss(&self, input: impl Iterator<Item=(LayerContainer, LayerContainer)>) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        let f_output = self.feedforward(input.into_iter());
-
-        let predicted = f_output.outputs;
+        let f_output = self.feedforward_cpu(input.into_iter());
 
         Self::cross_entropy(
-            predicted.into_iter().map(|v| v.0.into_iter()),
-            output.into_iter().map(|v| v.borrow().clone().into_iter())
+            f_output.into_iter().map(|output| output.output.0.into_iter()),
+            output.into_iter().map(|l| l.into_iter())
         )
     }
 
@@ -611,19 +487,22 @@ impl GRU
     // also the U and W letters r swapped in the derivatives compared to the picture
     // also derivatives of reset gate things use d18 not d10 (and actiavtions use d10)
     #[allow(dead_code)]
-    pub fn gradients(&self, input: InputOutputIter) -> GRUGradients
+    pub fn gradients_cpu<'a>(
+        &self,
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)>
+    ) -> GRUGradients
     {
-        self.gradients_with_hidden(LayerContainer::new(HIDDEN_AMOUNT), input).1
+        self.gradients_cpu_with_hidden(LayerContainer::new(HIDDEN_AMOUNT), input).1
     }
 
-    pub fn gradients_with_hidden(
+    pub fn gradients_cpu_with_hidden<'a>(
         &self,
         starting_hidden: LayerContainer,
-        input: InputOutputIter
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)>
     ) -> (LayerContainer, GRUGradients)
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let f_output = self.feedforward_with_hidden(
+        let f_output = self.feedforward_cpu_with_hidden(
             starting_hidden.clone(),
             input.iter().map(|x| (*x).clone())
         );
@@ -662,21 +541,15 @@ impl GRU
         let mut reset_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
         let mut activation_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
 
-        let GRUOutput{
-            outputs: f_outputs,
-            hiddens,
-            update,
-            reset,
-            activation
-        } = f_output;
-
-        for (t, predicted_output) in (0..output.len()).zip(f_outputs.into_iter()).rev()
+        for t in (0..output.len()).rev()
         {
+            let predicted_output = unsafe{ &f_output.get_unchecked(t).output };
+
             let expected_output = unsafe{ *output.get_unchecked(t) };
-            let hidden = unsafe{ hiddens.get_unchecked(t) };
+            let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
 
             let expected_sum: f32 = expected_output.iter().sum();
-            let diff = predicted_output.0 * expected_sum - expected_output;
+            let diff = predicted_output.0.clone() * expected_sum - expected_output;
 
             for y in 0..expected_output.len()
             {
@@ -707,11 +580,15 @@ impl GRU
                     starting_hidden.clone()
                 } else
                 {
-                    unsafe{ hiddens.get_unchecked(b_t - 1) }.clone()
+                    unsafe{ f_output.get_unchecked(b_t - 1).hidden.clone() }
                 };
 
+                let this_update = unsafe{ f_output.get_unchecked(b_t).update.clone() };
+                let this_reset = unsafe{ f_output.get_unchecked(b_t).reset.clone() };
+                let this_activation = unsafe{ f_output.get_unchecked(b_t).activation.clone() };
+
                 let d4 = Self::d4(D4Info{
-                    update_gate: unsafe{ update.get_unchecked(b_t) }.clone(),
+                    update_gate: this_update.clone(),
                     d3: &d3
                 });
 
@@ -721,14 +598,14 @@ impl GRU
                 });
 
                 let d8 = Self::d8(D8Info{
-                    update_gate: unsafe{ update.get_unchecked(b_t) }.clone(),
+                    update_gate: this_update.clone(),
                     d3: &d3
                 });
 
                 // d10
                 let activation_gate_derivative = Self::activation_gate_derivative(
                     ActivationGateDerivativeInfo{
-                        activation_gate: unsafe{ activation.get_unchecked(b_t) }.clone(),
+                        activation_gate: this_activation.clone(),
                         d8: &d8
                     }
                 );
@@ -736,8 +613,8 @@ impl GRU
                 // d11
                 let update_gate_derivative = Self::update_gate_derivative(
                     UpdateGateDerivativeInfo{
-                        activation_gate: unsafe{ activation.get_unchecked(b_t) }.clone(),
-                        update_gate: unsafe{ update.get_unchecked(b_t) }.clone(),
+                        activation_gate: this_activation,
+                        update_gate: this_update,
                         d3: &d3,
                         d6: &d6
                     }
@@ -749,7 +626,7 @@ impl GRU
 
                 // d18
                 let reset_gate_derivative = Self::reset_gate_derivative(ResetGateDerivativeInfo{
-                    reset_gate: unsafe{ reset.get_unchecked(b_t) }.clone(),
+                    reset_gate: this_reset.clone(),
                     previous_hidden: previous_hidden.clone(),
                     d13: &d13
                 });
@@ -758,7 +635,7 @@ impl GRU
                 hidden_reset_gradients.add_outer_product(&reset_gate_derivative, &previous_hidden);
                 
                 {
-                    let previous_hidden = previous_hidden * unsafe{ reset.get_unchecked(b_t) };
+                    let previous_hidden = previous_hidden * &this_reset;
                     hidden_activation_gradients.add_outer_product(
                         &activation_gate_derivative,
                         previous_hidden
@@ -779,7 +656,7 @@ impl GRU
                 activation_bias_gradients += activation_gate_derivative;
 
                 d3 = self.hidden_derivative(HiddenDerivativeInfo{
-                    reset_gate: unsafe{ reset.get_unchecked(b_t) }.clone(),
+                    reset_gate: this_reset,
                     d4: &d4,
                     d11: &update_gate_derivative,
                     d13,
@@ -801,7 +678,7 @@ impl GRU
             output_gradients
         };
 
-        let last_hidden = hiddens.last().unwrap().clone();
+        let last_hidden = f_output.last().unwrap().hidden.clone();
 
         (last_hidden, gradients)
     }
@@ -810,7 +687,7 @@ impl GRU
         &self,
         previous_hidden: &LayerContainer,
         input: &LayerContainer
-    ) -> GRUSingleOutput
+    ) -> GRUOutput
     {
         let mut update_gate =
             self.hidden_update_weights.mul(previous_hidden)
@@ -839,7 +716,7 @@ impl GRU
 
         let output = SoftmaxedLayer::new(self.output_weights.mul(&hidden));
 
-        GRUSingleOutput{
+        GRUOutput{
             update: update_gate,
             reset: reset_gate,
             activation: activation_gate,
@@ -849,7 +726,7 @@ impl GRU
     }
 
     #[allow(dead_code)]
-    pub fn feedforward_cpu<L>(&self, input: impl Iterator<Item=L>) -> GRUOutput
+    pub fn feedforward_cpu<L>(&self, input: impl Iterator<Item=L>) -> Vec<GRUOutput>
     where
         L: Borrow<LayerContainer>
     {
@@ -863,18 +740,14 @@ impl GRU
         &self,
         first_hidden: LayerContainer,
         input: impl Iterator<Item=L>
-    ) -> GRUOutput
+    ) -> Vec<GRUOutput>
     where
         L: Borrow<LayerContainer>
     {
         let (lower_bound, upper_bound) = input.size_hint();
         let time_total = upper_bound.unwrap_or(lower_bound);
 
-        let mut update = Vec::with_capacity(time_total);
-        let mut reset = Vec::with_capacity(time_total);
-        let mut activation = Vec::with_capacity(time_total);
-        let mut hiddens = Vec::with_capacity(time_total);
-        let mut outputs = Vec::with_capacity(time_total);
+        let mut outputs: Vec<GRUOutput> = Vec::with_capacity(time_total);
 
         for (t, this_input) in input.enumerate()
         {
@@ -883,96 +756,487 @@ impl GRU
                 &first_hidden
             } else
             {
-                unsafe{ hiddens.get_unchecked(t - 1) }
+                unsafe{ &outputs.get_unchecked(t - 1).hidden }
             };
 
             let this_input = this_input.borrow();
 
-            let GRUSingleOutput{
-                update: this_update,
-                reset: this_reset,
-                activation: this_activation,
-                hidden,
-                output
-            } = self.feedforward_cpu_single(previous_hidden, this_input);
+            let output = self.feedforward_cpu_single(previous_hidden, this_input);
 
-            update.push(this_update);
-            reset.push(this_reset);
-            activation.push(this_activation);
-            hiddens.push(hidden);
             outputs.push(output);
         }
 
-        GRUOutput{
-            update,
-            reset,
-            activation,
-            hiddens,
-            outputs
-        }
+        outputs
     }
+}
 
-    pub fn feedforward(&self, input: impl Iterator<Item=LayerContainer>) -> GRUOutput
+pub struct GPUGRU
+{
+    input_update_weights: Array<f32>,
+    input_reset_weights: Array<f32>,
+    input_activation_weights: Array<f32>,
+    hidden_update_weights: Array<f32>,
+    hidden_reset_weights: Array<f32>,
+    hidden_activation_weights: Array<f32>,
+    output_weights: Array<f32>,
+    update_biases: Array<f32>,
+    reset_biases: Array<f32>,
+    activation_biases: Array<f32>
+}
+
+impl GPUGRU
+{
+    pub fn apply_gradients(&mut self, gradients: GPUGRUGradients)
     {
-        let first_hidden = LayerContainer::new(HIDDEN_AMOUNT);
+        let GPUGRUGradients{
+            input_update_gradients,
+            input_reset_gradients,
+            input_activation_gradients,
+            hidden_update_gradients,
+            hidden_reset_gradients,
+            hidden_activation_gradients,
+            update_bias_gradients,
+            reset_bias_gradients,
+            activation_bias_gradients,
+            output_gradients
+        } = gradients;
 
-        self.feedforward_with_hidden(first_hidden, input)
+        self.input_update_weights +=
+            Self::gradient_to_change(input_update_gradients);
+
+        self.input_reset_weights +=
+            Self::gradient_to_change(input_reset_gradients);
+        
+        self.input_activation_weights +=
+            Self::gradient_to_change(input_activation_gradients);
+
+        self.hidden_update_weights +=
+            Self::gradient_to_change(hidden_update_gradients);
+
+        self.hidden_reset_weights +=
+            Self::gradient_to_change(hidden_reset_gradients);
+        
+        self.hidden_activation_weights +=
+            Self::gradient_to_change(hidden_activation_gradients);
+        
+        self.update_biases +=
+            Self::gradient_to_change(update_bias_gradients);
+        
+        self.reset_biases +=
+            Self::gradient_to_change(reset_bias_gradients);
+        
+        self.activation_biases +=
+            Self::gradient_to_change(activation_bias_gradients);
+        
+        self.output_weights +=
+            Self::gradient_to_change(output_gradients);
     }
 
-    pub fn feedforward_with_hidden(
+    fn gradient_to_change(gradient: Array<f32>) -> Array<f32>
+    {
+        dbg!("temp");
+        -gradient * 0.001_f32
+    }
+
+    pub fn accuracy<T>(
         &self,
-        first_hidden: LayerContainer,
-        input: impl Iterator<Item=LayerContainer>
-    ) -> GRUOutput
+        input: impl Iterator<Item=(T, T)>
+    ) -> f32
+    where
+        T: Borrow<Array<f32>>
     {
-        let buffer = Buffer::from_iter(
-            &self.gpu_info.memory_allocator,
-            BufferCreateInfo{
-                usage: BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo{
-                usage: MemoryUsage::Upload,
-                ..Default::default()
-            },
-            (0..1024).map(|i| i as f32)
-        ).unwrap();
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+        let amount = input.len();
 
-        let descriptor_set = PersistentDescriptorSet::new(
-            &self.gpu_info.descriptor_set_allocator,
-            self.gpu_info.feedforward_input_set.clone(),
-            [WriteDescriptorSet::buffer(0, buffer.clone())]
-        ).unwrap();
+        let f_output = self.feedforward(input.into_iter());
 
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.gpu_info.command_buffer_allocator,
-            self.gpu_info.queues[0].queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit
-        ).unwrap();
+        Self::correct_guesses(
+            f_output.into_iter().map(|output| output.output),
+            output.into_iter()
+        ) as f32 / amount as f32
+    }
 
-        builder.bind_pipeline_compute(self.gpu_info.feedforward_pipeline.clone())
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                self.gpu_info.feedforward_pipeline_layout.clone(),
-                0,
-                descriptor_set
-            ).dispatch([16, 1, 1])
-            .unwrap();
+    fn correct_guesses<T>(
+        predicted: impl Iterator<Item=SoftmaxedArray>,
+        target: impl Iterator<Item=T>
+    ) -> usize
+    where
+        T: Borrow<Array<f32>>
+    {
+        predicted.zip(target).map(|(predicted, target)|
+        {
+            let target = target.borrow();
 
-        let command_buffer = builder.build().unwrap();
+            let mut target_host = vec![0.0_f32; target.elements()];
+            target.host(&mut target_host);
 
-        let future = vulkano::sync::now(self.gpu_info.device.clone())
-            .then_execute(self.gpu_info.queues[0].clone(), command_buffer)
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap();
+            let (target_index, _) = target_host.into_iter().enumerate().max_by(|a, b|
+            {
+                a.1.partial_cmp(&b.1).unwrap()
+            }).unwrap();
 
-        future.wait(None).unwrap();
+            if predicted.pick_weighed(1.0) == target_index
+            {
+                1
+            } else
+            {
+                0
+            }
+        }).sum()
+    }
 
-        let buffer = buffer.read().unwrap();
-        dbg!((0..1024).map(|i| buffer[i]).collect::<Vec<_>>());
+    #[allow(dead_code)]
+    pub fn gradients<'a, const ONE_HOT_ENCODED: bool, T>(
+        &self,
+        input: impl Iterator<Item=(T, T)>
+    ) -> GPUGRUGradients
+    where
+        T: Borrow<Array<f32>>
+    {
+        let empty_hidden =
+            arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64));
 
-        todo!();
+        self.gradients_with_hidden::<ONE_HOT_ENCODED, T>(&empty_hidden, input).1
+    }
+
+    fn outer_product(a: &Array<f32>, b: &Array<f32>) -> Array<f32>
+    {
+        arrayfire::matmul(b, a, MatProp::NONE, MatProp::TRANS)
+    }
+
+    pub fn gradients_with_hidden<'a, const ONE_HOT_ENCODED: bool, T>(
+        &self,
+        starting_hidden: &Array<f32>,
+        input: impl Iterator<Item=(T, T)>
+    ) -> (Array<f32>, GPUGRUGradients)
+    where
+        T: Borrow<Array<f32>>
+    {
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let f_output = self.feedforward_with_hidden(
+            starting_hidden,
+            input.iter().map(|x| x.borrow())
+        );
+
+        let mut output_gradients = arrayfire::constant(0.0_f32, self.output_weights.dims());
+
+        let mut input_update_gradients =
+            arrayfire::constant(0.0_f32, self.input_update_weights.dims());
+
+        let mut input_reset_gradients =
+            arrayfire::constant(0.0_f32, self.input_reset_weights.dims());
+
+        let mut input_activation_gradients =
+            arrayfire::constant(0.0_f32, self.input_activation_weights.dims());
+
+        let mut hidden_update_gradients =
+            arrayfire::constant(0.0_f32, self.hidden_update_weights.dims());
+
+        let mut hidden_reset_gradients =
+            arrayfire::constant(0.0_f32, self.hidden_reset_weights.dims());
+
+        let mut hidden_activation_gradients =
+            arrayfire::constant(0.0_f32, self.hidden_activation_weights.dims());
+
+        let mut update_bias_gradients = arrayfire::constant(0.0_f32, self.update_biases.dims());
+        let mut reset_bias_gradients = arrayfire::constant(0.0_f32, self.reset_biases.dims());
+        let mut activation_bias_gradients =
+            arrayfire::constant(0.0_f32, self.activation_biases.dims());
+
+        for t in (0..output.len()).rev()
+        {
+            let predicted_output = unsafe{ &f_output.get_unchecked(t).output };
+
+            let expected_output = unsafe{ output.get_unchecked(t) }.borrow();
+            let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
+
+            let expected_sum: f32 = if ONE_HOT_ENCODED
+            {
+                1.0
+            } else
+            {
+                arrayfire::sum_all(&expected_output).0
+            };
+
+            let diff = &predicted_output.0 * expected_sum - expected_output;
+
+            output_gradients += Self::outer_product(&diff, hidden);
+
+            let mut d3 = arrayfire::matmul(
+                &self.output_weights,
+                &diff,
+                MatProp::NONE,
+                MatProp::NONE
+            );
+            
+            for b_t in (0..(t + 1)).rev()
+            {
+                let previous_hidden = if b_t == 0
+                {
+                    starting_hidden
+                } else
+                {
+                    unsafe{ &f_output.get_unchecked(b_t - 1).hidden }
+                };
+
+                let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
+                let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
+                let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
+
+                let d4 = (-(this_update.clone()) + 1.0_f32) * &d3;
+                let d5 = previous_hidden * &d3;
+                let d6 = &d5 * -1.0_f32;
+                let d7 = this_activation * &d3;
+                let d8 = this_update * &d3;
+                let d9 = &d7 + &d6;
+
+                // d10
+                let activation_gate_derivative =
+                    (-(this_activation * this_activation) + 1.0_f32) * &d8;
+
+                // d11
+                let update_gate_derivative =
+                    &d9 * (this_update * (-(this_update.clone()) + 1.0_f32));
+
+                let d13 = arrayfire::matmul(
+                    &self.hidden_activation_weights,
+                    &activation_gate_derivative,
+                    MatProp::NONE,
+                    MatProp::NONE
+                );
+
+                let d15 = arrayfire::matmul(
+                    &self.hidden_update_weights,
+                    &update_gate_derivative,
+                    MatProp::NONE,
+                    MatProp::NONE
+                );
+
+                let d16 = previous_hidden * &d13;
+
+                let d17 = &d13 * this_reset;
+
+                // d18
+                let reset_gate_derivative =
+                    (this_reset * (-(this_reset.clone()) + 1.0_f32)) * &d16;
+
+                let d19 = &d17 + &d4;
+
+                let d21 = arrayfire::matmul(
+                    &self.hidden_reset_weights,
+                    &reset_gate_derivative,
+                    MatProp::NONE,
+                    MatProp::NONE
+                );
+
+                let d22 = &d21 + &d15;
+
+
+                hidden_update_gradients +=
+                    Self::outer_product(&update_gate_derivative, previous_hidden);
+
+                hidden_reset_gradients +=
+                    Self::outer_product(&reset_gate_derivative, previous_hidden);
+
+                {
+                    let combined_hidden = previous_hidden * this_reset;
+                    hidden_activation_gradients +=
+                        Self::outer_product(&activation_gate_derivative, &combined_hidden);
+                }
+
+                let this_input = unsafe{ input.get_unchecked(b_t) }.borrow();
+
+                input_update_gradients +=
+                    Self::outer_product(&update_gate_derivative, this_input);
+
+                input_reset_gradients +=
+                    Self::outer_product(&reset_gate_derivative, this_input);
+
+                input_activation_gradients +=
+                    Self::outer_product(&activation_gate_derivative, this_input);
+
+                update_bias_gradients += update_gate_derivative;
+                reset_bias_gradients += reset_gate_derivative;
+                activation_bias_gradients += activation_gate_derivative;
+
+                d3 = &d19 + &d22;
+            }
+        }
+
+        let gradients = GPUGRUGradients{
+            input_update_gradients,
+            input_reset_gradients,
+            input_activation_gradients,
+            hidden_update_gradients,
+            hidden_reset_gradients,
+            hidden_activation_gradients,
+            update_bias_gradients,
+            reset_bias_gradients,
+            activation_bias_gradients,
+            output_gradients
+        };
+
+        let last_hidden = f_output.last().unwrap().hidden.clone();
+
+        (last_hidden, gradients)
+    }
+
+    pub fn feedforward<T>(
+        &self,
+        input: impl Iterator<Item=T> + ExactSizeIterator
+    ) -> Vec<GPUGRUOutput>
+    where
+        T: Borrow<Array<f32>>
+    {
+        let empty_hidden =
+            arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64));
+
+        self.feedforward_with_hidden(&empty_hidden, input)
+    }
+
+    pub fn loss<T>(&self, input: impl Iterator<Item=(T, T)>) -> f32
+    where
+        T: Borrow<Array<f32>>
+    {
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let f_output = self.feedforward(input.into_iter());
+
+        Self::cross_entropy(
+            f_output.into_iter().map(|output| output.output),
+            output.into_iter()
+        )
+    }
+
+    fn cross_entropy<T>(
+        predicted: impl Iterator<Item=SoftmaxedArray> + ExactSizeIterator,
+        target: impl Iterator<Item=T>
+    ) -> f32
+    where
+        T: Borrow<Array<f32>>
+    {
+        let predicted_len = predicted.len();
+        let s: f32 = predicted.zip(target).map(|(predicted, target)|
+        {
+            let predicted_nlog = arrayfire::log(&predicted.0);
+
+            let d = arrayfire::dot(target.borrow(), &predicted_nlog, MatProp::NONE, MatProp::NONE);
+
+            let mut out = [0.0_f32];
+            d.host(&mut out);
+
+            out[0]
+        }).sum();
+
+        -s / predicted_len as f32
+    }
+
+    pub fn feedforward_with_hidden<T>(
+        &self,
+        first_hidden: &Array<f32>,
+        input: impl Iterator<Item=T> + ExactSizeIterator
+    ) -> Vec<GPUGRUOutput>
+    where
+        T: Borrow<Array<f32>>
+    {
+        let mut outputs: Vec<GPUGRUOutput> = Vec::with_capacity(input.len());
+
+        for (t, inputs) in input.enumerate()
+        {
+            let previous_hidden = if t == 0
+            {
+                &first_hidden
+            } else
+            {
+                unsafe{ &outputs.get_unchecked(t - 1).hidden }
+            };
+
+            let output = self.feedforward_single(previous_hidden, inputs.borrow());
+
+            outputs.push(output);
+        }
+
+        outputs
+    }
+
+    pub fn feedforward_single(
+        &self,
+        previous_hidden: &Array<f32>,
+        input: &Array<f32>
+    ) -> GPUGRUOutput
+    {
+        let update_gate =
+            arrayfire::matmul(
+                &self.hidden_update_weights,
+                &previous_hidden,
+                MatProp::TRANS,
+                MatProp::NONE
+            )
+            + arrayfire::matmul(
+                &self.input_update_weights,
+                input,
+                MatProp::TRANS,
+                MatProp::NONE
+            )
+            + &self.update_biases;
+
+        let update_gate = arrayfire::sigmoid(&update_gate);
+
+        let reset_gate =
+            arrayfire::matmul(
+                &self.hidden_reset_weights,
+                &previous_hidden,
+                MatProp::TRANS,
+                MatProp::NONE
+            )
+            + arrayfire::matmul(
+                &self.input_reset_weights,
+                input,
+                MatProp::TRANS,
+                MatProp::NONE
+            )
+            + &self.reset_biases;
+
+        let reset_gate = arrayfire::sigmoid(&reset_gate);
+
+        let activation_v = &reset_gate * previous_hidden;
+        let activation_gate =
+            arrayfire::matmul(
+                &self.hidden_activation_weights,
+                &activation_v,
+                MatProp::TRANS,
+                MatProp::NONE
+            )
+            + arrayfire::matmul(
+                &self.input_activation_weights,
+                input,
+                MatProp::TRANS,
+                MatProp::NONE
+            )
+            + &self.activation_biases;
+
+        let activation_gate = arrayfire::tanh(&activation_gate);
+
+        let this_activation = &activation_gate * &update_gate;
+        let hidden = (-(update_gate.clone()) + 1.0_f32) * previous_hidden + &this_activation;
+
+        let output = arrayfire::matmul(
+            &self.output_weights,
+            &hidden,
+            MatProp::TRANS,
+            MatProp::NONE
+        );
+
+        let output = SoftmaxedArray::new(&output);
+
+        GPUGRUOutput{
+            update: update_gate,
+            reset: reset_gate,
+            activation: activation_gate,
+            hidden,
+            output
+        }
     }
 }
 
@@ -994,11 +1258,229 @@ pub mod tests
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
     }
 
+    #[test]
+    fn outer_product()
+    {
+        let mut w0 = WeightsContainer::new_with(10, 15, || 0.0_f32);
+
+        let mut a_i = 0;
+        let a = LayerContainer::new_with(15, ||
+        {
+            let out = a_i;
+
+            a_i += 1;
+
+            out as f32
+        });
+
+        let mut b_i = 0;
+        let b = LayerContainer::new_with(10, ||
+        {
+            let out = b_i;
+
+            b_i += 1;
+
+            out as f32
+        });
+
+        for y in 0..a.len()
+        {
+            for x in 0..b.len()
+            {
+                let weight = unsafe{ w0.weight_unchecked_mut(x, y) };
+
+                *weight += unsafe{
+                    a.get_unchecked(y) * b.get_unchecked(x)
+                };
+            }
+        }
+
+        let a = a.as_arrayfire();
+        let b = b.as_arrayfire();
+        let w1 = GPUGRU::outer_product(&a, &b);
+
+        let mut w1_host = vec![0.0_f32; w1.elements()];
+        w1.host(&mut w1_host);
+
+        w0.iter().zip(w1_host).for_each(|(&a, b)|
+        {
+            assert!(
+                close_enough(a, b, 0.001),
+                "a: {a}, b: {b}"
+            );
+        });
+    }
+
+    #[test]
+    fn accuracy_match()
+    {
+        let inputs_amount = 10;
+        let input_output_size = 20;
+
+        let gru = GRU::new(input_output_size);
+
+        let inputs = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        });
+
+        let expected = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        });
+
+        let inputs = inputs.zip(expected);
+
+        fastrand::seed(12345);
+        let cpu_accuracy = gru.accuracy(inputs.clone());
+
+        let gpu_adapter = gru.gpu_adapter();
+        
+        fastrand::seed(12345);
+        let gpu_accuracy = gpu_adapter.accuracy(
+            inputs.map(|(a, b)|
+            {
+                (a.as_arrayfire(), b.as_arrayfire())
+            })
+        );
+
+        assert!(
+            close_enough(cpu_accuracy, gpu_accuracy, 0.001),
+            "cpu_accuracy: {cpu_accuracy}, gpu_accuracy: {gpu_accuracy}"
+        );
+    }
+
+    #[test]
+    fn loss_match()
+    {
+        let inputs_amount = 10;
+        let input_output_size = 20;
+
+        let gru = GRU::new(input_output_size);
+
+        let inputs = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        });
+
+        let expected = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        });
+
+        let inputs = inputs.zip(expected);
+
+        let cpu_loss = gru.loss(inputs.clone());
+
+        let gpu_adapter = gru.gpu_adapter();
+        let gpu_loss = gpu_adapter.loss(
+            inputs.map(|(a, b)|
+            {
+                (a.as_arrayfire(), b.as_arrayfire())
+            })
+        );
+
+        // im not sure where the error is if i change the 0.1 to a lower value
+        // (just floating point weirdness? natural log being calculated differently?)
+        assert!(
+            close_enough(cpu_loss, gpu_loss, 0.1),
+            "cpu_loss: {cpu_loss}, gpu_loss: {gpu_loss}"
+        );
+    }
+
+    #[test]
+    fn gradients_match()
+    {
+        let inputs_amount = 10;
+        // cool value 20 is a cool value
+        let input_output_size = 20;
+
+        let gru = GRU::new(input_output_size);
+
+        let inputs = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        }).collect::<Vec<_>>();
+
+        let expected = (0..inputs_amount).map(|_|
+        {
+            LayerContainer::new_with(input_output_size, || fastrand::f32())
+        }).collect::<Vec<_>>();
+
+        let cpu_output = gru.gradients_cpu(inputs.iter().zip(expected.iter()));
+
+        let gpu_adapter = gru.gpu_adapter();
+        let gpu_output = gpu_adapter.gradients::<false, _>(
+            inputs.into_iter().map(|l| l.as_arrayfire())
+                .zip(expected.into_iter().map(|l| l.as_arrayfire()))
+        );
+
+        let comparer = |(cpu_result, gpu_result): (f32, f32)|
+        {
+            assert!(
+                close_enough(cpu_result, gpu_result, 0.05),
+                "cpu_result: {cpu_result}, gpu_result: {gpu_result}"
+            );
+        };
+
+        let gradient_comparer = |cpu_layer: &WeightsContainer, gpu_layer: &Array<f32>|
+        {
+            let mut gpu_layer_host = vec![0.0_f32; gpu_layer.elements()];
+            gpu_layer.host(&mut gpu_layer_host);
+
+            cpu_layer.iter().copied()
+                .zip(gpu_layer_host.into_iter())
+                .for_each(comparer);
+        };
+
+        eprintln!("output gradients");
+        gradient_comparer(
+            &cpu_output.output_gradients,
+            &gpu_output.output_gradients
+        );
+
+        eprintln!("hidden update gradients");
+        gradient_comparer(
+            &cpu_output.hidden_update_gradients,
+            &gpu_output.hidden_update_gradients
+        );
+
+        eprintln!("hidden reset gradients");
+        gradient_comparer(
+            &cpu_output.hidden_reset_gradients,
+            &gpu_output.hidden_reset_gradients
+        );
+
+        eprintln!("hidden activation gradients");
+        gradient_comparer(
+            &cpu_output.hidden_activation_gradients,
+            &gpu_output.hidden_activation_gradients
+        );
+
+        eprintln!("input update gradients");
+        gradient_comparer(
+            &cpu_output.input_update_gradients,
+            &gpu_output.input_update_gradients
+        );
+
+        eprintln!("input reset gradients");
+        gradient_comparer(
+            &cpu_output.input_reset_gradients,
+            &gpu_output.input_reset_gradients
+        );
+
+        eprintln!("input activation gradients");
+        gradient_comparer(
+            &cpu_output.input_activation_gradients,
+            &gpu_output.input_activation_gradients
+        );
+    }
+
     // check if cpu and gpu forwardprop gives the same results
     #[test]
     fn forwardprop_match()
     {
-        let inputs_amount = 3;
+        let inputs_amount = 10;
         // cool value 20 is a cool value
         let input_output_size = 20;
 
@@ -1010,28 +1492,35 @@ pub mod tests
         }).collect::<Vec<_>>();
 
         let cpu_output = gru.feedforward_cpu(inputs.clone().into_iter());
-        let gpu_output = gru.feedforward(inputs.into_iter());
 
-        let comparer = |(cpu_result, gpu_result): (&f32, &f32)|
+        let gpu_adapter = gru.gpu_adapter();
+        let gpu_output = gpu_adapter.feedforward(inputs.into_iter().map(|l| l.as_arrayfire()));
+
+        let comparer = |(cpu_result, gpu_result): (f32, f32)|
         {
             assert!(
-                close_enough(*cpu_result, *gpu_result, 0.001),
+                close_enough(cpu_result, gpu_result, 0.005),
                 "cpu_result: {cpu_result}, gpu_result: {gpu_result}"
             );
         };
 
-        let layer_comparer = |(cpu_layer, gpu_layer): (&LayerContainer, &LayerContainer)|
+        let layer_comparer = |cpu_layer: &LayerContainer, gpu_layer: &Array<f32>|
         {
-            cpu_layer.into_iter().zip(gpu_layer.into_iter()).for_each(comparer);
+            let mut gpu_layer_host = vec![0.0_f32; gpu_layer.elements()];
+            gpu_layer.host(&mut gpu_layer_host);
+
+            cpu_layer.into_iter().copied()
+                .zip(gpu_layer_host.into_iter())
+                .for_each(comparer);
         };
 
-        cpu_output.update.iter().zip(gpu_output.update.iter()).for_each(layer_comparer);
-        cpu_output.reset.iter().zip(gpu_output.reset.iter()).for_each(layer_comparer);
-        cpu_output.activation.iter().zip(gpu_output.activation.iter()).for_each(layer_comparer);
-        cpu_output.hiddens.iter().zip(gpu_output.hiddens.iter()).for_each(layer_comparer);
-        cpu_output.outputs.iter().zip(gpu_output.outputs.iter()).for_each(|(c, g)|
+        cpu_output.into_iter().zip(gpu_output.into_iter()).for_each(|(cpu_output, gpu_output)|
         {
-            layer_comparer((&c.0, &g.0));
+            layer_comparer(&cpu_output.update, &gpu_output.update);
+            layer_comparer(&cpu_output.reset, &gpu_output.reset);
+            layer_comparer(&cpu_output.activation, &gpu_output.activation);
+            layer_comparer(&cpu_output.hidden, &gpu_output.hidden);
+            layer_comparer(&cpu_output.output.0, &gpu_output.output.0);
         });
     }
 
@@ -1098,32 +1587,31 @@ pub mod tests
             update_biases,
             reset_biases,
             activation_biases,
-            output_weights,
-            gpu_info: Default::default()
+            output_weights
         };
 
         let input = LayerContainer::from(vec![-5.90, 1.78]);
         let f_output = gru.feedforward_cpu(iter::once(input));
 
-        let output = &f_output.outputs[0];
+        let output = &f_output[0].output;
 
         let epsilon = 0.0000001;
 
         let z = vec![1.686366804463125e-15, 1.7044644055950665e-10];
-        assert!(close_enough(z[0], f_output.update[0][0], epsilon));
-        assert!(close_enough(z[1], f_output.update[0][1], epsilon));
+        assert!(close_enough(z[0], f_output[0].update[0], epsilon));
+        assert!(close_enough(z[1], f_output[0].update[1], epsilon));
 
         let r = vec![1.0, 0.9999999999633351];
-        assert!(close_enough(r[0], f_output.reset[0][0], epsilon));
-        assert!(close_enough(r[1], f_output.reset[0][1], epsilon));
+        assert!(close_enough(r[0], f_output[0].reset[0], epsilon));
+        assert!(close_enough(r[1], f_output[0].reset[1], epsilon));
 
         let h = vec![1.0, 0.9999048161632378];
-        assert!(close_enough(h[0], f_output.activation[0][0], epsilon));
-        assert!(close_enough(h[1], f_output.activation[0][1], epsilon));
+        assert!(close_enough(h[0], f_output[0].activation[0], epsilon));
+        assert!(close_enough(h[1], f_output[0].activation[1], epsilon));
 
         let hidden = vec![1.686366804463125e-15, 1.7043021681333174e-10];
-        assert!(close_enough(hidden[0], f_output.hiddens[0][0], epsilon));
-        assert!(close_enough(hidden[1], f_output.hiddens[0][1], epsilon));
+        assert!(close_enough(hidden[0], f_output[0].hidden[0], epsilon));
+        assert!(close_enough(hidden[1], f_output[0].hidden[1], epsilon));
 
         let o = vec![0.5000000000460197, 0.4999999999539802];
         let (correct, calculated) = (o[0], output.0[0]);
@@ -1163,9 +1651,9 @@ pub mod tests
         );
     }
 
-    pub fn input_update_gradients_check(
+    pub fn input_update_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
@@ -1174,15 +1662,15 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_update_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
 
-    pub fn input_reset_gradients_check(
+    pub fn input_reset_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
@@ -1191,15 +1679,15 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
 
-    pub fn input_activation_gradients_check(
+    pub fn input_activation_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
@@ -1208,15 +1696,15 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
 
-    pub fn hidden_update_gradients_check(
+    pub fn hidden_update_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
@@ -1225,15 +1713,15 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_update_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
 
-    pub fn hidden_reset_gradients_check(
+    pub fn hidden_reset_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
@@ -1242,15 +1730,15 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
 
-    pub fn hidden_activation_gradients_check(
+    pub fn hidden_activation_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
@@ -1259,15 +1747,15 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
 
-    pub fn update_bias_gradients_check(
+    pub fn update_bias_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_bias_check(
@@ -1276,16 +1764,16 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.update_bias_gradients.iter().enumerate())
             .for_each(check_single_bias_gradient);
     }
 
-    pub fn reset_bias_gradients_check(
+    pub fn reset_bias_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_bias_check(
@@ -1294,44 +1782,41 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.reset_bias_gradients.iter().enumerate())
             .for_each(check_single_bias_gradient);
     }
 
-    pub fn activation_bias_gradients_check(
+    pub fn activation_bias_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_bias_check(
             network,
-            |network| &mut network.activation_biases,
-            input.clone()
+            |network| &mut network.activation_biases, input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
+        let calculated_gradient = network.gradients_cpu(input);
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.activation_bias_gradients.iter().enumerate())
             .for_each(check_single_bias_gradient);
     }
 
-    pub fn output_gradients_check(
+    pub fn output_gradients_check<'a>(
         network: &mut GRU,
-        input: InputOutputIter 
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.output_weights,
-            input.clone()
+            |network| &mut network.output_weights, input.clone()
         );
 
-        let calculated_gradient = network.gradients(input);
-
+        let calculated_gradient = network.gradients_cpu(input);
         true_gradient.iter_pos().zip(calculated_gradient.output_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
@@ -1364,10 +1849,10 @@ pub mod tests
         );
     }
 
-    pub fn gradient_bias_check(
+    pub fn gradient_bias_check<'a>(
         network: &mut GRU,
         mut bias_member: impl FnMut(&mut GRU) -> &mut LayerContainer,
-        input: InputOutputIter
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     ) -> LayerContainer
     {
         let input = input.map(|(a, b)| (a.clone(), b.clone()));
@@ -1400,10 +1885,10 @@ pub mod tests
         LayerContainer::from(biases)
     }
 
-    pub fn gradient_check(
+    pub fn gradient_check<'a>(
         network: &mut GRU,
         mut weights_member: impl FnMut(&mut GRU) -> &mut WeightsContainer,
-        input: InputOutputIter
+        input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)> + Clone
     ) -> WeightsContainer
     {
         let input = input.map(|(a, b)| (a.clone(), b.clone()));

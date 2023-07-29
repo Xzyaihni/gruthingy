@@ -11,13 +11,15 @@ use std::{
     ops::{Index, IndexMut, Add, Sub, Mul, AddAssign}
 };
 
+use arrayfire::{Array, dim4};
+
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 // #[allow(unused_imports)]
 // use rnn::{RNN, RNNGradients};
 
 #[allow(unused_imports)]
-use gru::{GRU, GRUGradients, GRUSingleOutput};
+use gru::{GRU, GRUGradients, GRUOutput};
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
@@ -72,6 +74,39 @@ impl SoftmaxedLayer
 
             c <= 0.0
         }).unwrap_or(values.len() - 1);
+
+        index
+    }
+}
+
+pub struct SoftmaxedArray(Array<f32>);
+
+impl SoftmaxedArray
+{
+    pub fn new(layer: &Array<f32>) -> Self
+    {
+        let exp_layer = arrayfire::exp(layer);
+        let s = arrayfire::sum_all(&exp_layer).0;
+
+        Self(exp_layer / s)
+    }
+
+    pub fn pick_weighed(&self, temperature: f32) -> usize
+    {
+        let values = &self.0 / temperature;
+
+        let mut c = fastrand::f32();
+
+        let mut host_values = vec![0.0_f32; values.elements()];
+        values.host(&mut host_values);
+
+        let last_index = host_values.len() - 1;
+        let index = host_values.into_iter().position(|v|
+        {
+            c -= v;
+
+            c <= 0.0
+        }).unwrap_or(last_index);
 
         index
     }
@@ -157,6 +192,14 @@ impl<T> LayerContainer<T>
 
 impl LayerContainer
 {
+    pub fn as_arrayfire(&self) -> Array<f32>
+    {
+        Array::new(
+            &self.values,
+            dim4!(self.values.len() as u64)
+        )
+    }
+
     pub fn highest_index(&self) -> usize
     {
         let (highest_index, _highest_value) = self.values.iter().enumerate().max_by(|x, y|
@@ -258,6 +301,17 @@ impl From<Vec<f32>> for LayerContainer
     fn from(values: Vec<f32>) -> Self
     {
         Self{values}
+    }
+}
+
+impl From<Array<f32>> for LayerContainer
+{
+    fn from(values: Array<f32>) -> Self
+    {
+        let mut values_host = vec![0.0_f32; values.elements()];
+        values.host(&mut values_host);
+
+        Self{values: values_host}
     }
 }
 
@@ -418,6 +472,23 @@ pub struct WeightsContainer<T=f32>
 }
 
 impl<T> WeightsContainer<T>
+{
+    pub fn new_from(&self, values: Array<f32>) -> WeightsContainer<f32>
+    {
+        debug_assert!(self.values.len() == values.elements());
+
+        let mut values_host = vec![0.0_f32; values.elements()];
+        values.host(&mut values_host);
+
+        WeightsContainer{
+            values: values_host.into_boxed_slice(),
+            previous_size: self.previous_size,
+            this_size: self.this_size
+        }
+    }
+}
+
+impl<T> WeightsContainer<T>
 where
     T: Default
 {
@@ -482,13 +553,13 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn iter(&self) -> impl Iterator<Item=&T>
+    pub fn iter(&self) -> impl Iterator<Item=&T> + ExactSizeIterator
     {
         self.values.iter()
     }
 
     #[allow(dead_code)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
+    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T> + ExactSizeIterator
     {
         self.values.iter_mut()
     }
@@ -565,6 +636,14 @@ where
 
 impl WeightsContainer<f32>
 {
+    pub fn as_arrayfire(&self) -> Array<f32>
+    {
+        Array::new(
+            &self.values,
+            dim4!(self.previous_size as u64, self.this_size as u64)
+        )
+    }
+
     #[inline(always)]
     pub fn mul(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
     {
@@ -665,6 +744,8 @@ where
 }
 
 type Sign = i8;
+
+#[allow(dead_code)]
 fn new_sign(num: f32) -> Sign
 {
     if num==0.0
@@ -688,6 +769,7 @@ struct GradientInfo
 
 impl GradientInfo
 {
+    #[allow(dead_code)]
     pub fn update(&mut self, gradient: f32) -> f32
     {
         let current_sign = new_sign(gradient);
@@ -765,12 +847,12 @@ impl GradientsInfo
     }
 }
 
-pub struct InputOutput
+pub struct InputOutput<T>
 {
-    container: Vec<LayerContainer>
+    container: Vec<T>
 }
 
-impl InputOutput
+impl<T> InputOutput<T>
 {
     pub fn batch<V, F>(
         values: &[V],
@@ -779,7 +861,7 @@ impl InputOutput
         batch_size: usize
     ) -> Self
     where
-        F: FnMut(&V) -> LayerContainer
+        F: FnMut(&V) -> T
     {
         let batch_end = (batch_start + batch_size + 1).min(values.len());
         let batch = &values[batch_start..batch_end];
@@ -789,17 +871,14 @@ impl InputOutput
         Self::new(batch.iter().map(f).collect())
     }
 
-    pub fn new(container: Vec<LayerContainer>) -> Self
+    pub fn new(container: Vec<T>) -> Self
     {
         Self{container}
     }
 
-    pub fn iter<'a>(&'a self) -> InputOutputIter<'a>
+    pub fn iter<'a>(&'a self) -> InputOutputIter<slice::Iter<'a, T>, &T>
     {
-        InputOutputIter{
-            container: &self.container,
-            current_index: 1
-        }
+        InputOutputIter::new(self.container.iter())
     }
 
     #[allow(dead_code)]
@@ -810,15 +889,15 @@ impl InputOutput
 }
 
 #[derive(Clone)]
-pub struct InputOutputConvIter<I>
+pub struct InputOutputIter<I, T>
 {
-    previous: LayerContainer,
+    previous: T,
     inputs: I
 }
 
-impl<I> InputOutputConvIter<I>
+impl<I, T> InputOutputIter<I, T>
 where
-    I: Iterator<Item=LayerContainer>
+    I: Iterator<Item=T>
 {
     pub fn new(mut inputs: I) -> Self
     {
@@ -829,11 +908,12 @@ where
     }
 }
 
-impl<I> Iterator for InputOutputConvIter<I>
+impl<I, T> Iterator for InputOutputIter<I, T>
 where
-    I: Iterator<Item=LayerContainer>
+    T: Clone,
+    I: Iterator<Item=T>
 {
-    type Item = (LayerContainer, LayerContainer);
+    type Item = (T, T);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -848,46 +928,6 @@ where
 
                 Some(out)
             }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct InputOutputIter<'a>
-{
-    container: &'a [LayerContainer],
-    current_index: usize
-}
-
-impl InputOutputIter<'_>
-{
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize
-    {
-        self.container.len() - 1
-    }
-}
-
-impl<'a> Iterator for InputOutputIter<'a>
-{
-    type Item = (&'a LayerContainer, &'a LayerContainer);
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        if self.container.len() == self.current_index
-        {
-            None
-        } else
-        {
-            debug_assert!((0..self.container.len()).contains(&(self.current_index - 1)));
-            let previous = unsafe{ self.container.get_unchecked(self.current_index - 1) };
-            
-            debug_assert!((0..self.container.len()).contains(&self.current_index));
-            let this = unsafe{ self.container.get_unchecked(self.current_index) };
- 
-            self.current_index += 1;
-
-            Some((previous, this))
         }
     }
 }
@@ -932,7 +972,7 @@ where
             debug_assert!(self.words.len() < i);
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
-            let GRUSingleOutput{
+            let GRUOutput{
                 output,
                 hidden,
                 ..
@@ -1018,21 +1058,23 @@ where
         calculate_accuracy: bool
     )
     {
-        let input_outputs = InputOutputConvIter::new(
+        let input_outputs = InputOutputIter::new(
             testing_inputs.iter().map(|word|
             {
-                self.dictionary.word_to_layer(*word)
+                self.dictionary.word_to_array(*word)
             })
         );
 
+        let gpu_adapter = self.network.gpu_adapter();
+
         if calculate_accuracy
         {
-            let accuracy = self.network.accuracy(input_outputs);
+            let accuracy = gpu_adapter.accuracy(input_outputs);
 
             println!("accuracy: {}%", accuracy * 100.0);
         } else
         {
-            let loss = self.network.loss(input_outputs);
+            let loss = gpu_adapter.loss(input_outputs);
 
             println!("loss: {loss}");
         }
@@ -1046,6 +1088,8 @@ where
     )
     {
         let TrainingInfo{batch_size, epochs, calculate_accuracy, ignore_loss} = info;
+
+        let mut gpu_adapter = self.network.gpu_adapter();
 
         let inputs = self.input_expected_from_text(text);
         let testing_inputs = if info.ignore_loss
@@ -1087,7 +1131,12 @@ where
             fastrand::usize(0..latest_start)
         };
 
-        let mut previous_hidden: LayerContainer<f32> = LayerContainer::new(HIDDEN_AMOUNT);
+        let empty_hidden = ||
+        {
+            arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64))
+        };
+
+        let mut previous_hidden: Array<f32> = empty_hidden();
 
         // whats an epoch? cool word is wut it is
         // at some point i found out wut it was (going over the whole training data once)
@@ -1096,7 +1145,7 @@ where
         {
             let input_vectorizer = |dictionary: &D, word: &VectorWord|
             {
-                dictionary.word_to_layer(*word)
+                dictionary.word_to_array(*word)
             };
 
             let batch = InputOutput::batch(
@@ -1112,24 +1161,30 @@ where
                 output_loss(self);
             }
 
-            let (final_hidden, gradients) =
-                self.network.gradients_with_hidden(previous_hidden.clone(), batch.iter());
+            let (final_hidden, gradients) = {
+                let inputs = batch.iter().map(|(a, b)| (a.clone(), b.clone()));
+
+                gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, inputs)
+            };
 
             previous_hidden = final_hidden;
 
-            self.apply_gradients(gradients);
+            gpu_adapter.apply_gradients(gradients);
 
             batch_start += batch_size;
             if batch_start >= (inputs.len() - 1)
             {
                 batch_start = 0;
-                previous_hidden = LayerContainer::new(HIDDEN_AMOUNT);
+                previous_hidden = empty_hidden();
             }
         }
+
+        self.network.transfer_weights(gpu_adapter);
 
         output_loss(self);
     }
 
+    #[allow(dead_code)]
     fn apply_gradients(&mut self, mut gradients: GRUGradients)
     {
         gradients.input_update_gradients.iter_mut()
@@ -1285,7 +1340,7 @@ mod tests
     fn test_input_outputs(
         test_texts: Vec<&'static str>,
         network: &mut NeuralNetwork
-    ) -> Vec<InputOutput>
+    ) -> Vec<InputOutput<LayerContainer>>
     {
         test_texts.into_iter().map(|text|
         {
@@ -1408,7 +1463,7 @@ mod tests
 
     fn gradients_check(
         network: &mut NeuralNetwork,
-        inputs: Vec<InputOutput>
+        inputs: Vec<InputOutput<LayerContainer>>
     )
     {
         let network = &mut network.network;

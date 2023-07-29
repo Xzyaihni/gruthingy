@@ -6,12 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bytemuck = "1.13.1"
+arrayfire = "3.8.0"
 ciborium = "0.2.1"
 fastrand = "1.9.0"
 serde = "1.0.171"
-vulkano = "0.33.0"
-vulkano-shaders = "0.33.0"
 
 [profile.release]
 panic = "abort"
