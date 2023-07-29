@@ -196,6 +196,8 @@ impl GRU
 
     pub fn gpu_adapter(&self, gradients: &GradientsInfo) -> GPUGRU
     {
+        arrayfire::set_device(0);
+
         #[cfg(not(test))]
         {
             arrayfire::info();
@@ -737,7 +739,7 @@ impl GPUGradientsInfo
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
-        let a_t = hyper.a * (1.0 - hyper.b2).sqrt() / (1.0 - hyper.b1);
+        let a_t = hyper.a * (1.0 - hyper.b2_t).sqrt() / (1.0 - hyper.b1_t);
 
         -a_t * &gradient_info.m / (arrayfire::sqrt(&gradient_info.v) + hyper.epsilon)
     }
@@ -835,6 +837,8 @@ impl GPUGRU
 			output_gradients,
             hyper
 		);
+
+        hyper.advance_time();
     }
 
     pub fn gradients_info(&self) -> &GPUGradientsInfo

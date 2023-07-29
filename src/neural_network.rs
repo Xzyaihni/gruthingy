@@ -1050,19 +1050,41 @@ pub struct AdamHyperparams
     pub a: f32,
     pub b1: f32,
     pub b2: f32,
-    pub epsilon: f32
+    pub epsilon: f32,
+    pub t: i32,
+    pub b1_t: f32,
+    pub b2_t: f32
+
 }
 
 impl AdamHyperparams
 {
     pub fn new() -> Self
     {
-        Self{
-            a: 0.001,
+        let mut this = Self{
+            a: 0.005,
             b1: 0.9,
             b2: 0.999,
-            epsilon: 10e-8
-        }
+            epsilon: 10e-8,
+            t: 1,
+            b1_t: 0.0,
+            b2_t: 0.0
+        };
+
+        this.update_t_vars();
+
+        this
+    }
+
+    fn update_t_vars(&mut self)
+    {
+        self.b1_t = self.b1.powi(self.t);
+        self.b2_t = self.b2.powi(self.t);
+    }
+
+    pub fn advance_time(&mut self)
+    {
+        self.t += 1;
     }
 }
 
@@ -1193,14 +1215,7 @@ where
             network.test_loss_inner(gpu_adapter, &testing_inputs, calculate_accuracy);
         };
 
-        let latest_start = inputs.len().saturating_sub(batch_size);
-        let mut batch_start: usize = if latest_start == 0
-        {
-            0
-        } else
-        {
-            fastrand::usize(0..latest_start)
-        };
+        let mut batch_start: usize = 0;
 
         let empty_hidden = ||
         {
