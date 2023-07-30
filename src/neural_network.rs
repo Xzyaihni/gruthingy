@@ -26,7 +26,7 @@ use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, Word
 mod gru;
 
 
-pub const HIDDEN_AMOUNT: usize = 100;
+pub const HIDDEN_AMOUNT: usize = 1000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SoftmaxedLayer(LayerContainer);
@@ -1260,11 +1260,8 @@ where
                     steps_num
                 );
 
-                let (final_hidden, gradients) = {
-                    let inputs = values.iter().map(|(a, b)| (a.clone(), b.clone()));
-
-                    gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, inputs)
-                };
+                let (final_hidden, gradients) =
+                    gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, values.iter());
 
                 if batch_gradients.is_none()
                 {
@@ -1285,6 +1282,7 @@ where
             }
 
             let gradients = batch_gradients.unwrap() / batch_size as f32;
+
             gpu_adapter.apply_gradients(gradients, &mut self.hyper);
         }
 

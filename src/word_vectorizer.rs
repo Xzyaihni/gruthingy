@@ -123,11 +123,12 @@ pub trait NetworkDictionary
 
     fn word_to_array(&self, word: VectorWord) -> Array<f32>
     {
-        let mut layer = vec![0.0; self.words_amount()];
+        let mut array = arrayfire::constant(0.0_f32, dim4!(self.words_amount() as u64));
+        let one_array = arrayfire::constant(1.0_f32, dim4!(1));
 
-        layer[word.index()] = 1.0;
+        arrayfire::set_row(&mut array, &one_array, word.index() as i64);
 
-        Array::new(&layer, dim4!(self.words_amount() as u64))
+        array
     }
     
     fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f32) -> VectorWord

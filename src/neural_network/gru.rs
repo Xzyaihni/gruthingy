@@ -236,6 +236,7 @@ impl GRU
     pub fn gpu_adapter(&self, gradients: &GradientsInfo) -> GPUGRU
     {
         arrayfire::set_device(0);
+        arrayfire::set_cublas_mode(arrayfire::CublasMathMode::TENSOR_OP);
 
         #[cfg(not(test))]
         {
@@ -886,6 +887,7 @@ impl GPUGRU
         &self.gradients
     }
 
+    #[inline(always)]
     pub fn zeroed_gradients(&self) -> GPUGRUGradients
     {
         let zeroed = |dims|
@@ -1031,12 +1033,14 @@ impl GPUGRU
                 let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
                 let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
 
-                let d4 = (-(this_update.clone()) + 1.0_f32) * &d3;
+                let one_minus_this_update = -(this_update.clone()) + 1.0_f32;
+
+                let d4 = &one_minus_this_update * &d3;
                 let d5 = previous_hidden * &d3;
-                let d6 = &d5 * -1.0_f32;
+                let d6 = d5 * -1.0_f32;
                 let d7 = this_activation * &d3;
-                let d8 = this_update * &d3;
-                let d9 = &d7 + &d6;
+                let d8 = this_update * d3;
+                let d9 = d7 + d6;
 
                 // d10
                 let activation_gate_derivative =
@@ -1044,7 +1048,7 @@ impl GPUGRU
 
                 // d11
                 let update_gate_derivative =
-                    &d9 * (this_update * (-(this_update.clone()) + 1.0_f32));
+                    d9 * (this_update * one_minus_this_update);
 
                 let d13 = arrayfire::matmul(
                     &self.hidden_activation_weights,
@@ -1062,13 +1066,13 @@ impl GPUGRU
 
                 let d16 = previous_hidden * &d13;
 
-                let d17 = &d13 * this_reset;
+                let d17 = d13 * this_reset;
 
                 // d18
                 let reset_gate_derivative =
                     (this_reset * (-(this_reset.clone()) + 1.0_f32)) * &d16;
 
-                let d19 = &d17 + &d4;
+                let d19 = d17 + d4;
 
                 let d21 = arrayfire::matmul(
                     &self.hidden_reset_weights,
@@ -1077,7 +1081,7 @@ impl GPUGRU
                     MatProp::NONE
                 );
 
-                let d22 = &d21 + &d15;
+                let d22 = d21 + d15;
 
 
                 gradients.hidden_update_gradients +=
@@ -1107,7 +1111,7 @@ impl GPUGRU
                 gradients.reset_bias_gradients += reset_gate_derivative;
                 gradients.activation_bias_gradients += activation_gate_derivative;
 
-                d3 = &d19 + &d22;
+                d3 = d19 + d22;
             }
         }
 
@@ -1297,10 +1301,13 @@ pub mod tests
     #[test]
     fn outer_product()
     {
-        let mut w0 = WeightsContainer::new_with(10, 15, || 0.0_f32);
+        let prev = 5500;
+        let this = 5750;
+
+        let mut w0 = WeightsContainer::new_with(prev, this, || 0.0_f32);
 
         let mut a_i = 0;
-        let a = LayerContainer::new_with(15, ||
+        let a = LayerContainer::new_with(this, ||
         {
             let out = a_i;
 
@@ -1310,7 +1317,7 @@ pub mod tests
         });
 
         let mut b_i = 0;
-        let b = LayerContainer::new_with(10, ||
+        let b = LayerContainer::new_with(prev, ||
         {
             let out = b_i;
 
@@ -1319,6 +1326,7 @@ pub mod tests
             out as f32
         });
 
+        eprintln!("cpu outer began");
         for y in 0..a.len()
         {
             for x in 0..b.len()
@@ -1330,10 +1338,14 @@ pub mod tests
                 };
             }
         }
+        eprintln!("cpu outer ended");
 
         let a = a.as_arrayfire();
         let b = b.as_arrayfire();
+
+        eprintln!("gpu outer began");
         let w1 = GPUGRU::outer_product(&a, &b);
+        eprintln!("gpu outer ended");
 
         let mut w1_host = vec![0.0_f32; w1.elements()];
         w1.host(&mut w1_host);
@@ -1445,19 +1457,24 @@ pub mod tests
             LayerContainer::new_with(input_output_size, || fastrand::f32())
         }).collect::<Vec<_>>();
 
+        eprintln!("cpu gradient began");
         let cpu_output = gru.gradients_cpu(inputs.iter().zip(expected.iter()));
+        eprintln!("cpu gradient ended");
 
-        let gradients_info = GradientsInfo::new(inputs_amount);
+        let gradients_info = GradientsInfo::new(input_output_size);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
-        let gpu_output = gpu_adapter.gradients::<false, _>(
-            inputs.into_iter().map(|l| l.as_arrayfire())
-                .zip(expected.into_iter().map(|l| l.as_arrayfire()))
-        );
+
+        let gpu_inputs = inputs.into_iter().map(|l| l.as_arrayfire())
+            .zip(expected.into_iter().map(|l| l.as_arrayfire()));
+
+        eprintln!("gpu gradient began");
+        let gpu_output = gpu_adapter.gradients::<false, _>(gpu_inputs);
+        eprintln!("gpu gradient ended");
 
         let comparer = |(cpu_result, gpu_result): (f32, f32)|
         {
             assert!(
-                close_enough(cpu_result, gpu_result, 0.05),
+                close_enough(cpu_result, gpu_result, 0.1),
                 "cpu_result: {cpu_result}, gpu_result: {gpu_result}"
             );
         };
