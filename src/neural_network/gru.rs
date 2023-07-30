@@ -928,24 +928,26 @@ impl GPUGRU
     ) -> f32
     {
         let (input, output) = input;
-        let amount = input.dims()[1] as i64;
+        let amount = input.dims()[1] as f32;
 
         let f_output = self.feedforward(&input);
 
         Self::correct_guesses(
-            (0..amount).map(|i| arrayfire::col(&f_output.output, i)),
-            (0..amount).map(|i| arrayfire::col(&output, i))
-        ) as f32 / amount as f32
+            f_output.output,
+            output
+        ) as f32 / amount
     }
 
-    fn correct_guesses<T>(
-        predicted: impl Iterator<Item=Array<f32>>,
-        target: impl Iterator<Item=T>
+    fn correct_guesses(
+        predicted: Array<f32>,
+        target: Array<f32>
     ) -> usize
-    where
-        T: Borrow<Array<f32>>
     {
-        predicted.zip(target).map(|(predicted, target)|
+        let amount = target.dims()[1] as i64;
+
+        (0..amount).map(|i| arrayfire::col(&predicted, i))
+            .zip((0..amount).map(|i| arrayfire::col(&target, i)))
+            .map(|(predicted, target)|
         {
             let target = target.borrow();
 
