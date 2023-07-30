@@ -951,6 +951,29 @@ pub struct InputOutputIter<I, T>
     inputs: I
 }
 
+mod input_output_associated
+{
+    use std::borrow::Borrow;
+    use arrayfire::Array;
+
+    pub fn join_array<IterT, Iter>(mut iter: Iter) -> (Array<f32>, Array<f32>)
+    where
+        IterT: Borrow<Array<f32>>,
+        Iter: Iterator<Item=(IterT, IterT)>
+    {
+        let (a, b) = iter.next().unwrap();
+        let (mut a, mut b): (Array<f32>, Array<f32>) = (a.borrow().clone(), b.borrow().clone());
+
+        while let Some((new_a, new_b)) = iter.next()
+        {
+            a = arrayfire::join(1, &a, new_a.borrow());
+            b = arrayfire::join(1, &b, new_b.borrow());
+        }
+
+        (a, b)
+    }
+}
+
 impl<I, T> InputOutputIter<I, T>
 where
     I: Iterator<Item=T>
@@ -961,6 +984,17 @@ where
             previous: inputs.next().expect("input must not be empty"),
             inputs
         }
+    }
+}
+
+impl<I, T> InputOutputIter<I, T>
+where
+    T: Borrow<Array<f32>> + Clone,
+    I: Iterator<Item=T>
+{
+    pub fn join_array(self) -> (Array<f32>, Array<f32>)
+    {
+        input_output_associated::join_array(self)
     }
 }
 
@@ -1171,7 +1205,7 @@ where
             {
                 self.dictionary.word_to_array(*word)
             })
-        );
+        ).join_array();
 
         if calculate_accuracy
         {
@@ -1263,9 +1297,9 @@ where
                     |word| input_vectorizer(&self.dictionary, word),
                     batch_start,
                     steps_num
-                );
+                ).iter().join_array();
 
-                let gradients = gpu_adapter.gradients::<true>(values.iter());
+                let gradients = gpu_adapter.gradients::<true>(values);
 
                 if batch_gradients.is_none()
                 {

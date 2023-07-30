@@ -921,21 +921,20 @@ impl GPUGRU
         }
     }
 
-    pub fn accuracy<T>(
+    // i could write this properly but im too lezy to rewrite code so its gonna be slow
+    pub fn accuracy(
         &self,
-        input: impl Iterator<Item=(T, T)>
+        input: (Array<f32>, Array<f32>)
     ) -> f32
-    where
-        T: Borrow<Array<f32>>
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let amount = input.len();
+        let (input, output) = input;
+        let amount = input.dims()[1] as i64;
 
-        let f_output = self.feedforward(input.into_iter());
+        let f_output = self.feedforward(&input);
 
         Self::correct_guesses(
-            (0..amount as i64).map(|i| arrayfire::col(&f_output.output, i)),
-            output.into_iter()
+            (0..amount).map(|i| arrayfire::col(&f_output.output, i)),
+            (0..amount).map(|i| arrayfire::col(&output, i))
         ) as f32 / amount as f32
     }
 
@@ -969,9 +968,9 @@ impl GPUGRU
     }
 
     #[allow(dead_code)]
-    pub fn gradients<'a, const ONE_HOT_ENCODED: bool>(
+    pub fn gradients<const ONE_HOT_ENCODED: bool>(
         &self,
-        input: impl Iterator<Item=(&'a Array<f32>, &'a Array<f32>)>
+        input: (Array<f32>, Array<f32>)
     ) -> GPUGRUGradients
     {
         let empty_hidden =
@@ -986,26 +985,26 @@ impl GPUGRU
         arrayfire::matmul(b, a, MatProp::NONE, MatProp::TRANS)
     }
 
-    pub fn gradients_with_hidden<'a, const ONE_HOT_ENCODED: bool>(
+    pub fn gradients_with_hidden<const ONE_HOT_ENCODED: bool>(
         &self,
         starting_hidden: &Array<f32>,
-        input: impl Iterator<Item=(&'a Array<f32>, &'a Array<f32>)>
+        input: (Array<f32>, Array<f32>)
     ) -> GPUGRUGradients
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+        let (input, output) = input;
 
         let f_output = self.feedforward_with_hidden(
             starting_hidden.clone(),
-            input.iter().map(|a| *a)
+            &input
         );
 
         let mut gradients = self.zeroed_gradients();
 
-        for t in (0..output.len() as i64).rev()
+        for t in (0..(output.dims()[1] as i64)).rev()
         {
             let predicted_output = arrayfire::col(&f_output.output, t);
 
-            let expected_output = unsafe{ output.get_unchecked(t as usize) };
+            let expected_output = arrayfire::col(&output, t);
             let hidden = arrayfire::col(&f_output.hidden, t);
 
             let expected_sum: f32 = if ONE_HOT_ENCODED
@@ -1016,7 +1015,7 @@ impl GPUGRU
                 arrayfire::sum_all(&expected_output).0
             };
 
-            let diff = &predicted_output * expected_sum - *expected_output;
+            let diff = &predicted_output * expected_sum - expected_output;
 
             gradients.output_gradients += Self::outer_product(&diff, &hidden);
 
@@ -1040,8 +1039,7 @@ impl GPUGRU
                 let this_update = arrayfire::col(&f_output.update, b_t);
                 let this_reset = arrayfire::col(&f_output.reset, b_t);
                 let this_activation = arrayfire::col(&f_output.activation, b_t);
-                let this_input = unsafe{ input.get_unchecked(b_t as usize) };
-                // let this_input = arrayfire::col(&input, b_t as i64);
+                let this_input = arrayfire::col(&input, b_t);
 
                 let one_minus_this_update = -(this_update.clone()) + 1.0_f32;
 
@@ -1126,12 +1124,10 @@ impl GPUGRU
         gradients
     }
 
-    pub fn feedforward<T>(
+    pub fn feedforward(
         &self,
-        input: impl Iterator<Item=T> + ExactSizeIterator
+        input: &Array<f32>
     ) -> GPUGRUOutput
-    where
-        T: Borrow<Array<f32>>
     {
         let empty_hidden =
             arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64));
@@ -1139,16 +1135,17 @@ impl GPUGRU
         self.feedforward_with_hidden(empty_hidden, input)
     }
 
-    pub fn loss<T>(&self, input: impl Iterator<Item=(T, T)>) -> f32
-    where
-        T: Borrow<Array<f32>>
+    pub fn loss(&self, input: (Array<f32>, Array<f32>)) -> f32
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+        let (input, output) = input;
+        let amount = output.dims()[1] as i64;
 
-        let f_output = self.feedforward(input.into_iter());
+        let f_output = self.feedforward(&input);
+
+        let output = (0..amount).map(|i| arrayfire::col(&output, i)).collect::<Vec<_>>();
 
         Self::cross_entropy(
-            (0..output.len() as i64).map(|i| arrayfire::col(&f_output.output, i)),
+            (0..amount).map(|i| arrayfire::col(&f_output.output, i)),
             output.into_iter()
         )
     }
@@ -1177,27 +1174,26 @@ impl GPUGRU
     }
 
     #[inline(always)]
-    pub fn feedforward_with_hidden<T>(
+    pub fn feedforward_with_hidden(
         &self,
         first_hidden: Array<f32>,
-        input: impl Iterator<Item=T> + ExactSizeIterator
+        input: &Array<f32>
     ) -> GPUGRUOutput
-    where
-        T: Borrow<Array<f32>>
     {
         let mut outputs: Option<GPUGRUOutput> = None;
 
-        for (t, inputs) in input.enumerate()
+        for t in 0..(input.dims()[1] as i64)
         {
             let previous_hidden = if t == 0
             {
                 first_hidden.clone()
             } else
             {
-                arrayfire::col(&outputs.as_ref().unwrap().hidden, t as i64 - 1)
+                arrayfire::col(&outputs.as_ref().unwrap().hidden, t - 1)
             };
 
-            let output = self.feedforward_single(&previous_hidden, inputs.borrow());
+            let inputs = arrayfire::col(input, t);
+            let output = self.feedforward_single(&previous_hidden, &inputs);
 
             if outputs.is_none()
             {
@@ -1298,7 +1294,7 @@ pub mod tests
     use std::iter;
 
     use super::*;
-    use crate::neural_network::WeightsIterValue;
+    use crate::neural_network::{WeightsIterValue, input_output_associated};
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -1397,13 +1393,14 @@ pub mod tests
         let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
         
-        fastrand::seed(12345);
-        let gpu_accuracy = gpu_adapter.accuracy(
-            inputs.map(|(a, b)|
+        let inputs = input_output_associated::join_array(inputs.map(|(a, b)|
             {
                 (a.as_arrayfire(), b.as_arrayfire())
             })
         );
+
+        fastrand::seed(12345);
+        let gpu_accuracy = gpu_adapter.accuracy(inputs);
 
         assert!(
             close_enough(cpu_accuracy, gpu_accuracy, 0.001),
@@ -1435,12 +1432,14 @@ pub mod tests
 
         let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
-        let gpu_loss = gpu_adapter.loss(
-            inputs.map(|(a, b)|
+
+        let inputs = input_output_associated::join_array(inputs.map(|(a, b)|
             {
                 (a.as_arrayfire(), b.as_arrayfire())
             })
         );
+
+        let gpu_loss = gpu_adapter.loss(inputs);
 
         // im not sure where the error is if i change the 0.1 to a lower value
         // (just floating point weirdness? natural log being calculated differently?)
@@ -1479,10 +1478,10 @@ pub mod tests
         let inputs = inputs.into_iter().map(|l| l.as_arrayfire()).collect::<Vec<_>>();
         let expected = expected.into_iter().map(|l| l.as_arrayfire()).collect::<Vec<_>>();
 
-        let gpu_inputs = inputs.iter().zip(expected.iter());
+        let inputs = input_output_associated::join_array(inputs.iter().zip(expected.iter()));
 
         eprintln!("gpu gradient began");
-        let gpu_output = gpu_adapter.gradients::<false>(gpu_inputs);
+        let gpu_output = gpu_adapter.gradients::<false>(inputs);
         eprintln!("gpu gradient ended");
 
         let comparer = |(cpu_result, gpu_result): (f32, f32)|
@@ -1565,7 +1564,12 @@ pub mod tests
 
         let gradients_info = GradientsInfo::new(inputs_amount);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
-        let gpu_output = gpu_adapter.feedforward(inputs.into_iter().map(|l| l.as_arrayfire()));
+
+        let inputs = input_output_associated::join_array(
+            inputs.into_iter().map(|l| l.as_arrayfire()).map(|l| (l.clone(), l))
+        );
+
+        let gpu_output = gpu_adapter.feedforward(&inputs.0);
 
         let comparer = |(cpu_result, gpu_result): (f32, f32)|
         {
