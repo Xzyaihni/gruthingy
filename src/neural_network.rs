@@ -82,17 +82,29 @@ pub struct SoftmaxedArray(Array<f32>);
 
 impl SoftmaxedArray
 {
+    #[allow(dead_code)]
     pub fn new(layer: &Array<f32>) -> Self
+    {
+        Self(Self::softmax(layer))
+    }
+
+    pub fn softmax(layer: &Array<f32>) -> Array<f32>
     {
         let exp_layer = arrayfire::exp(layer);
         let s = arrayfire::sum_all(&exp_layer).0;
 
-        Self(exp_layer / s)
+        exp_layer / s
     }
 
+    #[allow(dead_code)]
     pub fn pick_weighed(&self, temperature: f32) -> usize
     {
-        let values = &self.0 / temperature;
+        Self::pick_weighed_associated(&self.0, temperature)
+    }
+
+    pub fn pick_weighed_associated(layer: &Array<f32>, temperature: f32) -> usize
+    {
+        let values = layer / temperature;
 
         let mut c = fastrand::f32();
 

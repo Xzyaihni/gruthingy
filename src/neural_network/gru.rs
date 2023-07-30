@@ -35,7 +35,19 @@ pub struct GPUGRUOutput
     pub reset: Array<f32>,
     pub activation: Array<f32>,
     pub hidden: Array<f32>,
-    pub output: SoftmaxedArray
+    pub output: Array<f32>
+}
+
+impl GPUGRUOutput
+{
+    pub fn join(&mut self, value: GPUGRUOutput)
+    {
+		self.update = arrayfire::join(1, &self.update, &value.update);
+		self.reset = arrayfire::join(1, &self.reset, &value.reset);
+		self.activation = arrayfire::join(1, &self.activation, &value.activation);
+		self.hidden = arrayfire::join(1, &self.hidden, &value.hidden);
+		self.output = arrayfire::join(1, &self.output, &value.output);
+    }
 }
 
 #[derive(Debug)]
@@ -922,13 +934,13 @@ impl GPUGRU
         let f_output = self.feedforward(input.into_iter());
 
         Self::correct_guesses(
-            f_output.into_iter().map(|output| output.output),
+            (0..amount as i64).map(|i| arrayfire::col(&f_output.output, i)),
             output.into_iter()
         ) as f32 / amount as f32
     }
 
     fn correct_guesses<T>(
-        predicted: impl Iterator<Item=SoftmaxedArray>,
+        predicted: impl Iterator<Item=Array<f32>>,
         target: impl Iterator<Item=T>
     ) -> usize
     where
@@ -946,7 +958,7 @@ impl GPUGRU
                 a.1.partial_cmp(&b.1).unwrap()
             }).unwrap();
 
-            if predicted.pick_weighed(1.0) == target_index
+            if SoftmaxedArray::pick_weighed_associated(&predicted, 1.0) == target_index
             {
                 1
             } else
@@ -965,7 +977,7 @@ impl GPUGRU
         let empty_hidden =
             arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64));
 
-        self.gradients_with_hidden::<ONE_HOT_ENCODED>(&empty_hidden, input).1
+        self.gradients_with_hidden::<ONE_HOT_ENCODED>(&empty_hidden, input)
     }
 
     #[inline(always)]
@@ -978,23 +990,23 @@ impl GPUGRU
         &self,
         starting_hidden: &Array<f32>,
         input: impl Iterator<Item=(&'a Array<f32>, &'a Array<f32>)>
-    ) -> (Array<f32>, GPUGRUGradients)
+    ) -> GPUGRUGradients
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
         let f_output = self.feedforward_with_hidden(
-            starting_hidden,
+            starting_hidden.clone(),
             input.iter().map(|a| *a)
         );
 
         let mut gradients = self.zeroed_gradients();
 
-        for t in (0..output.len()).rev()
+        for t in (0..output.len() as i64).rev()
         {
-            let predicted_output = unsafe{ &f_output.get_unchecked(t).output };
+            let predicted_output = arrayfire::col(&f_output.output, t);
 
-            let expected_output = unsafe{ output.get_unchecked(t) }.borrow();
-            let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
+            let expected_output = unsafe{ output.get_unchecked(t as usize) };
+            let hidden = arrayfire::col(&f_output.hidden, t);
 
             let expected_sum: f32 = if ONE_HOT_ENCODED
             {
@@ -1004,9 +1016,9 @@ impl GPUGRU
                 arrayfire::sum_all(&expected_output).0
             };
 
-            let diff = &predicted_output.0 * expected_sum - expected_output;
+            let diff = &predicted_output * expected_sum - *expected_output;
 
-            gradients.output_gradients += Self::outer_product(&diff, hidden);
+            gradients.output_gradients += Self::outer_product(&diff, &hidden);
 
             let mut d3 = arrayfire::matmul(
                 &self.output_weights,
@@ -1019,30 +1031,30 @@ impl GPUGRU
             {
                 let previous_hidden = if b_t == 0
                 {
-                    starting_hidden
+                    starting_hidden.clone()
                 } else
                 {
-                    unsafe{ &f_output.get_unchecked(b_t - 1).hidden }
+                    arrayfire::col(&f_output.hidden, b_t - 1)
                 };
 
-                let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
-                let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
-                let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
-                let this_input = unsafe{ input.get_unchecked(b_t) };
-                // let this_input = arrayfire::row(&input, b_t as i64);
+                let this_update = arrayfire::col(&f_output.update, b_t);
+                let this_reset = arrayfire::col(&f_output.reset, b_t);
+                let this_activation = arrayfire::col(&f_output.activation, b_t);
+                let this_input = unsafe{ input.get_unchecked(b_t as usize) };
+                // let this_input = arrayfire::col(&input, b_t as i64);
 
                 let one_minus_this_update = -(this_update.clone()) + 1.0_f32;
 
                 let d4 = &one_minus_this_update * &d3;
-                let d5 = previous_hidden * &d3;
+                let d5 = &previous_hidden * &d3;
                 let d6 = d5 * -1.0_f32;
-                let d7 = this_activation * &d3;
-                let d8 = this_update * d3;
+                let d7 = &this_activation * &d3;
+                let d8 = &this_update * d3;
                 let d9 = d7 + d6;
 
                 // d10
                 let activation_gate_derivative =
-                    (-(this_activation * this_activation) + 1.0_f32) * &d8;
+                    (-(&this_activation * &this_activation) + 1.0_f32) * &d8;
 
                 // d11
                 let update_gate_derivative =
@@ -1062,13 +1074,13 @@ impl GPUGRU
                     MatProp::NONE
                 );
 
-                let d16 = previous_hidden * &d13;
+                let d16 = &previous_hidden * &d13;
 
-                let d17 = d13 * this_reset;
+                let d17 = d13 * &this_reset;
 
                 // d18
                 let reset_gate_derivative =
-                    (this_reset * (-(this_reset.clone()) + 1.0_f32)) * &d16;
+                    (&this_reset * (-(this_reset.clone()) + 1.0_f32)) * &d16;
 
                 let d19 = d17 + d4;
 
@@ -1083,10 +1095,10 @@ impl GPUGRU
 
 
                 gradients.hidden_update_gradients +=
-                    Self::outer_product(&update_gate_derivative, previous_hidden);
+                    Self::outer_product(&update_gate_derivative, &previous_hidden);
 
                 gradients.hidden_reset_gradients +=
-                    Self::outer_product(&reset_gate_derivative, previous_hidden);
+                    Self::outer_product(&reset_gate_derivative, &previous_hidden);
 
                 {
                     let combined_hidden = previous_hidden * this_reset;
@@ -1111,22 +1123,20 @@ impl GPUGRU
             }
         }
 
-        let last_hidden = f_output.last().unwrap().hidden.clone();
-
-        (last_hidden, gradients)
+        gradients
     }
 
     pub fn feedforward<T>(
         &self,
         input: impl Iterator<Item=T> + ExactSizeIterator
-    ) -> Vec<GPUGRUOutput>
+    ) -> GPUGRUOutput
     where
         T: Borrow<Array<f32>>
     {
         let empty_hidden =
             arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64));
 
-        self.feedforward_with_hidden(&empty_hidden, input)
+        self.feedforward_with_hidden(empty_hidden, input)
     }
 
     pub fn loss<T>(&self, input: impl Iterator<Item=(T, T)>) -> f32
@@ -1138,22 +1148,22 @@ impl GPUGRU
         let f_output = self.feedforward(input.into_iter());
 
         Self::cross_entropy(
-            f_output.into_iter().map(|output| output.output),
+            (0..output.len() as i64).map(|i| arrayfire::col(&f_output.output, i)),
             output.into_iter()
         )
     }
 
     fn cross_entropy<T>(
-        predicted: impl Iterator<Item=SoftmaxedArray> + ExactSizeIterator,
-        target: impl Iterator<Item=T>
+        predicted: impl Iterator<Item=Array<f32>>,
+        target: impl Iterator<Item=T> + ExactSizeIterator
     ) -> f32
     where
         T: Borrow<Array<f32>>
     {
-        let predicted_len = predicted.len();
+        let target_len = target.len();
         let s: f32 = predicted.zip(target).map(|(predicted, target)|
         {
-            let predicted_nlog = arrayfire::log(&predicted.0);
+            let predicted_nlog = arrayfire::log(&predicted);
 
             let d = arrayfire::dot(target.borrow(), &predicted_nlog, MatProp::NONE, MatProp::NONE);
 
@@ -1163,36 +1173,42 @@ impl GPUGRU
             out[0]
         }).sum();
 
-        -s / predicted_len as f32
+        -s / target_len as f32
     }
 
     #[inline(always)]
     pub fn feedforward_with_hidden<T>(
         &self,
-        first_hidden: &Array<f32>,
+        first_hidden: Array<f32>,
         input: impl Iterator<Item=T> + ExactSizeIterator
-    ) -> Vec<GPUGRUOutput>
+    ) -> GPUGRUOutput
     where
         T: Borrow<Array<f32>>
     {
-        let mut outputs: Vec<GPUGRUOutput> = Vec::with_capacity(input.len());
+        let mut outputs: Option<GPUGRUOutput> = None;
 
         for (t, inputs) in input.enumerate()
         {
             let previous_hidden = if t == 0
             {
-                &first_hidden
+                first_hidden.clone()
             } else
             {
-                unsafe{ &outputs.get_unchecked(t - 1).hidden }
+                arrayfire::col(&outputs.as_ref().unwrap().hidden, t as i64 - 1)
             };
 
-            let output = self.feedforward_single(previous_hidden, inputs.borrow());
+            let output = self.feedforward_single(&previous_hidden, inputs.borrow());
 
-            outputs.push(output);
+            if outputs.is_none()
+            {
+                outputs = Some(output);
+            } else
+            {
+                outputs.as_mut().map(|outputs| outputs.join(output));
+            }
         }
 
-        outputs
+        outputs.unwrap()
     }
 
     #[inline(always)]
@@ -1264,7 +1280,7 @@ impl GPUGRU
             MatProp::NONE
         );
 
-        let output = SoftmaxedArray::new(&output);
+        let output = SoftmaxedArray::softmax(&output);
 
         GPUGRUOutput{
             update: update_gate,
@@ -1559,7 +1575,7 @@ pub mod tests
             );
         };
 
-        let layer_comparer = |cpu_layer: &LayerContainer, gpu_layer: &Array<f32>|
+        let layer_comparer = |cpu_layer: &LayerContainer, gpu_layer: Array<f32>|
         {
             let mut gpu_layer_host = vec![0.0_f32; gpu_layer.elements()];
             gpu_layer.host(&mut gpu_layer_host);
@@ -1569,13 +1585,15 @@ pub mod tests
                 .for_each(comparer);
         };
 
-        cpu_output.into_iter().zip(gpu_output.into_iter()).for_each(|(cpu_output, gpu_output)|
+        cpu_output.into_iter().enumerate().for_each(|(i, cpu_output)|
         {
-            layer_comparer(&cpu_output.update, &gpu_output.update);
-            layer_comparer(&cpu_output.reset, &gpu_output.reset);
-            layer_comparer(&cpu_output.activation, &gpu_output.activation);
-            layer_comparer(&cpu_output.hidden, &gpu_output.hidden);
-            layer_comparer(&cpu_output.output.0, &gpu_output.output.0);
+            let g = |a| arrayfire::col(a, i as i64);
+
+            layer_comparer(&cpu_output.update, g(&gpu_output.update));
+            layer_comparer(&cpu_output.reset, g(&gpu_output.reset));
+            layer_comparer(&cpu_output.activation, g(&gpu_output.activation));
+            layer_comparer(&cpu_output.hidden, g(&gpu_output.hidden));
+            layer_comparer(&cpu_output.output.0, g(&gpu_output.output));
         });
     }
 
