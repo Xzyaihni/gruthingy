@@ -957,17 +957,15 @@ impl GPUGRU
     }
 
     #[allow(dead_code)]
-    pub fn gradients<'a, const ONE_HOT_ENCODED: bool, T>(
+    pub fn gradients<'a, const ONE_HOT_ENCODED: bool>(
         &self,
-        input: impl Iterator<Item=(T, T)>
+        input: impl Iterator<Item=(&'a Array<f32>, &'a Array<f32>)>
     ) -> GPUGRUGradients
-    where
-        T: Borrow<Array<f32>>
     {
         let empty_hidden =
             arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64));
 
-        self.gradients_with_hidden::<ONE_HOT_ENCODED, T>(&empty_hidden, input).1
+        self.gradients_with_hidden::<ONE_HOT_ENCODED>(&empty_hidden, input).1
     }
 
     #[inline(always)]
@@ -976,19 +974,17 @@ impl GPUGRU
         arrayfire::matmul(b, a, MatProp::NONE, MatProp::TRANS)
     }
 
-    pub fn gradients_with_hidden<'a, const ONE_HOT_ENCODED: bool, T>(
+    pub fn gradients_with_hidden<'a, const ONE_HOT_ENCODED: bool>(
         &self,
         starting_hidden: &Array<f32>,
-        input: impl Iterator<Item=(T, T)>
+        input: impl Iterator<Item=(&'a Array<f32>, &'a Array<f32>)>
     ) -> (Array<f32>, GPUGRUGradients)
-    where
-        T: Borrow<Array<f32>>
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
         let f_output = self.feedforward_with_hidden(
             starting_hidden,
-            input.iter().map(|x| x.borrow())
+            input.iter().map(|a| *a)
         );
 
         let mut gradients = self.zeroed_gradients();
@@ -1032,6 +1028,8 @@ impl GPUGRU
                 let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
                 let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
                 let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
+                let this_input = unsafe{ input.get_unchecked(b_t) };
+                // let this_input = arrayfire::row(&input, b_t as i64);
 
                 let one_minus_this_update = -(this_update.clone()) + 1.0_f32;
 
@@ -1096,16 +1094,14 @@ impl GPUGRU
                         Self::outer_product(&activation_gate_derivative, &combined_hidden);
                 }
 
-                let this_input = unsafe{ input.get_unchecked(b_t) }.borrow();
-
                 gradients.input_update_gradients +=
-                    Self::outer_product(&update_gate_derivative, this_input);
+                    Self::outer_product(&update_gate_derivative, &this_input);
 
                 gradients.input_reset_gradients +=
-                    Self::outer_product(&reset_gate_derivative, this_input);
+                    Self::outer_product(&reset_gate_derivative, &this_input);
 
                 gradients.input_activation_gradients +=
-                    Self::outer_product(&activation_gate_derivative, this_input);
+                    Self::outer_product(&activation_gate_derivative, &this_input);
 
                 gradients.update_bias_gradients += update_gate_derivative;
                 gradients.reset_bias_gradients += reset_gate_derivative;
@@ -1464,11 +1460,13 @@ pub mod tests
         let gradients_info = GradientsInfo::new(input_output_size);
         let gpu_adapter = gru.gpu_adapter(&gradients_info);
 
-        let gpu_inputs = inputs.into_iter().map(|l| l.as_arrayfire())
-            .zip(expected.into_iter().map(|l| l.as_arrayfire()));
+        let inputs = inputs.into_iter().map(|l| l.as_arrayfire()).collect::<Vec<_>>();
+        let expected = expected.into_iter().map(|l| l.as_arrayfire()).collect::<Vec<_>>();
+
+        let gpu_inputs = inputs.iter().zip(expected.iter());
 
         eprintln!("gpu gradient began");
-        let gpu_output = gpu_adapter.gradients::<false, _>(gpu_inputs);
+        let gpu_output = gpu_adapter.gradients::<false>(gpu_inputs);
         eprintln!("gpu gradient ended");
 
         let comparer = |(cpu_result, gpu_result): (f32, f32)|

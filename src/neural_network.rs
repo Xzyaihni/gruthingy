@@ -26,7 +26,7 @@ use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, Word
 mod gru;
 
 
-pub const HIDDEN_AMOUNT: usize = 1000;
+pub const HIDDEN_AMOUNT: usize = 100;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SoftmaxedLayer(LayerContainer);
@@ -1225,13 +1225,6 @@ where
 
         let mut batch_start: usize = 0;
 
-        let empty_hidden = ||
-        {
-            arrayfire::constant(0.0_f32, dim4!(HIDDEN_AMOUNT as u64))
-        };
-
-        let mut previous_hidden: Array<f32> = empty_hidden();
-
         // whats an epoch? cool word is wut it is
         // at some point i found out wut it was (going over the whole training data once)
         // but i dont rly feel like changing a silly thing like that
@@ -1260,8 +1253,7 @@ where
                     steps_num
                 );
 
-                let (final_hidden, gradients) =
-                    gpu_adapter.gradients_with_hidden::<true, _>(&previous_hidden, values.iter());
+                let gradients = gpu_adapter.gradients::<true>(values.iter());
 
                 if batch_gradients.is_none()
                 {
@@ -1271,13 +1263,10 @@ where
                     batch_gradients.as_mut().map(|batch_gradients| *batch_gradients += gradients);
                 }
 
-                previous_hidden = final_hidden;
-
                 batch_start += steps_num;
                 if batch_start >= (inputs.len() - 1)
                 {
                     batch_start = 0;
-                    previous_hidden = empty_hidden();
                 }
             }
 
