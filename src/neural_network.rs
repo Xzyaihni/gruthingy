@@ -908,8 +908,104 @@ pub struct InputOutput<T>
     container: Vec<T>
 }
 
+impl InputOutput<Array<f32>>
+{
+    pub fn batch<V, F>(
+        values: &[V],
+        mut f: F,
+        mut start: usize,
+        size: usize,
+        steps: usize
+    ) -> (Array<f32>, Array<f32>)
+    where
+        V: Copy + Default,
+        F: FnMut(&V) -> Array<f32>
+    {
+        let max_len = values.len();
+        let advance = |start: &mut usize| -> bool
+        {
+            *start += steps;
+
+            *start >= max_len
+        };
+
+        let mut output = Self::batch_slice(values, &mut f, start, steps);
+        if advance(&mut start)
+        {
+            return output;
+        }
+
+        for _ in 0..(size - 1)
+        {
+            let values = Self::batch_slice(values, &mut f, start, steps);
+
+            output = Self::tuple_joiner(output, values, 2);
+
+            if advance(&mut start)
+            {
+                break;
+            }
+        }
+
+        output
+    }
+
+    fn joiner(acc: &Array<f32>, v: &Array<f32>, dim: i32) -> Array<f32>
+    {
+        arrayfire::join(dim, acc, v)
+    }
+
+    fn tuple_joiner(
+        acc: (Array<f32>, Array<f32>),
+        v: (Array<f32>, Array<f32>),
+        dim: i32
+    ) -> (Array<f32>, Array<f32>) 
+    {
+        let (acc_a, acc_b) = acc;
+        let (v_a, v_b) = v;
+
+        (Self::joiner(&acc_a, &v_a, dim), Self::joiner(&acc_b, &v_b, dim))
+    }
+
+    fn batch_slice<V, F>(
+        values: &[V],
+        mut f: F,
+        start: usize,
+        steps: usize
+    ) -> (Array<f32>, Array<f32>)
+    where
+        V: Copy + Default,
+        F: FnMut(&V) -> Array<f32>
+    {
+        let full_length = steps;
+
+        let slice_end = (start + steps).min(values.len());
+        let this_slice = &values[start..slice_end];
+
+        let tuple_joiner_one = |acc, v|
+        {
+            Self::tuple_joiner(acc, v, 1)
+        };
+
+        if this_slice.len() == full_length
+        {
+            InputOutputIter::new(this_slice.iter().map(f)).reduce(tuple_joiner_one).unwrap()
+        } else
+        {
+            let pad_amount = full_length - this_slice.len();
+
+            let iter = this_slice.iter().copied().chain((0..pad_amount)
+                .map(|_| V::default()))
+                .map(|v| f(&v));
+
+            InputOutputIter::new(iter).reduce(tuple_joiner_one).unwrap()
+        }
+    }
+}
+
 impl<T> InputOutput<T>
 {
+    #[allow(dead_code)]
     pub fn values_slice<V, F>(
         values: &[V],
         f: F,
@@ -932,6 +1028,7 @@ impl<T> InputOutput<T>
         Self{container}
     }
 
+    #[allow(dead_code)]
     pub fn iter<'a>(&'a self) -> InputOutputIter<slice::Iter<'a, T>, &T>
     {
         InputOutputIter::new(self.container.iter())
@@ -1290,14 +1387,20 @@ where
             }
 
             let mut batch_gradients = None;
-            for _ in 0..batch_size
+
+            let values = InputOutput::batch(
+                &inputs,
+                |word| input_vectorizer(&self.dictionary, word),
+                batch_start,
+                batch_size,
+                steps_num
+            );
+
+            // it may not be the full batch_size cuz the file ended
+            for b_i in 0..(values.0.dims()[2] as i64)
             {
-                let values = InputOutput::values_slice(
-                    &inputs,
-                    |word| input_vectorizer(&self.dictionary, word),
-                    batch_start,
-                    steps_num
-                ).iter().join_array();
+                // eprintln!("({}, {})", values.0.dims(), values.1.dims());
+                let values = (arrayfire::slice(&values.0, b_i), arrayfire::slice(&values.1, b_i));
 
                 let gradients = gpu_adapter.gradients::<true>(values);
 
@@ -1308,12 +1411,12 @@ where
                 {
                     batch_gradients.as_mut().map(|batch_gradients| *batch_gradients += gradients);
                 }
+            }
 
-                batch_start += steps_num;
-                if batch_start >= (inputs.len() - 1)
-                {
-                    batch_start = 0;
-                }
+            batch_start += batch_size * steps_num;
+            if batch_start >= (inputs.len() - 1)
+            {
+                batch_start = 0;
             }
 
             let gradients = batch_gradients.unwrap() / batch_size as f32;
