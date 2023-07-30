@@ -1138,31 +1138,31 @@ impl GPUGRU
     pub fn loss(&self, input: (Array<f32>, Array<f32>)) -> f32
     {
         let (input, output) = input;
-        let amount = output.dims()[1] as i64;
 
         let f_output = self.feedforward(&input);
 
-        let output = (0..amount).map(|i| arrayfire::col(&output, i)).collect::<Vec<_>>();
-
         Self::cross_entropy(
-            (0..amount).map(|i| arrayfire::col(&f_output.output, i)),
-            output.into_iter()
+            f_output.output,
+            output
         )
     }
 
-    fn cross_entropy<T>(
-        predicted: impl Iterator<Item=Array<f32>>,
-        target: impl Iterator<Item=T> + ExactSizeIterator
+    fn cross_entropy(
+        predicted: Array<f32>,
+        target: Array<f32>
     ) -> f32
-    where
-        T: Borrow<Array<f32>>
     {
-        let target_len = target.len();
-        let s: f32 = predicted.zip(target).map(|(predicted, target)|
-        {
-            let predicted_nlog = arrayfire::log(&predicted);
+        let predicted_nlog = arrayfire::log(&predicted);
 
-            let d = arrayfire::dot(target.borrow(), &predicted_nlog, MatProp::NONE, MatProp::NONE);
+        let amount = target.dims()[1] as i64;
+        let s: f32 = (0..amount).map(|i|
+        {
+            let d = arrayfire::dot(
+                &arrayfire::col(&target, i),
+                &arrayfire::col(&predicted_nlog, i),
+                MatProp::NONE,
+                MatProp::NONE
+            );
 
             let mut out = [0.0_f32];
             d.host(&mut out);
@@ -1170,7 +1170,7 @@ impl GPUGRU
             out[0]
         }).sum();
 
-        -s / target_len as f32
+        -s / amount as f32
     }
 
     #[inline(always)]
