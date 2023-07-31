@@ -1182,6 +1182,7 @@ where
 pub struct TrainingInfo
 {
     pub epochs: usize,
+    pub batch_start: usize,
     pub batch_size: usize,
     pub steps_num: usize,
     pub calculate_accuracy: bool,
@@ -1325,12 +1326,16 @@ where
     )
     {
         let TrainingInfo{
+            batch_start,
             batch_size,
             steps_num,
             epochs,
             calculate_accuracy,
             ignore_loss
         } = info;
+
+        let batch_step = batch_size * steps_num;
+        let mut batch_start = batch_start * batch_step;
 
         let mut gpu_adapter = self.network.gpu_adapter(&self.gradients_info);
 
@@ -1353,7 +1358,7 @@ where
         println!("batch size: {batch_size}");
         println!("steps amount: {steps_num}");
         
-        let epochs_per_input = (inputs.len() / steps_num).max(1);
+        let epochs_per_input = (inputs.len() / batch_step).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
         let output_loss = |network: &NeuralNetwork<D>, gpu_adapter: &GPUGRU|
@@ -1365,8 +1370,6 @@ where
 
             network.test_loss_inner(gpu_adapter, &testing_inputs, calculate_accuracy);
         };
-
-        let mut batch_start: usize = 0;
 
         // whats an epoch? cool word is wut it is
         // at some point i found out wut it was (going over the whole training data once)
@@ -1491,7 +1494,8 @@ where
             Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
-        let output = predictor.predict_bytes(&self.network);
+        let output = predictor.predict_bytes(&self.network).into_iter().copied()
+            .filter(|&c| c != b'\0').collect::<Vec<_>>();
         
         String::from_utf8_lossy(&output).to_string()
     }
