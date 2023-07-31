@@ -977,9 +977,9 @@ impl InputOutput<Array<f32>>
         V: Copy + Default,
         F: FnMut(&V) -> Array<f32>
     {
-        let full_length = steps;
+        let full_length = steps + 1;
 
-        let slice_end = (start + steps).min(values.len());
+        let slice_end = (start + full_length).min(values.len());
         let this_slice = &values[start..slice_end];
 
         let tuple_joiner_one = |acc, v|
@@ -1502,6 +1502,9 @@ mod tests
 {
     use super::*;
     
+    #[allow(unused_imports)]
+    use arrayfire::af_print;
+    
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
@@ -1550,6 +1553,17 @@ mod tests
     fn test_texts_three() -> Vec<&'static str>
     {
         vec!["testing test", "abc", "611", "AAA"]
+    }
+
+    fn test_input_words(
+        test_texts: Vec<&'static str>,
+        network: &mut NeuralNetwork
+    ) -> Vec<VectorWord>
+    {
+        test_texts.into_iter().flat_map(|text|
+        {
+            network.input_expected_from_text(text.as_bytes())
+        }).collect()
     }
 
     fn test_input_outputs(
@@ -1667,6 +1681,125 @@ mod tests
         let inputs = test_input_outputs(test_texts_three(), &mut network);
 
         gradients_check(&mut network, inputs);
+    }
+
+    #[test]
+    fn batching_one()
+    {
+        let mut network = test_network();
+
+        let texts = vec![
+            "testing tests or sm",
+            "abcdefghij",
+            "coolllllll",
+            "AAAAAAAAAA"
+        ];
+
+        let inputs = test_input_words(texts, &mut network);
+
+        let steps_num = 20;
+
+        let values = InputOutput::batch(
+            &inputs,
+            |word| network.dictionary.word_to_array(*word),
+            0,
+            1,
+            steps_num
+        );
+
+        let values_slice = InputOutput::values_slice(
+            &inputs,
+            |word| network.dictionary.word_to_array(*word),
+            0,
+            steps_num
+        ).iter().join_array();
+
+        let v = |a: Array<f32>|
+        {
+            let mut v = vec![0.0_f32; a.elements()];
+
+            a.host(&mut v);
+
+            v
+        };
+
+        eprintln!("inputs");
+        v(values.0).into_iter().zip(v(values_slice.0).into_iter()).for_each(|(b, nb)|
+        {
+            assert_eq!(b, nb, "b: {b}, nb: {nb}");
+        });
+
+        eprintln!("outputs");
+        v(values.1).into_iter().zip(v(values_slice.1).into_iter()).for_each(|(b, nb)|
+        {
+            assert_eq!(b, nb, "b: {b}, nb: {nb}");
+        });
+    }
+
+    #[test]
+    fn batching_many()
+    {
+        let mut network = test_network();
+        let texts = vec![
+            "testing tests or sm",
+            "abcdefghij",
+            "coolllllll",
+            "AAAAAAAAAA"
+        ];
+
+        let inputs = test_input_words(texts, &mut network);
+
+        let steps_num = 19;
+
+        let values = InputOutput::batch(
+            &inputs,
+            |word| network.dictionary.word_to_array(*word),
+            0,
+            2,
+            steps_num
+        );
+
+        let values_slice = {
+            let v = |s| InputOutput::values_slice(
+                &inputs,
+                |word| network.dictionary.word_to_array(*word),
+                s,
+                steps_num
+            ).iter().join_array();
+
+            let (a0, b0) = v(0);
+            let (a1, b1) = v(steps_num);
+
+            (
+                arrayfire::join(2, &a0, &a1),
+                arrayfire::join(2, &b0, &b1)
+            )
+        };
+
+        let v = |a: Array<f32>|
+        {
+            let mut v = vec![0.0_f32; a.elements()];
+
+            a.host(&mut v);
+
+            v
+        };
+
+        // af_print!("b0: {}", values.0);
+        // af_print!("nb0: {}", values_slice.0);
+        eprintln!("inputs");
+        v(values.0).into_iter().zip(v(values_slice.0).into_iter()).for_each(|(b, nb)|
+        {
+            assert_eq!(b, nb, "b: {b}, nb: {nb}");
+        });
+
+        // af_print!("b1: {}", values.1);
+        // af_print!("nb1: {}", values_slice.1);
+        eprintln!("outputs");
+        v(values.1).into_iter().zip(v(values_slice.1).into_iter()).for_each(|(b, nb)|
+        {
+            assert_eq!(b, nb, "b: {b}, nb: {nb}");
+        });
     }
 
     fn print_status(description: &str, f: impl FnOnce())
