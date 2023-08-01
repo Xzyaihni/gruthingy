@@ -160,13 +160,7 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     let mut network: NeuralNetwork<CharDictionary> =
         NeuralNetwork::load(&config.network_path).unwrap();
 
-    if config.use_gpu
-    {
-        network.test_loss(text_file, config.calculate_accuracy);
-    } else
-    {
-        network.test_loss_cpu(text_file, config.calculate_accuracy);
-    }
+    network.test_loss(text_file, config.calculate_accuracy);
 }
 
 fn train_new(mut args: impl Iterator<Item=String>)
@@ -220,13 +214,7 @@ where
             })
     });
 
-    if config.use_gpu
-    {
-        network.train(training_info, test_file, text_file);
-    } else
-    {
-        network.train_cpu(training_info, test_file, text_file);
-    }
+    network.train(training_info, test_file, text_file);
 
     network.save(config.network_path);
 }

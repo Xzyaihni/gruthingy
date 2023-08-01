@@ -14,7 +14,7 @@ use arrayfire::{Array, dim4};
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::{SoftmaxedLayer, LayerContainer};
+use super::neural_network::{SoftmaxedLayer, GenericContainer};
 
 
 #[allow(dead_code)]
@@ -117,25 +117,15 @@ pub trait NetworkDictionary
     
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
     
-    fn word_to_layer(&self, word: VectorWord) -> LayerContainer
+    fn word_to_layer(&self, word: VectorWord) -> GenericContainer
     {
         let mut layer = vec![0.0; self.words_amount()];
 
         layer[word.index()] = 1.0;
 
-        layer.into()
+        GenericContainer::from_raw(layer, self.words_amount(), 1)
     }
 
-    fn word_to_array(&self, word: VectorWord) -> Array<f32>
-    {
-        let mut array = arrayfire::constant(0.0_f32, dim4!(self.words_amount() as u64));
-        let one_array = arrayfire::constant(1.0_f32, dim4!(1));
-
-        arrayfire::set_row(&mut array, &one_array, word.index() as i64);
-
-        array
-    }
-    
     fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f32) -> VectorWord
     {
         let index = layer.pick_weighed(temperature);
