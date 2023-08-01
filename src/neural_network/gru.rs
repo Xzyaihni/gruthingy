@@ -1195,7 +1195,7 @@ pub mod tests
     use std::iter;
 
     use super::*;
-    use crate::neural_network::{WeightsIterValue, input_output_associated};
+    use crate::neural_network::{WeightsIterValue, InputOutputIter, input_output_associated};
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -1614,6 +1614,172 @@ pub mod tests
             close_enough(correct, calculated, epsilon),
             "correct: {correct}, calculated: {calculated}"
         );
+    }
+
+    #[ignore]
+    #[allow(dead_code)]
+    // #[test]
+    fn backprop_smol()
+    {
+        assert_eq!(HIDDEN_AMOUNT, 2);
+
+        let input_update_weights = WeightsContainer::from_raw(
+            vec![4.63, -2.64, 4.76, 3.63].into_boxed_slice(),
+            2,
+            HIDDEN_AMOUNT
+        );
+
+        let input_reset_weights = WeightsContainer::from_raw(
+            vec![-8.29, 9.96, -4.78, 2.24].into_boxed_slice(),
+            2,
+            HIDDEN_AMOUNT
+        );
+
+        let input_activation_weights = WeightsContainer::from_raw(
+            vec![-5.09, 1.99, 1.15, 4.63].into_boxed_slice(),
+            2,
+            HIDDEN_AMOUNT
+        );
+
+        let hidden_update_weights = WeightsContainer::from_raw(
+            vec![-0.48, 8.48, -6.14, 2.42].into_boxed_slice(),
+            HIDDEN_AMOUNT,
+            HIDDEN_AMOUNT
+        );
+
+        let hidden_reset_weights = WeightsContainer::from_raw(
+            vec![-5.74, -2.66, -6.25, -9.21].into_boxed_slice(),
+            HIDDEN_AMOUNT,
+            HIDDEN_AMOUNT
+        );
+
+        let hidden_activation_weights = WeightsContainer::from_raw(
+            vec![-3.95, -6.07, 6.36, -5.36].into_boxed_slice(),
+            HIDDEN_AMOUNT,
+            HIDDEN_AMOUNT
+        );
+
+        let update_biases = LayerContainer::from(vec![-2.00, -0.87]);
+        let reset_biases = LayerContainer::from(vec![-8.36, -8.16]);
+        let activation_biases = LayerContainer::from(vec![3.47, 3.52]);
+
+        let output_weights = WeightsContainer::from_raw(
+            vec![8.59, -1.08, -7.31, -7.97].into_boxed_slice(),
+            HIDDEN_AMOUNT,
+            2
+        );
+
+        let gru = GRU{
+            input_update_weights,
+            input_reset_weights,
+            input_activation_weights,
+            hidden_update_weights,
+            hidden_reset_weights,
+            hidden_activation_weights,
+            update_biases,
+            reset_biases,
+            activation_biases,
+            output_weights
+        };
+
+        let input = vec![
+            LayerContainer::from(vec![-5.90, 1.78]),
+            LayerContainer::from(vec![-1.23, 4.56]),
+            LayerContainer::from(vec![9.99, -1.02]),
+            LayerContainer::from(vec![0.01, 10.0])
+        ];
+
+        let input = InputOutputIter::new(input.iter());
+
+        let output = gru.gradients_cpu::<false>(input);
+
+        let single_match = |correct, calculated|
+        {
+            assert!(
+                close_enough_abs(calculated, correct, 0.00001),
+                "correct: {correct}, calculated: {calculated}"
+            );
+        };
+
+        let layer_match = |correct: [f32; 4], calculated: WeightsContainer|
+        {
+            correct.iter().zip(calculated.iter()).for_each(|(correct, calculated)|
+            {
+                single_match(*correct, *calculated);
+            });
+        };
+
+        let bias_match = |correct: [f32; 2], calculated: LayerContainer|
+        {
+            correct.iter().zip(calculated.iter()).for_each(|(correct, calculated)|
+            {
+                single_match(*correct, *calculated);
+            });
+        };
+
+        layer_match([
+            5.416323632651452e-8,
+            -2.008012961152585e-7,
+            0.0004701980745839663,
+            -0.0017432416518287585,
+        ], output.input_update_gradients);
+
+        layer_match([
+            -3.2916534783598936e-62,
+            3.3608473953224137e-63,
+            -4.376070777317816e-36,
+            1.6512401517820905e-35,
+        ], output.input_reset_gradients);
+
+        layer_match([
+            1.2026719991784244e-23,
+            -4.4586864359785484e-23,
+            -2.815569864494384e-9,
+            2.8823767498944457e-10,
+        ], output.input_activation_gradients);
+
+        layer_match([
+            -7.425982242345576e-23,
+            -7.50496131841157e-18,
+            -6.446831266464838e-19,
+            -6.515396576798509e-14,
+        ], output.hidden_update_gradients);
+
+        layer_match([
+            -8.867181401246852e-72,
+            -3.2947707711316803e-63,
+            2.1594354702353152e-47,
+            8.02152580715418e-39,
+        ], output.hidden_reset_gradients);
+
+        layer_match([
+            -1.6488992976193476e-38,
+            -1.6658391023269182e-33,
+            -5.1807365201048425e-64,
+            -1.496633901915441e-39,
+        ], output.hidden_activation_gradients);
+
+        bias_match([
+            -4.4035341451853064e-8,
+            -0.000382287763564198,
+        ], output.update_bias_gradients);
+
+        bias_match([
+            -3.29494842678668e-63,
+            3.630957026725113e-36,
+        ], output.reset_bias_gradients);
+
+        bias_match([
+            -9.777821131531905e-24,
+            -2.8080948683310396e-10,
+        ], output.activation_bias_gradients);
+
+        layer_match([
+            0.008777106286423676,
+            -1.0378464082942112,
+            -0.008777106286423085,
+            1.037846408294211,
+        ], output.output_gradients);
     }
 
     #[test]
