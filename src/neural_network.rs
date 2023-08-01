@@ -34,7 +34,7 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 100;
+pub const HIDDEN_AMOUNT: usize = 10;
 
 impl Into<GPUGradientInfo> for &GradientInfo<LayerContainer>
 {
@@ -412,6 +412,17 @@ where
                 Some(out)
             }
         }
+    }
+}
+
+impl<I, T> ExactSizeIterator for InputOutputIter<I, T>
+where
+    T: Clone,
+    I: Iterator<Item=T> + ExactSizeIterator
+{
+    fn len(&self) -> usize
+    {
+        self.inputs.len()
     }
 }
 

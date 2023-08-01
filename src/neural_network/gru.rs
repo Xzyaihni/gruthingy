@@ -331,8 +331,18 @@ impl GRU
         }).sum()
     }
 
-    #[allow(dead_code)]
-    pub fn loss(&self, input: impl Iterator<Item=(LayerContainer, LayerContainer)>) -> f32
+
+    pub fn loss(
+        &self,
+        input: impl Iterator<Item=(LayerContainer, LayerContainer)> + ExactSizeIterator
+    ) -> f32
+    {
+        let amount = input.len();
+
+        self.loss_unscaled(input) / amount as f32
+    }
+
+    pub fn loss_unscaled(&self, input: impl Iterator<Item=(LayerContainer, LayerContainer)>) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
@@ -352,16 +362,12 @@ impl GRU
         PIter: Iterator<Item=f32>,
         TIter: Iterator<Item=f32>
     {
-        let mut count = 0;
-
         let s: f32 = predicted.zip(target).map(|(predicted, target)|
         {
-            count += 1;
-
             Self::cross_entropy_single(predicted, target)
         }).sum();
 
-        -s / count as f32
+        -s
     }
 
     fn cross_entropy_single(
@@ -1578,7 +1584,7 @@ pub mod tests
 
         let output = &f_output[0].output;
 
-        let epsilon = 0.0000001;
+        let epsilon = 0.00001;
 
         let z = vec![1.686366804463125e-15, 1.7044644055950665e-10];
         assert!(close_enough(z[0], f_output[0].update[0], epsilon));
@@ -1623,10 +1629,12 @@ pub mod tests
             vec![0.0, 0.0, 0.0, 1.0]
         ];
 
+        let amount = target.len() as f32;
+
         let loss = GRU::cross_entropy(
             predicted.into_iter().map(|v| v.into_iter()),
             target.into_iter().map(|v| v.into_iter())
-        );
+        ) / amount;
 
         assert!(
             close_enough(loss, 0.71355817782, 0.000001),
@@ -1855,10 +1863,10 @@ pub mod tests
             };
 
             set_this_weight(network, bias - epsilon);
-            let under_loss = network.loss(input.clone());
+            let under_loss = network.loss_unscaled(input.clone());
             
             set_this_weight(network, bias + epsilon);
-            let over_loss = network.loss(input.clone());
+            let over_loss = network.loss_unscaled(input.clone());
 
             set_this_weight(network, bias);
 
@@ -1893,10 +1901,10 @@ pub mod tests
 
             // ; ;
             set_this_weight(network, weight - epsilon);
-            let under_loss = network.loss(input.clone());
+            let under_loss = network.loss_unscaled(input.clone());
             
             set_this_weight(network, weight + epsilon);
-            let over_loss = network.loss(input.clone());
+            let over_loss = network.loss_unscaled(input.clone());
 
             set_this_weight(network, weight);
 
