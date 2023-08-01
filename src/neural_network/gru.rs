@@ -1209,11 +1209,6 @@ pub mod tests
 
     fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
     {
-        if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
-        {
-            return true;
-        }
-
         (a - b).abs() < epsilon
     }
 
@@ -1987,7 +1982,7 @@ pub mod tests
         let calculated_gradient = calculated_gradient.value;
 
         assert!(
-            close_enough(true_gradient, calculated_gradient, 0.1),
+            close_enough_abs(true_gradient, calculated_gradient, 0.001),
             "true_gradient: {true_gradient}, calculated_gradient: {calculated_gradient}, previous_index: {previous}, this_index: {this}"
         );
     }
@@ -2001,7 +1996,7 @@ pub mod tests
         let calculated_gradient = calculated_gradient.1;
 
         assert!(
-            close_enough(*true_gradient, *calculated_gradient, 0.1),
+            close_enough_abs(*true_gradient, *calculated_gradient, 0.001),
             "true_gradient: {true_gradient}, calculated_gradient: {calculated_gradient}, index: {index}"
         );
     }
@@ -2021,7 +2016,7 @@ pub mod tests
 
         let biases = biases.into_iter().map(|(index, bias)|
         {
-            let epsilon = 0.0001;
+            let epsilon = 0.01;
 
             let mut set_this_weight = |network: &mut GRU, value|
             {
@@ -2058,7 +2053,7 @@ pub mod tests
         let weights = weights.into_iter().map(|weight|
         {
             let WeightsIterValue{value: weight, previous, this} = weight;
-            let epsilon = 0.0001;
+            let epsilon = 0.01;
 
             let mut set_this_weight = |network: &mut GRU, value|
             {
