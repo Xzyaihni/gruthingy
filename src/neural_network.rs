@@ -1,16 +1,14 @@
 use std::{
     f32,
-    vec,
     mem,
     slice,
     borrow::Borrow,
     io::{self, Read},
     fs::File,
-    path::Path,
-    ops::{Index, IndexMut, Add, Sub, Mul, AddAssign}
+    path::Path
 };
 
-use arrayfire::{Array, dim4};
+use arrayfire::Array;
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
@@ -22,833 +20,96 @@ use gru::{GRU, GRUGradients, GPUGradientsInfo, GPUGradientInfo, GRUOutput, GPUGR
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
+pub use containers::{WeightsContainer, LayerContainer, SoftmaxedLayer, SoftmaxedArray};
+
 // mod rnn;
 mod gru;
 
+pub mod containers;
 
-pub const HIDDEN_AMOUNT: usize = 100;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SoftmaxedLayer(LayerContainer);
-
-impl SoftmaxedLayer
-{
-    pub fn new(mut layer: LayerContainer) -> Self
-    {
-        let s: f32 = layer.iter().map(|v|
-        {
-            f32::consts::E.powf(*v)
-        }).sum();
-
-        layer.map(|v|
-        {
-            f32::consts::E.powf(v) / s
-        });
-
-        Self(layer)
-    }
-
-    #[allow(dead_code)]
-    pub fn from_raw(layer: LayerContainer) -> Self
-    {
-        Self(layer)
-    }
-
-    #[allow(dead_code)]
-    pub fn new_empty(size: usize) -> Self
-    {
-        Self(LayerContainer::new(size))
-    }
-
-    pub fn pick_weighed(&self, temperature: f32) -> usize
-    {
-        let mut values = self.0.clone();
-        values.map(|v| v / temperature);
-
-        let mut c = fastrand::f32();
-
-        let index = values.iter().position(|v|
-        {
-            c -= v;
-
-            c <= 0.0
-        }).unwrap_or(values.len() - 1);
-
-        index
-    }
-}
-
-pub struct SoftmaxedArray(Array<f32>);
-
-impl SoftmaxedArray
-{
-    #[allow(dead_code)]
-    pub fn new(layer: &Array<f32>) -> Self
-    {
-        Self(Self::softmax(layer))
-    }
-
-    pub fn softmax(layer: &Array<f32>) -> Array<f32>
-    {
-        let exp_layer = arrayfire::exp(layer);
-        let s = arrayfire::sum_all(&exp_layer).0;
-
-        exp_layer / s
-    }
-
-    #[allow(dead_code)]
-    pub fn pick_weighed(&self, temperature: f32) -> usize
-    {
-        Self::pick_weighed_associated(&self.0, temperature)
-    }
-
-    pub fn pick_weighed_associated(layer: &Array<f32>, temperature: f32) -> usize
-    {
-        let values = layer / temperature;
-
-        let mut c = fastrand::f32();
-
-        let mut host_values = vec![0.0_f32; values.elements()];
-        values.host(&mut host_values);
-
-        let last_index = host_values.len() - 1;
-        let index = host_values.into_iter().position(|v|
-        {
-            c -= v;
-
-            c <= 0.0
-        }).unwrap_or(last_index);
-
-        index
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LayerContainer<T=f32>
-{
-    values: Vec<T>
-}
-
-impl<T> LayerContainer<T>
-where
-    T: Default + Copy
-{
-    pub fn new(size: usize) -> Self
-    {
-        let values = vec![T::default(); size];
-
-        Self{values}
-    }
-
-    pub fn new_with<F>(size: usize, mut f: F) -> Self
-    where
-        F: FnMut() -> T
-    {
-        let values = (0..size).map(|_|
-        {
-            f()
-        }).collect();
-
-        Self{values}
-    }
-}
-
-impl<T> LayerContainer<T>
-{
-    pub fn dims(&self) -> arrayfire::Dim4
-    {
-        dim4!(self.values.len() as u64)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item=&T>
-    {
-        self.values.iter()
-    }
-
-    #[allow(dead_code)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
-    {
-        self.values.iter_mut()
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize
-    {
-        self.values.len()
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub unsafe fn get_unchecked(&self, index: usize) -> &T
-    {
-        debug_assert!(
-            (0..self.values.len()).contains(&index),
-            "{} >= {}",
-            index,
-            self.values.len()
-        );
-
-        self.values.get_unchecked(index)
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T
-    {
-        debug_assert!(
-            (0..self.values.len()).contains(&index),
-            "{} >= {}",
-            index,
-            self.values.len()
-        );
-
-        self.values.get_unchecked_mut(index)
-    }
-}
-
-impl LayerContainer
-{
-    pub fn as_arrayfire(&self) -> Array<f32>
-    {
-        Array::new(&self.values, self.dims())
-    }
-
-    pub fn highest_index(&self) -> usize
-    {
-        let (highest_index, _highest_value) = self.values.iter().enumerate().max_by(|x, y|
-        {
-            x.1.partial_cmp(y.1).unwrap()
-        }).unwrap();
-
-        highest_index
-    }
-
-    #[inline(always)]
-    pub fn outer_product(&self, other: impl Borrow<Self>) -> WeightsContainer
-    {
-        let other = other.borrow();
-
-        let raw_weights = (0..self.len()).flat_map(|y|
-        {
-            (0..other.len()).map(move |x|
-            {
-                unsafe{ other.get_unchecked(x) * self.get_unchecked(y) }
-            })
-        }).collect();
-
-        WeightsContainer::from_raw(raw_weights, other.len(), self.len())
-    }
-
-    pub fn dot(&self, other: impl Borrow<Self>) -> f32
-    {
-        self.values.iter().zip(other.borrow().values.iter())
-            .map(|(this, other)| this * other).sum()
-    }
-
-    #[inline(always)]
-    pub fn powi(self, pow: i32) -> Self
-    {
-        Self{
-            values: self.values.into_iter().map(|v|
-            {
-                v.powi(pow)
-            }).collect()
-        }
-    }
-
-    #[inline(always)]
-    pub fn one_minus_this(mut self) -> Self
-    {
-        self.values.iter_mut().for_each(|v|
-        {
-            *v = 1.0 - *v;
-        });
-
-        self
-    }
-
-    pub fn map<F>(&mut self, mut f: F)
-    where
-        F: FnMut(f32) -> f32
-    {
-        self.values.iter_mut().for_each(|v| *v = f(*v));
-    }
-}
-
-impl FromIterator<f32> for LayerContainer
-{
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item=f32>
-    {
-        Self{
-            values: Vec::<f32>::from_iter(iter)
-        }
-    }
-}
-
-impl IntoIterator for LayerContainer
-{
-    type Item = f32;
-    type IntoIter = vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self.values.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a LayerContainer
-{
-    type Item = &'a f32;
-    type IntoIter = slice::Iter<'a, f32>;
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self.values.iter()
-    }
-}
-
-impl From<Vec<f32>> for LayerContainer
-{
-    fn from(values: Vec<f32>) -> Self
-    {
-        Self{values}
-    }
-}
-
-impl From<Array<f32>> for LayerContainer
-{
-    fn from(values: Array<f32>) -> Self
-    {
-        let mut values_host = vec![0.0_f32; values.elements()];
-        values.host(&mut values_host);
-
-        Self{values: values_host}
-    }
-}
-
-impl Index<usize> for LayerContainer
-{
-    type Output = f32;
-
-    #[inline(always)]
-    fn index(&self, index: usize) -> &Self::Output
-    {
-        &self.values[index]
-    }
-}
-
-impl IndexMut<usize> for LayerContainer
-{
-    #[inline(always)]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output
-    {
-        &mut self.values[index]
-    }
-}
-
-impl Add<f32> for LayerContainer
-{
-    type Output = Self;
-
-    fn add(self, rhs: f32) -> Self::Output
-    {
-        Self{
-            values: self.values.into_iter().map(|v|
-            {
-                v + rhs
-            }).collect()
-        }
-    }
-}
-
-impl<T> Add<T> for LayerContainer
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn add(self, rhs: T) -> Self::Output
-    {
-        debug_assert!(
-            rhs.borrow().len() == self.len(),
-            "{} != {}",
-            rhs.borrow().len(),
-            self.len()
-        );
-
-        Self{
-            values: self.values.into_iter().zip(rhs.borrow().values.iter()).map(|(v, rv)|
-            {
-                v + rv
-            }).collect()
-        }
-    }
-}
-
-impl<R> AddAssign<R> for LayerContainer
-where
-    R: Borrow<Self>
-{
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: R)
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(self.len() == rhs.len());
-
-        self.iter_mut().zip(rhs.iter()).for_each(|(this, other)|
-        {
-            *this = *this + other;
-        });
-    }
-}
-
-impl<T> Sub<T> for LayerContainer
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn sub(self, rhs: T) -> Self::Output
-    {
-        debug_assert!(
-            rhs.borrow().len() == self.len(),
-            "{} != {}",
-            rhs.borrow().len(),
-            self.len()
-        );
-
-        Self{
-            values: self.values.into_iter().zip(rhs.borrow().values.iter()).map(|(v, rv)|
-            {
-                v - rv
-            }).collect()
-        }
-    }
-}
-
-impl Mul<f32> for LayerContainer
-{
-    type Output = Self;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        Self{
-            values: self.values.into_iter().map(|v|
-            {
-                v * rhs
-            }).collect()
-        }
-    }
-}
-
-impl<T> Mul<T> for LayerContainer
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        debug_assert!(
-            rhs.borrow().len() == self.len(),
-            "{} != {}",
-            rhs.borrow().len(),
-            self.len()
-        );
-
-        Self{
-            values: self.values.into_iter().zip(rhs.borrow().values.iter()).map(|(v, rhs)|
-            {
-                v * rhs
-            }).collect()
-        }
-    }
-}
-
-impl Into<GPUGradientInfo> for &LayerContainer<GradientInfo>
+impl Into<GPUGradientInfo> for &GradientInfo<LayerContainer>
 {
     fn into(self) -> GPUGradientInfo
     {
-        let dimensions = self.dims();
-
-        let (m_data, v_data): (Vec<_>, Vec<_>) = self.iter().map(|v|
-        {
-            (v.m, v.v)
-        }).unzip();
-
-        let m = Array::new(&m_data, dimensions);
-        let v = Array::new(&v_data, dimensions);
+        let m = self.m.as_arrayfire();
+        let v = self.v.as_arrayfire();
 
         GPUGradientInfo{m, v}
     }
 }
 
-impl LayerContainer<GradientInfo>
+impl GradientInfo<LayerContainer>
 {
     pub fn copy_gradients_from(&mut self, value: &GPUGradientInfo)
     {
-        debug_assert!(self.values.len() == value.m.elements());
-        debug_assert!(self.values.len() == value.v.elements());
+        debug_assert!(self.m.len() == value.m.elements());
+        debug_assert!(self.v.len() == value.v.elements());
 
-        let mut m_values = vec![0.0_f32; self.values.len()];
-        let mut v_values = vec![0.0_f32; self.values.len()];
+        let GPUGradientInfo{
+            m,
+            v
+        } = value;
 
-        value.m.host(&mut m_values);
-        value.v.host(&mut v_values);
-
-        self.values = m_values.into_iter().zip(v_values.into_iter()).map(|(m, v)|
-        {
-            GradientInfo{m, v}
-        }).collect();
+        self.m = m.clone().into();
+        self.v = v.clone().into();
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct WeightsIterValue<T>
-{
-    pub previous: usize,
-    pub this: usize,
-    pub value: T
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WeightsContainer<T=f32>
-{
-    values: Box<[T]>,
-    previous_size: usize,
-    this_size: usize
-}
-
-impl<T> WeightsContainer<T>
-{
-    pub fn new_from(&self, values: Array<f32>) -> WeightsContainer<f32>
-    {
-        debug_assert!(self.values.len() == values.elements());
-
-        let mut values_host = vec![0.0_f32; values.elements()];
-        values.host(&mut values_host);
-
-        WeightsContainer{
-            values: values_host.into_boxed_slice(),
-            previous_size: self.previous_size,
-            this_size: self.this_size
-        }
-    }
-
-    #[inline(always)]
-    pub fn dims(&self) -> arrayfire::Dim4
-    {
-        dim4!(self.previous_size as u64, self.this_size as u64)
-    }
-}
-
-impl<T> WeightsContainer<T>
-where
-    T: Default
-{
-    pub fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        let values = (0..(previous_size * this_size)).map(|_| T::default()).collect();
-
-        Self{values, previous_size, this_size}
-    }
-}
-
-impl<T> WeightsContainer<T>
-where
-    T: Copy
-{
-    pub fn new_with<F>(previous_size: usize, this_size: usize, mut f: F) -> Self
-    where
-        F: FnMut() -> T
-    {
-        let values = (0..(previous_size * this_size)).map(|_|
-        {
-            f()
-        }).collect();
-
-        Self{values, previous_size, this_size}
-    }
-
-    #[allow(dead_code)]
-    pub fn from_raw(values: Box<[T]>, previous_size: usize, this_size: usize) -> Self
-    {
-        Self{values, previous_size, this_size}
-    }
-    
-    #[allow(dead_code)]
-    pub fn this(&self, previous: usize) -> impl Iterator<Item=&T>
-    {
-        (0..self.this_size).map(move |i|
-        {
-            self.weight(previous, i)
-        })
-    }
-
-    #[allow(dead_code)]
-    pub unsafe fn this_unchecked(&self, previous: usize) -> impl Iterator<Item=&T>
-    {
-        (0..self.this_size).map(move |i|
-        {
-            self.weight_unchecked(previous, i)
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn previous_size(&self) -> usize
-    {
-        self.previous_size
-    }
-
-    #[allow(dead_code)]
-    pub fn this_size(&self) -> usize
-    {
-        self.this_size
-    }
-
-    #[allow(dead_code)]
-    pub fn iter(&self) -> impl Iterator<Item=&T> + ExactSizeIterator
-    {
-        self.values.iter()
-    }
-
-    #[allow(dead_code)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T> + ExactSizeIterator
-    {
-        self.values.iter_mut()
-    }
-
-    #[allow(dead_code)]
-    pub fn iter_pos(&self) -> impl Iterator<Item=WeightsIterValue<T>> + '_
-    {
-        self.values.iter().enumerate().map(|(index, &value)|
-        {
-            WeightsIterValue{
-                previous: index % self.previous_size,
-                this: index / self.previous_size,
-                value
-            }
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn map<F>(&mut self, mut f: F)
-    where
-        F: FnMut(T) -> T
-    {
-        self.values.iter_mut().for_each(|v| *v = f(*v));
-    }
-
-    #[inline(always)]
-    fn index_of(&self, previous: usize, this: usize) -> usize
-    {
-        this * self.previous_size + previous
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn weight(&self, previous: usize, this: usize) -> &T
-    {
-        &self.values[self.index_of(previous, this)]
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub unsafe fn weight_unchecked(&self, previous: usize, this: usize) -> &T
-    {
-        debug_assert!(
-            (0..self.previous_size).contains(&previous),
-            "{} >= {}",
-            previous,
-            self.previous_size
-        );
-        debug_assert!((0..self.this_size).contains(&this), "{} >= {}", this, self.this_size);
-        self.values.get_unchecked(self.index_of(previous, this))
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn weight_mut(&mut self, previous: usize, this: usize) -> &mut T
-    {
-        &mut self.values[self.index_of(previous, this)]
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub unsafe fn weight_unchecked_mut(&mut self, previous: usize, this: usize) -> &mut T
-    {
-        debug_assert!(
-            (0..self.previous_size).contains(&previous),
-            "{} >= {}",
-            previous,
-            self.previous_size
-        );
-        debug_assert!((0..self.this_size).contains(&this), "{} >= {}", this, self.this_size);
-        self.values.get_unchecked_mut(self.index_of(previous, this))
-    }
-}
-
-impl WeightsContainer<f32>
-{
-    pub fn as_arrayfire(&self) -> Array<f32>
-    {
-        Array::new(&self.values, self.dims())
-    }
-
-    #[inline(always)]
-    pub fn mul(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            rhs.len() == self.previous_size,
-            "{} != {}",
-            rhs.len(),
-            self.previous_size
-        );
-
-        (0..self.this_size).map(|i|
-        {
-            (0..rhs.len()).map(|p|
-            {
-                // no bounds checking, if i messed something up let it burn
-                unsafe{ self.weight_unchecked(p, i) * rhs.get_unchecked(p) }
-            }).sum()
-        }).collect()
-    }
-
-    #[inline(always)]
-    pub fn mul_transposed(&self, rhs: impl Borrow<LayerContainer>) -> LayerContainer
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            rhs.len() == self.this_size,
-            "{} != {}",
-            rhs.len(),
-            self.this_size
-        );
-
-        (0..self.previous_size).map(|i|
-        {
-            (0..rhs.len()).map(|p|
-            {
-                // no bounds checking, if i messed something up let it burn
-                unsafe{ self.weight_unchecked(i, p) * rhs.get_unchecked(p) }
-            }).sum()
-        }).collect()
-    }
-
-    // ballin
-    #[inline(always)]
-    pub fn add_outer_product(
-        &mut self,
-        lhs: impl Borrow<LayerContainer>,
-        rhs: impl Borrow<LayerContainer>
-    )
-    {
-        let lhs = lhs.borrow();
-        let rhs = rhs.borrow();
-        
-        debug_assert!(
-            (lhs.len() == self.this_size)
-            &&
-            (rhs.len() == self.previous_size)
-        );
-
-        let this_size = self.this_size;
-        let previous_size = self.previous_size;
-
-        let mut weights = self.iter_mut();
-        for y in 0..this_size
-        {
-            for x in 0..previous_size
-            {
-                unsafe{
-                    *weights.next().unwrap_unchecked() += lhs.get_unchecked(y) * rhs.get_unchecked(x);
-                }
-            }
-        }
-    }
-}
-
-impl WeightsContainer<GradientInfo>
-{
-    pub fn copy_gradients_from(&mut self, value: &GPUGradientInfo)
-    {
-        debug_assert!(self.values.len() == value.m.elements());
-        debug_assert!(self.values.len() == value.v.elements());
-
-        let mut m_values = vec![0.0_f32; self.values.len()];
-        let mut v_values = vec![0.0_f32; self.values.len()];
-
-        value.m.host(&mut m_values);
-        value.v.host(&mut v_values);
-
-        self.values = m_values.into_iter().zip(v_values.into_iter()).map(|(m, v)|
-        {
-            GradientInfo{m, v}
-        }).collect();
-    }
-}
-
-impl<R> AddAssign<R> for WeightsContainer<f32>
-where
-    R: Borrow<Self>
-{
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: R)
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            (self.previous_size == rhs.previous_size)
-            &&
-            (self.this_size == rhs.this_size)
-        );
-
-        self.iter_mut().zip(rhs.iter()).for_each(|(this, other)|
-        {
-            *this = *this + other;
-        });
-    }
-}
-
-impl Into<GPUGradientInfo> for &WeightsContainer<GradientInfo>
+pub const HIDDEN_AMOUNT: usize = 1000;
+impl Into<GPUGradientInfo> for &GradientInfo<WeightsContainer>
 {
     fn into(self) -> GPUGradientInfo
     {
-        let dimensions = self.dims();
-
-        let (m_data, v_data): (Vec<_>, Vec<_>) = self.iter().map(|v|
-        {
-            (v.m, v.v)
-        }).unzip();
-
-        let m = Array::new(&m_data, dimensions);
-        let v = Array::new(&v_data, dimensions);
+        let m = self.m.as_arrayfire();
+        let v = self.v.as_arrayfire();
 
         GPUGradientInfo{m, v}
     }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
-pub struct GradientInfo
+pub struct GradientInfo<T>
 {
-    m: f32,
-    v: f32
+    m: T,
+    v: T
 }
 
-impl Default for GradientInfo
+impl GradientInfo<WeightsContainer>
 {
-    fn default() -> Self
+    pub fn new_weights(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: 0.0,
-            v: 0.0
+            m: WeightsContainer::new(previous_size, this_size),
+            v: WeightsContainer::new(previous_size, this_size)
+        }
+    }
+}
+
+impl GradientInfo<WeightsContainer>
+{
+    pub fn copy_gradients_from(&mut self, value: &GPUGradientInfo)
+    {
+        debug_assert!(self.m.total_len() == value.m.elements());
+        debug_assert!(self.v.total_len() == value.v.elements());
+
+        let GPUGradientInfo{
+            m,
+            v
+        } = value;
+
+        self.m = self.m.new_from(m);
+        self.v = self.v.new_from(v);
+    }
+}
+
+impl GradientInfo<LayerContainer>
+{
+    pub fn new_layers(size: usize) -> Self
+    {
+        Self{
+            m: LayerContainer::new(size),
+            v: LayerContainer::new(size)
         }
     }
 }
@@ -856,16 +117,16 @@ impl Default for GradientInfo
 #[derive(Serialize, Deserialize)]
 pub struct GradientsInfo
 {
-    pub input_update_gradients: WeightsContainer<GradientInfo>,
-    pub input_reset_gradients: WeightsContainer<GradientInfo>,
-    pub input_activation_gradients: WeightsContainer<GradientInfo>,
-    pub hidden_update_gradients: WeightsContainer<GradientInfo>,
-    pub hidden_reset_gradients: WeightsContainer<GradientInfo>,
-    pub hidden_activation_gradients: WeightsContainer<GradientInfo>,
-    pub update_bias_gradients: LayerContainer<GradientInfo>,
-    pub reset_bias_gradients: LayerContainer<GradientInfo>,
-    pub activation_bias_gradients: LayerContainer<GradientInfo>,
-    pub output_gradients: WeightsContainer<GradientInfo>
+    pub input_update_gradients: GradientInfo<WeightsContainer>,
+    pub input_reset_gradients: GradientInfo<WeightsContainer>,
+    pub input_activation_gradients: GradientInfo<WeightsContainer>,
+    pub hidden_update_gradients: GradientInfo<WeightsContainer>,
+    pub hidden_reset_gradients: GradientInfo<WeightsContainer>,
+    pub hidden_activation_gradients: GradientInfo<WeightsContainer>,
+    pub update_bias_gradients: GradientInfo<LayerContainer>,
+    pub reset_bias_gradients: GradientInfo<LayerContainer>,
+    pub activation_bias_gradients: GradientInfo<LayerContainer>,
+    pub output_gradients: GradientInfo<WeightsContainer>
 }
 
 impl GradientsInfo
@@ -873,16 +134,16 @@ impl GradientsInfo
     pub fn new(word_vector_size: usize) -> Self
     {
         Self{
-        	input_update_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
-        	input_reset_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
-        	input_activation_gradients: WeightsContainer::new(word_vector_size, HIDDEN_AMOUNT),
-        	hidden_update_gradients: WeightsContainer::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        	hidden_reset_gradients: WeightsContainer::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        	hidden_activation_gradients: WeightsContainer::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-            update_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
-            reset_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
-            activation_bias_gradients: LayerContainer::new(HIDDEN_AMOUNT),
-            output_gradients: WeightsContainer::new(HIDDEN_AMOUNT, word_vector_size)
+        	input_update_gradients: GradientInfo::new_weights(word_vector_size, HIDDEN_AMOUNT),
+        	input_reset_gradients: GradientInfo::new_weights(word_vector_size, HIDDEN_AMOUNT),
+        	input_activation_gradients: GradientInfo::new_weights(word_vector_size, HIDDEN_AMOUNT),
+        	hidden_update_gradients: GradientInfo::new_weights(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        	hidden_reset_gradients: GradientInfo::new_weights(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        	hidden_activation_gradients: GradientInfo::new_weights(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+            update_bias_gradients: GradientInfo::new_layers(HIDDEN_AMOUNT),
+            reset_bias_gradients: GradientInfo::new_layers(HIDDEN_AMOUNT),
+            activation_bias_gradients: GradientInfo::new_layers(HIDDEN_AMOUNT),
+            output_gradients: GradientInfo::new_weights(HIDDEN_AMOUNT, word_vector_size)
         }
     }
 
@@ -900,6 +161,34 @@ impl GradientsInfo
 			activation_bias_gradients: (&self.activation_bias_gradients).into(),
 			output_gradients: (&self.output_gradients).into()
         }
+    }
+
+    fn gradient_to_change(
+        gradient_info: &mut GradientInfo<WeightsContainer>,
+        gradient: WeightsContainer,
+        hyper: &AdamHyperparams
+    ) -> WeightsContainer
+    {
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+
+        let a_t = hyper.a * (1.0 - hyper.b2_t).sqrt() / (1.0 - hyper.b1_t);
+
+        (&gradient_info.m * -a_t) / (gradient_info.v.sqrt() + hyper.epsilon)
+    }
+
+    fn gradient_bias_to_change(
+        gradient_info: &mut GradientInfo<LayerContainer>,
+        gradient: LayerContainer,
+        hyper: &AdamHyperparams
+    ) -> LayerContainer
+    {
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+
+        let a_t = hyper.a * (1.0 - hyper.b2_t).sqrt() / (1.0 - hyper.b1_t);
+
+        (&gradient_info.m * -a_t) / (gradient_info.v.sqrt() + hyper.epsilon)
     }
 }
 
@@ -1168,7 +457,9 @@ where
 
             if i >= (input_amount - 1)
             {
-                let word = self.dictionary.layer_to_word(&output, self.temperature);
+                let word = SoftmaxedLayer::pick_weighed_associated(&output, self.temperature);
+                let word = VectorWord::from_raw(word);
+
                 self.words.push(self.dictionary.word_to_layer(word));
 
                 self.predicted.extend(self.dictionary.word_to_bytes(word).into_iter());
@@ -1272,6 +563,86 @@ where
         ciborium::from_reader(reader)
     }
 
+    pub fn apply_gradients(&mut self, gradients: GRUGradients)
+    {
+        let GRUGradients{
+            input_update_gradients,
+            input_reset_gradients,
+            input_activation_gradients,
+            hidden_update_gradients,
+            hidden_reset_gradients,
+            hidden_activation_gradients,
+            update_bias_gradients,
+            reset_bias_gradients,
+            activation_bias_gradients,
+            output_gradients
+        } = gradients;
+
+        let hyper = &mut self.hyper;
+
+        self.network.input_update_weights += GradientsInfo::gradient_to_change(
+            &mut self.gradients_info.input_update_gradients,
+            input_update_gradients,
+            hyper
+        );
+
+        self.network.input_reset_weights += GradientsInfo::gradient_to_change(
+			&mut self.gradients_info.input_reset_gradients,
+			input_reset_gradients,
+            hyper
+		);
+        
+        self.network.input_activation_weights += GradientsInfo::gradient_to_change(
+			&mut self.gradients_info.input_activation_gradients,
+			input_activation_gradients,
+            hyper
+		);
+
+        self.network.hidden_update_weights += GradientsInfo::gradient_to_change(
+			&mut self.gradients_info.hidden_update_gradients,
+			hidden_update_gradients,
+            hyper
+		);
+
+        self.network.hidden_reset_weights += GradientsInfo::gradient_to_change(
+			&mut self.gradients_info.hidden_reset_gradients,
+			hidden_reset_gradients,
+            hyper
+		);
+        
+        self.network.hidden_activation_weights += GradientsInfo::gradient_to_change(
+			&mut self.gradients_info.hidden_activation_gradients,
+			hidden_activation_gradients,
+            hyper
+		);
+        
+        self.network.update_biases += GradientsInfo::gradient_bias_to_change(
+			&mut self.gradients_info.update_bias_gradients,
+			update_bias_gradients,
+            hyper
+		);
+        
+        self.network.reset_biases += GradientsInfo::gradient_bias_to_change(
+			&mut self.gradients_info.reset_bias_gradients,
+			reset_bias_gradients,
+            hyper
+		);
+        
+        self.network.activation_biases += GradientsInfo::gradient_bias_to_change(
+			&mut self.gradients_info.activation_bias_gradients,
+			activation_bias_gradients,
+            hyper
+		);
+        
+        self.network.output_weights += GradientsInfo::gradient_to_change(
+			&mut self.gradients_info.output_gradients,
+			output_gradients,
+            hyper
+		);
+
+        hyper.advance_time();
+    }
+
     pub fn input_expected_from_text(
         &mut self,
         text: impl Read
@@ -1289,6 +660,40 @@ where
         let gpu_adapter = self.network.gpu_adapter(&self.gradients_info);
 
         self.test_loss_inner(&gpu_adapter, &inputs, calculate_accuracy);
+    }
+
+    pub fn test_loss_cpu(&mut self, file: impl Read, calculate_accuracy: bool)
+    {
+        let inputs = self.input_expected_from_text(file);
+
+        self.test_loss_cpu_inner(&inputs, calculate_accuracy);
+    }
+
+
+    fn test_loss_cpu_inner(
+        &self,
+        inputs: &[VectorWord],
+        calculate_accuracy: bool
+    )
+    {
+        let input_outputs = InputOutputIter::new(
+            inputs.iter().map(|word|
+            {
+                self.dictionary.word_to_layer(*word)
+            })
+        );
+
+        if calculate_accuracy
+        {
+            let accuracy = self.network.accuracy(input_outputs);
+
+            println!("accuracy: {}%", accuracy * 100.0);
+        } else
+        {
+            let loss = self.network.loss(input_outputs);
+
+            println!("loss: {loss}");
+        }
     }
 
     fn test_loss_inner(
@@ -1431,6 +836,108 @@ where
 
         self.transfer_gradient_info(&gpu_adapter);
         self.network.transfer_weights(gpu_adapter);
+    }
+
+    pub fn train_cpu<R: Read>(
+        &mut self,
+        info: TrainingInfo,
+        testing_data: Option<R>,
+        text: impl Read
+    )
+    {
+        let TrainingInfo{
+            batch_start,
+            batch_size,
+            steps_num,
+            epochs,
+            calculate_accuracy,
+            ignore_loss
+        } = info;
+
+        let batch_step = batch_size * steps_num;
+        let mut batch_start = batch_start * batch_step;
+
+        let inputs = self.input_expected_from_text(text);
+        let testing_inputs = if info.ignore_loss
+        {
+            Vec::new()
+        } else
+        {
+            match testing_data
+            {
+                None => inputs.clone(),
+                Some(testing_data) =>
+                {
+                    self.input_expected_from_text(testing_data)
+                }
+            }
+        };
+
+        println!("batch size: {batch_size}");
+        println!("steps amount: {steps_num}");
+        
+        let epochs_per_input = (inputs.len() / batch_step).max(1);
+        println!("calculate loss every {epochs_per_input} epochs");
+
+        let output_loss = |network: &NeuralNetwork<D>|
+        {
+            if ignore_loss
+            {
+                return;
+            }
+
+            network.test_loss_cpu_inner(&testing_inputs, calculate_accuracy);
+        };
+
+        // whats an epoch? cool word is wut it is
+        // at some point i found out wut it was (going over the whole training data once)
+        // but i dont rly feel like changing a silly thing like that
+        for epoch in 0..epochs
+        {
+            eprintln!("epoch: {epoch}");
+
+            let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
+            if print_loss
+            {
+                output_loss(self);
+            }
+
+            let mut batch_gradients = None;
+
+            for _ in 0..batch_size
+            {
+                let values = InputOutput::values_slice(
+                    &inputs,
+                    |word| self.dictionary.word_to_layer(*word),
+                    batch_start,
+                    steps_num
+                );
+
+                let gradients = self.network.gradients_cpu::<true>(values.iter());
+
+                if batch_gradients.is_none()
+                {
+                    batch_gradients = Some(gradients);
+                } else
+                {
+                    batch_gradients.as_mut().map(|batch_gradients| *batch_gradients += gradients);
+                }
+
+
+                batch_start += steps_num;
+                if batch_start >= (inputs.len() - 1)
+                {
+                    batch_start = 0;
+                }
+            }
+
+            let mut gradients = batch_gradients.unwrap();
+            gradients /= batch_size as f32;
+
+            self.apply_gradients(gradients);
+        }
+
+        output_loss(self);
     }
 
     fn transfer_gradient_info(&mut self, gpugru: &GPUGRU)

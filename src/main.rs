@@ -160,7 +160,13 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     let mut network: NeuralNetwork<CharDictionary> =
         NeuralNetwork::load(&config.network_path).unwrap();
 
-    network.test_loss(text_file, config.calculate_accuracy);
+    if config.use_gpu
+    {
+        network.test_loss(text_file, config.calculate_accuracy);
+    } else
+    {
+        network.test_loss_cpu(text_file, config.calculate_accuracy);
+    }
 }
 
 fn train_new(mut args: impl Iterator<Item=String>)
@@ -214,15 +220,13 @@ where
             })
     });
 
-    if !config.use_gpu
+    if config.use_gpu
     {
-        arrayfire::set_backend(arrayfire::Backend::CPU);
+        network.train(training_info, test_file, text_file);
     } else
     {
-        arrayfire::set_backend(arrayfire::Backend::DEFAULT);
+        network.train_cpu(training_info, test_file, text_file);
     }
-
-    network.train(training_info, test_file, text_file);
 
     network.save(config.network_path);
 }
@@ -251,7 +255,7 @@ impl RunConfig
 {
     pub fn parse(mut args: impl Iterator<Item=String>) -> Self
     {
-        let mut tokens_amount = 25;
+        let mut tokens_amount = 100;
         let mut temperature = 1.0;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 

@@ -45,6 +45,11 @@ impl VectorWord
         Self(index)
     }
 
+    pub fn from_raw(index: usize) -> Self
+    {
+        Self(index)
+    }
+
     pub fn index(&self) -> usize
     {
         self.0

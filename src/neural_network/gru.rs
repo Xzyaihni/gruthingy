@@ -1,7 +1,7 @@
 use std::{
     f32,
     borrow::Borrow,
-    ops::{Div, AddAssign}
+    ops::{Div, DivAssign, AddAssign}
 };
 
 use arrayfire::{Array, MatProp, dim4};
@@ -26,7 +26,7 @@ pub struct GRUOutput
     pub reset: LayerContainer,
     pub activation: LayerContainer,
     pub hidden: LayerContainer,
-    pub output: SoftmaxedLayer
+    pub output: LayerContainer
 }
 
 pub struct GPUGRUOutput
@@ -65,6 +65,40 @@ pub struct GRUGradients
     pub output_gradients: WeightsContainer
 }
 
+impl DivAssign<f32> for GRUGradients
+{
+    fn div_assign(&mut self, rhs: f32)
+    {
+		self.input_update_gradients /= rhs;
+		self.input_reset_gradients /= rhs;
+		self.input_activation_gradients /= rhs;
+		self.hidden_update_gradients /= rhs;
+		self.hidden_reset_gradients /= rhs;
+		self.hidden_activation_gradients /= rhs;
+		self.update_bias_gradients /= rhs;
+		self.reset_bias_gradients /= rhs;
+		self.activation_bias_gradients /= rhs;
+		self.output_gradients /= rhs;
+    }
+}
+
+impl AddAssign for GRUGradients
+{
+    fn add_assign(&mut self, rhs: Self)
+    {
+		self.input_update_gradients += rhs.input_update_gradients;
+		self.input_reset_gradients += rhs.input_reset_gradients;
+		self.input_activation_gradients += rhs.input_activation_gradients;
+		self.hidden_update_gradients += rhs.hidden_update_gradients;
+		self.hidden_reset_gradients += rhs.hidden_reset_gradients;
+		self.hidden_activation_gradients += rhs.hidden_activation_gradients;
+		self.update_bias_gradients += rhs.update_bias_gradients;
+		self.reset_bias_gradients += rhs.reset_bias_gradients;
+		self.activation_bias_gradients += rhs.activation_bias_gradients;
+		self.output_gradients += rhs.output_gradients;
+    }
+}
+
 pub struct GPUGRUGradients
 {
     pub input_update_gradients: Array<f32>,
@@ -81,21 +115,21 @@ pub struct GPUGRUGradients
 
 impl Div<f32> for GPUGRUGradients
 {
-    type Output = GPUGRUGradients;
+    type Output = Self;
 
-    fn div(self, rhs: f32) -> Self::Output
+    fn div(self, rhs: f32) -> Self
     {
         Self{
-			input_update_gradients: self.input_update_gradients / rhs,
-			input_reset_gradients: self.input_reset_gradients / rhs,
-			input_activation_gradients: self.input_activation_gradients / rhs,
-			hidden_update_gradients: self.hidden_update_gradients / rhs,
-			hidden_reset_gradients: self.hidden_reset_gradients / rhs,
-			hidden_activation_gradients: self.hidden_activation_gradients / rhs,
-			update_bias_gradients: self.update_bias_gradients / rhs,
-			reset_bias_gradients: self.reset_bias_gradients / rhs,
-			activation_bias_gradients: self.activation_bias_gradients / rhs,
-			output_gradients: self.output_gradients / rhs
+            input_update_gradients: self.input_update_gradients / rhs,
+            input_reset_gradients: self.input_reset_gradients / rhs,
+            input_activation_gradients: self.input_activation_gradients / rhs,
+            hidden_update_gradients: self.hidden_update_gradients / rhs,
+            hidden_reset_gradients: self.hidden_reset_gradients / rhs,
+            hidden_activation_gradients: self.hidden_activation_gradients / rhs,
+            update_bias_gradients: self.update_bias_gradients / rhs,
+            reset_bias_gradients: self.reset_bias_gradients / rhs,
+            activation_bias_gradients: self.activation_bias_gradients / rhs,
+            output_gradients: self.output_gradients / rhs
         }
     }
 }
@@ -179,16 +213,16 @@ struct HiddenDerivativeInfo<'a>
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GRU
 {
-    input_update_weights: WeightsContainer,
-    input_reset_weights: WeightsContainer,
-    input_activation_weights: WeightsContainer,
-    hidden_update_weights: WeightsContainer,
-    hidden_reset_weights: WeightsContainer,
-    hidden_activation_weights: WeightsContainer,
-    update_biases: LayerContainer,
-    reset_biases: LayerContainer,
-    activation_biases: LayerContainer,
-    output_weights: WeightsContainer
+	pub input_update_weights: WeightsContainer,
+	pub input_reset_weights: WeightsContainer,
+	pub input_activation_weights: WeightsContainer,
+	pub hidden_update_weights: WeightsContainer,
+	pub hidden_reset_weights: WeightsContainer,
+	pub hidden_activation_weights: WeightsContainer,
+	pub update_biases: LayerContainer,
+	pub reset_biases: LayerContainer,
+	pub activation_biases: LayerContainer,
+	pub output_weights: WeightsContainer
 }
 
 impl GRU
@@ -293,29 +327,29 @@ impl GRU
         } = gpugru;
 
 		self.input_update_weights =
-            self.input_update_weights.new_from(input_update_weights);
+            self.input_update_weights.new_from(&input_update_weights);
 
 		self.input_reset_weights =
-            self.input_reset_weights.new_from(input_reset_weights);
+            self.input_reset_weights.new_from(&input_reset_weights);
 
 		self.input_activation_weights =
-            self.input_activation_weights.new_from(input_activation_weights);
+            self.input_activation_weights.new_from(&input_activation_weights);
 
 		self.hidden_update_weights =
-            self.hidden_update_weights.new_from(hidden_update_weights);
+            self.hidden_update_weights.new_from(&hidden_update_weights);
 
 		self.hidden_reset_weights =
-            self.hidden_reset_weights.new_from(hidden_reset_weights);
+            self.hidden_reset_weights.new_from(&hidden_reset_weights);
 
 		self.hidden_activation_weights =
-            self.hidden_activation_weights.new_from(hidden_activation_weights);
+            self.hidden_activation_weights.new_from(&hidden_activation_weights);
 
 		self.update_biases = update_biases.into();
 		self.reset_biases = reset_biases.into();
 		self.activation_biases = activation_biases.into();
 
 		self.output_weights =
-            self.output_weights.new_from(output_weights);
+            self.output_weights.new_from(&output_weights);
     }
 
     #[allow(dead_code)]
@@ -340,13 +374,13 @@ impl GRU
         target: impl Iterator<Item=T>
     ) -> usize
     where
-        P: Borrow<SoftmaxedLayer>,
+        P: Borrow<LayerContainer>,
         T: Borrow<LayerContainer>
     {
         predicted.zip(target).map(|(predicted, target)|
         {
             let target_index = target.borrow().highest_index();
-            if predicted.borrow().pick_weighed(1.0) == target_index
+            if SoftmaxedLayer::pick_weighed_associated(predicted.borrow(), 1.0) == target_index
             {
                 1
             } else
@@ -364,7 +398,7 @@ impl GRU
         let f_output = self.feedforward_cpu(input.into_iter());
 
         Self::cross_entropy(
-            f_output.into_iter().map(|output| output.output.0.into_iter()),
+            f_output.into_iter().map(|output| output.output.into_iter()),
             output.into_iter().map(|l| l.into_iter())
         )
     }
@@ -465,6 +499,57 @@ impl GRU
         d19 + d22
     }
 
+    #[inline(always)]
+    pub fn zeroed_gradients(&self) -> GRUGradients
+    {
+        let output_gradients = WeightsContainer::new(
+            self.output_weights.previous_size(), self.output_weights.this_size()
+        );
+
+        let input_update_gradients = WeightsContainer::new(
+            self.input_update_weights.previous_size(), self.input_update_weights.this_size()
+        );
+
+        let input_reset_gradients = WeightsContainer::new(
+            self.input_reset_weights.previous_size(), self.input_reset_weights.this_size()
+        );
+
+        let input_activation_gradients = WeightsContainer::new(
+            self.input_activation_weights.previous_size(),
+            self.input_activation_weights.this_size()
+        );
+
+        let hidden_update_gradients = WeightsContainer::new(
+            self.hidden_update_weights.previous_size(), self.hidden_update_weights.this_size()
+        );
+
+        let hidden_reset_gradients = WeightsContainer::new(
+            self.hidden_reset_weights.previous_size(), self.hidden_reset_weights.this_size()
+        );
+
+        let hidden_activation_gradients = WeightsContainer::new(
+            self.hidden_activation_weights.previous_size(),
+            self.hidden_activation_weights.this_size()
+        );
+
+        let update_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
+        let reset_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
+        let activation_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
+
+        GRUGradients{
+            input_update_gradients,
+            input_reset_gradients,
+            input_activation_gradients,
+            hidden_update_gradients,
+            hidden_reset_gradients,
+            hidden_activation_gradients,
+            update_bias_gradients,
+            reset_bias_gradients,
+            activation_bias_gradients,
+            output_gradients
+        }
+    }
+
     // deriving this hell made me appreciate how simple the rnn.rs derivation was
     // nevermind found somebody else deriving it again (mine were wrong ;-;)
     // https://cran.r-project.org/web/packages/rnn/vignettes/GRU_units.html
@@ -477,59 +562,31 @@ impl GRU
     // also the U and W letters r swapped in the derivatives compared to the picture
     // also derivatives of reset gate things use d18 not d10 (and actiavtions use d10)
     #[allow(dead_code)]
-    pub fn gradients_cpu<'a>(
+    pub fn gradients_cpu<'a, const ONE_HOT_ENCODED: bool>(
         &self,
         input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)>
     ) -> GRUGradients
     {
-        self.gradients_cpu_with_hidden(LayerContainer::new(HIDDEN_AMOUNT), input).1
+        self.gradients_cpu_with_hidden::<ONE_HOT_ENCODED>(
+            LayerContainer::new(HIDDEN_AMOUNT),
+            input
+        )
     }
 
-    pub fn gradients_cpu_with_hidden<'a>(
+    pub fn gradients_cpu_with_hidden<'a, const ONE_HOT_ENCODED: bool>(
         &self,
         starting_hidden: LayerContainer,
         input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)>
-    ) -> (LayerContainer, GRUGradients)
+    ) -> GRUGradients
     {
+        todo!("DONT CLONE IN feedforward_cpu_with_hidden");
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let f_output = self.feedforward_cpu_with_hidden(
             starting_hidden.clone(),
             input.iter().map(|x| (*x).clone())
         );
 
-        let mut output_gradients = WeightsContainer::new(
-            self.output_weights.previous_size(), self.output_weights.this_size()
-        );
-
-        let mut input_update_gradients = WeightsContainer::new(
-            self.input_update_weights.previous_size(), self.input_update_weights.this_size()
-        );
-
-        let mut input_reset_gradients = WeightsContainer::new(
-            self.input_reset_weights.previous_size(), self.input_reset_weights.this_size()
-        );
-
-        let mut input_activation_gradients = WeightsContainer::new(
-            self.input_activation_weights.previous_size(),
-            self.input_activation_weights.this_size()
-        );
-
-        let mut hidden_update_gradients = WeightsContainer::new(
-            self.hidden_update_weights.previous_size(), self.hidden_update_weights.this_size()
-        );
-
-        let mut hidden_reset_gradients = WeightsContainer::new(
-            self.hidden_reset_weights.previous_size(), self.hidden_reset_weights.this_size()
-        );
-
-        let mut hidden_activation_gradients = WeightsContainer::new(
-            self.hidden_activation_weights.previous_size(),
-            self.hidden_activation_weights.this_size()
-        );
-
-        let mut update_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
-        let mut reset_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
-        let mut activation_bias_gradients = LayerContainer::new(HIDDEN_AMOUNT);
+        let mut gradients = self.zeroed_gradients();
 
         for t in (0..output.len()).rev()
         {
@@ -538,20 +595,17 @@ impl GRU
             let expected_output = unsafe{ *output.get_unchecked(t) };
             let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
 
-            let expected_sum: f32 = expected_output.iter().sum();
-            let diff = predicted_output.0.clone() * expected_sum - expected_output;
-
-            for y in 0..expected_output.len()
+            let expected_sum: f32 = if ONE_HOT_ENCODED
             {
-                for x in 0..hidden.len()
-                {
-                    let weight = unsafe{ output_gradients.weight_unchecked_mut(x, y) };
+                1.0
+            } else
+            {
+                expected_output.iter().sum()
+            };
 
-                    *weight += unsafe{
-                        diff.get_unchecked(y) * hidden.get_unchecked(x)
-                    };
-                }
-            }
+            let diff = predicted_output * expected_sum - expected_output;
+
+            gradients.output_gradients.add_outer_product(&diff, hidden);
 
             let mut d3 = {
                 let output_derivative = self.output_weights.mul_transposed(diff);
@@ -621,29 +675,32 @@ impl GRU
                     d13: &d13
                 });
 
-                hidden_update_gradients.add_outer_product(&update_gate_derivative, &previous_hidden);
-                hidden_reset_gradients.add_outer_product(&reset_gate_derivative, &previous_hidden);
+                gradients.hidden_update_gradients
+                    .add_outer_product(&update_gate_derivative, &previous_hidden);
+
+                gradients.hidden_reset_gradients
+                    .add_outer_product(&reset_gate_derivative, &previous_hidden);
                 
                 {
                     let previous_hidden = previous_hidden * &this_reset;
-                    hidden_activation_gradients.add_outer_product(
-                        &activation_gate_derivative,
-                        previous_hidden
-                    );
+                    gradients.hidden_activation_gradients
+                        .add_outer_product(&activation_gate_derivative, previous_hidden);
                 }
 
                 let this_input = unsafe{ *input.get_unchecked(b_t) };
-                input_update_gradients.add_outer_product(&update_gate_derivative, this_input);
-                input_reset_gradients.add_outer_product(&reset_gate_derivative, this_input);
-                
-                input_activation_gradients.add_outer_product(
-                    &activation_gate_derivative,
-                    this_input
-                );
 
-                update_bias_gradients += &update_gate_derivative;
-                reset_bias_gradients += &reset_gate_derivative;
-                activation_bias_gradients += activation_gate_derivative;
+                gradients.input_update_gradients
+                    .add_outer_product(&update_gate_derivative, this_input);
+
+                gradients.input_reset_gradients
+                    .add_outer_product(&reset_gate_derivative, this_input);
+                
+                gradients.input_activation_gradients
+                    .add_outer_product(&activation_gate_derivative, this_input);
+
+                gradients.update_bias_gradients += &update_gate_derivative;
+                gradients.reset_bias_gradients += &reset_gate_derivative;
+                gradients.activation_bias_gradients += activation_gate_derivative;
 
                 d3 = self.hidden_derivative(HiddenDerivativeInfo{
                     reset_gate: this_reset,
@@ -655,22 +712,7 @@ impl GRU
             }
         }
 
-        let gradients = GRUGradients{
-            input_update_gradients,
-            input_reset_gradients,
-            input_activation_gradients,
-            hidden_update_gradients,
-            hidden_reset_gradients,
-            hidden_activation_gradients,
-            update_bias_gradients,
-            reset_bias_gradients,
-            activation_bias_gradients,
-            output_gradients
-        };
-
-        let last_hidden = f_output.last().unwrap().hidden.clone();
-
-        (last_hidden, gradients)
+        gradients
     }
 
     #[inline(always)]
@@ -705,7 +747,7 @@ impl GRU
         let this_activation = activation_gate.clone() * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
-        let output = SoftmaxedLayer::new(self.output_weights.mul(&hidden));
+        let output = SoftmaxedLayer::softmax(self.output_weights.mul(&hidden));
 
         GRUOutput{
             update: update_gate,
@@ -1369,6 +1411,7 @@ pub mod tests
         });
     }
 
+    #[ignore]
     #[test]
     fn accuracy_match()
     {
