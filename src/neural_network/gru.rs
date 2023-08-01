@@ -685,7 +685,7 @@ impl GPUGradientsInfo
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
-        let a_t = hyper.a * (1.0 - hyper.b2_t).sqrt() / (1.0 - hyper.b1_t);
+        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
 
         -a_t * &gradient_info.m / (arrayfire::sqrt(&gradient_info.v) + hyper.epsilon)
     }

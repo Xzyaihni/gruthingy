@@ -564,7 +564,7 @@ pub struct WeightsIterValue<T>
     pub value: T
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightsContainer<T=f32>
 {
     values: Box<[T]>,
@@ -893,6 +893,24 @@ where
         WeightsContainer{
             values,
             ..*self
+        }
+    }
+}
+
+impl Div<f32> for WeightsContainer
+{
+    type Output = Self;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        let values = self.values.into_iter().map(|v|
+        {
+            v / rhs
+        }).collect();
+
+        Self{
+            values,
+            ..self
         }
     }
 }

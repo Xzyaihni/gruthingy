@@ -34,7 +34,7 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 1000;
+pub const HIDDEN_AMOUNT: usize = 100;
 
 impl Into<GPUGradientInfo> for &GradientInfo<LayerContainer>
 {
@@ -179,7 +179,7 @@ impl GradientsInfo
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
-        let a_t = hyper.a * (1.0 - hyper.b2_t).sqrt() / (1.0 - hyper.b1_t);
+        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
 
         (&gradient_info.m * -a_t) / (gradient_info.v.sqrt() + hyper.epsilon)
     }
@@ -193,7 +193,7 @@ impl GradientsInfo
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
-        let a_t = hyper.a * (1.0 - hyper.b2_t).sqrt() / (1.0 - hyper.b1_t);
+        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
 
         (&gradient_info.m * -a_t) / (gradient_info.v.sqrt() + hyper.epsilon)
     }
@@ -495,8 +495,8 @@ pub struct AdamHyperparams
     pub b2: f32,
     pub epsilon: f32,
     pub t: i32,
-    pub b1_t: f32,
-    pub b2_t: f32
+    pub one_minus_b1_t: f32,
+    pub one_minus_b2_t: f32
 
 }
 
@@ -510,8 +510,8 @@ impl AdamHyperparams
             b2: 0.999,
             epsilon: 10e-8,
             t: 1,
-            b1_t: 0.0,
-            b2_t: 0.0
+            one_minus_b1_t: 0.0,
+            one_minus_b2_t: 0.0
         };
 
         this.update_t_vars();
@@ -521,13 +521,15 @@ impl AdamHyperparams
 
     fn update_t_vars(&mut self)
     {
-        self.b1_t = self.b1.powi(self.t);
-        self.b2_t = self.b2.powi(self.t);
+        self.one_minus_b1_t = 1.0 - self.b1.powi(self.t);
+        self.one_minus_b2_t = 1.0 - self.b2.powi(self.t);
     }
 
     pub fn advance_time(&mut self)
     {
         self.t += 1;
+
+        self.update_t_vars();
     }
 }
 
@@ -1098,6 +1100,106 @@ mod tests
                 network.dictionary.word_to_layer(*word)
             }).collect())
         }).collect()
+    }
+
+    #[test]
+    fn adam_correct()
+    {
+        let mut old_weight = vec![3.21, 7.65];
+
+        let mut m = vec![0.0, 0.0];
+        let mut v = vec![0.0, 0.0];
+        
+        let mut g = vec![3.1_f32, -0.8_f32];
+
+        let mut t = 1;
+
+        for _ in 0..2
+        {
+            let a = 0.001;
+            let b1 = 0.9;
+            let b2 = 0.999;
+
+            let epsilon = 10e-8;
+
+            let adam_g = {
+                let mut gradient_info = GradientInfo{
+                    m: WeightsContainer::from_raw(m.clone().into_boxed_slice(), 2, 1),
+                    v: WeightsContainer::from_raw(v.clone().into_boxed_slice(), 2, 1)
+                };
+
+                let gradient = WeightsContainer::from_raw(g.clone().into_boxed_slice(), 2, 1);
+
+                let hyper = AdamHyperparams{
+                    a,
+                    b1,
+                    b2,
+                    epsilon,
+                    t,
+                    one_minus_b1_t: 1.0 - b1.powi(t),
+                    one_minus_b2_t: 1.0 - b2.powi(t)
+                };
+
+                let change = GradientsInfo::gradient_to_change(
+                    &mut gradient_info,
+                    gradient.clone(),
+                    &hyper
+                );
+
+                WeightsContainer::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change
+            };
+
+            m = vec![
+                b1 * m[0] + (1.0 - b1) * g[0],
+                b1 * m[1] + (1.0 - b1) * g[1]
+            ];
+
+            v = vec![
+                b2 * v[0] + (1.0 - b2) * g[0].powi(2),
+                b2 * v[1] + (1.0 - b2) * g[1].powi(2)
+            ];
+
+            let m_hat = vec![
+                m[0] / (1.0 - b1.powi(t)),
+                m[1] / (1.0 - b1.powi(t))
+            ];
+
+            let v_hat = vec![
+                v[0] / (1.0 - b2.powi(t)),
+                v[1] / (1.0 - b2.powi(t))
+            ];
+
+            let new_weight = vec![
+                old_weight[0] - a * m_hat[0] / (v_hat[0].sqrt() + epsilon),
+                old_weight[1] - a * m_hat[1] / (v_hat[1].sqrt() + epsilon)
+            ];
+
+            if t == 1
+            {
+                assert_eq!(new_weight[0], 3.2090000000322581);
+                assert_eq!(new_weight[1], 7.6509999998750000);
+
+                let mut adam_g = adam_g.iter();
+                assert_eq!(new_weight[0], *adam_g.next().unwrap());
+                assert_eq!(new_weight[1], *adam_g.next().unwrap());
+            } else
+            {
+                assert_eq!(new_weight[0], 3.2080334761008376);
+                assert_eq!(new_weight[1], 7.6518864757914067);
+
+                let mut adam_g = adam_g.iter();
+                assert_eq!(new_weight[0], *adam_g.next().unwrap());
+                assert_eq!(new_weight[1], *adam_g.next().unwrap());
+            }
+
+            t += 1;
+
+            old_weight = new_weight;
+            g = vec![
+                g[0] - 1.1,
+                g[1] - 2.34
+            ];
+        }
     }
 
     #[test]
