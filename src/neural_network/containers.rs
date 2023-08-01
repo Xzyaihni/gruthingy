@@ -12,7 +12,7 @@ use serde::{Serialize, Deserialize};
 
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SoftmaxedLayer(LayerContainer);
+pub struct SoftmaxedLayer(pub LayerContainer);
 
 impl SoftmaxedLayer
 {

@@ -151,65 +151,6 @@ impl AddAssign for GPUGRUGradients
     }
 }
 
-struct D3Info<'a>
-{
-    output_derivative: LayerContainer,
-    hidden_derivative: &'a LayerContainer
-}
-
-struct D4Info<'a>
-{
-    update_gate: LayerContainer,
-    d3: &'a LayerContainer
-}
-
-struct D6Info<'a>
-{
-    previous_hidden: LayerContainer,
-    d3: &'a LayerContainer
-}
-
-struct D8Info<'a>
-{
-    update_gate: LayerContainer,
-    d3: &'a LayerContainer
-}
-
-struct ActivationGateDerivativeInfo<'a>
-{
-    activation_gate: LayerContainer,
-    d8: &'a LayerContainer
-}
-
-struct UpdateGateDerivativeInfo<'a>
-{
-    update_gate: LayerContainer,
-    activation_gate: LayerContainer,
-    d3: &'a LayerContainer,
-    d6: &'a LayerContainer
-}
-
-struct D13Info<'a>
-{
-    d10: &'a LayerContainer
-}
-
-struct ResetGateDerivativeInfo<'a>
-{
-    reset_gate: LayerContainer,
-    previous_hidden: LayerContainer,
-    d13: &'a LayerContainer
-}
-
-struct HiddenDerivativeInfo<'a>
-{
-    reset_gate: LayerContainer,
-    d4: &'a LayerContainer,
-    d11: &'a LayerContainer,
-    d13: LayerContainer,
-    d18: &'a LayerContainer
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GRU
 {
@@ -434,71 +375,6 @@ impl GRU
         }).sum()
     }
 
-    fn d3(info: D3Info) -> LayerContainer
-    {
-        info.output_derivative + info.hidden_derivative
-    }
-
-    fn d4(info: D4Info) -> LayerContainer
-    {
-        info.update_gate.one_minus_this() * info.d3
-    }
-
-    fn d6(info: D6Info) -> LayerContainer
-    {
-        let d5 = info.previous_hidden * info.d3;
-
-        d5 * -1.0
-    }
-
-    fn d8(info: D8Info) -> LayerContainer
-    {
-        info.update_gate * info.d3
-    }
-
-    // d10
-    fn activation_gate_derivative(info: ActivationGateDerivativeInfo) -> LayerContainer
-    {
-        info.activation_gate.powi(2).one_minus_this() * info.d8
-    }
-
-    // d11
-    fn update_gate_derivative(info: UpdateGateDerivativeInfo) -> LayerContainer
-    {
-        let d7 = info.activation_gate * info.d3;
-        let d9 = d7 + info.d6;
-
-        d9 * (info.update_gate.clone() * info.update_gate.one_minus_this())
-    }
-
-    fn d13(&self, info: D13Info) -> LayerContainer
-    {
-        self.hidden_activation_weights.mul_transposed(info.d10)
-    }
-
-    // d18
-    fn reset_gate_derivative(info: ResetGateDerivativeInfo) -> LayerContainer
-    {
-        let d16 = info.previous_hidden * info.d13;
-
-        (info.reset_gate.clone() * info.reset_gate.one_minus_this()) * &d16
-    }
-
-    // d23
-    fn hidden_derivative(&self, info: HiddenDerivativeInfo) -> LayerContainer
-    {
-        let d15 = self.hidden_update_weights.mul_transposed(info.d11);
-
-        let d17 = info.d13 * &info.reset_gate;
-
-        let d19 = d17 + info.d4;
-
-        let d21 = self.hidden_reset_weights.mul_transposed(info.d18);
-        let d22 = d21 + d15;
-
-        d19 + d22
-    }
-
     #[inline(always)]
     pub fn zeroed_gradients(&self) -> GRUGradients
     {
@@ -579,11 +455,10 @@ impl GRU
         input: impl Iterator<Item=(&'a LayerContainer, &'a LayerContainer)>
     ) -> GRUGradients
     {
-        todo!("DONT CLONE IN feedforward_cpu_with_hidden");
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let f_output = self.feedforward_cpu_with_hidden(
-            starting_hidden.clone(),
-            input.iter().map(|x| (*x).clone())
+            &starting_hidden,
+            input.iter().map(|v| *v)
         );
 
         let mut gradients = self.zeroed_gradients();
@@ -607,82 +482,62 @@ impl GRU
 
             gradients.output_gradients.add_outer_product(&diff, hidden);
 
-            let mut d3 = {
-                let output_derivative = self.output_weights.mul_transposed(diff);
-                let hidden_derivative = LayerContainer::new(HIDDEN_AMOUNT);
-
-                Self::d3(D3Info{
-                    output_derivative,
-                    hidden_derivative: &hidden_derivative
-                })
-            };
+            let mut d3 = self.output_weights.mul_transposed(diff);
 
             for b_t in (0..(t + 1)).rev()
             {
                 let previous_hidden = if b_t == 0
                 {
-                    starting_hidden.clone()
+                    &starting_hidden
                 } else
                 {
-                    unsafe{ f_output.get_unchecked(b_t - 1).hidden.clone() }
+                    unsafe{ &f_output.get_unchecked(b_t - 1).hidden }
                 };
 
-                let this_update = unsafe{ f_output.get_unchecked(b_t).update.clone() };
-                let this_reset = unsafe{ f_output.get_unchecked(b_t).reset.clone() };
-                let this_activation = unsafe{ f_output.get_unchecked(b_t).activation.clone() };
+                let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
+                let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
+                let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
 
-                let d4 = Self::d4(D4Info{
-                    update_gate: this_update.clone(),
-                    d3: &d3
-                });
+                let d4 = this_update.clone().one_minus_this() * &d3;
 
-                let d6 = Self::d6(D6Info{
-                    previous_hidden: previous_hidden.clone(),
-                    d3: &d3
-                });
-
-                let d8 = Self::d8(D8Info{
-                    update_gate: this_update.clone(),
-                    d3: &d3
-                });
+                let d5 = previous_hidden * &d3;
+                let d6 = d5 * -1.0;
+                let d7 = this_activation * &d3;
+                let d8 = this_update * &d3;
+                let d9 = d7 + d6;
 
                 // d10
-                let activation_gate_derivative = Self::activation_gate_derivative(
-                    ActivationGateDerivativeInfo{
-                        activation_gate: this_activation.clone(),
-                        d8: &d8
-                    }
-                );
+                let activation_gate_derivative =
+                    this_activation.clone().powi(2).one_minus_this() * d8;
 
                 // d11
-                let update_gate_derivative = Self::update_gate_derivative(
-                    UpdateGateDerivativeInfo{
-                        activation_gate: this_activation,
-                        update_gate: this_update,
-                        d3: &d3,
-                        d6: &d6
-                    }
-                );
+                let update_gate_derivative =
+                    &d9 * (this_update * this_update.clone().one_minus_this());
 
-                let d13 = self.d13(D13Info{
-                    d10: &activation_gate_derivative
-                });
+                let d13 =
+                    self.hidden_activation_weights.mul_transposed(&activation_gate_derivative);
+
+                let d15 = self.hidden_update_weights.mul_transposed(&update_gate_derivative);
+                let d16 = previous_hidden * &d13;
+                let d17 = d13 * this_reset;
 
                 // d18
-                let reset_gate_derivative = Self::reset_gate_derivative(ResetGateDerivativeInfo{
-                    reset_gate: this_reset.clone(),
-                    previous_hidden: previous_hidden.clone(),
-                    d13: &d13
-                });
+                let reset_gate_derivative =
+                    (this_reset * this_reset.clone().one_minus_this()) * &d16;
+
+                let d19 = d17 + d4;
+
+                let d21 = self.hidden_reset_weights.mul_transposed(&reset_gate_derivative);
+                let d22 = d21 + d15;
 
                 gradients.hidden_update_gradients
-                    .add_outer_product(&update_gate_derivative, &previous_hidden);
+                    .add_outer_product(&update_gate_derivative, previous_hidden);
 
                 gradients.hidden_reset_gradients
-                    .add_outer_product(&reset_gate_derivative, &previous_hidden);
+                    .add_outer_product(&reset_gate_derivative, previous_hidden);
                 
                 {
-                    let previous_hidden = previous_hidden * &this_reset;
+                    let previous_hidden = previous_hidden * this_reset;
                     gradients.hidden_activation_gradients
                         .add_outer_product(&activation_gate_derivative, previous_hidden);
                 }
@@ -702,13 +557,9 @@ impl GRU
                 gradients.reset_bias_gradients += &reset_gate_derivative;
                 gradients.activation_bias_gradients += activation_gate_derivative;
 
-                d3 = self.hidden_derivative(HiddenDerivativeInfo{
-                    reset_gate: this_reset,
-                    d4: &d4,
-                    d11: &update_gate_derivative,
-                    d13,
-                    d18: &reset_gate_derivative
-                });
+                let d23 = d19 + d22;
+
+                d3 = d23;
             }
         }
 
@@ -736,7 +587,7 @@ impl GRU
 
         reset_gate.map(|x| 1.0 / (1.0 + f32::consts::E.powf(-x)));
 
-        let activation_v = reset_gate.clone() * previous_hidden;
+        let activation_v = &reset_gate * previous_hidden;
         let mut activation_gate =
             self.hidden_activation_weights.mul(activation_v)
             + self.input_activation_weights.mul(input)
@@ -744,7 +595,7 @@ impl GRU
 
         activation_gate.map(f32::tanh);
 
-        let this_activation = activation_gate.clone() * &update_gate;
+        let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
         let output = SoftmaxedLayer::softmax(self.output_weights.mul(&hidden));
@@ -765,13 +616,13 @@ impl GRU
     {
         let first_hidden = LayerContainer::new(HIDDEN_AMOUNT);
 
-        self.feedforward_cpu_with_hidden(first_hidden, input)
+        self.feedforward_cpu_with_hidden(&first_hidden, input)
     }
 
     #[allow(dead_code)]
     pub fn feedforward_cpu_with_hidden<L>(
         &self,
-        first_hidden: LayerContainer,
+        first_hidden: &LayerContainer,
         input: impl Iterator<Item=L>
     ) -> Vec<GRUOutput>
     where
@@ -786,7 +637,7 @@ impl GRU
         {
             let previous_hidden = if t == 0
             {
-                &first_hidden
+                first_hidden
             } else
             {
                 unsafe{ &outputs.get_unchecked(t - 1).hidden }
@@ -1350,6 +1201,16 @@ pub mod tests
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
     }
 
+    fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
+    {
+        if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
+        {
+            return true;
+        }
+
+        (a - b).abs() < epsilon
+    }
+
     #[test]
     fn outer_product()
     {
@@ -1514,7 +1375,7 @@ pub mod tests
         }).collect::<Vec<_>>();
 
         eprintln!("cpu gradient began");
-        let cpu_output = gru.gradients_cpu(inputs.iter().zip(expected.iter()));
+        let cpu_output = gru.gradients_cpu::<false>(inputs.iter().zip(expected.iter()));
         eprintln!("cpu gradient ended");
 
         let gradients_info = GradientsInfo::new(input_output_size);
@@ -1532,7 +1393,7 @@ pub mod tests
         let comparer = |(cpu_result, gpu_result): (f32, f32)|
         {
             assert!(
-                close_enough(cpu_result, gpu_result, 0.1),
+                close_enough_abs(cpu_result, gpu_result, 0.0001),
                 "cpu_result: {cpu_result}, gpu_result: {gpu_result}"
             );
         };
@@ -1642,7 +1503,7 @@ pub mod tests
             layer_comparer(&cpu_output.reset, g(&gpu_output.reset));
             layer_comparer(&cpu_output.activation, g(&gpu_output.activation));
             layer_comparer(&cpu_output.hidden, g(&gpu_output.hidden));
-            layer_comparer(&cpu_output.output.0, g(&gpu_output.output));
+            layer_comparer(&cpu_output.output, g(&gpu_output.output));
         });
     }
 
@@ -1736,13 +1597,13 @@ pub mod tests
         assert!(close_enough(hidden[1], f_output[0].hidden[1], epsilon));
 
         let o = vec![0.5000000000460197, 0.4999999999539802];
-        let (correct, calculated) = (o[0], output.0[0]);
+        let (correct, calculated) = (o[0], output[0]);
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {correct}, calculated: {calculated}"
         );
 
-        let (correct, calculated) = (o[1], output.0[1]);
+        let (correct, calculated) = (o[1], output[1]);
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {correct}, calculated: {calculated}"
@@ -1784,7 +1645,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_update_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1801,7 +1662,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1818,7 +1679,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.input_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1835,7 +1696,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_update_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1852,7 +1713,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1869,7 +1730,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1886,7 +1747,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.update_bias_gradients.iter().enumerate())
@@ -1904,7 +1765,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.reset_bias_gradients.iter().enumerate())
@@ -1921,7 +1782,7 @@ pub mod tests
             |network| &mut network.activation_biases, input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.activation_bias_gradients.iter().enumerate())
@@ -1938,7 +1799,7 @@ pub mod tests
             |network| &mut network.output_weights, input.clone()
         );
 
-        let calculated_gradient = network.gradients_cpu(input);
+        let calculated_gradient = network.gradients_cpu::<false>(input);
         true_gradient.iter_pos().zip(calculated_gradient.output_gradients.iter_pos())
             .for_each(check_single_gradient);
     }

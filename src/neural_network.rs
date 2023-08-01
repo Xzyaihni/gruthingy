@@ -20,13 +20,21 @@ use gru::{GRU, GRUGradients, GPUGradientsInfo, GPUGradientInfo, GRUOutput, GPUGR
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
 
-pub use containers::{WeightsContainer, LayerContainer, SoftmaxedLayer, SoftmaxedArray};
+pub use containers::{
+    WeightsContainer,
+    WeightsIterValue,
+    LayerContainer,
+    SoftmaxedLayer,
+    SoftmaxedArray
+};
 
 // mod rnn;
 mod gru;
 
 pub mod containers;
 
+
+pub const HIDDEN_AMOUNT: usize = 1000;
 
 impl Into<GPUGradientInfo> for &GradientInfo<LayerContainer>
 {
@@ -56,7 +64,6 @@ impl GradientInfo<LayerContainer>
     }
 }
 
-pub const HIDDEN_AMOUNT: usize = 1000;
 impl Into<GPUGradientInfo> for &GradientInfo<WeightsContainer>
 {
     fn into(self) -> GPUGradientInfo
