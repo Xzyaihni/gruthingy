@@ -712,8 +712,8 @@ pub mod tests
                 {
                     let index = y * correct.previous_size() + x;
 
-                    let correct = correct.as_slice()[index];
-                    let calculated = calculated.as_slice()[index];
+                    let correct = correct.as_vec()[index];
+                    let calculated = calculated.as_vec()[index];
 
                     single_match(correct, calculated, index);
                 }
