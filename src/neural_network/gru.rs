@@ -1,30 +1,34 @@
 use std::{
     f32,
     borrow::Borrow,
-    ops::{DivAssign, AddAssign}
+    ops::{DivAssign, AddAssign, Mul, Div}
 };
 
 use serde::{Serialize, Deserialize};
 
 use crate::neural_network::{
-    GenericContainer,
     SoftmaxedLayer,
+    NetworkType,
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT
 };
 
 
 #[derive(Debug)]
-pub struct GRUOutput
+pub struct GRUOutput<T>
 {
-    pub update: GenericContainer,
-    pub reset: GenericContainer,
-    pub activation: GenericContainer,
-    pub hidden: GenericContainer,
-    pub output: GenericContainer
+    pub update: T,
+    pub reset: T,
+    pub activation: T,
+    pub hidden: T,
+    pub output: T
 }
 
-impl AddAssign for GRUOutput
+impl<T> AddAssign for GRUOutput<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>
 {
     fn add_assign(&mut self, rhs: Self)
     {
@@ -45,21 +49,25 @@ impl AddAssign for GRUOutput
 }
 
 #[derive(Debug)]
-pub struct GRUGradients
+pub struct GRUGradients<T>
 {
-    pub input_update_gradients: GenericContainer,
-    pub input_reset_gradients: GenericContainer,
-    pub input_activation_gradients: GenericContainer,
-    pub hidden_update_gradients: GenericContainer,
-    pub hidden_reset_gradients: GenericContainer,
-    pub hidden_activation_gradients: GenericContainer,
-    pub update_bias_gradients: GenericContainer,
-    pub reset_bias_gradients: GenericContainer,
-    pub activation_bias_gradients: GenericContainer,
-    pub output_gradients: GenericContainer
+    pub input_update_gradients: T,
+    pub input_reset_gradients: T,
+    pub input_activation_gradients: T,
+    pub hidden_update_gradients: T,
+    pub hidden_reset_gradients: T,
+    pub hidden_activation_gradients: T,
+    pub update_bias_gradients: T,
+    pub reset_bias_gradients: T,
+    pub activation_bias_gradients: T,
+    pub output_gradients: T
 }
 
-impl DivAssign<f32> for GRUGradients
+impl<T> DivAssign<f32> for GRUGradients<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>
 {
     fn div_assign(&mut self, rhs: f32)
     {
@@ -76,7 +84,11 @@ impl DivAssign<f32> for GRUGradients
     }
 }
 
-impl AddAssign for GRUGradients
+impl<T> AddAssign for GRUGradients<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>
 {
     fn add_assign(&mut self, rhs: Self)
     {
@@ -94,21 +106,25 @@ impl AddAssign for GRUGradients
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GRU
+pub struct GRU<T>
 {
-	pub input_update_weights: GenericContainer,
-	pub input_reset_weights: GenericContainer,
-	pub input_activation_weights: GenericContainer,
-	pub hidden_update_weights: GenericContainer,
-	pub hidden_reset_weights: GenericContainer,
-	pub hidden_activation_weights: GenericContainer,
-	pub update_biases: GenericContainer,
-	pub reset_biases: GenericContainer,
-	pub activation_biases: GenericContainer,
-	pub output_weights: GenericContainer
+	pub input_update_weights: T,
+	pub input_reset_weights: T,
+	pub input_activation_weights: T,
+	pub hidden_update_weights: T,
+	pub hidden_reset_weights: T,
+	pub hidden_activation_weights: T,
+	pub update_biases: T,
+	pub reset_biases: T,
+	pub activation_biases: T,
+	pub output_weights: T
 }
 
-impl GRU
+impl<N> GRU<N>
+where
+    N: NetworkType,
+    for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+    for<'a> &'a N: Div<f32, Output=N>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -120,41 +136,41 @@ impl GRU
         };
 
         Self{
-        	input_update_weights: GenericContainer::new_with(
+        	input_update_weights: N::new_with(
                 word_vector_size,
                 HIDDEN_AMOUNT,
                 || weights_init(word_vector_size as f32)
             ),
-        	input_reset_weights: GenericContainer::new_with(
+        	input_reset_weights: N::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
 				|| weights_init(word_vector_size as f32)
 			),
-        	input_activation_weights: GenericContainer::new_with(
+        	input_activation_weights: N::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
 				|| weights_init(word_vector_size as f32)
 			),
-        	hidden_update_weights: GenericContainer::new_with(
+        	hidden_update_weights: N::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
 				|| weights_init(HIDDEN_AMOUNT as f32)
 			),
-        	hidden_reset_weights: GenericContainer::new_with(
+        	hidden_reset_weights: N::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
 				|| weights_init(HIDDEN_AMOUNT as f32)
 			),
-        	hidden_activation_weights: GenericContainer::new_with(
+        	hidden_activation_weights: N::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
 				|| weights_init(HIDDEN_AMOUNT as f32)
 			),
             // initialize biases to 0 cuz i read somewhere thats good
-            update_biases: GenericContainer::new(HIDDEN_AMOUNT, 1),
-            reset_biases: GenericContainer::new(HIDDEN_AMOUNT, 1),
-            activation_biases: GenericContainer::new(HIDDEN_AMOUNT, 1),
-            output_weights: GenericContainer::new_with(
+            update_biases: N::new(HIDDEN_AMOUNT, 1),
+            reset_biases: N::new(HIDDEN_AMOUNT, 1),
+            activation_biases: N::new(HIDDEN_AMOUNT, 1),
+            output_weights: N::new_with(
                 HIDDEN_AMOUNT,
                 word_vector_size,
                 || weights_init(HIDDEN_AMOUNT as f32)
@@ -165,7 +181,7 @@ impl GRU
     #[allow(dead_code)]
     pub fn accuracy(
         &self,
-        input: impl Iterator<Item=(GenericContainer, GenericContainer)>
+        input: impl Iterator<Item=(N, N)>
     ) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -184,8 +200,8 @@ impl GRU
         target: impl Iterator<Item=T>
     ) -> usize
     where
-        P: Borrow<GenericContainer>,
-        T: Borrow<GenericContainer>
+        P: Borrow<N>,
+        T: Borrow<N>
     {
         predicted.zip(target).map(|(predicted, target)|
         {
@@ -203,7 +219,7 @@ impl GRU
 
     pub fn loss(
         &self,
-        input: impl Iterator<Item=(GenericContainer, GenericContainer)> + ExactSizeIterator
+        input: impl Iterator<Item=(N, N)> + ExactSizeIterator
     ) -> f32
     {
         let amount = input.len();
@@ -213,7 +229,7 @@ impl GRU
 
     pub fn loss_unscaled(
         &self,
-        input: impl Iterator<Item=(GenericContainer, GenericContainer)>
+        input: impl Iterator<Item=(N, N)>
     ) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -227,8 +243,8 @@ impl GRU
     }
 
     fn cross_entropy(
-        predicted: impl Iterator<Item=GenericContainer>,
-        target: impl Iterator<Item=GenericContainer>
+        predicted: impl Iterator<Item=N>,
+        target: impl Iterator<Item=N>
     ) -> f32
     {
         let s: f32 = predicted.zip(target).map(|(predicted, target)|
@@ -240,41 +256,41 @@ impl GRU
     }
 
     #[inline(always)]
-    pub fn zeroed_gradients(&self) -> GRUGradients
+    pub fn zeroed_gradients(&self) -> GRUGradients<N>
     {
-        let output_gradients = GenericContainer::new(
+        let output_gradients = N::new(
             self.output_weights.previous_size(), self.output_weights.this_size()
         );
 
-        let input_update_gradients = GenericContainer::new(
+        let input_update_gradients = N::new(
             self.input_update_weights.previous_size(), self.input_update_weights.this_size()
         );
 
-        let input_reset_gradients = GenericContainer::new(
+        let input_reset_gradients = N::new(
             self.input_reset_weights.previous_size(), self.input_reset_weights.this_size()
         );
 
-        let input_activation_gradients = GenericContainer::new(
+        let input_activation_gradients = N::new(
             self.input_activation_weights.previous_size(),
             self.input_activation_weights.this_size()
         );
 
-        let hidden_update_gradients = GenericContainer::new(
+        let hidden_update_gradients = N::new(
             self.hidden_update_weights.previous_size(), self.hidden_update_weights.this_size()
         );
 
-        let hidden_reset_gradients = GenericContainer::new(
+        let hidden_reset_gradients = N::new(
             self.hidden_reset_weights.previous_size(), self.hidden_reset_weights.this_size()
         );
 
-        let hidden_activation_gradients = GenericContainer::new(
+        let hidden_activation_gradients = N::new(
             self.hidden_activation_weights.previous_size(),
             self.hidden_activation_weights.this_size()
         );
 
-        let update_bias_gradients = GenericContainer::new(HIDDEN_AMOUNT, 1);
-        let reset_bias_gradients = GenericContainer::new(HIDDEN_AMOUNT, 1);
-        let activation_bias_gradients = GenericContainer::new(HIDDEN_AMOUNT, 1);
+        let update_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
+        let reset_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
+        let activation_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
 
         GRUGradients{
             input_update_gradients,
@@ -304,20 +320,24 @@ impl GRU
     #[allow(dead_code)]
     pub fn gradients<'a, const ONE_HOT_ENCODED: bool>(
         &self,
-        input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)>
-    ) -> GRUGradients
+        input: impl Iterator<Item=(&'a N, &'a N)>
+    ) -> GRUGradients<N>
+    where
+        N: 'a
     {
         self.gradients_with_hidden::<ONE_HOT_ENCODED>(
-            GenericContainer::new(HIDDEN_AMOUNT, 1),
+            N::new(HIDDEN_AMOUNT, 1),
             input
         )
     }
 
     pub fn gradients_with_hidden<'a, const ONE_HOT_ENCODED: bool>(
         &self,
-        starting_hidden: GenericContainer,
-        input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)>
-    ) -> GRUGradients
+        starting_hidden: N,
+        input: impl Iterator<Item=(&'a N, &'a N)>
+    ) -> GRUGradients<N>
+    where
+        N: 'a
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let f_output = self.feedforward_with_hidden(
@@ -339,7 +359,7 @@ impl GRU
                 1.0
             } else
             {
-                expected_output.iter().sum()
+                expected_output.sum()
             };
 
             let diff = predicted_output * expected_sum - expected_output;
@@ -417,8 +437,8 @@ impl GRU
                 gradients.input_activation_gradients
                     .add_outer_product(&activation_gate_derivative, this_input);
 
-                gradients.update_bias_gradients += &update_gate_derivative;
-                gradients.reset_bias_gradients += &reset_gate_derivative;
+                gradients.update_bias_gradients += update_gate_derivative;
+                gradients.reset_bias_gradients += reset_gate_derivative;
                 gradients.activation_bias_gradients += activation_gate_derivative;
 
                 let d23 = d19 + d22;
@@ -433,31 +453,31 @@ impl GRU
     #[inline(always)]
     pub fn feedforward_single(
         &self,
-        previous_hidden: &GenericContainer,
-        input: &GenericContainer
-    ) -> GRUOutput
+        previous_hidden: &N,
+        input: &N
+    ) -> GRUOutput<N>
     {
-        let mut update_gate =
+        let update_gate =
             self.hidden_update_weights.matmul(previous_hidden)
             + self.input_update_weights.matmul(input)
             + &self.update_biases;
 
-        update_gate.map(|x| 1.0 / (1.0 + f32::consts::E.powf(-x)));
+        let update_gate = update_gate.sigmoid();
 
-        let mut reset_gate =
+        let reset_gate =
             self.hidden_reset_weights.matmul(previous_hidden)
             + self.input_reset_weights.matmul(input)
             + &self.reset_biases;
 
-        reset_gate.map(|x| 1.0 / (1.0 + f32::consts::E.powf(-x)));
+        let reset_gate = reset_gate.sigmoid();
 
         let activation_v = &reset_gate * previous_hidden;
-        let mut activation_gate =
+        let activation_gate =
             self.hidden_activation_weights.matmul(activation_v)
             + self.input_activation_weights.matmul(input)
             + &self.activation_biases;
 
-        activation_gate.map(f32::tanh);
+        let activation_gate = activation_gate.tanh();
 
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
@@ -474,11 +494,11 @@ impl GRU
     }
 
     #[allow(dead_code)]
-    pub fn feedforward<L>(&self, input: impl Iterator<Item=L>) -> Vec<GRUOutput>
+    pub fn feedforward<L>(&self, input: impl Iterator<Item=L>) -> Vec<GRUOutput<N>>
     where
-        L: Borrow<GenericContainer>
+        L: Borrow<N>
     {
-        let first_hidden = GenericContainer::new(HIDDEN_AMOUNT, 1);
+        let first_hidden = N::new(HIDDEN_AMOUNT, 1);
 
         self.feedforward_with_hidden(&first_hidden, input)
     }
@@ -486,16 +506,16 @@ impl GRU
     #[allow(dead_code)]
     pub fn feedforward_with_hidden<L>(
         &self,
-        first_hidden: &GenericContainer,
+        first_hidden: &N,
         input: impl Iterator<Item=L>
-    ) -> Vec<GRUOutput>
+    ) -> Vec<GRUOutput<N>>
     where
-        L: Borrow<GenericContainer>
+        L: Borrow<N>
     {
         let (lower_bound, upper_bound) = input.size_hint();
         let time_total = upper_bound.unwrap_or(lower_bound);
 
-        let mut outputs: Vec<GRUOutput> = Vec::with_capacity(time_total);
+        let mut outputs: Vec<GRUOutput<N>> = Vec::with_capacity(time_total);
 
         for (t, this_input) in input.enumerate()
         {
@@ -524,7 +544,7 @@ pub mod tests
     use std::iter;
 
     use super::*;
-    use crate::neural_network::{WeightsIterValue, InputOutputIter};
+    use crate::neural_network::{GenericContainer, WeightsIterValue, InputOutputIter};
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -843,7 +863,7 @@ pub mod tests
     }
 
     pub fn input_update_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -860,7 +880,7 @@ pub mod tests
     }
 
     pub fn input_reset_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -877,7 +897,7 @@ pub mod tests
     }
 
     pub fn input_activation_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -894,7 +914,7 @@ pub mod tests
     }
 
     pub fn hidden_update_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -911,7 +931,7 @@ pub mod tests
     }
 
     pub fn hidden_reset_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -928,7 +948,7 @@ pub mod tests
     }
 
     pub fn hidden_activation_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -945,7 +965,7 @@ pub mod tests
     }
 
     pub fn update_bias_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -963,7 +983,7 @@ pub mod tests
     }
 
     pub fn reset_bias_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -981,7 +1001,7 @@ pub mod tests
     }
 
     pub fn activation_bias_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -998,7 +1018,7 @@ pub mod tests
     }
 
     pub fn output_gradients_check<'a>(
-        network: &mut GRU,
+        network: &mut GRU<GenericContainer>,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
@@ -1041,8 +1061,8 @@ pub mod tests
     }
 
     pub fn gradient_check<'a>(
-        network: &mut GRU,
-        mut weights_member: impl FnMut(&mut GRU) -> &mut GenericContainer,
+        network: &mut GRU<GenericContainer>,
+        mut weights_member: impl FnMut(&mut GRU<GenericContainer>) -> &mut GenericContainer,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     ) -> GenericContainer
     {
@@ -1058,7 +1078,7 @@ pub mod tests
             let WeightsIterValue{value: weight, previous, this} = weight;
             let epsilon = 0.01;
 
-            let mut set_this_weight = |network: &mut GRU, value|
+            let mut set_this_weight = |network: &mut GRU<GenericContainer>, value|
             {
                 *weights_member(network).weight_mut(previous, this) = value;
             };

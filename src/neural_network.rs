@@ -4,7 +4,8 @@ use std::{
     slice,
     io::{self, Read},
     fs::File,
-    path::Path
+    path::Path,
+    ops::{Mul, Div}
 };
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -15,9 +16,10 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 #[allow(unused_imports)]
 use gru::{GRU, GRUGradients, GRUOutput};
 
-use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord, WordDictionary};
+use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
 
 pub use containers::{
+    NetworkType,
     GenericContainer,
     WeightsIterValue,
     SoftmaxedLayer
@@ -39,33 +41,41 @@ pub struct GradientInfo<T>
     v: T
 }
 
-impl GradientInfo<GenericContainer>
+impl<T> GradientInfo<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: GenericContainer::new(previous_size, this_size),
-            v: GenericContainer::new(previous_size, this_size)
+            m: T::new(previous_size, this_size),
+            v: T::new(previous_size, this_size)
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct GradientsInfo
+pub struct GradientsInfo<T>
 {
-    pub input_update_gradients: GradientInfo<GenericContainer>,
-    pub input_reset_gradients: GradientInfo<GenericContainer>,
-    pub input_activation_gradients: GradientInfo<GenericContainer>,
-    pub hidden_update_gradients: GradientInfo<GenericContainer>,
-    pub hidden_reset_gradients: GradientInfo<GenericContainer>,
-    pub hidden_activation_gradients: GradientInfo<GenericContainer>,
-    pub update_bias_gradients: GradientInfo<GenericContainer>,
-    pub reset_bias_gradients: GradientInfo<GenericContainer>,
-    pub activation_bias_gradients: GradientInfo<GenericContainer>,
-    pub output_gradients: GradientInfo<GenericContainer>
+    pub input_update_gradients: GradientInfo<T>,
+    pub input_reset_gradients: GradientInfo<T>,
+    pub input_activation_gradients: GradientInfo<T>,
+    pub hidden_update_gradients: GradientInfo<T>,
+    pub hidden_reset_gradients: GradientInfo<T>,
+    pub hidden_activation_gradients: GradientInfo<T>,
+    pub update_bias_gradients: GradientInfo<T>,
+    pub reset_bias_gradients: GradientInfo<T>,
+    pub activation_bias_gradients: GradientInfo<T>,
+    pub output_gradients: GradientInfo<T>
 }
 
-impl GradientsInfo
+impl<T> GradientsInfo<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -84,24 +94,10 @@ impl GradientsInfo
     }
 
     fn gradient_to_change(
-        gradient_info: &mut GradientInfo<GenericContainer>,
-        gradient: GenericContainer,
+        gradient_info: &mut GradientInfo<T>,
+        gradient: T,
         hyper: &AdamHyperparams
-    ) -> GenericContainer
-    {
-        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
-        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
-
-        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
-
-        (&gradient_info.m * -a_t) / (gradient_info.v.sqrt() + hyper.epsilon)
-    }
-
-    fn gradient_bias_to_change(
-        gradient_info: &mut GradientInfo<GenericContainer>,
-        gradient: GenericContainer,
-        hyper: &AdamHyperparams
-    ) -> GenericContainer
+    ) -> T
     {
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
@@ -210,22 +206,25 @@ where
     }
 }
 
-struct Predictor<'a, D>
+struct Predictor<'a, N, D>
 {
     dictionary: &'a mut D,
-    words: Vec<GenericContainer>,
+    words: Vec<N>,
     predicted: Vec<u8>,
     temperature: f32,
     predict_amount: usize
 }
 
-impl<'a, D> Predictor<'a, D>
+impl<'a, N, D> Predictor<'a, N, D>
 where
+    N: NetworkType,
+    for<'b> &'b N: Mul<f32, Output=N> + Mul<&'b N, Output=N> + Mul<N, Output=N>,
+    for<'b> &'b N: Div<f32, Output=N>,
     D: NetworkDictionary
 {
     pub fn new(
         dictionary: &'a mut D,
-        words: Vec<GenericContainer>,
+        words: Vec<N>,
         temperature: f32,
         predict_amount: usize
     ) -> Self
@@ -240,11 +239,11 @@ where
     }
 
     // uses the cpu
-    pub fn predict_bytes(mut self, network: &GRU) -> Box<[u8]>
+    pub fn predict_bytes(mut self, network: &GRU<N>) -> Box<[u8]>
     {
         let input_amount = self.words.len();
 
-        let mut previous_hidden = GenericContainer::new(self.dictionary.words_amount(), 1);
+        let mut previous_hidden = N::new(self.dictionary.words_amount(), 1);
         for i in 0..(input_amount + self.predict_amount)
         {
             debug_assert!(self.words.len() < i);
@@ -329,17 +328,20 @@ impl AdamHyperparams
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NeuralNetwork<D=WordDictionary>
+pub struct NeuralNetwork<T, D>
 {
     dictionary: D,
-    network: GRU,
-    gradients_info: GradientsInfo,
+    network: GRU<T>,
+    gradients_info: GradientsInfo<T>,
     hyper: AdamHyperparams
 }
 
-impl<D: NetworkDictionary> NeuralNetwork<D>
+impl<T, D> NeuralNetwork<T, D>
 where
-    D: Serialize + DeserializeOwned
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>,
+    D: NetworkDictionary + Serialize + DeserializeOwned
 {
     pub fn new(dictionary: D) -> Self
     {
@@ -367,7 +369,7 @@ where
         ciborium::from_reader(reader)
     }
 
-    pub fn apply_gradients(&mut self, gradients: GRUGradients)
+    pub fn apply_gradients(&mut self, gradients: GRUGradients<T>)
     {
         let GRUGradients{
             input_update_gradients,
@@ -420,19 +422,19 @@ where
             hyper
 		);
         
-        self.network.update_biases += GradientsInfo::gradient_bias_to_change(
+        self.network.update_biases += GradientsInfo::gradient_to_change(
 			&mut self.gradients_info.update_bias_gradients,
 			update_bias_gradients,
             hyper
 		);
         
-        self.network.reset_biases += GradientsInfo::gradient_bias_to_change(
+        self.network.reset_biases += GradientsInfo::gradient_to_change(
 			&mut self.gradients_info.reset_bias_gradients,
 			reset_bias_gradients,
             hyper
 		);
         
-        self.network.activation_biases += GradientsInfo::gradient_bias_to_change(
+        self.network.activation_biases += GradientsInfo::gradient_to_change(
 			&mut self.gradients_info.activation_bias_gradients,
 			activation_bias_gradients,
             hyper
@@ -532,7 +534,7 @@ where
         let epochs_per_input = (inputs.len() / batch_step).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let output_loss = |network: &NeuralNetwork<D>|
+        let output_loss = |network: &NeuralNetwork<T, D>|
         {
             if ignore_loss
             {
@@ -620,6 +622,8 @@ where
 mod tests
 {
     use super::*;
+
+    use crate::word_vectorizer::WordDictionary;
     
     #[allow(unused_imports)]
     use arrayfire::af_print;
@@ -644,7 +648,7 @@ mod tests
         WordDictionary::no_defaults(words.as_bytes())
     }
 
-    fn test_network() -> NeuralNetwork
+    fn test_network() -> NeuralNetwork<GenericContainer, WordDictionary>
     {
         NeuralNetwork::new(test_dictionary())
     }
@@ -676,7 +680,7 @@ mod tests
 
     fn test_input_outputs(
         test_texts: Vec<&'static str>,
-        network: &mut NeuralNetwork
+        network: &mut NeuralNetwork<GenericContainer, WordDictionary>
     ) -> Vec<InputOutput<GenericContainer>>
     {
         test_texts.into_iter().map(|text|
@@ -899,7 +903,7 @@ mod tests
     }
 
     fn gradients_check(
-        network: &mut NeuralNetwork,
+        network: &mut NeuralNetwork<GenericContainer, WordDictionary>,
         inputs: Vec<InputOutput<GenericContainer>>
     )
     {

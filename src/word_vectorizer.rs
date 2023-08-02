@@ -7,14 +7,13 @@ use std::{
         Read,
         BufRead,
         BufReader
-    }
+    },
+    ops::{Mul, Div}
 };
-
-use arrayfire::{Array, dim4};
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::{SoftmaxedLayer, GenericContainer};
+use super::neural_network::{SoftmaxedLayer, NetworkType};
 
 
 #[allow(dead_code)]
@@ -117,16 +116,24 @@ pub trait NetworkDictionary
     
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
     
-    fn word_to_layer(&self, word: VectorWord) -> GenericContainer
+    fn word_to_layer<N>(&self, word: VectorWord) -> N
+    where
+        N: NetworkType,
+        for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+        for<'a> &'a N: Div<f32, Output=N>
     {
         let mut layer = vec![0.0; self.words_amount()];
 
         layer[word.index()] = 1.0;
 
-        GenericContainer::from_raw(layer, self.words_amount(), 1)
+        N::from_raw(layer, self.words_amount(), 1)
     }
 
-    fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f32) -> VectorWord
+    fn layer_to_word<N>(&self, layer: &SoftmaxedLayer<N>, temperature: f32) -> VectorWord
+    where
+        N: NetworkType,
+        for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+        for<'a> &'a N: Div<f32, Output=N>
     {
         let index = layer.pick_weighed(temperature);
 
@@ -376,6 +383,8 @@ mod tests
 {
     use super::*;
 
+    use crate::neural_network::GenericContainer;
+
     #[test]
     fn encodes_decodes()
     {
@@ -401,7 +410,7 @@ mod tests
         let decoded_bytes = vectorizer.collect::<Vec<_>>();
         let decoded_bytes = decoded_bytes.into_iter().flat_map(|word|
         {
-            let layer = dictionary.word_to_layer(word);
+            let layer: GenericContainer = dictionary.word_to_layer(word);
             let word = dictionary.layer_to_word(&SoftmaxedLayer::from_raw(layer), 1.0);
 
             dictionary.word_to_bytes(word).into_vec().into_iter()
