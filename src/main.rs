@@ -5,6 +5,8 @@ use std::{
     ops::{Div, Mul}
 };
 
+use nalgebra::DMatrix;
+
 use serde::{Serialize, de::DeserializeOwned};
 
 use neural_network::{TrainingInfo, NeuralNetwork, GenericContainer, NetworkType};

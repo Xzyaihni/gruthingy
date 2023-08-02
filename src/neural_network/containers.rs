@@ -5,6 +5,8 @@ use std::{
     ops::{Add, Sub, Mul, Div, AddAssign, DivAssign}
 };
 
+use nalgebra::DMatrix;
+
 use arrayfire::{Array, dim4};
 
 use serde::{Serialize, Deserialize};
@@ -638,6 +640,7 @@ where
         f: F
     )-> Self;
     fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self;
+    fn zeroed_copy(&self) -> Self;
     
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self;
     fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self;
@@ -655,8 +658,6 @@ where
     fn one_minus_this(self) -> Self;
 
     fn total_len(&self) -> usize;
-    fn previous_size(&self) -> usize;
-    fn this_size(&self) -> usize;
 
     fn as_slice(&self) -> &[f32];
 
@@ -684,6 +685,98 @@ where
 }
 
 impl NetworkType for GenericContainer
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        GenericContainer::new(previous_size, this_size)
+    }
+
+    fn new_with<F: FnMut() -> f32>(
+        previous_size: usize,
+        this_size: usize,
+        f: F
+    )-> Self
+    {
+        GenericContainer::new_with(previous_size, this_size, f)
+    }
+
+    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    {
+        GenericContainer::from_raw(values, previous_size, this_size)
+    }
+
+    fn zeroed_copy(&self) -> Self
+    {
+        GenericContainer::new(self.previous_size, self.this_size)
+    }
+
+    fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    {
+        GenericContainer::matmul(self, rhs)
+    }
+
+    fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    {
+        GenericContainer::matmul_transposed(self, rhs)
+    }
+
+    fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
+    {
+        GenericContainer::add_outer_product(self, lhs, rhs);
+    }
+
+    fn dot(self, rhs: Self) -> f32
+    {
+        GenericContainer::dot(self, rhs)
+    }
+
+    fn sqrt(&self) -> Self
+    {
+        GenericContainer::applied(self, |x| x.sqrt())
+    }
+
+    fn exp(&self) -> Self
+    {
+        GenericContainer::applied(self, |x| x.exp())
+    }
+
+    fn ln(&self) -> Self
+    {
+        GenericContainer::applied(self, |x| x.ln())
+    }
+
+    fn sigmoid(&self) -> Self
+    {
+        GenericContainer::applied(self, |x| 1.0 / (1.0 + (-x).exp()))
+    }
+
+    fn tanh(&self) -> Self
+    {
+        GenericContainer::applied(self, |x| x.tanh())
+    }
+
+    fn sum(&self) -> f32
+    {
+        GenericContainer::sum(self)
+    }
+
+    fn one_minus_this(self) -> Self
+    {
+        GenericContainer::one_minus_this(self)
+    }
+
+    fn total_len(&self) -> usize
+    {
+        GenericContainer::total_len(self)
+    }
+
+    fn as_slice(&self) -> &[f32]
+    {
+        &self.values
+    }
+}
+
+/*impl NetworkType for DMatrix<f32>
 {
     fn new(previous_size: usize, this_size: usize) -> Self
     {
@@ -776,6 +869,6 @@ impl NetworkType for GenericContainer
 
     fn as_slice(&self) -> &[f32]
     {
-        &self.values
+        self.values.as_slice()
     }
-}
+}*/

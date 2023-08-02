@@ -258,39 +258,19 @@ where
     #[inline(always)]
     pub fn zeroed_gradients(&self) -> GRUGradients<N>
     {
-        let output_gradients = N::new(
-            self.output_weights.previous_size(), self.output_weights.this_size()
-        );
+        let output_gradients = N::zeroed_copy(&self.output_weights);
 
-        let input_update_gradients = N::new(
-            self.input_update_weights.previous_size(), self.input_update_weights.this_size()
-        );
+        let input_update_gradients = N::zeroed_copy(&self.input_update_weights);
+        let input_reset_gradients = N::zeroed_copy(&self.input_reset_weights);
+        let input_activation_gradients = N::zeroed_copy(&self.input_activation_weights);
 
-        let input_reset_gradients = N::new(
-            self.input_reset_weights.previous_size(), self.input_reset_weights.this_size()
-        );
+        let hidden_update_gradients = N::zeroed_copy(&self.hidden_update_weights);
+        let hidden_reset_gradients = N::zeroed_copy(&self.hidden_reset_weights);
+        let hidden_activation_gradients = N::zeroed_copy(&self.hidden_activation_weights);
 
-        let input_activation_gradients = N::new(
-            self.input_activation_weights.previous_size(),
-            self.input_activation_weights.this_size()
-        );
-
-        let hidden_update_gradients = N::new(
-            self.hidden_update_weights.previous_size(), self.hidden_update_weights.this_size()
-        );
-
-        let hidden_reset_gradients = N::new(
-            self.hidden_reset_weights.previous_size(), self.hidden_reset_weights.this_size()
-        );
-
-        let hidden_activation_gradients = N::new(
-            self.hidden_activation_weights.previous_size(),
-            self.hidden_activation_weights.this_size()
-        );
-
-        let update_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
-        let reset_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
-        let activation_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
+        let update_bias_gradients = N::zeroed_copy(&self.update_biases);
+        let reset_bias_gradients = N::zeroed_copy(&self.reset_biases);
+        let activation_bias_gradients = N::zeroed_copy(&self.activation_biases);
 
         GRUGradients{
             input_update_gradients,
