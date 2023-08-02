@@ -776,99 +776,244 @@ impl NetworkType for GenericContainer
     }
 }
 
-/*impl NetworkType for DMatrix<f32>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatrixWrapper(pub DMatrix<f32>);
+
+impl<T> Add<T> for MatrixWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn add(self, rhs: T) -> Self::Output
+    {
+        Self(self.0 + &rhs.borrow().0)
+    }
+}
+
+impl Add<f32> for MatrixWrapper
+{
+    type Output = Self;
+
+    fn add(self, rhs: f32) -> Self::Output
+    {
+        Self(self.0.add_scalar(rhs))
+    }
+}
+
+impl<T> Sub<T> for MatrixWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn sub(self, rhs: T) -> Self::Output
+    {
+        Self(self.0 - &rhs.borrow().0)
+    }
+}
+
+impl<T> Mul<T> for MatrixWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        Self(self.0.component_mul(&rhs.borrow().0))
+    }
+}
+
+impl<T> Mul<T> for &MatrixWrapper
+where
+    T: Borrow<MatrixWrapper>
+{
+    type Output = MatrixWrapper;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        MatrixWrapper(self.0.component_mul(&rhs.borrow().0))
+    }
+}
+
+impl Mul<f32> for MatrixWrapper
+{
+    type Output = Self;
+
+    fn mul(self, rhs: f32) -> Self::Output
+    {
+        Self(self.0 * rhs)
+    }
+}
+
+impl Mul<f32> for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn mul(self, rhs: f32) -> Self::Output
+    {
+        MatrixWrapper(&self.0 * rhs)
+    }
+}
+
+impl<T> Div<T> for MatrixWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn div(self, rhs: T) -> Self::Output
+    {
+        Self(self.0.component_div(&rhs.borrow().0))
+    }
+}
+
+impl Div<f32> for MatrixWrapper
+{
+    type Output = Self;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        Self(self.0 / rhs)
+    }
+}
+
+impl Div<f32> for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        MatrixWrapper(&self.0 / rhs)
+    }
+}
+
+impl AddAssign for MatrixWrapper
+{
+    fn add_assign(&mut self, rhs: Self)
+    {
+        self.0 += rhs.0;
+    }
+}
+
+impl DivAssign<f32> for MatrixWrapper
+{
+    fn div_assign(&mut self, rhs: f32)
+    {
+        self.0 /= rhs;
+    }
+}
+
+impl NetworkType for MatrixWrapper
 {
     fn new(previous_size: usize, this_size: usize) -> Self
     {
-        GenericContainer::new(previous_size, this_size)
+        Self(DMatrix::zeros(previous_size, this_size))
     }
 
     fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
-        f: F
+        mut f: F
     )-> Self
     {
-        GenericContainer::new_with(previous_size, this_size, f)
+        Self(DMatrix::from_fn(previous_size, this_size, |_, _| f()))
     }
 
     fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
-        GenericContainer::from_raw(values, previous_size, this_size)
+        Self(DMatrix::from_vec(previous_size, this_size, values.into().to_vec()))
+    }
+
+    fn zeroed_copy(&self) -> Self
+    {
+        let mut out = self.0.clone();
+        out.fill(0.0);
+
+        Self(out)
     }
 
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self
     {
-        GenericContainer::matmul(self, rhs)
+        let transposed = self.0.transpose();
+        Self(transposed * &rhs.borrow().0)
     }
 
     fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
     {
-        GenericContainer::matmul_transposed(self, rhs)
+        Self(&self.0 * &rhs.borrow().0)
     }
 
     fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
     {
-        GenericContainer::add_outer_product(self, lhs, rhs);
+        let transposed_rhs = rhs.borrow().0.transpose();
+
+        self.0 += (&lhs.borrow().0 * transposed_rhs).transpose();
     }
 
     fn dot(self, rhs: Self) -> f32
     {
-        GenericContainer::dot(self, rhs)
+        self.0.dot(&rhs.0)
     }
 
     fn sqrt(&self) -> Self
     {
-        GenericContainer::applied(self, |x| x.sqrt())
+        let mut out = self.0.clone();
+        out.apply(|v| *v = v.sqrt());
+
+        Self(out)
     }
 
     fn exp(&self) -> Self
     {
-        GenericContainer::applied(self, |x| x.exp())
+        let mut out = self.0.clone();
+        out.apply(|v| *v = v.exp());
+
+        Self(out)
     }
 
     fn ln(&self) -> Self
     {
-        GenericContainer::applied(self, |x| x.ln())
+        let mut out = self.0.clone();
+        out.apply(|v| *v = v.ln());
+
+        Self(out)
     }
 
     fn sigmoid(&self) -> Self
     {
-        GenericContainer::applied(self, |x| 1.0 / (1.0 + (-x).exp()))
+        let mut out = self.0.clone();
+        out.apply(|v| *v = 1.0 / (1.0 + (-*v).exp()));
+
+        Self(out)
     }
 
     fn tanh(&self) -> Self
     {
-        GenericContainer::applied(self, |x| x.tanh())
+        let mut out = self.0.clone();
+        out.apply(|v| *v = v.tanh());
+
+        Self(out)
     }
 
     fn sum(&self) -> f32
     {
-        GenericContainer::sum(self)
+        self.0.sum()
     }
 
     fn one_minus_this(self) -> Self
     {
-        GenericContainer::one_minus_this(self)
+        Self((-self.0).add_scalar(1.0))
     }
 
     fn total_len(&self) -> usize
     {
-        GenericContainer::total_len(self)
-    }
-
-    fn previous_size(&self) -> usize
-    {
-        GenericContainer::previous_size(self)
-    }
-
-    fn this_size(&self) -> usize
-    {
-        GenericContainer::this_size(self)
+        self.0.as_slice().len()
     }
 
     fn as_slice(&self) -> &[f32]
     {
-        self.values.as_slice()
+        self.0.as_slice()
     }
-}*/
+}

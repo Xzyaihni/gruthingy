@@ -5,11 +5,9 @@ use std::{
     ops::{Div, Mul}
 };
 
-use nalgebra::DMatrix;
-
 use serde::{Serialize, de::DeserializeOwned};
 
-use neural_network::{TrainingInfo, NeuralNetwork, GenericContainer, NetworkType};
+use neural_network::{TrainingInfo, NeuralNetwork, MatrixWrapper, GenericContainer, NetworkType};
 
 #[allow(unused_imports)]
 use word_vectorizer::{NetworkDictionary, CharDictionary, WordDictionary};
@@ -160,7 +158,7 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
 
-    let mut network: NeuralNetwork<GenericContainer, CharDictionary> =
+    let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
         NeuralNetwork::load(&config.network_path).unwrap();
 
     network.test_loss(text_file, config.calculate_accuracy);
@@ -182,7 +180,7 @@ fn train_new(mut args: impl Iterator<Item=String>)
     // let dictionary = WordDictionary::build(dictionary_file);
     let dictionary = CharDictionary::new();
 
-    let network = NeuralNetwork::<GenericContainer, _>::new(dictionary);
+    let network = NeuralNetwork::<MatrixWrapper, _>::new(dictionary);
 
     train_inner(network, text_path, config);
 }
@@ -236,7 +234,7 @@ fn train(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
     
-    let network: NeuralNetwork<GenericContainer, CharDictionary> =
+    let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
         NeuralNetwork::load(&config.network_path).unwrap();
 
     train_inner(network, text_path, config);
@@ -309,7 +307,7 @@ fn run(mut args: impl Iterator<Item=String>)
 
     let config = RunConfig::parse(args);
 
-    let mut network: NeuralNetwork<GenericContainer, CharDictionary> =
+    let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
         NeuralNetwork::load(config.network_path).unwrap();
     
     let predicted = network.predict(&text, config.tokens_amount, config.temperature);

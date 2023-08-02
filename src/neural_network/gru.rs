@@ -524,7 +524,12 @@ pub mod tests
     use std::iter;
 
     use super::*;
-    use crate::neural_network::{GenericContainer, WeightsIterValue, InputOutputIter};
+    use crate::neural_network::{
+        MatrixWrapper,
+        GenericContainer,
+        WeightsIterValue,
+        InputOutputIter
+    };
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -641,6 +646,148 @@ pub mod tests
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {correct}, calculated: {calculated}"
+        );
+    }
+
+    fn test_values(amount: usize) -> Vec<f32>
+    {
+        (0..amount).map(|_| fastrand::f32()).collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn backprop_match()
+    {
+        let inputs_amount = 5;
+        let inputs_size = 10;
+
+        fastrand::seed(12345);
+        let gru_correct: GRU<GenericContainer> = GRU::new(inputs_size);
+
+        fastrand::seed(12345);
+        let gru_nalgebra: GRU<MatrixWrapper> = GRU::new(inputs_size);
+
+        let values = test_values(inputs_amount * inputs_size);
+
+        let inputs = (0..inputs_amount).map(|i|
+        {
+            (0..inputs_size).map(|j|
+            {
+                let index = i * inputs_size + j;
+
+                values[index]
+            }).collect::<Vec<_>>()
+        }).collect::<Vec<_>>();
+
+        let input_correct = (0..inputs_amount).map(|i|
+        {
+            GenericContainer::from_raw(inputs[0].clone(), inputs_size, 1)
+        }).collect::<Vec<_>>();
+
+        let input_nalgebra = (0..inputs_amount).map(|i|
+        {
+            MatrixWrapper::from_raw(inputs[0].clone(), inputs_size, 1)
+        }).collect::<Vec<_>>();
+
+        let input_correct = InputOutputIter::new(input_correct.iter());
+        let output_correct = gru_correct.gradients::<false>(input_correct);
+
+        let input_nalgebra = InputOutputIter::new(input_nalgebra.iter());
+        let output_nalgebra = gru_nalgebra.gradients::<false>(input_nalgebra);
+
+        let single_match = |correct, calculated, index|
+        {
+            assert!(
+                close_enough_abs(calculated, correct, 0.00001),
+                "correct: {correct}, calculated: {calculated}, index: {index}"
+            );
+        };
+
+        let layer_match = |correct: GenericContainer, calculated: MatrixWrapper|
+        {
+            for y in 0..correct.this_size()
+            {
+                for x in 0..correct.previous_size()
+                {
+                    let previous_size = correct.previous_size();
+                    let this_size = correct.this_size();
+
+                    let index = y * previous_size + x;
+
+                    let correct = correct.as_slice()[index];
+
+                    let calc_index = if this_size == 1
+                    {
+                        x
+                    } else
+                    {
+                        x * previous_size + y
+                    };
+
+                    let calculated = calculated.as_slice()[calc_index];
+
+                    single_match(correct, calculated, index);
+                }
+            }
+        };
+
+        eprintln!("input update gradients");
+        layer_match(
+            output_correct.input_update_gradients,
+            output_nalgebra.input_update_gradients
+        );
+
+        eprintln!("input reset gradients");
+        layer_match(
+            output_correct.input_reset_gradients,
+            output_nalgebra.input_reset_gradients
+        );
+
+        eprintln!("input activation gradients");
+        layer_match(
+            output_correct.input_activation_gradients,
+            output_nalgebra.input_activation_gradients
+        );
+
+        eprintln!("hidden update gradients");
+        layer_match(
+            output_correct.hidden_update_gradients,
+            output_nalgebra.hidden_update_gradients
+        );
+
+        eprintln!("hidden reset gradients");
+        layer_match(
+            output_correct.hidden_reset_gradients,
+            output_nalgebra.hidden_reset_gradients
+        );
+
+        eprintln!("hidden activation gradients");
+        layer_match(
+            output_correct.hidden_activation_gradients,
+            output_nalgebra.hidden_activation_gradients
+        );
+
+        eprintln!("update bias gradients");
+        layer_match(
+            output_correct.update_bias_gradients,
+            output_nalgebra.update_bias_gradients
+        );
+
+        eprintln!("reset bias gradients");
+        layer_match(
+            output_correct.reset_bias_gradients,
+            output_nalgebra.reset_bias_gradients
+        );
+
+        eprintln!("activation bias gradients");
+        layer_match(
+            output_correct.activation_bias_gradients,
+            output_nalgebra.activation_bias_gradients
+        );
+
+        eprintln!("output gradients");
+        layer_match(
+            output_correct.output_gradients,
+            output_nalgebra.output_gradients
         );
     }
 

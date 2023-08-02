@@ -20,6 +20,7 @@ use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
 
 pub use containers::{
     NetworkType,
+    MatrixWrapper,
     GenericContainer,
     WeightsIterValue,
     SoftmaxedLayer
@@ -31,7 +32,7 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 10;
+pub const HIDDEN_AMOUNT: usize = 100;
 pub const LAYERS_AMOUNT: usize = 3;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
