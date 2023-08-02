@@ -240,15 +240,14 @@ where
         }
     }
 
-    // uses the cpu
     pub fn predict_bytes(mut self, network: &GRU<N>) -> Box<[u8]>
     {
         let input_amount = self.words.len();
 
-        let mut previous_hidden = N::new(self.dictionary.words_amount(), 1);
+        let mut previous_hidden = N::new(HIDDEN_AMOUNT, 1);
         for i in 0..(input_amount + self.predict_amount)
         {
-            debug_assert!(self.words.len() < i);
+            debug_assert!(i < self.words.len());
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
             let GRUOutput{
