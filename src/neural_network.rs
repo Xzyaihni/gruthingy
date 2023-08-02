@@ -105,7 +105,7 @@ where
 
         let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
 
-        (&gradient_info.m * -a_t) / (gradient_info.v.sqrt() + hyper.epsilon)
+        (&gradient_info.m * -a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
     }
 }
 

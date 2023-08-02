@@ -27,11 +27,12 @@ where
         Self(Self::softmax(layer))
     }
 
-    pub fn softmax(layer: T) -> T
+    pub fn softmax(mut layer: T) -> T
     {
-        let s = layer.exp().sum();
+        layer.exp();
+        let s = layer.sum();
 
-        layer.exp() / s
+        layer / s
     }
 
     #[allow(dead_code)]
@@ -331,6 +332,12 @@ impl GenericContainer<f32>
             previous_size: self.previous_size,
             this_size: 1
         }
+    }
+
+    #[inline(always)]
+    pub fn apply<F: FnMut(&f32) -> f32>(&mut self, mut f: F)
+    {
+        self.iter_mut().for_each(|v| *v = f(v));
     }
 
     #[inline(always)]
@@ -647,11 +654,11 @@ where
     fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>);
     fn dot(self, rhs: Self) -> f32;
     
-    fn sqrt(&self) -> Self;
-    fn exp(&self) -> Self;
-    fn ln(&self) -> Self;
-    fn sigmoid(&self) -> Self;
-    fn tanh(&self) -> Self;
+    fn sqrt(&mut self);
+    fn exp(&mut self);
+    fn ln(&mut self);
+    fn sigmoid(&mut self);
+    fn tanh(&mut self);
 
     fn sum(&self) -> f32;
     
@@ -660,6 +667,14 @@ where
     fn total_len(&self) -> usize;
 
     fn as_slice(&self) -> &[f32];
+
+    fn clone_sqrt(&self) -> Self
+    {
+        let mut out = self.clone();
+        out.sqrt();
+
+        out
+    }
 
     fn pick_weighed(&self) -> usize
     {
@@ -730,29 +745,29 @@ impl NetworkType for GenericContainer
         GenericContainer::dot(self, rhs)
     }
 
-    fn sqrt(&self) -> Self
+    fn sqrt(&mut self)
     {
-        GenericContainer::applied(self, |x| x.sqrt())
+        GenericContainer::apply(self, |x| x.sqrt())
     }
 
-    fn exp(&self) -> Self
+    fn exp(&mut self)
     {
-        GenericContainer::applied(self, |x| x.exp())
+        GenericContainer::apply(self, |x| x.exp())
     }
 
-    fn ln(&self) -> Self
+    fn ln(&mut self)
     {
-        GenericContainer::applied(self, |x| x.ln())
+        GenericContainer::apply(self, |x| x.ln())
     }
 
-    fn sigmoid(&self) -> Self
+    fn sigmoid(&mut self)
     {
-        GenericContainer::applied(self, |x| 1.0 / (1.0 + (-x).exp()))
+        GenericContainer::apply(self, |x| 1.0 / (1.0 + (-x).exp()))
     }
 
-    fn tanh(&self) -> Self
+    fn tanh(&mut self)
     {
-        GenericContainer::applied(self, |x| x.tanh())
+        GenericContainer::apply(self, |x| x.tanh())
     }
 
     fn sum(&self) -> f32
@@ -957,44 +972,29 @@ impl NetworkType for MatrixWrapper
         self.0.dot(&rhs.0)
     }
 
-    fn sqrt(&self) -> Self
+    fn sqrt(&mut self)
     {
-        let mut out = self.0.clone();
-        out.apply(|v| *v = v.sqrt());
-
-        Self(out)
+        self.0.apply(|v| *v = v.sqrt());
     }
 
-    fn exp(&self) -> Self
+    fn exp(&mut self)
     {
-        let mut out = self.0.clone();
-        out.apply(|v| *v = v.exp());
-
-        Self(out)
+        self.0.apply(|v| *v = v.exp());
     }
 
-    fn ln(&self) -> Self
+    fn ln(&mut self)
     {
-        let mut out = self.0.clone();
-        out.apply(|v| *v = v.ln());
-
-        Self(out)
+        self.0.apply(|v| *v = v.ln());
     }
 
-    fn sigmoid(&self) -> Self
+    fn sigmoid(&mut self)
     {
-        let mut out = self.0.clone();
-        out.apply(|v| *v = 1.0 / (1.0 + (-*v).exp()));
-
-        Self(out)
+        self.0.apply(|v| *v = 1.0 / (1.0 + (-*v).exp()));
     }
 
-    fn tanh(&self) -> Self
+    fn tanh(&mut self)
     {
-        let mut out = self.0.clone();
-        out.apply(|v| *v = v.tanh());
-
-        Self(out)
+        self.0.apply(|v| *v = v.tanh());
     }
 
     fn sum(&self) -> f32

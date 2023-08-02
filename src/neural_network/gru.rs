@@ -247,9 +247,11 @@ where
         target: impl Iterator<Item=N>
     ) -> f32
     {
-        let s: f32 = predicted.zip(target).map(|(predicted, target)|
+        let s: f32 = predicted.zip(target).map(|(mut predicted, target)|
         {
-            predicted.ln().dot(target)
+            predicted.ln();
+
+            predicted.dot(target)
         }).sum();
 
         -s
@@ -437,27 +439,27 @@ where
         input: &N
     ) -> GRUOutput<N>
     {
-        let update_gate =
+        let mut update_gate =
             self.hidden_update_weights.matmul(previous_hidden)
             + self.input_update_weights.matmul(input)
             + &self.update_biases;
 
-        let update_gate = update_gate.sigmoid();
+        update_gate.sigmoid();
 
-        let reset_gate =
+        let mut reset_gate =
             self.hidden_reset_weights.matmul(previous_hidden)
             + self.input_reset_weights.matmul(input)
             + &self.reset_biases;
 
-        let reset_gate = reset_gate.sigmoid();
+        reset_gate.sigmoid();
 
         let activation_v = &reset_gate * previous_hidden;
-        let activation_gate =
+        let mut activation_gate =
             self.hidden_activation_weights.matmul(activation_v)
             + self.input_activation_weights.matmul(input)
             + &self.activation_biases;
 
-        let activation_gate = activation_gate.tanh();
+        activation_gate.tanh();
 
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
@@ -680,12 +682,12 @@ pub mod tests
 
         let input_correct = (0..inputs_amount).map(|i|
         {
-            GenericContainer::from_raw(inputs[0].clone(), inputs_size, 1)
+            GenericContainer::from_raw(inputs[i].clone(), inputs_size, 1)
         }).collect::<Vec<_>>();
 
         let input_nalgebra = (0..inputs_amount).map(|i|
         {
-            MatrixWrapper::from_raw(inputs[0].clone(), inputs_size, 1)
+            MatrixWrapper::from_raw(inputs[i].clone(), inputs_size, 1)
         }).collect::<Vec<_>>();
 
         let input_correct = InputOutputIter::new(input_correct.iter());
@@ -708,22 +710,10 @@ pub mod tests
             {
                 for x in 0..correct.previous_size()
                 {
-                    let previous_size = correct.previous_size();
-                    let this_size = correct.this_size();
-
-                    let index = y * previous_size + x;
+                    let index = y * correct.previous_size() + x;
 
                     let correct = correct.as_slice()[index];
-
-                    let calc_index = if this_size == 1
-                    {
-                        x
-                    } else
-                    {
-                        x * previous_size + y
-                    };
-
-                    let calculated = calculated.as_slice()[calc_index];
+                    let calculated = calculated.as_slice()[index];
 
                     single_match(correct, calculated, index);
                 }
