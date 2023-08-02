@@ -7,7 +7,15 @@ use std::{
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use neural_network::{TrainingInfo, NeuralNetwork, MatrixWrapper, GenericContainer, NetworkType};
+#[allow(unused_imports)]
+use neural_network::{
+    TrainingInfo,
+    NeuralNetwork,
+    MatrixWrapper,
+    ArrayWrapper,
+    GenericContainer,
+    NetworkType
+};
 
 #[allow(unused_imports)]
 use word_vectorizer::{NetworkDictionary, CharDictionary, WordDictionary};
@@ -48,7 +56,7 @@ impl TrainConfig
         let mut steps_num = 64;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
-        let mut use_gpu = true;
+        let mut use_gpu = false;
         let mut testing_data = None;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
@@ -114,9 +122,9 @@ impl TrainConfig
                             complain(&format!("expected value after {arg}"))
                         });
                 },
-                "-c" | "--cpu" =>
+                "-g" | "--gpu" =>
                 {
-                    use_gpu = false;
+                    use_gpu = true;
                 },
                 "-a" | "--accuracy" =>
                 {
@@ -158,10 +166,19 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
 
-    let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
-        NeuralNetwork::load(&config.network_path).unwrap();
+    if config.use_gpu
+    {
+        let mut network: NeuralNetwork<ArrayWrapper, CharDictionary> =
+            NeuralNetwork::load(&config.network_path).unwrap();
 
-    network.test_loss(text_file, config.calculate_accuracy);
+        network.test_loss(text_file, config.calculate_accuracy);
+    } else
+    {
+        let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+            NeuralNetwork::load(&config.network_path).unwrap();
+
+        network.test_loss(text_file, config.calculate_accuracy);
+    }
 }
 
 fn train_new(mut args: impl Iterator<Item=String>)
@@ -180,9 +197,17 @@ fn train_new(mut args: impl Iterator<Item=String>)
     // let dictionary = WordDictionary::build(dictionary_file);
     let dictionary = CharDictionary::new();
 
-    let network = NeuralNetwork::<MatrixWrapper, _>::new(dictionary);
+    if config.use_gpu
+    {
+        let network = NeuralNetwork::<ArrayWrapper, _>::new(dictionary);
 
-    train_inner(network, text_path, config);
+        train_inner(network, text_path, config);
+    } else
+    {
+        let network = NeuralNetwork::<MatrixWrapper, _>::new(dictionary);
+
+        train_inner(network, text_path, config);
+    }
 }
 
 fn train_inner<T, D>(
@@ -234,16 +259,26 @@ fn train(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
     
-    let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
-        NeuralNetwork::load(&config.network_path).unwrap();
+    if config.use_gpu
+    {
+        let network: NeuralNetwork<ArrayWrapper, CharDictionary> =
+            NeuralNetwork::load(&config.network_path).unwrap();
 
-    train_inner(network, text_path, config);
+        train_inner(network, text_path, config);
+    } else
+    {
+        let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+            NeuralNetwork::load(&config.network_path).unwrap();
+
+        train_inner(network, text_path, config);
+    }
 }
 
 struct RunConfig
 {
     tokens_amount: usize,
     temperature: f32,
+    use_gpu: bool,
     network_path: String
 }
 
@@ -253,6 +288,7 @@ impl RunConfig
     {
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
+        let mut use_gpu = false;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
         while let Some(arg) = args.next()
@@ -281,6 +317,10 @@ impl RunConfig
                             complain(&format!("cant parse the temperature: {err:?}"))
                         });
                 },
+                "-g" | "--gpu" =>
+                {
+                    use_gpu = true;
+                },
                 "-p" | "--path" =>
                 {
                     network_path = args.next().unwrap_or_else(||
@@ -295,6 +335,7 @@ impl RunConfig
         Self{
             tokens_amount,
             temperature,
+            use_gpu,
             network_path
         }
     }
@@ -307,10 +348,19 @@ fn run(mut args: impl Iterator<Item=String>)
 
     let config = RunConfig::parse(args);
 
-    let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
-        NeuralNetwork::load(config.network_path).unwrap();
-    
-    let predicted = network.predict(&text, config.tokens_amount, config.temperature);
+    let predicted = if config.use_gpu
+    {
+        let mut network: NeuralNetwork<ArrayWrapper, CharDictionary> =
+            NeuralNetwork::load(config.network_path).unwrap();
+        
+        network.predict(&text, config.tokens_amount, config.temperature)
+    } else
+    {
+        let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+            NeuralNetwork::load(config.network_path).unwrap();
+        
+        network.predict(&text, config.tokens_amount, config.temperature)
+    };
 
     println!("{predicted}");
 }

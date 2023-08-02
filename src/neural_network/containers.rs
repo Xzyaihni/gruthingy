@@ -7,7 +7,7 @@ use std::{
 
 use nalgebra::DMatrix;
 
-use arrayfire::{Array, dim4};
+use arrayfire::{Array, MatProp, dim4};
 
 use serde::{Serialize, Deserialize};
 
@@ -58,6 +58,32 @@ where
         let values = values / temperature;
 
         values.pick_weighed()
+    }
+
+    pub fn pick_weighed_inner<'b, I>(mut iter: I) -> usize
+    where
+        I: Iterator<Item=&'b f32> + ExactSizeIterator
+    {
+        let mut c = fastrand::f32();
+
+        let max_index = iter.len() - 1;
+
+        iter.position(|v|
+        {
+            c -= v;
+
+            c <= 0.0
+        }).unwrap_or(max_index)
+    }
+
+    pub fn highest_index<'b, I>(iter: I) -> usize
+    where
+        I: Iterator<Item=&'b f32>
+    {
+        iter.enumerate().max_by(|a, b|
+        {
+            a.1.partial_cmp(b.1).unwrap()
+        }).unwrap().0
     }
 }
 
@@ -666,7 +692,10 @@ where
 
     fn total_len(&self) -> usize;
 
-    fn as_slice(&self) -> &[f32];
+    fn as_vec(&self) -> Vec<f32>;
+
+    fn pick_weighed(&self) -> usize;
+    fn highest_index(&self) -> usize;
 
     fn clone_sqrt(&self) -> Self
     {
@@ -674,28 +703,6 @@ where
         out.sqrt();
 
         out
-    }
-
-    fn pick_weighed(&self) -> usize
-    {
-        let mut c = fastrand::f32();
-
-        let max_index = self.total_len() - 1;
-
-        self.as_slice().iter().position(|v|
-        {
-            c -= v;
-
-            c <= 0.0
-        }).unwrap_or(max_index)
-    }
-
-    fn highest_index(&self) -> usize
-    {
-        self.as_slice().iter().enumerate().max_by(|a, b|
-        {
-            a.1.partial_cmp(b.1).unwrap()
-        }).unwrap().0
     }
 }
 
@@ -785,9 +792,19 @@ impl NetworkType for GenericContainer
         GenericContainer::total_len(self)
     }
 
-    fn as_slice(&self) -> &[f32]
+    fn as_vec(&self) -> Vec<f32>
     {
-        &self.values
+        self.values.clone().to_vec()
+    }
+
+    fn pick_weighed(&self) -> usize
+    {
+        SoftmaxedLayer::<Self>::pick_weighed_inner(self.values.iter())
+    }
+
+    fn highest_index(&self) -> usize
+    {
+        SoftmaxedLayer::<Self>::highest_index(self.values.iter())
     }
 }
 
@@ -951,8 +968,7 @@ impl NetworkType for MatrixWrapper
 
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self
     {
-        let transposed = self.0.transpose();
-        Self(transposed * &rhs.borrow().0)
+        Self(self.0.tr_mul(&rhs.borrow().0))
     }
 
     fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
@@ -1012,8 +1028,273 @@ impl NetworkType for MatrixWrapper
         self.0.as_slice().len()
     }
 
-    fn as_slice(&self) -> &[f32]
+    fn as_vec(&self) -> Vec<f32>
     {
-        self.0.as_slice()
+        self.0.as_slice().to_vec()
+    }
+
+    fn pick_weighed(&self) -> usize
+    {
+        SoftmaxedLayer::<Self>::pick_weighed_inner(self.0.as_slice().iter())
+    }
+
+    fn highest_index(&self) -> usize
+    {
+        SoftmaxedLayer::<Self>::highest_index(self.0.as_slice().iter())
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ArrayWrapper(pub Array<f32>);
+
+impl<T> Add<T> for ArrayWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn add(self, rhs: T) -> Self::Output
+    {
+        Self(self.0 + &rhs.borrow().0)
+    }
+}
+
+impl Add<f32> for ArrayWrapper
+{
+    type Output = Self;
+
+    fn add(self, rhs: f32) -> Self::Output
+    {
+        Self(self.0 + rhs)
+    }
+}
+
+impl<T> Sub<T> for ArrayWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn sub(self, rhs: T) -> Self::Output
+    {
+        Self(self.0 - &rhs.borrow().0)
+    }
+}
+
+impl<T> Mul<T> for ArrayWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        Self(self.0 * &rhs.borrow().0)
+    }
+}
+
+impl<T> Mul<T> for &ArrayWrapper
+where
+    T: Borrow<ArrayWrapper>
+{
+    type Output = ArrayWrapper;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        ArrayWrapper(&self.0 * &rhs.borrow().0)
+    }
+}
+
+impl Mul<f32> for ArrayWrapper
+{
+    type Output = Self;
+
+    fn mul(self, rhs: f32) -> Self::Output
+    {
+        Self(self.0 * rhs)
+    }
+}
+
+impl Mul<f32> for &ArrayWrapper
+{
+    type Output = ArrayWrapper;
+
+    fn mul(self, rhs: f32) -> Self::Output
+    {
+        ArrayWrapper(&self.0 * rhs)
+    }
+}
+
+impl<T> Div<T> for ArrayWrapper
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn div(self, rhs: T) -> Self::Output
+    {
+        Self(self.0 / &rhs.borrow().0)
+    }
+}
+
+impl Div<f32> for ArrayWrapper
+{
+    type Output = Self;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        Self(self.0 / rhs)
+    }
+}
+
+impl Div<f32> for &ArrayWrapper
+{
+    type Output = ArrayWrapper;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        ArrayWrapper(&self.0 / rhs)
+    }
+}
+
+impl AddAssign for ArrayWrapper
+{
+    fn add_assign(&mut self, rhs: Self)
+    {
+        self.0 += rhs.0;
+    }
+}
+
+impl DivAssign<f32> for ArrayWrapper
+{
+    fn div_assign(&mut self, rhs: f32)
+    {
+        self.0 = &self.0 / rhs;
+    }
+}
+
+impl NetworkType for ArrayWrapper
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self(arrayfire::constant(0.0, dim4!(previous_size as u64, this_size as u64)))
+    }
+
+    fn new_with<F: FnMut() -> f32>(
+        previous_size: usize,
+        this_size: usize,
+        mut f: F
+    )-> Self
+    {
+        let s = (0..(previous_size * this_size)).map(|_| f()).collect::<Vec<_>>();
+        Self(Array::new(&s, dim4!(previous_size as u64, this_size as u64)))
+    }
+
+    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    {
+        Self(Array::new(&values.into(), dim4!(previous_size as u64, this_size as u64)))
+    }
+
+    fn zeroed_copy(&self) -> Self
+    {
+        Self(arrayfire::constant(0.0, self.0.dims()))
+    }
+
+    fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    {
+        Self(arrayfire::matmul(
+            &self.0,
+            &rhs.borrow().0,
+            MatProp::TRANS,
+            MatProp::NONE
+        ))
+    }
+
+    fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    {
+        Self(arrayfire::matmul(
+            &self.0,
+            &rhs.borrow().0,
+            MatProp::NONE,
+            MatProp::NONE
+        ))
+    }
+
+    fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
+    {
+        self.0 += arrayfire::matmul(
+            &rhs.borrow().0,
+            &lhs.borrow().0,
+            MatProp::NONE,
+            MatProp::TRANS
+        );
+    }
+
+    fn dot(self, rhs: Self) -> f32
+    {
+        let d = arrayfire::dot(&self.0, &rhs.0, MatProp::NONE, MatProp::NONE);
+
+        let mut out = [0.0_f32];
+        d.host(&mut out);
+
+        out[0]
+    }
+
+    fn sqrt(&mut self)
+    {
+        self.0 = arrayfire::sqrt(&self.0);
+    }
+
+    fn exp(&mut self)
+    {
+        self.0 = arrayfire::exp(&self.0);
+    }
+
+    fn ln(&mut self)
+    {
+        self.0 = arrayfire::log(&self.0);
+    }
+
+    fn sigmoid(&mut self)
+    {
+        self.0 = arrayfire::sigmoid(&self.0);
+    }
+
+    fn tanh(&mut self)
+    {
+        self.0 = arrayfire::tanh(&self.0);
+    }
+
+    fn sum(&self) -> f32
+    {
+        arrayfire::sum_all(&self.0).0
+    }
+
+    fn one_minus_this(self) -> Self
+    {
+        Self(1.0_f32 - self.0)
+    }
+
+    fn total_len(&self) -> usize
+    {
+        self.0.elements()
+    }
+
+    fn as_vec(&self) -> Vec<f32>
+    {
+        let mut out = vec![0.0_f32; self.0.elements()];
+        self.0.host(&mut out);
+
+        out
+    }
+
+    fn pick_weighed(&self) -> usize
+    {
+        SoftmaxedLayer::<Self>::pick_weighed_inner(self.as_vec().iter())
+    }
+
+    fn highest_index(&self) -> usize
+    {
+        SoftmaxedLayer::<Self>::highest_index(self.as_vec().iter())
     }
 }

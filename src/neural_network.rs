@@ -21,6 +21,7 @@ use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
 pub use containers::{
     NetworkType,
     MatrixWrapper,
+    ArrayWrapper,
     GenericContainer,
     WeightsIterValue,
     SoftmaxedLayer
