@@ -278,6 +278,7 @@ pub struct TrainingInfo
     pub batch_start: usize,
     pub batch_size: usize,
     pub steps_num: usize,
+    pub learning_rate: f32,
     pub calculate_accuracy: bool,
     pub ignore_loss: bool
 }
@@ -506,9 +507,12 @@ where
             batch_size,
             steps_num,
             epochs,
+            learning_rate,
             calculate_accuracy,
             ignore_loss
         } = info;
+
+        self.hyper.a = learning_rate;
 
         let batch_step = batch_size * steps_num;
         let mut batch_start = batch_start * batch_step;

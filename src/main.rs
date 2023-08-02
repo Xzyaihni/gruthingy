@@ -39,6 +39,7 @@ struct TrainConfig
     batch_start: usize,
     batch_size: usize,
     steps_num: usize,
+    learning_rate: f32,
     calculate_accuracy: bool,
     ignore_loss: bool,
     use_gpu: bool,
@@ -54,6 +55,7 @@ impl TrainConfig
         let mut batch_start = 0;
         let mut batch_size = 2_usize.pow(6);
         let mut steps_num = 64;
+        let mut learning_rate = 0.001;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
         let mut use_gpu = false;
@@ -105,7 +107,18 @@ impl TrainConfig
                         }).parse()
                         .unwrap_or_else(|err|
                         {
-                            complain(&format!("cant parse the steps amount: {err:?}"))
+                            complain(&format!("cant parse the start offset: {err:?}"))
+                        });
+                },
+                "-l" | "--learning-rate" =>
+                {
+                    learning_rate = args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }).parse()
+                        .unwrap_or_else(|err|
+                        {
+                            complain(&format!("cant parse the learning rate: {err:?}"))
                         });
                 },
                 "-t" | "--testing" =>
@@ -143,6 +156,7 @@ impl TrainConfig
             batch_start,
             batch_size,
             steps_num,
+            learning_rate,
             calculate_accuracy,
             ignore_loss,
             use_gpu,
@@ -233,6 +247,7 @@ where
         batch_start: config.batch_start,
         batch_size: config.batch_size,
         steps_num: config.steps_num,
+        learning_rate: config.learning_rate,
         calculate_accuracy: config.calculate_accuracy,
         ignore_loss: config.ignore_loss
     };
