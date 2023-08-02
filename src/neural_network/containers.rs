@@ -962,9 +962,9 @@ impl NetworkType for MatrixWrapper
 
     fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
     {
-        let transposed_rhs = rhs.borrow().0.transpose();
+        let transposed_lhs = lhs.borrow().0.transpose();
 
-        self.0 += (&lhs.borrow().0 * transposed_rhs).transpose();
+        self.0 += &rhs.borrow().0 * transposed_lhs;
     }
 
     fn dot(self, rhs: Self) -> f32
