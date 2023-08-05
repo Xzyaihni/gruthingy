@@ -273,15 +273,10 @@ where
                     unsafe{ output_gradient[t].get_unchecked(0) }.clone()
                 } else
                 {
-                    debug_assert!(0 < output_gradient.len());
-                    unsafe{ output_gradient[t].get_unchecked(0) }.clone()
-                    /*if t == 1
+                    (t..input.len()).map(|i|
                     {
-                        output_gradient[t].clone()
-                    } else
-                    {
-                        output_gradient[0].clone() + output_gradient[1].clone()
-                    }*/
+                        output_gradient[i][t].clone()
+                    }).reduce(|acc, this| acc + this).unwrap()
                 };
 
                 // if (!last_layer) || (b_t == t)
@@ -392,7 +387,7 @@ where
             input_gradients.push(this_input_gradients.into_iter().rev().collect());
         }
 
-        (input_gradients.into_iter().rev().collect(), gradients)
+        (input_gradients, gradients)
     }
 
     pub fn feedforward_single<FO>(

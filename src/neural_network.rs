@@ -33,8 +33,8 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 1;
-pub const LAYERS_AMOUNT: usize = 2;
+pub const HIDDEN_AMOUNT: usize = 4;
+pub const LAYERS_AMOUNT: usize = 3;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct GradientInfo<T>
@@ -873,7 +873,7 @@ mod tests
     }
 
     #[ignore]
-    // #[test]
+    #[test]
     fn gradients_check_many()
     {
         let mut network = test_network();
@@ -893,7 +893,7 @@ mod tests
     }
 
     #[ignore]
-    // #[test]
+    #[test]
     fn gradients_check_three()
     {
         let mut network = test_network();
