@@ -596,7 +596,15 @@ where
                 gradients /= batch_size as f32;
 
                 gradients
-            }).sum();
+            }).reduce_with(|mut acc, this|
+            {
+                acc.0.iter_mut().zip(this.0.into_iter()).for_each(|(acc, this)|
+                {
+                    *acc += this;
+                });
+
+                acc
+            }).expect("batch size must not be 0");
 
             batch_start += batch_size * steps_num;
             if batch_start >= max_batch_start

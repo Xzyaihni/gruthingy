@@ -1,6 +1,5 @@
 use std::{
     f32,
-    iter,
     borrow::Borrow,
     collections::VecDeque,
     ops::{DivAssign, AddAssign, Mul, Div, Sub}
@@ -145,27 +144,6 @@ where
     fn div_assign(&mut self, rhs: f32)
     {
         self.0.iter_mut().for_each(|v| *v /= rhs);
-    }
-}
-
-impl<T> iter::Sum for GRUFullGradients<T>
-where
-    T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>,
-    for<'a> &'a T: Sub<Output=T>
-{
-    fn sum<I: Iterator<Item=Self>>(iter: I) -> Self
-    {
-        iter.reduce(|mut acc, this|
-        {
-            acc.0.iter_mut().zip(this.0.into_iter()).for_each(|(acc, this)|
-            {
-                *acc += this;
-            });
-
-            acc
-        }).unwrap_or_else(|| GRUFullGradients::new())
     }
 }
 
