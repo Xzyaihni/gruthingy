@@ -1,5 +1,5 @@
 use std::{
-    f32,
+    f64,
     mem,
     slice,
     io::{self, Read},
@@ -46,8 +46,8 @@ pub struct GradientInfo<T>
 impl<T> GradientInfo<T>
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f64, Output=T>
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
@@ -76,8 +76,8 @@ pub struct GradientsInfo<T>
 impl<T> GradientsInfo<T>
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f64, Output=T>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -213,21 +213,21 @@ struct Predictor<'a, N, D>
     dictionary: &'a mut D,
     words: Vec<N>,
     predicted: Vec<u8>,
-    temperature: f32,
+    temperature: f64,
     predict_amount: usize
 }
 
 impl<'a, N, D> Predictor<'a, N, D>
 where
     N: NetworkType,
-    for<'b> &'b N: Mul<f32, Output=N> + Mul<&'b N, Output=N> + Mul<N, Output=N>,
-    for<'b> &'b N: Div<f32, Output=N>,
+    for<'b> &'b N: Mul<f64, Output=N> + Mul<&'b N, Output=N> + Mul<N, Output=N>,
+    for<'b> &'b N: Div<f64, Output=N>,
     D: NetworkDictionary
 {
     pub fn new(
         dictionary: &'a mut D,
         words: Vec<N>,
-        temperature: f32,
+        temperature: f64,
         predict_amount: usize
     ) -> Self
     {
@@ -279,7 +279,7 @@ pub struct TrainingInfo
     pub batch_start: usize,
     pub batch_size: usize,
     pub steps_num: usize,
-    pub learning_rate: f32,
+    pub learning_rate: f64,
     pub calculate_accuracy: bool,
     pub ignore_loss: bool
 }
@@ -287,13 +287,13 @@ pub struct TrainingInfo
 #[derive(Serialize, Deserialize)]
 pub struct AdamHyperparams
 {
-    pub a: f32,
-    pub b1: f32,
-    pub b2: f32,
-    pub epsilon: f32,
+    pub a: f64,
+    pub b1: f64,
+    pub b2: f64,
+    pub epsilon: f64,
     pub t: i32,
-    pub one_minus_b1_t: f32,
-    pub one_minus_b2_t: f32
+    pub one_minus_b1_t: f64,
+    pub one_minus_b2_t: f64
 
 }
 
@@ -342,8 +342,8 @@ pub struct NeuralNetwork<T, D>
 impl<T, D> NeuralNetwork<T, D>
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f64, Output=T>,
     D: NetworkDictionary + Serialize + DeserializeOwned
 {
     pub fn new(dictionary: D) -> Self
@@ -609,7 +609,7 @@ where
             }
 
             let mut gradients = batch_gradients.unwrap();
-            gradients.iter_mut().for_each(|gradients| *gradients /= batch_size as f32);
+            gradients.iter_mut().for_each(|gradients| *gradients /= batch_size as f64);
 
             self.apply_gradients(gradients);
         }
@@ -618,7 +618,7 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn predict(&mut self, text: &str, amount: usize, temperature: f32) -> String
+    pub fn predict(&mut self, text: &str, amount: usize, temperature: f64) -> String
     {
         let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text.as_bytes());
 
@@ -650,7 +650,7 @@ mod tests
     #[allow(unused_imports)]
     use arrayfire::af_print;
     
-    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
+    fn close_enough(a: f64, b: f64, epsilon: f64) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
         {
@@ -719,7 +719,7 @@ mod tests
         let mut m = vec![0.0, 0.0];
         let mut v = vec![0.0, 0.0];
         
-        let mut g = vec![3.1_f32, -0.8_f32];
+        let mut g = vec![3.1_f64, -0.8_f64];
 
         let mut t = 1;
 
@@ -858,13 +858,13 @@ mod tests
         let mut network = test_network();
         let inputs = test_input_outputs(test_texts_many(), &mut network);
 
-        let l = inputs.len() as f32;
+        let l = inputs.len() as f64;
         let this_loss = inputs.into_iter().map(|input|
         {
             network.network.loss(input.iter().map(|(a, b)| (a.clone(), b.clone())))
-        }).sum::<f32>() / l;
+        }).sum::<f64>() / l;
 
-        let predicted_loss = (network.dictionary.words_amount() as f32).ln();
+        let predicted_loss = (network.dictionary.words_amount() as f64).ln();
 
         assert!(
             close_enough(this_loss, predicted_loss, 0.1),

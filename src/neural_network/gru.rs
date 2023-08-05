@@ -1,5 +1,5 @@
 use std::{
-    f32,
+    f64,
     borrow::Borrow,
     ops::{DivAssign, AddAssign, Mul, Div}
 };
@@ -85,13 +85,13 @@ pub struct GRUGradients<T>
     pub output_gradients: T
 }
 
-impl<T> DivAssign<f32> for GRUGradients<T>
+impl<T> DivAssign<f64> for GRUGradients<T>
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f64, Output=T>
 {
-    fn div_assign(&mut self, rhs: f32)
+    fn div_assign(&mut self, rhs: f64)
     {
 		self.input_update_gradients /= rhs;
 		self.input_reset_gradients /= rhs;
@@ -109,8 +109,8 @@ where
 impl<T> AddAssign for GRUGradients<T>
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f64, Output=T>
 {
     fn add_assign(&mut self, rhs: Self)
     {
@@ -145,48 +145,48 @@ pub struct GRULayer<T>
 impl<N> GRULayer<N>
 where
     N: NetworkType,
-    for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-    for<'a> &'a N: Div<f32, Output=N>
+    for<'a> &'a N: Mul<f64, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+    for<'a> &'a N: Div<f64, Output=N>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
-        let weights_init = |previous: f32|
+        let weights_init = |previous: f64|
         {
             let v = 1.0 / previous.sqrt();
 
-            (fastrand::f32() * 2.0 - 1.0) * v
+            (fastrand::f64() * 2.0 - 1.0) * v
         };
 
         Self{
         	input_update_weights: N::new_with(
                 word_vector_size,
                 HIDDEN_AMOUNT,
-                || weights_init(word_vector_size as f32)
+                || weights_init(word_vector_size as f64)
             ),
         	input_reset_weights: N::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
-				|| weights_init(word_vector_size as f32)
+				|| weights_init(word_vector_size as f64)
 			),
         	input_activation_weights: N::new_with(
 				word_vector_size,
 				HIDDEN_AMOUNT,
-				|| weights_init(word_vector_size as f32)
+				|| weights_init(word_vector_size as f64)
 			),
         	hidden_update_weights: N::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f32)
+				|| weights_init(HIDDEN_AMOUNT as f64)
 			),
         	hidden_reset_weights: N::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f32)
+				|| weights_init(HIDDEN_AMOUNT as f64)
 			),
         	hidden_activation_weights: N::new_with(
 				HIDDEN_AMOUNT,
 				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f32)
+				|| weights_init(HIDDEN_AMOUNT as f64)
 			),
             // initialize biases to 0 cuz i read somewhere thats good
             update_biases: N::new(HIDDEN_AMOUNT, 1),
@@ -195,7 +195,7 @@ where
             output_weights: N::new_with(
                 HIDDEN_AMOUNT,
                 word_vector_size,
-                || weights_init(HIDDEN_AMOUNT as f32)
+                || weights_init(HIDDEN_AMOUNT as f64)
             )
         }
     }
@@ -274,8 +274,7 @@ where
                 } else
                 {
                     debug_assert!(0 < output_gradient.len());
-                    let g = unsafe{ output_gradient[t].get_unchecked(0) }.clone();
-                    &g * g.clone().one_minus_this()
+                    unsafe{ output_gradient[t].get_unchecked(0) }.clone()
                     /*if t == 1
                     {
                         output_gradient[t].clone()
@@ -302,7 +301,7 @@ where
                 {
                     if b_t == t
                     {
-                        hidden_gradient + output_gradient
+                        hidden_gradient + &output_gradient
                     } else
                     {
                         hidden_gradient
@@ -311,7 +310,7 @@ where
                 {
                     if b_t == t
                     {
-                        hidden_gradient + output_gradient
+                        hidden_gradient + &output_gradient
                     } else
                     {
                         hidden_gradient
@@ -383,8 +382,9 @@ where
 
                 let d23 = d19 + d22;
                 let d24 = d12 + d14 + d20;
-
-                this_input_gradients.push(d24);
+                
+                let input_gradient = (this_input * this_input.clone().one_minus_this()) * d24;
+                this_input_gradients.push(input_gradient);
 
                 hidden_gradient = d23;
             }
@@ -429,10 +429,10 @@ where
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
-        let mut output_untrans = self.output_weights.matmul(&hidden);
-        output_activation(&mut output_untrans);
+        let output_untrans = self.output_weights.matmul(&hidden);
 
-        let output_gate = output_untrans;
+        let mut output_gate = output_untrans.clone();
+        output_activation(&mut output_gate);
 
         GRUOutput{
             update: update_gate,
@@ -454,8 +454,8 @@ pub struct GRU<T>
 impl<N> GRU<N>
 where
     N: NetworkType,
-    for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-    for<'a> &'a N: Div<f32, Output=N>
+    for<'a> &'a N: Mul<f64, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+    for<'a> &'a N: Div<f64, Output=N>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -469,7 +469,7 @@ where
     pub fn accuracy(
         &self,
         input: impl Iterator<Item=(N, N)>
-    ) -> f32
+    ) -> f64
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let amount = input.len();
@@ -479,7 +479,7 @@ where
         Self::correct_guesses(
             f_output.into_iter().map(|output| output.last_output()),
             output.into_iter()
-        ) as f32 / amount as f32
+        ) as f64 / amount as f64
     }
 
     fn correct_guesses<P, T>(
@@ -507,17 +507,17 @@ where
     pub fn loss(
         &self,
         input: impl Iterator<Item=(N, N)> + ExactSizeIterator
-    ) -> f32
+    ) -> f64
     {
         let amount = input.len();
 
-        self.loss_unscaled(input) / amount as f32
+        self.loss_unscaled(input) / amount as f64
     }
 
     pub fn loss_unscaled(
         &self,
         input: impl Iterator<Item=(N, N)>
-    ) -> f32
+    ) -> f64
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
@@ -532,9 +532,9 @@ where
     fn cross_entropy(
         predicted: impl Iterator<Item=N>,
         target: impl Iterator<Item=N>
-    ) -> f32
+    ) -> f64
     {
-        let s: f32 = predicted.zip(target).map(|(mut predicted, target)|
+        let s: f64 = predicted.zip(target).map(|(mut predicted, target)|
         {
             predicted.ln();
 
@@ -610,7 +610,7 @@ where
 
                     let expected_output = unsafe{ *output.get_unchecked(t) };
 
-                    let expected_sum: f32 = if ONE_HOT_ENCODED
+                    let expected_sum: f64 = if ONE_HOT_ENCODED
                     {
                         1.0
                     } else
@@ -622,16 +622,7 @@ where
                 }).collect::<Vec<_>>()
             } else
             {
-                let mut this_output = this_output.take().unwrap();
-                /*this_output.iter_mut().for_each(|inner_gradient|
-                {
-                    inner_gradient.iter_mut().for_each(|gradient|
-                    {
-                        *gradient = &*gradient * gradient.clone().one_minus_this();
-                    });
-                });*/
-
-                this_output
+                this_output.take().unwrap()
             };
 
             let (input_gradients, this_gradient) = if l_i == 0
@@ -783,7 +774,7 @@ pub mod tests
         InputOutputIter
     };
 
-    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
+    fn close_enough(a: f64, b: f64, epsilon: f64) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
         {
@@ -793,7 +784,7 @@ pub mod tests
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
     }
 
-    fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
+    fn close_enough_abs(a: f64, b: f64, epsilon: f64) -> bool
     {
         (a - b).abs() < epsilon
     }
@@ -821,14 +812,14 @@ pub mod tests
             });
         };
 
-        let v = |values: Vec<f32>|
+        let v = |values: Vec<f64>|
         {
             let size = values.len();
             GenericContainer::from_raw(values, size, 1)
         };
 
         let input = vec![
-            v(vec![fastrand::f32() * 20.0 - 10.0, fastrand::f32() * 20.0 - 10.0])
+            v(vec![fastrand::f64() * 20.0 - 10.0, fastrand::f64() * 20.0 - 10.0])
         ];
 
         let gru = GRU::<GenericContainer>::new(2);
@@ -918,9 +909,9 @@ pub mod tests
         layer_match(&o_out, &f_output[0].0[l_i].output);
     }
 
-    fn test_values(amount: usize) -> Vec<f32>
+    fn test_values(amount: usize) -> Vec<f64>
     {
-        (0..amount).map(|_| fastrand::f32()).collect::<Vec<_>>()
+        (0..amount).map(|_| fastrand::f64()).collect::<Vec<_>>()
     }
 
     #[test]
@@ -1138,7 +1129,7 @@ pub mod tests
             );
         };
 
-        let layer_match = |correct: [f32; 4], calculated: GenericContainer|
+        let layer_match = |correct: [f64; 4], calculated: GenericContainer|
         {
             correct.iter().zip(calculated.iter()).for_each(|(correct, calculated)|
             {
@@ -1146,7 +1137,7 @@ pub mod tests
             });
         };
 
-        let bias_match = |correct: [f32; 2], calculated: GenericContainer|
+        let bias_match = |correct: [f64; 2], calculated: GenericContainer|
         {
             correct.iter().zip(calculated.iter()).for_each(|(correct, calculated)|
             {
@@ -1222,7 +1213,7 @@ pub mod tests
     #[test]
     fn loss_correct()
     {
-        let c = |v: Vec<f32>|
+        let c = |v: Vec<f64>|
         {
             let len = v.len();
             GenericContainer::from_raw(v, len, 1)
@@ -1238,7 +1229,7 @@ pub mod tests
             c(vec![0.0, 0.0, 0.0, 1.0])
         ];
 
-        let amount = target.len() as f32;
+        let amount = target.len() as f64;
 
         let loss = GRU::cross_entropy(
             predicted.into_iter(),
@@ -1432,7 +1423,7 @@ pub mod tests
             .for_each(check_single_gradient);
     }
 
-    fn check_single_gradient(pair: (WeightsIterValue<f32>, WeightsIterValue<f32>))
+    fn check_single_gradient(pair: (WeightsIterValue<f64>, WeightsIterValue<f64>))
     {
         let (true_gradient, calculated_gradient) = pair;
         let (previous, this) = (true_gradient.previous, true_gradient.this);
@@ -1447,7 +1438,7 @@ pub mod tests
         );
     }
 
-    fn check_single_bias_gradient(pair: ((usize, &f32), (usize, &f32)))
+    fn check_single_bias_gradient(pair: ((usize, &f64), (usize, &f64)))
     {
         let (true_gradient, calculated_gradient) = pair;
         let index = true_gradient.0;
@@ -1477,7 +1468,7 @@ pub mod tests
         let weights = weights.into_iter().map(|weight|
         {
             let WeightsIterValue{value: weight, previous, this} = weight;
-            let epsilon = 0.002;
+            let epsilon = 0.001;
 
             let mut set_this_weight = |network: &mut GRU<GenericContainer>, value|
             {
