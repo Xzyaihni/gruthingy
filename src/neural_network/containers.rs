@@ -691,6 +691,8 @@ where
     }
 }
 
+pub const LEAKY_SLOPE: f32 = 0.01;
+
 pub trait NetworkType
 where
     for<'a> Self: Sized + Serialize + Deserialize<'a> + Clone,
@@ -721,6 +723,9 @@ where
     fn ln(&mut self);
     fn sigmoid(&mut self);
     fn tanh(&mut self);
+
+    fn leaky_relu(&mut self);
+    fn leaky_relu_d(&mut self);
 
     fn sum(&self) -> f32;
     
@@ -806,6 +811,25 @@ impl NetworkType for GenericContainer
     fn tanh(&mut self)
     {
         GenericContainer::apply(self, |x| x.tanh())
+    }
+
+    fn leaky_relu(&mut self)
+    {
+        GenericContainer::apply(self, |x| x.max(LEAKY_SLOPE * x))
+    }
+
+    fn leaky_relu_d(&mut self)
+    {
+        GenericContainer::apply(self, |x|
+        {
+            if *x > 0.0
+            {
+                1.0
+            } else
+            {
+                LEAKY_SLOPE
+            }
+        })
     }
 
     fn sum(&self) -> f32
@@ -1046,6 +1070,25 @@ impl NetworkType for MatrixWrapper
     fn tanh(&mut self)
     {
         self.0.apply(|v| *v = v.tanh());
+    }
+
+    fn leaky_relu(&mut self)
+    {
+        self.0.apply(|v| *v = v.max(LEAKY_SLOPE * *v));
+    }
+
+    fn leaky_relu_d(&mut self)
+    {
+        self.0.apply(|v| 
+        {
+            *v = if *v > 0.0
+            {
+                1.0
+            } else
+            {
+                LEAKY_SLOPE
+            };
+        })
     }
 
     fn sum(&self) -> f32
@@ -1305,6 +1348,20 @@ impl NetworkType for ArrayWrapper
     fn tanh(&mut self)
     {
         self.0 = arrayfire::tanh(&self.0);
+    }
+
+    fn leaky_relu(&mut self)
+    {
+        self.0 = arrayfire::maxof(&self.0, &(&self.0 * LEAKY_SLOPE), false);
+    }
+
+    fn leaky_relu_d(&mut self)
+    {
+        let ones = arrayfire::constant(1.0_f32, self.0.dims());
+        let cond = arrayfire::gt(&self.0, &0.0_f32, true);
+        let leakys = arrayfire::constant(LEAKY_SLOPE, self.0.dims());
+
+        self.0 = arrayfire::select(&ones, &cond, &leakys);
     }
 
     fn sum(&self) -> f32

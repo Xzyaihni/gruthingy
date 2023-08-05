@@ -21,6 +21,7 @@ pub struct GRUOutput<T>
     pub reset: T,
     pub activation: T,
     pub hidden: T,
+    pub output_ut: T,
     pub output: T
 }
 
@@ -234,7 +235,8 @@ where
         }
     }
 
-    pub fn gradients_with_hidden(
+    // needs to know if its the first layer so it doesnt apply the transfer function
+    pub fn gradients_with_hidden<const FIRST_LAYER: bool>(
         &self,
         word_vector_size: usize,
         starting_hidden: &N,
@@ -322,15 +324,21 @@ where
                 }
 
                 let this_input = unsafe{ *input.get_unchecked(b_t) };
+                let mut this_input_t = this_input.clone();
+
+                if !FIRST_LAYER
+                {
+                    this_input_t.sigmoid();
+                }
 
                 gradients.input_update_gradients
-                    .add_outer_product(&update_gate_derivative, this_input);
+                    .add_outer_product(&update_gate_derivative, &this_input_t);
 
                 gradients.input_reset_gradients
-                    .add_outer_product(&reset_gate_derivative, this_input);
+                    .add_outer_product(&reset_gate_derivative, &this_input_t);
                 
                 gradients.input_activation_gradients
-                    .add_outer_product(&activation_gate_derivative, this_input);
+                    .add_outer_product(&activation_gate_derivative, this_input_t);
 
                 gradients.update_bias_gradients += update_gate_derivative;
                 gradients.reset_bias_gradients += reset_gate_derivative;
@@ -339,7 +347,14 @@ where
                 let d23 = d19 + d22;
                 let d24 = d12 + d14 + d20;
                 
-                let input_gradient = (this_input * this_input.clone().one_minus_this()) * d24;
+                let mut this_input = this_input.clone();
+                
+                if !FIRST_LAYER
+                {
+                    this_input.sigmoid();
+                }
+
+                let input_gradient = (&this_input * this_input.clone().one_minus_this()) * d24;
                 *unsafe{ input_gradients.get_unchecked_mut(b_t) } += input_gradient;
 
                 d3 = d23;
@@ -383,16 +398,17 @@ where
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
-        let mut output_untrans = self.output_weights.matmul(&hidden);
-        output_activation(&mut output_untrans);
+        let output_untrans = self.output_weights.matmul(&hidden);
 
-        let output_gate = output_untrans;
+        let mut output_gate = output_untrans.clone();
+        output_activation(&mut output_gate);
 
         GRUOutput{
             update: update_gate,
             reset: reset_gate,
             activation: activation_gate,
             hidden,
+            output_ut: output_untrans,
             output: output_gate
         }
     }
@@ -581,7 +597,7 @@ where
             let (input_gradients, this_gradient) = if l_i == 0
             {
                 // if its the first layer
-                layer.gradients_with_hidden(
+                layer.gradients_with_hidden::<true>(
                     self.word_vector_size,
                     starting_hidden,
                     &starting_input,
@@ -595,10 +611,10 @@ where
                     let index = l_i - 1;
 
                     debug_assert!(index < layer.0.len());
-                    unsafe{ &layer.0.get_unchecked(index).output }
+                    unsafe{ &layer.0.get_unchecked(index).output_ut }
                 }).collect::<Vec<_>>();
 
-                layer.gradients_with_hidden(
+                layer.gradients_with_hidden::<false>(
                     self.word_vector_size,
                     starting_hidden,
                     &input,
