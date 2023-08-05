@@ -14,7 +14,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 // use rnn::{RNN, RNNGradients};
 
 #[allow(unused_imports)]
-use gru::{GRU, GRUGradients, GRUOutput};
+use gru::{GRU, GRUGradients, GRUOutput, GRUFullGradients};
 
 use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
 
@@ -378,9 +378,9 @@ where
     }
 
     // suckines
-    pub fn apply_gradients(&mut self, gradients: Vec<GRUGradients<T>>)
+    pub fn apply_gradients(&mut self, gradients: GRUFullGradients<T>)
     {
-        let combined_iter = gradients.into_iter()
+        let combined_iter = gradients.0.into_iter()
             .zip(self.network.layers.iter_mut()
                  .zip(self.gradients_info.iter_mut())
             );
@@ -577,11 +577,9 @@ where
                 output_loss(self);
             }
 
-            let mut batch_gradients = None;
-
             let max_batch_start = inputs.len() - steps_num;
 
-            for b_i in 0..batch_size
+            let gradients = (0..batch_size).map(|b_i|
             {
                 let batch_start = batch_start + b_i * steps_num;
 
@@ -592,33 +590,17 @@ where
                     steps_num
                 );
 
-                let gradients = self.network.gradients::<true>(values.iter());
+                let mut gradients = self.network.gradients::<true>(values.iter());
+                gradients /= batch_size as f32;
 
-                if batch_gradients.is_none()
-                {
-                    batch_gradients = Some(gradients);
-                } else
-                {
-                    batch_gradients.as_mut().map(|batch_gradients|
-                    {
-                        batch_gradients.iter_mut().zip(gradients.into_iter())
-                            .for_each(|(batch_gradients, mut gradients)|
-                            {
-                                gradients /= batch_size as f32;
-
-                                *batch_gradients += gradients;
-                            });
-                    });
-                }
-            }
+                gradients
+            }).sum();
 
             batch_start += batch_size * steps_num;
             if batch_start >= max_batch_start
             {
                 batch_start = 0;
             }
-
-            let gradients = batch_gradients.unwrap();
 
             self.apply_gradients(gradients);
         }

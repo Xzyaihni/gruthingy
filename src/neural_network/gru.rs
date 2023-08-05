@@ -1,6 +1,8 @@
 use std::{
     f32,
+    iter,
     borrow::Borrow,
+    collections::VecDeque,
     ops::{DivAssign, AddAssign, Mul, Div, Sub}
 };
 
@@ -127,6 +129,43 @@ where
 		self.reset_bias_gradients += rhs.reset_bias_gradients;
 		self.activation_bias_gradients += rhs.activation_bias_gradients;
 		self.output_gradients += rhs.output_gradients;
+    }
+}
+
+#[derive(Debug)]
+pub struct GRUFullGradients<T>(pub VecDeque<GRUGradients<T>>);
+
+impl<T> DivAssign<f32> for GRUFullGradients<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<Output=T>
+{
+    fn div_assign(&mut self, rhs: f32)
+    {
+        self.0.iter_mut().for_each(|v| *v /= rhs);
+    }
+}
+
+impl<T> iter::Sum for GRUFullGradients<T>
+where
+    T: NetworkType,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<Output=T>
+{
+    fn sum<I: Iterator<Item=Self>>(iter: I) -> Self
+    {
+        iter.reduce(|mut acc, this|
+        {
+            acc.0.iter_mut().zip(this.0.into_iter()).for_each(|(acc, this)|
+            {
+                *acc += this;
+            });
+
+            acc
+        }).expect("must not be called on an empty iterator (im too lazy)")
     }
 }
 
@@ -525,7 +564,7 @@ where
     pub fn gradients<'a, const ONE_HOT_ENCODED: bool>(
         &self,
         input: impl Iterator<Item=(&'a N, &'a N)>
-    ) -> Vec<GRUGradients<N>>
+    ) -> GRUFullGradients<N>
     where
         N: 'a
     {
@@ -537,7 +576,7 @@ where
         &self,
         starting_hiddens: &[N],
         input: impl Iterator<Item=(&'a N, &'a N)>
-    ) -> Vec<GRUGradients<N>>
+    ) -> GRUFullGradients<N>
     where
         N: 'a
     {
@@ -547,7 +586,7 @@ where
             starting_input.iter().map(|v| *v)
         );
 
-        let mut gradients = Vec::with_capacity(LAYERS_AMOUNT);
+        let mut gradients = VecDeque::with_capacity(LAYERS_AMOUNT);
 
         let mut this_output: Option<Vec<N>> = None;
 
@@ -623,10 +662,10 @@ where
 
             this_output = Some(input_gradients);
 
-            gradients.push(this_gradient);
+            gradients.push_front(this_gradient);
         }
 
-        gradients.into_iter().rev().collect()
+        GRUFullGradients(gradients)
     }
 
     #[inline(always)]
@@ -919,8 +958,8 @@ pub mod tests
         let input_nalgebra = InputOutputIter::new(input_nalgebra.iter());
         let output_nalgebra = gru_nalgebra.gradients::<false>(input_nalgebra);
 
-        for (output_correct, output_nalgebra) in output_correct.into_iter()
-            .zip(output_nalgebra.into_iter())
+        for (output_correct, output_nalgebra) in output_correct.0.into_iter()
+            .zip(output_nalgebra.0.into_iter())
         {
             let single_match = |correct, calculated, index|
             {
@@ -1219,7 +1258,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.input_update_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1237,7 +1276,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.input_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1255,7 +1294,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.input_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1273,7 +1312,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_update_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1291,7 +1330,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1309,7 +1348,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1327,7 +1366,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.update_bias_gradients.iter().enumerate())
@@ -1346,7 +1385,7 @@ pub mod tests
             input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.reset_bias_gradients.iter().enumerate())
@@ -1364,7 +1403,7 @@ pub mod tests
             |network| &mut network.layers[layer_index].activation_biases, input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.activation_bias_gradients.iter().enumerate())
@@ -1382,7 +1421,7 @@ pub mod tests
             |network| &mut network.layers[layer_index].output_weights, input.clone()
         );
 
-        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+        let calculated_gradient = &network.gradients::<false>(input).0[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.output_gradients.iter_pos())
             .for_each(check_single_gradient);
