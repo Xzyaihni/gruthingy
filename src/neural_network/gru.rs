@@ -328,7 +328,7 @@ where
 
                 if !FIRST_LAYER
                 {
-                    this_input_t.sigmoid();
+                    this_input_t.leaky_relu();
                 }
 
                 gradients.input_update_gradients
@@ -338,7 +338,7 @@ where
                     .add_outer_product(&reset_gate_derivative, &this_input_t);
                 
                 gradients.input_activation_gradients
-                    .add_outer_product(&activation_gate_derivative, this_input_t);
+                    .add_outer_product(&activation_gate_derivative, &this_input_t);
 
                 gradients.update_bias_gradients += update_gate_derivative;
                 gradients.reset_bias_gradients += reset_gate_derivative;
@@ -346,15 +346,11 @@ where
 
                 let d23 = d19 + d22;
                 let d24 = d12 + d14 + d20;
-                
-                let mut this_input = this_input.clone();
-                
-                if !FIRST_LAYER
-                {
-                    this_input.sigmoid();
-                }
 
-                let input_gradient = (&this_input * this_input.clone().one_minus_this()) * d24;
+                let mut this_input_d = this_input.clone();
+                this_input_d.leaky_relu_d();
+
+                let input_gradient = this_input_d * d24;
                 *unsafe{ input_gradients.get_unchecked_mut(b_t) } += input_gradient;
 
                 d3 = d23;
@@ -674,7 +670,7 @@ where
                 layer.feedforward_single(
                     previous_hidden,
                     input,
-                    N::sigmoid
+                    N::leaky_relu
                 )
             };
 
