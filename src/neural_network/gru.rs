@@ -24,27 +24,49 @@ pub struct GRUOutput<T>
     pub output: T
 }
 
-impl<T> AddAssign for GRUOutput<T>
-where
-    T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
-{
-    fn add_assign(&mut self, rhs: Self)
-    {
-        let Self{
-            update,
-            reset,
-            activation,
-            hidden,
-            output
-        } = rhs;
+pub struct GRUOutputLayer<T>(pub Vec<GRUOutput<T>>);
 
-		self.update += update;
-		self.reset += reset;
-		self.activation += activation;
-		self.hidden += hidden;
-		self.output += output;
+impl<T> GRUOutputLayer<T>
+{
+    pub fn with_capacity(capacity: usize) -> Self
+    {
+        Self(Vec::with_capacity(capacity))
+    }
+
+    pub fn push(&mut self, value: GRUOutput<T>)
+    {
+        self.0.push(value);
+    }
+
+    pub fn last_output_ref(&self) -> &T
+    {
+        &self.0.iter().rev().next().unwrap().output
+    }
+
+    pub fn last_output(self) -> T
+    {
+        self.0.into_iter().rev().next().unwrap().output
+    }
+
+    pub fn hiddens(self) -> Vec<T>
+    {
+        self.0.into_iter().map(|output|
+        {
+            let GRUOutput{
+                hidden,
+                ..
+            } = output;
+
+            hidden
+        }).collect()
+    }
+
+    pub fn hiddens_ref(&self) -> Vec<&T>
+    {
+        self.0.iter().map(|output|
+        {
+            &output.hidden
+        }).collect()
     }
 }
 
@@ -106,7 +128,7 @@ where
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GRU<T>
+pub struct GRULayer<T>
 {
 	pub input_update_weights: T,
 	pub input_reset_weights: T,
@@ -120,7 +142,7 @@ pub struct GRU<T>
 	pub output_weights: T
 }
 
-impl<N> GRU<N>
+impl<N> GRULayer<N>
 where
     N: NetworkType,
     for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
@@ -178,6 +200,271 @@ where
         }
     }
 
+    #[inline(always)]
+    pub fn zeroed_gradients(word_vector_size: usize) -> GRUGradients<N>
+    {
+        let output_gradients = N::new(HIDDEN_AMOUNT, word_vector_size);
+
+        let input_update_gradients = N::new(word_vector_size, HIDDEN_AMOUNT);
+        let input_reset_gradients = N::new(word_vector_size, HIDDEN_AMOUNT);
+        let input_activation_gradients = N::new(word_vector_size, HIDDEN_AMOUNT);
+
+        let hidden_update_gradients = N::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT);
+        let hidden_reset_gradients = N::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT);
+        let hidden_activation_gradients = N::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT);
+
+        let update_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
+        let reset_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
+        let activation_bias_gradients = N::new(HIDDEN_AMOUNT, 1);
+
+        GRUGradients{
+            input_update_gradients,
+            input_reset_gradients,
+            input_activation_gradients,
+            hidden_update_gradients,
+            hidden_reset_gradients,
+            hidden_activation_gradients,
+            update_bias_gradients,
+            reset_bias_gradients,
+            activation_bias_gradients,
+            output_gradients
+        }
+    }
+
+    pub fn gradients_with_hidden(
+        &self,
+        word_vector_size: usize,
+        starting_hidden: &N,
+        input: &[&N],
+        output_gradient: Vec<Vec<N>>,
+        f_output: &[&GRUOutput<N>],
+        last_layer: bool
+    ) -> (Vec<Vec<N>>, GRUGradients<N>)
+    {
+        let mut gradients = Self::zeroed_gradients(word_vector_size);
+
+        let mut input_gradients = Vec::new();
+
+        for t in 0..input.len()
+        {
+            let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
+
+            let mut this_input_gradients = Vec::new();
+
+            let mut hidden_gradient = N::new(HIDDEN_AMOUNT, 1);
+
+            for b_t in (0..=t).rev()
+            {
+                let previous_hidden = if b_t == 0
+                {
+                    starting_hidden
+                } else
+                {
+                    unsafe{ &f_output.get_unchecked(b_t - 1).hidden }
+                };
+
+                let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
+                let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
+                let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
+
+                let output_gradient = if last_layer
+                {
+                    debug_assert!(0 < output_gradient.len());
+                    unsafe{ output_gradient[t].get_unchecked(0) }.clone()
+                } else
+                {
+                    debug_assert!(0 < output_gradient.len());
+                    let g = unsafe{ output_gradient[t].get_unchecked(0) }.clone();
+                    &g * g.clone().one_minus_this()
+                    /*if t == 1
+                    {
+                        output_gradient[t].clone()
+                    } else
+                    {
+                        output_gradient[0].clone() + output_gradient[1].clone()
+                    }*/
+                };
+
+                // if (!last_layer) || (b_t == t)
+                {
+                    if b_t == t
+                    {
+                        gradients.output_gradients.add_outer_product(&output_gradient, hidden);
+                    } else
+                    {
+
+                    }
+                }
+
+                let output_gradient = self.output_weights.matmul_transposed(&output_gradient);
+
+                let d3 = if last_layer
+                {
+                    if b_t == t
+                    {
+                        hidden_gradient + output_gradient
+                    } else
+                    {
+                        hidden_gradient
+                    }
+                } else
+                {
+                    if b_t == t
+                    {
+                        hidden_gradient + output_gradient
+                    } else
+                    {
+                        hidden_gradient
+                    }
+                };
+
+                let d4 = this_update.clone().one_minus_this() * &d3;
+
+                let d5 = previous_hidden * &d3;
+                let d6 = d5 * -1.0;
+                let d7 = this_activation * &d3;
+                let d8 = this_update * &d3;
+                let d9 = d7 + d6;
+
+                // d10
+                let activation_gate_derivative =
+                    (this_activation * this_activation).one_minus_this() * d8;
+
+                // d11
+                let update_gate_derivative =
+                    &d9 * (this_update * this_update.clone().one_minus_this());
+
+                let d12 =
+                    self.input_activation_weights.matmul_transposed(&activation_gate_derivative);
+
+                let d13 =
+                    self.hidden_activation_weights.matmul_transposed(&activation_gate_derivative);
+
+                let d14 = self.input_update_weights.matmul_transposed(&update_gate_derivative);
+                let d15 = self.hidden_update_weights.matmul_transposed(&update_gate_derivative);
+                let d16 = previous_hidden * &d13;
+                let d17 = d13 * this_reset;
+
+                // d18
+                let reset_gate_derivative =
+                    (this_reset * this_reset.clone().one_minus_this()) * &d16;
+
+                let d19 = d17 + d4;
+                let d20 = self.input_reset_weights.matmul_transposed(&reset_gate_derivative);
+                let d21 = self.hidden_reset_weights.matmul_transposed(&reset_gate_derivative);
+                let d22 = d21 + d15;
+
+                gradients.hidden_update_gradients
+                    .add_outer_product(&update_gate_derivative, previous_hidden);
+
+                gradients.hidden_reset_gradients
+                    .add_outer_product(&reset_gate_derivative, previous_hidden);
+                
+                {
+                    let previous_hidden = previous_hidden * this_reset;
+                    gradients.hidden_activation_gradients
+                        .add_outer_product(&activation_gate_derivative, previous_hidden);
+                }
+
+                let this_input = unsafe{ *input.get_unchecked(b_t) };
+
+                gradients.input_update_gradients
+                    .add_outer_product(&update_gate_derivative, this_input);
+
+                gradients.input_reset_gradients
+                    .add_outer_product(&reset_gate_derivative, this_input);
+                
+                gradients.input_activation_gradients
+                    .add_outer_product(&activation_gate_derivative, this_input);
+
+                gradients.update_bias_gradients += update_gate_derivative;
+                gradients.reset_bias_gradients += reset_gate_derivative;
+                gradients.activation_bias_gradients += activation_gate_derivative;
+
+                let d23 = d19 + d22;
+                let d24 = d12 + d14 + d20;
+
+                this_input_gradients.push(d24);
+
+                hidden_gradient = d23;
+            }
+
+            input_gradients.push(this_input_gradients.into_iter().rev().collect());
+        }
+
+        (input_gradients.into_iter().rev().collect(), gradients)
+    }
+
+    pub fn feedforward_single<FO>(
+        &self,
+        previous_hidden: &N,
+        input: &N,
+        output_activation: FO
+    ) -> GRUOutput<N>
+    where
+        FO: FnOnce(&mut N)
+    {
+        let mut update_gate =
+            self.hidden_update_weights.matmul(previous_hidden)
+            + self.input_update_weights.matmul(input)
+            + &self.update_biases;
+
+        update_gate.sigmoid();
+
+        let mut reset_gate =
+            self.hidden_reset_weights.matmul(previous_hidden)
+            + self.input_reset_weights.matmul(input)
+            + &self.reset_biases;
+
+        reset_gate.sigmoid();
+
+        let activation_v = &reset_gate * previous_hidden;
+        let mut activation_gate =
+            self.hidden_activation_weights.matmul(activation_v)
+            + self.input_activation_weights.matmul(input)
+            + &self.activation_biases;
+
+        activation_gate.tanh();
+
+        let this_activation = &activation_gate * &update_gate;
+        let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
+
+        let mut output_untrans = self.output_weights.matmul(&hidden);
+        output_activation(&mut output_untrans);
+
+        let output_gate = output_untrans;
+
+        GRUOutput{
+            update: update_gate,
+            reset: reset_gate,
+            activation: activation_gate,
+            hidden,
+            output: output_gate
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GRU<T>
+{
+    pub layers: Vec<GRULayer<T>>,
+    word_vector_size: usize
+}
+
+impl<N> GRU<N>
+where
+    N: NetworkType,
+    for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+    for<'a> &'a N: Div<f32, Output=N>
+{
+    pub fn new(word_vector_size: usize) -> Self
+    {
+        Self{
+            layers: (0..LAYERS_AMOUNT).map(|_| GRULayer::new(word_vector_size)).collect(),
+            word_vector_size
+        }
+    }
+
     #[allow(dead_code)]
     pub fn accuracy(
         &self,
@@ -190,7 +477,7 @@ where
         let f_output = self.feedforward(input.into_iter());
 
         Self::correct_guesses(
-            f_output.into_iter().map(|output| output.output),
+            f_output.into_iter().map(|output| output.last_output()),
             output.into_iter()
         ) as f32 / amount as f32
     }
@@ -237,7 +524,7 @@ where
         let f_output = self.feedforward(input.into_iter());
 
         Self::cross_entropy(
-            f_output.into_iter().map(|output| output.output),
+            f_output.into_iter().map(|output| output.last_output()),
             output.into_iter()
         )
     }
@@ -257,37 +544,6 @@ where
         -s
     }
 
-    #[inline(always)]
-    pub fn zeroed_gradients(&self) -> GRUGradients<N>
-    {
-        let output_gradients = N::zeroed_copy(&self.output_weights);
-
-        let input_update_gradients = N::zeroed_copy(&self.input_update_weights);
-        let input_reset_gradients = N::zeroed_copy(&self.input_reset_weights);
-        let input_activation_gradients = N::zeroed_copy(&self.input_activation_weights);
-
-        let hidden_update_gradients = N::zeroed_copy(&self.hidden_update_weights);
-        let hidden_reset_gradients = N::zeroed_copy(&self.hidden_reset_weights);
-        let hidden_activation_gradients = N::zeroed_copy(&self.hidden_activation_weights);
-
-        let update_bias_gradients = N::zeroed_copy(&self.update_biases);
-        let reset_bias_gradients = N::zeroed_copy(&self.reset_biases);
-        let activation_bias_gradients = N::zeroed_copy(&self.activation_biases);
-
-        GRUGradients{
-            input_update_gradients,
-            input_reset_gradients,
-            input_activation_gradients,
-            hidden_update_gradients,
-            hidden_reset_gradients,
-            hidden_activation_gradients,
-            update_bias_gradients,
-            reset_bias_gradients,
-            activation_bias_gradients,
-            output_gradients
-        }
-    }
-
     // deriving this hell made me appreciate how simple the rnn.rs derivation was
     // nevermind found somebody else deriving it again (mine were wrong ;-;)
     // https://cran.r-project.org/web/packages/rnn/vignettes/GRU_units.html
@@ -303,215 +559,210 @@ where
     pub fn gradients<'a, const ONE_HOT_ENCODED: bool>(
         &self,
         input: impl Iterator<Item=(&'a N, &'a N)>
-    ) -> GRUGradients<N>
+    ) -> Vec<GRUGradients<N>>
     where
         N: 'a
     {
-        self.gradients_with_hidden::<ONE_HOT_ENCODED>(
-            N::new(HIDDEN_AMOUNT, 1),
-            input
-        )
+        let first_hiddens = vec![N::new(HIDDEN_AMOUNT, 1); LAYERS_AMOUNT];
+        self.gradients_with_hidden::<ONE_HOT_ENCODED>(&first_hiddens, input)
     }
 
     pub fn gradients_with_hidden<'a, const ONE_HOT_ENCODED: bool>(
         &self,
-        starting_hidden: N,
+        starting_hiddens: &[N],
         input: impl Iterator<Item=(&'a N, &'a N)>
-    ) -> GRUGradients<N>
+    ) -> Vec<GRUGradients<N>>
     where
         N: 'a
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+        let (starting_input, output): (Vec<_>, Vec<_>) = input.unzip();
         let f_output = self.feedforward_with_hidden(
-            &starting_hidden,
-            input.iter().map(|v| *v)
+            starting_hiddens,
+            starting_input.iter().map(|v| *v)
         );
 
-        let mut gradients = self.zeroed_gradients();
+        let mut gradients = Vec::with_capacity(LAYERS_AMOUNT);
 
-        for t in (0..output.len()).rev()
+        let mut this_output: Option<Vec<Vec<N>>> = None;
+
+        for l_i in (0..LAYERS_AMOUNT).rev()
         {
-            let predicted_output = unsafe{ &f_output.get_unchecked(t).output };
+            debug_assert!(l_i < starting_hiddens.len());
+            let starting_hidden = unsafe{ starting_hiddens.get_unchecked(l_i) };
 
-            let expected_output = unsafe{ *output.get_unchecked(t) };
-            let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
+            debug_assert!(l_i < self.layers.len());
+            let layer = unsafe{ self.layers.get_unchecked(l_i) };
 
-            let expected_sum: f32 = if ONE_HOT_ENCODED
+            let this_f_output = f_output.iter().map(|layer|
             {
-                1.0
+                debug_assert!(l_i < layer.0.len());
+                unsafe{ layer.0.get_unchecked(l_i) }
+            }).collect::<Vec<_>>();
+
+            let is_last_layer = l_i == (LAYERS_AMOUNT - 1);
+
+            let output_gradients = if is_last_layer
+            {
+                // if its the last layer
+                (0..starting_input.len()).map(|t|
+                {
+                    let predicted_output = unsafe{ &this_f_output.get_unchecked(t).output };
+
+                    let expected_output = unsafe{ *output.get_unchecked(t) };
+
+                    let expected_sum: f32 = if ONE_HOT_ENCODED
+                    {
+                        1.0
+                    } else
+                    {
+                        expected_output.sum()
+                    };
+
+                    vec![predicted_output * expected_sum - expected_output]
+                }).collect::<Vec<_>>()
             } else
             {
-                expected_output.sum()
+                let mut this_output = this_output.take().unwrap();
+                /*this_output.iter_mut().for_each(|inner_gradient|
+                {
+                    inner_gradient.iter_mut().for_each(|gradient|
+                    {
+                        *gradient = &*gradient * gradient.clone().one_minus_this();
+                    });
+                });*/
+
+                this_output
             };
 
-            let diff = predicted_output * expected_sum - expected_output;
-
-            gradients.output_gradients.add_outer_product(&diff, hidden);
-
-            let mut d3 = self.output_weights.matmul_transposed(diff);
-
-            for b_t in (0..(t + 1)).rev()
+            let (input_gradients, this_gradient) = if l_i == 0
             {
-                let previous_hidden = if b_t == 0
+                // if its the first layer
+                layer.gradients_with_hidden(
+                    self.word_vector_size,
+                    starting_hidden,
+                    &starting_input,
+                    output_gradients,
+                    &this_f_output,
+                    is_last_layer
+                )
+            } else
+            {
+                let input = f_output.iter().map(|layer|
                 {
-                    &starting_hidden
-                } else
-                {
-                    unsafe{ &f_output.get_unchecked(b_t - 1).hidden }
-                };
+                    let index = l_i - 1;
 
-                let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
-                let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
-                let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
+                    debug_assert!(index < layer.0.len());
+                    unsafe{ &layer.0.get_unchecked(index).output }
+                }).collect::<Vec<_>>();
 
-                let d4 = this_update.clone().one_minus_this() * &d3;
+                layer.gradients_with_hidden(
+                    self.word_vector_size,
+                    starting_hidden,
+                    &input,
+                    output_gradients,
+                    &this_f_output,
+                    is_last_layer
+                )
+            };
 
-                let d5 = previous_hidden * &d3;
-                let d6 = d5 * -1.0;
-                let d7 = this_activation * &d3;
-                let d8 = this_update * &d3;
-                let d9 = d7 + d6;
+            this_output = Some(input_gradients);
 
-                // d10
-                let activation_gate_derivative =
-                    (this_activation * this_activation).one_minus_this() * d8;
-
-                // d11
-                let update_gate_derivative =
-                    &d9 * (this_update * this_update.clone().one_minus_this());
-
-                let d13 =
-                    self.hidden_activation_weights.matmul_transposed(&activation_gate_derivative);
-
-                let d15 = self.hidden_update_weights.matmul_transposed(&update_gate_derivative);
-                let d16 = previous_hidden * &d13;
-                let d17 = d13 * this_reset;
-
-                // d18
-                let reset_gate_derivative =
-                    (this_reset * this_reset.clone().one_minus_this()) * &d16;
-
-                let d19 = d17 + d4;
-
-                let d21 = self.hidden_reset_weights.matmul_transposed(&reset_gate_derivative);
-                let d22 = d21 + d15;
-
-                gradients.hidden_update_gradients
-                    .add_outer_product(&update_gate_derivative, previous_hidden);
-
-                gradients.hidden_reset_gradients
-                    .add_outer_product(&reset_gate_derivative, previous_hidden);
-                
-                {
-                    let previous_hidden = previous_hidden * this_reset;
-                    gradients.hidden_activation_gradients
-                        .add_outer_product(&activation_gate_derivative, previous_hidden);
-                }
-
-                let this_input = unsafe{ *input.get_unchecked(b_t) };
-
-                gradients.input_update_gradients
-                    .add_outer_product(&update_gate_derivative, this_input);
-
-                gradients.input_reset_gradients
-                    .add_outer_product(&reset_gate_derivative, this_input);
-                
-                gradients.input_activation_gradients
-                    .add_outer_product(&activation_gate_derivative, this_input);
-
-                gradients.update_bias_gradients += update_gate_derivative;
-                gradients.reset_bias_gradients += reset_gate_derivative;
-                gradients.activation_bias_gradients += activation_gate_derivative;
-
-                let d23 = d19 + d22;
-
-                d3 = d23;
-            }
+            gradients.push(this_gradient);
         }
 
-        gradients
+        gradients.into_iter().rev().collect()
     }
 
     #[inline(always)]
-    pub fn feedforward_single(
+    pub fn feedforward_single<B>(
         &self,
-        previous_hidden: &N,
+        previous_hiddens: &[B],
         input: &N
-    ) -> GRUOutput<N>
+    ) -> GRUOutputLayer<N>
+    where
+        B: Borrow<N>
     {
-        let mut update_gate =
-            self.hidden_update_weights.matmul(previous_hidden)
-            + self.input_update_weights.matmul(input)
-            + &self.update_biases;
+        debug_assert!(previous_hiddens.len() == LAYERS_AMOUNT);
+        let mut output: GRUOutputLayer<N> = GRUOutputLayer::with_capacity(LAYERS_AMOUNT);
 
-        update_gate.sigmoid();
+        for l_i in 0..LAYERS_AMOUNT
+        {
+            let input = if l_i == 0
+            {
+                input
+            } else
+            {
+                let index = l_i - 1;
 
-        let mut reset_gate =
-            self.hidden_reset_weights.matmul(previous_hidden)
-            + self.input_reset_weights.matmul(input)
-            + &self.reset_biases;
+                debug_assert!(index < output.0.len());
+                unsafe{ &output.0.get_unchecked(index).output }
+            };
 
-        reset_gate.sigmoid();
+            debug_assert!(l_i < self.layers.len());
+            let layer = unsafe{ self.layers.get_unchecked(l_i) };
 
-        let activation_v = &reset_gate * previous_hidden;
-        let mut activation_gate =
-            self.hidden_activation_weights.matmul(activation_v)
-            + self.input_activation_weights.matmul(input)
-            + &self.activation_biases;
+            let previous_hidden = unsafe{ previous_hiddens.get_unchecked(l_i).borrow() };
 
-        activation_gate.tanh();
+            let this_output = if l_i == (LAYERS_AMOUNT - 1)
+            {
+                // last layer
+                layer.feedforward_single(
+                    previous_hidden,
+                    input,
+                    SoftmaxedLayer::softmax
+                )
+            } else
+            {
+                layer.feedforward_single(
+                    previous_hidden,
+                    input,
+                    N::sigmoid
+                )
+            };
 
-        let this_activation = &activation_gate * &update_gate;
-        let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
-
-        let output_gate = SoftmaxedLayer::softmax(self.output_weights.matmul(&hidden));
-
-        GRUOutput{
-            update: update_gate,
-            reset: reset_gate,
-            activation: activation_gate,
-            hidden,
-            output: output_gate
+            output.push(this_output);
         }
+
+        output
     }
 
     #[allow(dead_code)]
-    pub fn feedforward<L>(&self, input: impl Iterator<Item=L>) -> Vec<GRUOutput<N>>
-    where
-        L: Borrow<N>
-    {
-        let first_hidden = N::new(HIDDEN_AMOUNT, 1);
-
-        self.feedforward_with_hidden(&first_hidden, input)
-    }
-
-    #[allow(dead_code)]
-    pub fn feedforward_with_hidden<L>(
+    pub fn feedforward<L>(
         &self,
-        first_hidden: &N,
-        input: impl Iterator<Item=L>
-    ) -> Vec<GRUOutput<N>>
+        input: impl Iterator<Item=L> + ExactSizeIterator
+    ) -> Vec<GRUOutputLayer<N>>
     where
         L: Borrow<N>
     {
-        let (lower_bound, upper_bound) = input.size_hint();
-        let time_total = upper_bound.unwrap_or(lower_bound);
+        let first_hiddens = vec![N::new(HIDDEN_AMOUNT, 1); LAYERS_AMOUNT];
 
-        let mut outputs: Vec<GRUOutput<N>> = Vec::with_capacity(time_total);
+        self.feedforward_with_hidden(&first_hiddens, input)
+    }
+
+    #[allow(dead_code)]
+    pub fn feedforward_with_hidden<L, B>(
+        &self,
+        first_hiddens: &[B],
+        input: impl Iterator<Item=L> + ExactSizeIterator
+    ) -> Vec<GRUOutputLayer<N>>
+    where
+        B: Borrow<N>,
+        L: Borrow<N>
+    {
+        let mut outputs: Vec<GRUOutputLayer<N>> = Vec::with_capacity(input.len());
 
         for (t, this_input) in input.enumerate()
         {
-            let previous_hidden = if t == 0
-            {
-                first_hidden
-            } else
-            {
-                unsafe{ &outputs.get_unchecked(t - 1).hidden }
-            };
-
             let this_input = this_input.borrow();
 
-            let output = self.feedforward_single(previous_hidden, this_input);
+            let output = if t == 0
+            {
+                self.feedforward_single(first_hiddens, this_input)
+            } else
+            {
+                let previous_hidden = unsafe{ &outputs.get_unchecked(t - 1).hiddens_ref() };
+                self.feedforward_single(previous_hidden, this_input)
+            };
 
             outputs.push(output);
         }
@@ -523,12 +774,11 @@ where
 #[cfg(test)]
 pub mod tests
 {
-    use std::iter;
-
     use super::*;
     use crate::neural_network::{
         MatrixWrapper,
         GenericContainer,
+        NetworkType,
         WeightsIterValue,
         InputOutputIter
     };
@@ -548,107 +798,124 @@ pub mod tests
         (a - b).abs() < epsilon
     }
 
-    #[ignore]
     #[allow(dead_code)]
     // #[test]
     fn forwardprop()
     {
         assert_eq!(HIDDEN_AMOUNT, 2);
-
-        let input_update_weights = GenericContainer::from_raw(
-            vec![4.63, -2.64, 4.76, 3.63].into_boxed_slice(),
-            2,
-            HIDDEN_AMOUNT
-        );
-
-        let input_reset_weights = GenericContainer::from_raw(
-            vec![-8.29, 9.96, -4.78, 2.24].into_boxed_slice(),
-            2,
-            HIDDEN_AMOUNT
-        );
-
-        let input_activation_weights = GenericContainer::from_raw(
-            vec![-5.09, 1.99, 1.15, 4.63].into_boxed_slice(),
-            2,
-            HIDDEN_AMOUNT
-        );
-
-        let hidden_update_weights = GenericContainer::from_raw(
-            vec![-0.48, 8.48, -6.14, 2.42].into_boxed_slice(),
-            HIDDEN_AMOUNT,
-            HIDDEN_AMOUNT
-        );
-
-        let hidden_reset_weights = GenericContainer::from_raw(
-            vec![-5.74, -2.66, -6.25, -9.21].into_boxed_slice(),
-            HIDDEN_AMOUNT,
-            HIDDEN_AMOUNT
-        );
-
-        let hidden_activation_weights = GenericContainer::from_raw(
-            vec![-3.95, -6.07, 6.36, -5.36].into_boxed_slice(),
-            HIDDEN_AMOUNT,
-            HIDDEN_AMOUNT
-        );
-
-        let update_biases = GenericContainer::from_raw(vec![-2.00, -0.87], 2, 1);
-        let reset_biases = GenericContainer::from_raw(vec![-8.36, -8.16], 2, 1);
-        let activation_biases = GenericContainer::from_raw(vec![3.47, 3.52], 2, 1);
-
-        let output_weights = GenericContainer::from_raw(
-            vec![8.59, -1.08, -7.31, -7.97].into_boxed_slice(),
-            HIDDEN_AMOUNT,
-            2
-        );
-
-        let gru = GRU{
-            input_update_weights,
-            input_reset_weights,
-            input_activation_weights,
-            hidden_update_weights,
-            hidden_reset_weights,
-            hidden_activation_weights,
-            update_biases,
-            reset_biases,
-            activation_biases,
-            output_weights
+        assert_eq!(LAYERS_AMOUNT, 2);
+        
+        let single_match = |correct, calculated|
+        {
+            assert!(
+                close_enough_abs(calculated, correct, 0.000001),
+                "correct: {correct}, calculated: {calculated}"
+            );
         };
 
-        let input = GenericContainer::from_raw(vec![-5.90, 1.78], 2, 1);
-        let f_output = gru.feedforward(iter::once(input));
+        let layer_match = |correct: &GenericContainer, calculated: &GenericContainer|
+        {
+            correct.iter().zip(calculated.iter()).for_each(|(correct, calculated)|
+            {
+                single_match(*correct, *calculated);
+            });
+        };
 
-        let output = &f_output[0].output;
+        let v = |values: Vec<f32>|
+        {
+            let size = values.len();
+            GenericContainer::from_raw(values, size, 1)
+        };
 
-        let epsilon = 0.00001;
+        let input = vec![
+            v(vec![fastrand::f32() * 20.0 - 10.0, fastrand::f32() * 20.0 - 10.0])
+        ];
 
-        let z = vec![1.686366804463125e-15, 1.7044644055950665e-10];
-        assert!(close_enough(z[0], *f_output[0].update.weight(0, 0), epsilon));
-        assert!(close_enough(z[1], *f_output[0].update.weight(1, 0), epsilon));
+        let gru = GRU::<GenericContainer>::new(2);
 
-        let r = vec![1.0, 0.9999999999633351];
-        assert!(close_enough(r[0], *f_output[0].reset.weight(0, 0), epsilon));
-        assert!(close_enough(r[1], *f_output[0].reset.weight(1, 0), epsilon));
+        let mut z =
+            gru.layers[0].input_update_weights.matmul(&input[0])
+            + gru.layers[0].hidden_update_weights.matmul(v(vec![0.0, 0.0]))
+            + &gru.layers[0].update_biases;
 
-        let h = vec![1.0, 0.9999048161632378];
-        assert!(close_enough(h[0], *f_output[0].activation.weight(0, 0), epsilon));
-        assert!(close_enough(h[1], *f_output[0].activation.weight(1, 0), epsilon));
+        z.sigmoid();
 
-        let hidden = vec![1.686366804463125e-15, 1.7043021681333174e-10];
-        assert!(close_enough(hidden[0], *f_output[0].hidden.weight(0, 0), epsilon));
-        assert!(close_enough(hidden[1], *f_output[0].hidden.weight(1, 0), epsilon));
+        let mut r =
+            gru.layers[0].input_reset_weights.matmul(&input[0])
+            + gru.layers[0].hidden_reset_weights.matmul(v(vec![0.0, 0.0]))
+            + &gru.layers[0].reset_biases;
 
-        let o = vec![0.5000000000460197, 0.4999999999539802];
-        let (correct, calculated) = (o[0], *output.weight(0, 0));
-        assert!(
-            close_enough(correct, calculated, epsilon),
-            "correct: {correct}, calculated: {calculated}"
-        );
+        r.sigmoid();
 
-        let (correct, calculated) = (o[1], *output.weight(1, 0));
-        assert!(
-            close_enough(correct, calculated, epsilon),
-            "correct: {correct}, calculated: {calculated}"
-        );
+        let av = v(vec![0.0, 0.0]) * &r;
+
+        let mut a =
+            gru.layers[0].input_activation_weights.matmul(&input[0])
+            + gru.layers[0].hidden_activation_weights.matmul(av)
+            + &gru.layers[0].activation_biases;
+
+        a.tanh();
+
+        let h_out = z.clone().one_minus_this() * v(vec![0.0, 0.0]) + &z * &a;
+
+        let mut o_out = gru.layers[0].output_weights.matmul(&h_out);
+        o_out.sigmoid();
+
+        let f_output = gru.feedforward(input.into_iter());
+
+        let l_i = 0;
+
+        eprintln!("update");
+        layer_match(&z, &f_output[0].0[l_i].update);
+        eprintln!("reset");
+        layer_match(&r, &f_output[0].0[l_i].reset);
+        eprintln!("activation");
+        layer_match(&a, &f_output[0].0[l_i].activation);
+        eprintln!("hidden");
+        layer_match(&h_out, &f_output[0].0[l_i].hidden);
+        eprintln!("output");
+        layer_match(&o_out, &f_output[0].0[l_i].output);
+
+        let mut z =
+            gru.layers[1].input_update_weights.matmul(&o_out)
+            + gru.layers[1].hidden_update_weights.matmul(v(vec![0.0, 0.0]))
+            + &gru.layers[1].update_biases;
+
+        z.sigmoid();
+
+        let mut r =
+            gru.layers[1].input_reset_weights.matmul(&o_out)
+            + gru.layers[1].hidden_reset_weights.matmul(v(vec![0.0, 0.0]))
+            + &gru.layers[1].reset_biases;
+
+        r.sigmoid();
+
+        let av = v(vec![0.0, 0.0]) * &r;
+
+        let mut a =
+            gru.layers[1].input_activation_weights.matmul(&o_out)
+            + gru.layers[1].hidden_activation_weights.matmul(av)
+            + &gru.layers[1].activation_biases;
+
+        a.tanh();
+
+        let h_out = z.clone().one_minus_this() * v(vec![0.0, 0.0]) + &z * &a;
+
+        let mut o_out = gru.layers[1].output_weights.matmul(&h_out);
+        SoftmaxedLayer::softmax(&mut o_out);
+
+        let l_i = 1;
+
+        eprintln!("update");
+        layer_match(&z, &f_output[0].0[l_i].update);
+        eprintln!("reset");
+        layer_match(&r, &f_output[0].0[l_i].reset);
+        eprintln!("activation");
+        layer_match(&a, &f_output[0].0[l_i].activation);
+        eprintln!("hidden");
+        layer_match(&h_out, &f_output[0].0[l_i].hidden);
+        eprintln!("output");
+        layer_match(&o_out, &f_output[0].0[l_i].output);
     }
 
     fn test_values(amount: usize) -> Vec<f32>
@@ -696,97 +963,102 @@ pub mod tests
         let input_nalgebra = InputOutputIter::new(input_nalgebra.iter());
         let output_nalgebra = gru_nalgebra.gradients::<false>(input_nalgebra);
 
-        let single_match = |correct, calculated, index|
+        for (output_correct, output_nalgebra) in output_correct.into_iter()
+            .zip(output_nalgebra.into_iter())
         {
-            assert!(
-                close_enough_abs(calculated, correct, 0.00001),
-                "correct: {correct}, calculated: {calculated}, index: {index}"
-            );
-        };
-
-        let layer_match = |correct: GenericContainer, calculated: MatrixWrapper|
-        {
-            for y in 0..correct.this_size()
+            let single_match = |correct, calculated, index|
             {
-                for x in 0..correct.previous_size()
+                assert!(
+                    close_enough_abs(calculated, correct, 0.00001),
+                    "correct: {correct}, calculated: {calculated}, index: {index}"
+                );
+            };
+
+            let layer_match = |correct: GenericContainer, calculated: MatrixWrapper|
+            {
+                for y in 0..correct.this_size()
                 {
-                    let index = y * correct.previous_size() + x;
+                    for x in 0..correct.previous_size()
+                    {
+                        let index = y * correct.previous_size() + x;
 
-                    let correct = correct.as_vec()[index];
-                    let calculated = calculated.as_vec()[index];
+                        let correct = correct.as_vec()[index];
+                        let calculated = calculated.as_vec()[index];
 
-                    single_match(correct, calculated, index);
+                        single_match(correct, calculated, index);
+                    }
                 }
-            }
-        };
+            };
 
-        eprintln!("input update gradients");
-        layer_match(
-            output_correct.input_update_gradients,
-            output_nalgebra.input_update_gradients
-        );
+            eprintln!("input update gradients");
+            layer_match(
+                output_correct.input_update_gradients,
+                output_nalgebra.input_update_gradients
+            );
 
-        eprintln!("input reset gradients");
-        layer_match(
-            output_correct.input_reset_gradients,
-            output_nalgebra.input_reset_gradients
-        );
+            eprintln!("input reset gradients");
+            layer_match(
+                output_correct.input_reset_gradients,
+                output_nalgebra.input_reset_gradients
+            );
 
-        eprintln!("input activation gradients");
-        layer_match(
-            output_correct.input_activation_gradients,
-            output_nalgebra.input_activation_gradients
-        );
+            eprintln!("input activation gradients");
+            layer_match(
+                output_correct.input_activation_gradients,
+                output_nalgebra.input_activation_gradients
+            );
 
-        eprintln!("hidden update gradients");
-        layer_match(
-            output_correct.hidden_update_gradients,
-            output_nalgebra.hidden_update_gradients
-        );
+            eprintln!("hidden update gradients");
+            layer_match(
+                output_correct.hidden_update_gradients,
+                output_nalgebra.hidden_update_gradients
+            );
 
-        eprintln!("hidden reset gradients");
-        layer_match(
-            output_correct.hidden_reset_gradients,
-            output_nalgebra.hidden_reset_gradients
-        );
+            eprintln!("hidden reset gradients");
+            layer_match(
+                output_correct.hidden_reset_gradients,
+                output_nalgebra.hidden_reset_gradients
+            );
 
-        eprintln!("hidden activation gradients");
-        layer_match(
-            output_correct.hidden_activation_gradients,
-            output_nalgebra.hidden_activation_gradients
-        );
+            eprintln!("hidden activation gradients");
+            layer_match(
+                output_correct.hidden_activation_gradients,
+                output_nalgebra.hidden_activation_gradients
+            );
 
-        eprintln!("update bias gradients");
-        layer_match(
-            output_correct.update_bias_gradients,
-            output_nalgebra.update_bias_gradients
-        );
+            eprintln!("update bias gradients");
+            layer_match(
+                output_correct.update_bias_gradients,
+                output_nalgebra.update_bias_gradients
+            );
 
-        eprintln!("reset bias gradients");
-        layer_match(
-            output_correct.reset_bias_gradients,
-            output_nalgebra.reset_bias_gradients
-        );
+            eprintln!("reset bias gradients");
+            layer_match(
+                output_correct.reset_bias_gradients,
+                output_nalgebra.reset_bias_gradients
+            );
 
-        eprintln!("activation bias gradients");
-        layer_match(
-            output_correct.activation_bias_gradients,
-            output_nalgebra.activation_bias_gradients
-        );
+            eprintln!("activation bias gradients");
+            layer_match(
+                output_correct.activation_bias_gradients,
+                output_nalgebra.activation_bias_gradients
+            );
 
-        eprintln!("output gradients");
-        layer_match(
-            output_correct.output_gradients,
-            output_nalgebra.output_gradients
-        );
+            eprintln!("output gradients");
+            layer_match(
+                output_correct.output_gradients,
+                output_nalgebra.output_gradients
+            );
+        }
     }
 
-    #[ignore]
+    /*
     #[allow(dead_code)]
     // #[test]
     fn backprop_smol()
     {
         assert_eq!(HIDDEN_AMOUNT, 2);
+        assert_eq!(LAYERS_AMOUNT, 1);
 
         let input_update_weights = GenericContainer::from_raw(
             vec![4.63, -2.64, 4.76, 3.63].into_boxed_slice(),
@@ -945,7 +1217,7 @@ pub mod tests
             -0.008777106286423085,
             1.037846408294211,
         ], output.output_gradients);
-    }
+    }*/
 
     #[test]
     fn loss_correct()
@@ -981,16 +1253,17 @@ pub mod tests
 
     pub fn input_update_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.input_update_weights,
+            |network| &mut network.layers[layer_index].input_update_weights,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.input_update_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -998,16 +1271,17 @@ pub mod tests
 
     pub fn input_reset_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.input_reset_weights,
+            |network| &mut network.layers[layer_index].input_reset_weights,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.input_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1015,16 +1289,17 @@ pub mod tests
 
     pub fn input_activation_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.input_activation_weights,
+            |network| &mut network.layers[layer_index].input_activation_weights,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.input_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1032,16 +1307,17 @@ pub mod tests
 
     pub fn hidden_update_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.hidden_update_weights,
+            |network| &mut network.layers[layer_index].hidden_update_weights,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_update_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1049,16 +1325,17 @@ pub mod tests
 
     pub fn hidden_reset_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.hidden_reset_weights,
+            |network| &mut network.layers[layer_index].hidden_reset_weights,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_reset_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1066,16 +1343,17 @@ pub mod tests
 
     pub fn hidden_activation_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.hidden_activation_weights,
+            |network| &mut network.layers[layer_index].hidden_activation_weights,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter_pos().zip(calculated_gradient.hidden_activation_gradients.iter_pos())
             .for_each(check_single_gradient);
@@ -1083,16 +1361,17 @@ pub mod tests
 
     pub fn update_bias_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.update_biases,
+            |network| &mut network.layers[layer_index].update_biases,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.update_bias_gradients.iter().enumerate())
@@ -1101,16 +1380,17 @@ pub mod tests
 
     pub fn reset_bias_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.reset_biases,
+            |network| &mut network.layers[layer_index].reset_biases,
             input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.reset_bias_gradients.iter().enumerate())
@@ -1119,15 +1399,16 @@ pub mod tests
 
     pub fn activation_bias_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.activation_biases, input.clone()
+            |network| &mut network.layers[layer_index].activation_biases, input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
 
         true_gradient.iter().enumerate()
             .zip(calculated_gradient.activation_bias_gradients.iter().enumerate())
@@ -1136,15 +1417,17 @@ pub mod tests
 
     pub fn output_gradients_check<'a>(
         network: &mut GRU<GenericContainer>,
+        layer_index: usize,
         input: impl Iterator<Item=(&'a GenericContainer, &'a GenericContainer)> + Clone
     )
     {
         let true_gradient = gradient_check(
             network,
-            |network| &mut network.output_weights, input.clone()
+            |network| &mut network.layers[layer_index].output_weights, input.clone()
         );
 
-        let calculated_gradient = network.gradients::<false>(input);
+        let calculated_gradient = &network.gradients::<false>(input)[layer_index];
+
         true_gradient.iter_pos().zip(calculated_gradient.output_gradients.iter_pos())
             .for_each(check_single_gradient);
     }
@@ -1157,6 +1440,7 @@ pub mod tests
         let true_gradient = true_gradient.value;
         let calculated_gradient = calculated_gradient.value;
 
+        // println!("comparing {true_gradient} and {calculated_gradient}");
         assert!(
             close_enough_abs(true_gradient, calculated_gradient, 0.001),
             "true_gradient: {true_gradient}, calculated_gradient: {calculated_gradient}, previous_index: {previous}, this_index: {this}"
@@ -1193,23 +1477,37 @@ pub mod tests
         let weights = weights.into_iter().map(|weight|
         {
             let WeightsIterValue{value: weight, previous, this} = weight;
-            let epsilon = 0.01;
+            let epsilon = 0.002;
 
             let mut set_this_weight = |network: &mut GRU<GenericContainer>, value|
             {
                 *weights_member(network).weight_mut(previous, this) = value;
             };
 
-            // ; ;
-            set_this_weight(network, weight - epsilon);
-            let under_loss = network.loss_unscaled(input.clone());
-            
-            set_this_weight(network, weight + epsilon);
-            let over_loss = network.loss_unscaled(input.clone());
+            let gradient = {
+                let f = |network: &GRU<_>|
+                {
+                    network.loss_unscaled(input.clone())
+                };
+
+                let mut change = |c|
+                {
+                    set_this_weight(network, weight + c);
+
+                    f(&network)
+                };
+
+                let loss_0 = change(2.0 * epsilon);
+                let loss_1 = change(epsilon);
+                let loss_2 = change(-epsilon);
+                let loss_3 = change(-2.0 * epsilon);
+
+                (-loss_0 + 8.0 * loss_1 - 8.0 * loss_2 + loss_3) / (12.0 * epsilon)
+            };
 
             set_this_weight(network, weight);
 
-            (over_loss - under_loss) / (2.0 * epsilon)
+            gradient
         }).collect::<Box<[_]>>();
 
         GenericContainer::from_raw(

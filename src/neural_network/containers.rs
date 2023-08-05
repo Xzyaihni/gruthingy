@@ -22,17 +22,18 @@ where
     for<'a> &'a T: Div<f32, Output=T>
 {
     #[allow(dead_code)]
-    pub fn new(layer: T) -> Self
+    pub fn new(mut layer: T) -> Self
     {
-        Self(Self::softmax(layer))
+        Self::softmax(&mut layer);
+        Self(layer)
     }
 
-    pub fn softmax(mut layer: T) -> T
+    pub fn softmax(layer: &mut T) 
     {
         layer.exp();
         let s = layer.sum();
 
-        layer / s
+        *layer /= s;
     }
 
     #[allow(dead_code)]
@@ -145,7 +146,7 @@ where
     T: Copy
 {
     #[allow(dead_code)]
-    pub fn iter_pos(&self) -> impl Iterator<Item=WeightsIterValue<T>> + '_
+    pub fn iter_pos(&self) -> impl Iterator<Item=WeightsIterValue<T>> + DoubleEndedIterator + '_
     {
         self.values.iter().enumerate().map(|(index, &value)|
         {
@@ -599,8 +600,17 @@ where
     {
         let rhs = rhs.borrow();
 
-        debug_assert!(self.previous_size == rhs.previous_size);
-        debug_assert!(self.this_size == rhs.this_size);
+        debug_assert!(
+            self.previous_size == rhs.previous_size,
+            "self.previous_size: {}, rhs.previous_size: {}",
+            self.previous_size, rhs.previous_size
+        );
+
+        debug_assert!(
+            self.this_size == rhs.this_size,
+            "self.this_size: {}, rhs.this_size: {}",
+            self.this_size, rhs.this_size
+        );
 
         let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
         {
@@ -673,7 +683,6 @@ where
         f: F
     )-> Self;
     fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self;
-    fn zeroed_copy(&self) -> Self;
     
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self;
     fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self;
@@ -725,11 +734,6 @@ impl NetworkType for GenericContainer
     fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         GenericContainer::from_raw(values, previous_size, this_size)
-    }
-
-    fn zeroed_copy(&self) -> Self
-    {
-        GenericContainer::new(self.previous_size, self.this_size)
     }
 
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self
@@ -956,14 +960,6 @@ impl NetworkType for MatrixWrapper
     fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         Self(DMatrix::from_vec(previous_size, this_size, values.into().to_vec()))
-    }
-
-    fn zeroed_copy(&self) -> Self
-    {
-        let mut out = self.0.clone();
-        out.fill(0.0);
-
-        Self(out)
     }
 
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self
@@ -1193,11 +1189,6 @@ impl NetworkType for ArrayWrapper
     fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         Self(Array::new(&values.into(), dim4!(previous_size as u64, this_size as u64)))
-    }
-
-    fn zeroed_copy(&self) -> Self
-    {
-        Self(arrayfire::constant(0.0, self.0.dims()))
     }
 
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self

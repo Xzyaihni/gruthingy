@@ -33,8 +33,8 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 100;
-pub const LAYERS_AMOUNT: usize = 3;
+pub const HIDDEN_AMOUNT: usize = 1;
+pub const LAYERS_AMOUNT: usize = 2;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct GradientInfo<T>
@@ -244,18 +244,19 @@ where
     {
         let input_amount = self.words.len();
 
-        let mut previous_hidden = N::new(HIDDEN_AMOUNT, 1);
+        let mut previous_hiddens: Vec<N> = vec![N::new(HIDDEN_AMOUNT, 1); LAYERS_AMOUNT];
         for i in 0..(input_amount + self.predict_amount)
         {
             debug_assert!(i < self.words.len());
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
-            let GRUOutput{
-                output,
-                hidden,
-                ..
-            } = network.feedforward_single(&previous_hidden, this_input);
-            previous_hidden = hidden;
+            let outputs = network.feedforward_single(
+                &previous_hiddens.iter().collect::<Vec<_>>(),
+                this_input
+            );
+
+            let output = outputs.last_output_ref().clone();
+            previous_hiddens = outputs.hiddens();
 
             if i >= (input_amount - 1)
             {
@@ -334,7 +335,7 @@ pub struct NeuralNetwork<T, D>
 {
     dictionary: D,
     network: GRU<T>,
-    gradients_info: GradientsInfo<T>,
+    gradients_info: Vec<GradientsInfo<T>>,
     hyper: AdamHyperparams
 }
 
@@ -350,7 +351,8 @@ where
         let words_vector_size = dictionary.words_amount();
         let network = GRU::new(words_vector_size);
 
-        let gradients_info = GradientsInfo::new(words_vector_size);
+        let gradients_info = (0..LAYERS_AMOUNT).map(|_| GradientsInfo::new(words_vector_size))
+            .collect::<Vec<_>>();
 
         let hyper = AdamHyperparams::new();
 
@@ -371,84 +373,93 @@ where
         ciborium::from_reader(reader)
     }
 
-    pub fn apply_gradients(&mut self, gradients: GRUGradients<T>)
+    // suckines
+    pub fn apply_gradients(&mut self, gradients: Vec<GRUGradients<T>>)
     {
-        let GRUGradients{
-            input_update_gradients,
-            input_reset_gradients,
-            input_activation_gradients,
-            hidden_update_gradients,
-            hidden_reset_gradients,
-            hidden_activation_gradients,
-            update_bias_gradients,
-            reset_bias_gradients,
-            activation_bias_gradients,
-            output_gradients
-        } = gradients;
+        let combined_iter = gradients.into_iter()
+            .zip(self.network.layers.iter_mut()
+                 .zip(self.gradients_info.iter_mut())
+            );
 
-        let hyper = &mut self.hyper;
+        combined_iter.for_each(|(gradients, (network_weights, gradients_info))|
+        {
+            let GRUGradients{
+                input_update_gradients,
+                input_reset_gradients,
+                input_activation_gradients,
+                hidden_update_gradients,
+                hidden_reset_gradients,
+                hidden_activation_gradients,
+                update_bias_gradients,
+                reset_bias_gradients,
+                activation_bias_gradients,
+                output_gradients
+            } = gradients;
 
-        self.network.input_update_weights += GradientsInfo::gradient_to_change(
-            &mut self.gradients_info.input_update_gradients,
-            input_update_gradients,
-            hyper
-        );
+            let hyper = &mut self.hyper;
 
-        self.network.input_reset_weights += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.input_reset_gradients,
-			input_reset_gradients,
-            hyper
-		);
-        
-        self.network.input_activation_weights += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.input_activation_gradients,
-			input_activation_gradients,
-            hyper
-		);
+            network_weights.input_update_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.input_update_gradients,
+                input_update_gradients,
+                hyper
+            );
 
-        self.network.hidden_update_weights += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.hidden_update_gradients,
-			hidden_update_gradients,
-            hyper
-		);
+            network_weights.input_reset_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.input_reset_gradients,
+                input_reset_gradients,
+                hyper
+            );
+            
+            network_weights.input_activation_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.input_activation_gradients,
+                input_activation_gradients,
+                hyper
+            );
 
-        self.network.hidden_reset_weights += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.hidden_reset_gradients,
-			hidden_reset_gradients,
-            hyper
-		);
-        
-        self.network.hidden_activation_weights += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.hidden_activation_gradients,
-			hidden_activation_gradients,
-            hyper
-		);
-        
-        self.network.update_biases += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.update_bias_gradients,
-			update_bias_gradients,
-            hyper
-		);
-        
-        self.network.reset_biases += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.reset_bias_gradients,
-			reset_bias_gradients,
-            hyper
-		);
-        
-        self.network.activation_biases += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.activation_bias_gradients,
-			activation_bias_gradients,
-            hyper
-		);
-        
-        self.network.output_weights += GradientsInfo::gradient_to_change(
-			&mut self.gradients_info.output_gradients,
-			output_gradients,
-            hyper
-		);
+            network_weights.hidden_update_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.hidden_update_gradients,
+                hidden_update_gradients,
+                hyper
+            );
 
-        hyper.advance_time();
+            network_weights.hidden_reset_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.hidden_reset_gradients,
+                hidden_reset_gradients,
+                hyper
+            );
+            
+            network_weights.hidden_activation_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.hidden_activation_gradients,
+                hidden_activation_gradients,
+                hyper
+            );
+            
+            network_weights.update_biases += GradientsInfo::gradient_to_change(
+                &mut gradients_info.update_bias_gradients,
+                update_bias_gradients,
+                hyper
+            );
+            
+            network_weights.reset_biases += GradientsInfo::gradient_to_change(
+                &mut gradients_info.reset_bias_gradients,
+                reset_bias_gradients,
+                hyper
+            );
+            
+            network_weights.activation_biases += GradientsInfo::gradient_to_change(
+                &mut gradients_info.activation_bias_gradients,
+                activation_bias_gradients,
+                hyper
+            );
+            
+            network_weights.output_weights += GradientsInfo::gradient_to_change(
+                &mut gradients_info.output_gradients,
+                output_gradients,
+                hyper
+            );
+        });
+
+        self.hyper.advance_time();
     }
 
     pub fn input_expected_from_text(
@@ -580,9 +591,15 @@ where
                     batch_gradients = Some(gradients);
                 } else
                 {
-                    batch_gradients.as_mut().map(|batch_gradients| *batch_gradients += gradients);
+                    batch_gradients.as_mut().map(|batch_gradients|
+                    {
+                        batch_gradients.iter_mut().zip(gradients.into_iter())
+                            .for_each(|(batch_gradients, gradients)|
+                            {
+                                *batch_gradients += gradients
+                            });
+                    });
                 }
-
 
                 batch_start += steps_num;
                 if batch_start >= (inputs.len() - 1)
@@ -592,7 +609,7 @@ where
             }
 
             let mut gradients = batch_gradients.unwrap();
-            gradients /= batch_size as f32;
+            gradients.iter_mut().for_each(|gradients| *gradients /= batch_size as f32);
 
             self.apply_gradients(gradients);
         }
@@ -666,11 +683,6 @@ mod tests
             "coolllllll",
             "AAAAAAAAAA"
         ]
-    }
-
-    fn test_texts_one() -> Vec<&'static str>
-    {
-        vec!["testing", "a", "6", "A"]
     }
 
     fn test_texts_two() -> Vec<&'static str>
@@ -861,21 +873,11 @@ mod tests
     }
 
     #[ignore]
-    #[test]
+    // #[test]
     fn gradients_check_many()
     {
         let mut network = test_network();
         let inputs = test_input_outputs(test_texts_many(), &mut network);
-
-        gradients_check(&mut network, inputs);
-    }
-
-    #[ignore]
-    #[test]
-    fn gradients_check_one()
-    {
-        let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_one(), &mut network);
 
         gradients_check(&mut network, inputs);
     }
@@ -891,7 +893,7 @@ mod tests
     }
 
     #[ignore]
-    #[test]
+    // #[test]
     fn gradients_check_three()
     {
         let mut network = test_network();
@@ -913,57 +915,63 @@ mod tests
     )
     {
         let network = &mut network.network;
-        inputs.into_iter().for_each(|input|
+
+        for l_i in (0..LAYERS_AMOUNT).rev()
         {
-            print_status("output gradients", ||
-            {
-                gru::tests::output_gradients_check(network, input.iter())
-            });
+            println!("layer {l_i}");
 
-            print_status("hidden update gradients", ||
+            inputs.iter().for_each(|input|
             {
-                gru::tests::hidden_update_gradients_check(network, input.iter())
-            });
+                print_status("output gradients", ||
+                {
+                    gru::tests::output_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("hidden reset gradients", ||
-            {
-                gru::tests::hidden_reset_gradients_check(network, input.iter())
-            });
+                print_status("hidden update gradients", ||
+                {
+                    gru::tests::hidden_update_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("hidden activation gradients", ||
-            {
-                gru::tests::hidden_activation_gradients_check(network, input.iter())
-            });
+                print_status("hidden reset gradients", ||
+                {
+                    gru::tests::hidden_reset_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("update bias gradients", ||
-            {
-                gru::tests::update_bias_gradients_check(network, input.iter())
-            });
+                print_status("hidden activation gradients", ||
+                {
+                    gru::tests::hidden_activation_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("reset bias gradients", ||
-            {
-                gru::tests::reset_bias_gradients_check(network, input.iter())
-            });
+                print_status("update bias gradients", ||
+                {
+                    gru::tests::update_bias_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("activation bias gradients", ||
-            {
-                gru::tests::activation_bias_gradients_check(network, input.iter())
-            });
+                print_status("reset bias gradients", ||
+                {
+                    gru::tests::reset_bias_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("input update gradients", ||
-            {
-                gru::tests::input_update_gradients_check(network, input.iter())
-            });
+                print_status("activation bias gradients", ||
+                {
+                    gru::tests::activation_bias_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("input reset gradients", ||
-            {
-                gru::tests::input_reset_gradients_check(network, input.iter())
-            });
+                print_status("input update gradients", ||
+                {
+                    gru::tests::input_update_gradients_check(network, l_i, input.iter())
+                });
 
-            print_status("input activation gradients", ||
-            {
-                gru::tests::input_activation_gradients_check(network, input.iter())
+                print_status("input reset gradients", ||
+                {
+                    gru::tests::input_reset_gradients_check(network, l_i, input.iter())
+                });
+
+                print_status("input activation gradients", ||
+                {
+                    gru::tests::input_activation_gradients_check(network, l_i, input.iter())
+                });
             });
-        });
+        }
     }
 }
