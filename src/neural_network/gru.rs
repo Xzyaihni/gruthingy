@@ -1,7 +1,7 @@
 use std::{
     f32,
     borrow::Borrow,
-    ops::{DivAssign, AddAssign, Mul, Div}
+    ops::{DivAssign, AddAssign, Mul, Div, Sub}
 };
 
 use serde::{Serialize, Deserialize};
@@ -89,7 +89,8 @@ impl<T> DivAssign<f32> for GRUGradients<T>
 where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<Output=T>
 {
     fn div_assign(&mut self, rhs: f32)
     {
@@ -110,7 +111,8 @@ impl<T> AddAssign for GRUGradients<T>
 where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<Output=T>
 {
     fn add_assign(&mut self, rhs: Self)
     {
@@ -146,7 +148,8 @@ impl<N> GRULayer<N>
 where
     N: NetworkType,
     for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-    for<'a> &'a N: Div<f32, Output=N>
+    for<'a> &'a N: Div<f32, Output=N>,
+    for<'a> &'a N: Sub<Output=N>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -237,8 +240,7 @@ where
         starting_hidden: &N,
         input: &[&N],
         output_gradient: Vec<N>,
-        f_output: &[&GRUOutput<N>],
-        last_layer: bool
+        f_output: &[&GRUOutput<N>]
     ) -> (Vec<N>, GRUGradients<N>)
     {
         let mut gradients = Self::zeroed_gradients(word_vector_size);
@@ -249,9 +251,13 @@ where
         {
             let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
 
-            let mut hidden_gradient = N::new(HIDDEN_AMOUNT, 1);
+            let output_gradient = unsafe{ output_gradient.get_unchecked(t) };
 
-            let output_gradient = unsafe{ output_gradient.get_unchecked(t) }.clone();
+            gradients.output_gradients.add_outer_product(output_gradient, hidden);
+
+            let output_gradient = self.output_weights.matmul_transposed(output_gradient);
+
+            let mut d3 = output_gradient;
 
             for b_t in (0..=t).rev()
             {
@@ -266,39 +272,6 @@ where
                 let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
                 let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
                 let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
-
-                // if (!last_layer) || (b_t == t)
-                {
-                    if b_t == t
-                    {
-                        gradients.output_gradients.add_outer_product(&output_gradient, hidden);
-                    } else
-                    {
-
-                    }
-                }
-
-                let output_gradient = self.output_weights.matmul_transposed(&output_gradient);
-
-                let d3 = if last_layer
-                {
-                    if b_t == t
-                    {
-                        hidden_gradient + &output_gradient
-                    } else
-                    {
-                        hidden_gradient
-                    }
-                } else
-                {
-                    if b_t == t
-                    {
-                        hidden_gradient + &output_gradient
-                    } else
-                    {
-                        hidden_gradient
-                    }
-                };
 
                 let d4 = this_update.clone().one_minus_this() * &d3;
 
@@ -367,9 +340,9 @@ where
                 let d24 = d12 + d14 + d20;
                 
                 let input_gradient = (this_input * this_input.clone().one_minus_this()) * d24;
-                input_gradients[b_t] += input_gradient;
+                *unsafe{ input_gradients.get_unchecked_mut(b_t) } += input_gradient;
 
-                hidden_gradient = d23;
+                d3 = d23;
             }
         }
 
@@ -436,7 +409,8 @@ impl<N> GRU<N>
 where
     N: NetworkType,
     for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-    for<'a> &'a N: Div<f32, Output=N>
+    for<'a> &'a N: Div<f32, Output=N>,
+    for<'a> &'a N: Sub<Output=N>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -591,15 +565,13 @@ where
 
                     let expected_output = unsafe{ *output.get_unchecked(t) };
 
-                    let expected_sum: f32 = if ONE_HOT_ENCODED
+                    if ONE_HOT_ENCODED
                     {
-                        1.0
+                        predicted_output - expected_output
                     } else
                     {
-                        expected_output.sum()
-                    };
-
-                    predicted_output * expected_sum - expected_output
+                        predicted_output * expected_output.sum() - expected_output
+                    }
                 }).collect::<Vec<_>>()
             } else
             {
@@ -614,8 +586,7 @@ where
                     starting_hidden,
                     &starting_input,
                     output_gradients,
-                    &this_f_output,
-                    is_last_layer
+                    &this_f_output
                 )
             } else
             {
@@ -632,8 +603,7 @@ where
                     starting_hidden,
                     &input,
                     output_gradients,
-                    &this_f_output,
-                    is_last_layer
+                    &this_f_output
                 )
             };
 

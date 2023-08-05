@@ -19,7 +19,8 @@ impl<T> SoftmaxedLayer<T>
 where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<&'a T, Output=T>
 {
     #[allow(dead_code)]
     pub fn new(mut layer: T) -> Self
@@ -590,6 +591,31 @@ where
     }
 }
 
+impl<V> Sub<V> for &GenericContainer
+where
+    V: Borrow<GenericContainer>
+{
+    type Output = GenericContainer;
+
+    fn sub(self, rhs: V) -> Self::Output
+    {
+        let rhs = rhs.borrow();
+
+        debug_assert!(self.previous_size == rhs.previous_size);
+        debug_assert!(self.this_size == rhs.this_size);
+
+        let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
+        {
+            v - rhs
+        }).collect();
+
+        GenericContainer{
+            values,
+            ..*self
+        }
+    }
+}
+
 impl<V> Add<V> for GenericContainer
 where
     V: Borrow<Self>
@@ -673,6 +699,7 @@ where
     Self: AddAssign<Self>,
     Self: Div<Output=Self> + Div<f32, Output=Self> + DivAssign<f32>,
     for<'a> Self: Sub<&'a Self, Output=Self>,
+    for<'a> &'a Self: Sub<&'a Self, Output=Self>,
     for<'a> &'a Self: Mul<f32, Output=Self> + Mul<&'a Self, Output=Self> + Mul<Self, Output=Self>,
     for<'a> &'a Self: Div<f32, Output=Self>
 {
@@ -846,6 +873,18 @@ where
     fn sub(self, rhs: T) -> Self::Output
     {
         Self(self.0 - &rhs.borrow().0)
+    }
+}
+
+impl<T> Sub<T> for &MatrixWrapper
+where
+    T: Borrow<MatrixWrapper>
+{
+    type Output = MatrixWrapper;
+
+    fn sub(self, rhs: T) -> Self::Output
+    {
+        MatrixWrapper(&self.0 - &rhs.borrow().0)
     }
 }
 
@@ -1074,6 +1113,18 @@ where
     fn sub(self, rhs: T) -> Self::Output
     {
         Self(self.0 - &rhs.borrow().0)
+    }
+}
+
+impl<T> Sub<T> for &ArrayWrapper
+where
+    T: Borrow<ArrayWrapper>
+{
+    type Output = ArrayWrapper;
+
+    fn sub(self, rhs: T) -> Self::Output
+    {
+        ArrayWrapper(&self.0 - &rhs.borrow().0)
     }
 }
 

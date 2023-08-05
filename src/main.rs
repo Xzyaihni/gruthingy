@@ -2,7 +2,7 @@ use std::{
     env,
     process,
     fs::File,
-    ops::{Div, Mul}
+    ops::{Div, Mul, Sub}
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -233,6 +233,7 @@ where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
     for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<Output=T>,
     D: NetworkDictionary + DeserializeOwned + Serialize
 {
     let text_file = File::open(&text_path)

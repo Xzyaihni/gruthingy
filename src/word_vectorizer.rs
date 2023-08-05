@@ -8,7 +8,7 @@ use std::{
         BufRead,
         BufReader
     },
-    ops::{Mul, Div}
+    ops::{Mul, Div, Sub}
 };
 
 use serde::{Serialize, Deserialize};
@@ -120,7 +120,8 @@ pub trait NetworkDictionary
     where
         N: NetworkType,
         for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-        for<'a> &'a N: Div<f32, Output=N>
+        for<'a> &'a N: Div<f32, Output=N>,
+        for<'a> &'a N: Sub<Output=N>
     {
         let mut layer = vec![0.0; self.words_amount()];
 
@@ -133,7 +134,8 @@ pub trait NetworkDictionary
     where
         N: NetworkType,
         for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-        for<'a> &'a N: Div<f32, Output=N>
+        for<'a> &'a N: Div<f32, Output=N>,
+        for<'a> &'a N: Sub<Output=N>
     {
         let index = layer.pick_weighed(temperature);
 

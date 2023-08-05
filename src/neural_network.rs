@@ -5,7 +5,7 @@ use std::{
     io::{self, Read},
     fs::File,
     path::Path,
-    ops::{Mul, Div}
+    ops::{Mul, Div, Sub}
 };
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -47,7 +47,8 @@ impl<T> GradientInfo<T>
 where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<&'a T, Output=T>
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
@@ -77,7 +78,8 @@ impl<T> GradientsInfo<T>
 where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>
+    for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<&'a T, Output=T>
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -222,6 +224,7 @@ where
     N: NetworkType,
     for<'b> &'b N: Mul<f32, Output=N> + Mul<&'b N, Output=N> + Mul<N, Output=N>,
     for<'b> &'b N: Div<f32, Output=N>,
+    for<'b> &'b N: Sub<Output=N>,
     D: NetworkDictionary
 {
     pub fn new(
@@ -344,6 +347,7 @@ where
     T: NetworkType,
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
     for<'a> &'a T: Div<f32, Output=T>,
+    for<'a> &'a T: Sub<&'a T, Output=T>,
     D: NetworkDictionary + Serialize + DeserializeOwned
 {
     pub fn new(dictionary: D) -> Self
