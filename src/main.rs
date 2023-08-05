@@ -39,7 +39,7 @@ struct TrainConfig
     batch_start: usize,
     batch_size: usize,
     steps_num: usize,
-    learning_rate: f64,
+    learning_rate: f32,
     calculate_accuracy: bool,
     ignore_loss: bool,
     use_gpu: bool,
@@ -231,8 +231,8 @@ fn train_inner<T, D>(
 )
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f64, Output=T>,
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>,
     D: NetworkDictionary + DeserializeOwned + Serialize
 {
     let text_file = File::open(&text_path)
@@ -292,7 +292,7 @@ fn train(mut args: impl Iterator<Item=String>)
 struct RunConfig
 {
     tokens_amount: usize,
-    temperature: f64,
+    temperature: f32,
     use_gpu: bool,
     network_path: String
 }

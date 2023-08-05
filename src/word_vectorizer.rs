@@ -119,8 +119,8 @@ pub trait NetworkDictionary
     fn word_to_layer<N>(&self, word: VectorWord) -> N
     where
         N: NetworkType,
-        for<'a> &'a N: Mul<f64, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-        for<'a> &'a N: Div<f64, Output=N>
+        for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+        for<'a> &'a N: Div<f32, Output=N>
     {
         let mut layer = vec![0.0; self.words_amount()];
 
@@ -129,11 +129,11 @@ pub trait NetworkDictionary
         N::from_raw(layer, self.words_amount(), 1)
     }
 
-    fn layer_to_word<N>(&self, layer: &SoftmaxedLayer<N>, temperature: f64) -> VectorWord
+    fn layer_to_word<N>(&self, layer: &SoftmaxedLayer<N>, temperature: f32) -> VectorWord
     where
         N: NetworkType,
-        for<'a> &'a N: Mul<f64, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
-        for<'a> &'a N: Div<f64, Output=N>
+        for<'a> &'a N: Mul<f32, Output=N> + Mul<&'a N, Output=N> + Mul<N, Output=N>,
+        for<'a> &'a N: Div<f32, Output=N>
     {
         let index = layer.pick_weighed(temperature);
 

@@ -1,5 +1,5 @@
 use std::{
-    f64,
+    f32,
     vec,
     borrow::Borrow,
     ops::{Add, Sub, Mul, Div, AddAssign, DivAssign}
@@ -18,8 +18,8 @@ pub struct SoftmaxedLayer<T>(pub T);
 impl<T> SoftmaxedLayer<T>
 where
     T: NetworkType,
-    for<'a> &'a T: Mul<f64, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f64, Output=T>
+    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
+    for<'a> &'a T: Div<f32, Output=T>
 {
     #[allow(dead_code)]
     pub fn new(mut layer: T) -> Self
@@ -49,12 +49,12 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn pick_weighed(&self, temperature: f64) -> usize
+    pub fn pick_weighed(&self, temperature: f32) -> usize
     {
         Self::pick_weighed_associated(&self.0, temperature)
     }
 
-    pub fn pick_weighed_associated(values: &T, temperature: f64) -> usize
+    pub fn pick_weighed_associated(values: &T, temperature: f32) -> usize
     {
         let values = values / temperature;
 
@@ -63,9 +63,9 @@ where
 
     pub fn pick_weighed_inner<'b, I>(mut iter: I) -> usize
     where
-        I: Iterator<Item=&'b f64> + ExactSizeIterator
+        I: Iterator<Item=&'b f32> + ExactSizeIterator
     {
-        let mut c = fastrand::f64();
+        let mut c = fastrand::f32();
 
         let max_index = iter.len() - 1;
 
@@ -79,7 +79,7 @@ where
 
     pub fn highest_index<'b, I>(iter: I) -> usize
     where
-        I: Iterator<Item=&'b f64>
+        I: Iterator<Item=&'b f32>
     {
         iter.enumerate().max_by(|a, b|
         {
@@ -97,7 +97,7 @@ pub struct WeightsIterValue<T>
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GenericContainer<T=f64>
+pub struct GenericContainer<T=f32>
 {
     values: Box<[T]>,
     previous_size: usize,
@@ -106,13 +106,13 @@ pub struct GenericContainer<T=f64>
 
 impl<T> GenericContainer<T>
 {
-    pub fn new_from(&self, values: &Array<f64>) -> GenericContainer<f64>
+    pub fn new_from(&self, values: &Array<f32>) -> GenericContainer<f32>
     {
         debug_assert!(self.previous_size == values.dims()[0] as usize);
         debug_assert!(self.this_size == values.dims()[1] as usize);
         debug_assert!(self.values.len() == values.elements());
 
-        let mut values_host = vec![0.0_f64; values.elements()];
+        let mut values_host = vec![0.0_f32; values.elements()];
         values.host(&mut values_host);
 
         GenericContainer{
@@ -287,16 +287,16 @@ impl<T> GenericContainer<T>
     }
 }
 
-impl GenericContainer<f64>
+impl GenericContainer<f32>
 {
     #[inline(always)]
-    pub fn dot(self, rhs: GenericContainer) -> f64
+    pub fn dot(self, rhs: GenericContainer) -> f32
     {
         self.values.into_iter().zip(rhs.values.into_iter()).map(|(v, rhs)| v * rhs).sum()
     }
 
     #[inline(always)]
-    pub fn sum(&self) -> f64
+    pub fn sum(&self) -> f32
     {
         self.values.into_iter().sum()
     }
@@ -362,13 +362,13 @@ impl GenericContainer<f64>
     }
 
     #[inline(always)]
-    pub fn apply<F: FnMut(&f64) -> f64>(&mut self, mut f: F)
+    pub fn apply<F: FnMut(&f32) -> f32>(&mut self, mut f: F)
     {
         self.iter_mut().for_each(|v| *v = f(v));
     }
 
     #[inline(always)]
-    pub fn applied<F: FnMut(&f64) -> f64>(&self, mut f: F) -> Self
+    pub fn applied<F: FnMut(&f32) -> f32>(&self, mut f: F) -> Self
     {
         Self{
             values: self.iter().map(|v| f(v)).collect(),
@@ -411,11 +411,11 @@ impl GenericContainer<f64>
     }
 }
 
-impl Mul<f64> for GenericContainer
+impl Mul<f32> for GenericContainer
 {
     type Output = Self;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         let values = self.values.into_iter().map(|v|
         {
@@ -429,11 +429,11 @@ impl Mul<f64> for GenericContainer
     }
 }
 
-impl Mul<f64> for &GenericContainer
+impl Mul<f32> for &GenericContainer
 {
     type Output = GenericContainer;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         let values = self.iter().map(|v|
         {
@@ -497,11 +497,11 @@ where
     }
 }
 
-impl Div<f64> for GenericContainer
+impl Div<f32> for GenericContainer
 {
     type Output = Self;
 
-    fn div(self, rhs: f64) -> Self::Output
+    fn div(self, rhs: f32) -> Self::Output
     {
         let values = self.values.into_iter().map(|v|
         {
@@ -515,11 +515,11 @@ impl Div<f64> for GenericContainer
     }
 }
 
-impl Div<f64> for &GenericContainer
+impl Div<f32> for &GenericContainer
 {
     type Output = GenericContainer;
 
-    fn div(self, rhs: f64) -> Self::Output
+    fn div(self, rhs: f32) -> Self::Output
     {
         let values = self.iter().map(|v|
         {
@@ -554,9 +554,9 @@ impl Div for GenericContainer
     }
 }
 
-impl DivAssign<f64> for GenericContainer
+impl DivAssign<f32> for GenericContainer
 {
-    fn div_assign(&mut self, rhs: f64)
+    fn div_assign(&mut self, rhs: f32)
     {
         self.values.iter_mut().for_each(|v|
         {
@@ -624,11 +624,11 @@ where
     }
 }
 
-impl Add<f64> for GenericContainer
+impl Add<f32> for GenericContainer
 {
     type Output = Self;
 
-    fn add(self, rhs: f64) -> Self::Output
+    fn add(self, rhs: f32) -> Self::Output
     {
         let values = self.values.into_iter().map(|v|
         {
@@ -668,26 +668,26 @@ where
 pub trait NetworkType
 where
     for<'a> Self: Sized + Serialize + Deserialize<'a> + Clone,
-    for<'a> Self: Mul<f64, Output=Self> + Mul<Self, Output=Self> + Mul<&'a Self, Output=Self>,
-    for<'a> Self: Add<Output=Self> + Add<f64, Output=Self> + Add<&'a Self, Output=Self>,
+    for<'a> Self: Mul<f32, Output=Self> + Mul<Self, Output=Self> + Mul<&'a Self, Output=Self>,
+    for<'a> Self: Add<Output=Self> + Add<f32, Output=Self> + Add<&'a Self, Output=Self>,
     Self: AddAssign<Self>,
-    Self: Div<Output=Self> + Div<f64, Output=Self> + DivAssign<f64>,
+    Self: Div<Output=Self> + Div<f32, Output=Self> + DivAssign<f32>,
     for<'a> Self: Sub<&'a Self, Output=Self>,
-    for<'a> &'a Self: Mul<f64, Output=Self> + Mul<&'a Self, Output=Self> + Mul<Self, Output=Self>,
-    for<'a> &'a Self: Div<f64, Output=Self>
+    for<'a> &'a Self: Mul<f32, Output=Self> + Mul<&'a Self, Output=Self> + Mul<Self, Output=Self>,
+    for<'a> &'a Self: Div<f32, Output=Self>
 {
     fn new(previous_size: usize, this_size: usize) -> Self;
-    fn new_with<F: FnMut() -> f64>(
+    fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
         f: F
     )-> Self;
-    fn from_raw<V: Into<Box<[f64]>>>(values: V, previous_size: usize, this_size: usize) -> Self;
+    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self;
     
     fn matmul(&self, rhs: impl Borrow<Self>) -> Self;
     fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self;
     fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>);
-    fn dot(self, rhs: Self) -> f64;
+    fn dot(self, rhs: Self) -> f32;
     
     fn sqrt(&mut self);
     fn exp(&mut self);
@@ -695,13 +695,13 @@ where
     fn sigmoid(&mut self);
     fn tanh(&mut self);
 
-    fn sum(&self) -> f64;
+    fn sum(&self) -> f32;
     
     fn one_minus_this(self) -> Self;
 
     fn total_len(&self) -> usize;
 
-    fn as_vec(&self) -> Vec<f64>;
+    fn as_vec(&self) -> Vec<f32>;
 
     fn pick_weighed(&self) -> usize;
     fn highest_index(&self) -> usize;
@@ -722,7 +722,7 @@ impl NetworkType for GenericContainer
         GenericContainer::new(previous_size, this_size)
     }
 
-    fn new_with<F: FnMut() -> f64>(
+    fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
         f: F
@@ -731,7 +731,7 @@ impl NetworkType for GenericContainer
         GenericContainer::new_with(previous_size, this_size, f)
     }
 
-    fn from_raw<V: Into<Box<[f64]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         GenericContainer::from_raw(values, previous_size, this_size)
     }
@@ -751,7 +751,7 @@ impl NetworkType for GenericContainer
         GenericContainer::add_outer_product(self, lhs, rhs);
     }
 
-    fn dot(self, rhs: Self) -> f64
+    fn dot(self, rhs: Self) -> f32
     {
         GenericContainer::dot(self, rhs)
     }
@@ -781,7 +781,7 @@ impl NetworkType for GenericContainer
         GenericContainer::apply(self, |x| x.tanh())
     }
 
-    fn sum(&self) -> f64
+    fn sum(&self) -> f32
     {
         GenericContainer::sum(self)
     }
@@ -796,7 +796,7 @@ impl NetworkType for GenericContainer
         GenericContainer::total_len(self)
     }
 
-    fn as_vec(&self) -> Vec<f64>
+    fn as_vec(&self) -> Vec<f32>
     {
         self.values.clone().to_vec()
     }
@@ -813,7 +813,7 @@ impl NetworkType for GenericContainer
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatrixWrapper(pub DMatrix<f64>);
+pub struct MatrixWrapper(pub DMatrix<f32>);
 
 impl<T> Add<T> for MatrixWrapper
 where
@@ -827,11 +827,11 @@ where
     }
 }
 
-impl Add<f64> for MatrixWrapper
+impl Add<f32> for MatrixWrapper
 {
     type Output = Self;
 
-    fn add(self, rhs: f64) -> Self::Output
+    fn add(self, rhs: f32) -> Self::Output
     {
         Self(self.0.add_scalar(rhs))
     }
@@ -873,21 +873,21 @@ where
     }
 }
 
-impl Mul<f64> for MatrixWrapper
+impl Mul<f32> for MatrixWrapper
 {
     type Output = Self;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         Self(self.0 * rhs)
     }
 }
 
-impl Mul<f64> for &MatrixWrapper
+impl Mul<f32> for &MatrixWrapper
 {
     type Output = MatrixWrapper;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         MatrixWrapper(&self.0 * rhs)
     }
@@ -905,21 +905,21 @@ where
     }
 }
 
-impl Div<f64> for MatrixWrapper
+impl Div<f32> for MatrixWrapper
 {
     type Output = Self;
 
-    fn div(self, rhs: f64) -> Self::Output
+    fn div(self, rhs: f32) -> Self::Output
     {
         Self(self.0 / rhs)
     }
 }
 
-impl Div<f64> for &MatrixWrapper
+impl Div<f32> for &MatrixWrapper
 {
     type Output = MatrixWrapper;
 
-    fn div(self, rhs: f64) -> Self::Output
+    fn div(self, rhs: f32) -> Self::Output
     {
         MatrixWrapper(&self.0 / rhs)
     }
@@ -933,9 +933,9 @@ impl AddAssign for MatrixWrapper
     }
 }
 
-impl DivAssign<f64> for MatrixWrapper
+impl DivAssign<f32> for MatrixWrapper
 {
-    fn div_assign(&mut self, rhs: f64)
+    fn div_assign(&mut self, rhs: f32)
     {
         self.0 /= rhs;
     }
@@ -948,7 +948,7 @@ impl NetworkType for MatrixWrapper
         Self(DMatrix::zeros(previous_size, this_size))
     }
 
-    fn new_with<F: FnMut() -> f64>(
+    fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
         mut f: F
@@ -957,7 +957,7 @@ impl NetworkType for MatrixWrapper
         Self(DMatrix::from_fn(previous_size, this_size, |_, _| f()))
     }
 
-    fn from_raw<V: Into<Box<[f64]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         Self(DMatrix::from_vec(previous_size, this_size, values.into().to_vec()))
     }
@@ -979,7 +979,7 @@ impl NetworkType for MatrixWrapper
         self.0 += &rhs.borrow().0 * transposed_lhs;
     }
 
-    fn dot(self, rhs: Self) -> f64
+    fn dot(self, rhs: Self) -> f32
     {
         self.0.dot(&rhs.0)
     }
@@ -1009,7 +1009,7 @@ impl NetworkType for MatrixWrapper
         self.0.apply(|v| *v = v.tanh());
     }
 
-    fn sum(&self) -> f64
+    fn sum(&self) -> f32
     {
         self.0.sum()
     }
@@ -1024,7 +1024,7 @@ impl NetworkType for MatrixWrapper
         self.0.as_slice().len()
     }
 
-    fn as_vec(&self) -> Vec<f64>
+    fn as_vec(&self) -> Vec<f32>
     {
         self.0.as_slice().to_vec()
     }
@@ -1041,7 +1041,7 @@ impl NetworkType for MatrixWrapper
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ArrayWrapper(pub Array<f64>);
+pub struct ArrayWrapper(pub Array<f32>);
 
 impl<T> Add<T> for ArrayWrapper
 where
@@ -1055,11 +1055,11 @@ where
     }
 }
 
-impl Add<f64> for ArrayWrapper
+impl Add<f32> for ArrayWrapper
 {
     type Output = Self;
 
-    fn add(self, rhs: f64) -> Self::Output
+    fn add(self, rhs: f32) -> Self::Output
     {
         Self(self.0 + rhs)
     }
@@ -1101,21 +1101,21 @@ where
     }
 }
 
-impl Mul<f64> for ArrayWrapper
+impl Mul<f32> for ArrayWrapper
 {
     type Output = Self;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         Self(self.0 * rhs)
     }
 }
 
-impl Mul<f64> for &ArrayWrapper
+impl Mul<f32> for &ArrayWrapper
 {
     type Output = ArrayWrapper;
 
-    fn mul(self, rhs: f64) -> Self::Output
+    fn mul(self, rhs: f32) -> Self::Output
     {
         ArrayWrapper(&self.0 * rhs)
     }
@@ -1133,21 +1133,21 @@ where
     }
 }
 
-impl Div<f64> for ArrayWrapper
+impl Div<f32> for ArrayWrapper
 {
     type Output = Self;
 
-    fn div(self, rhs: f64) -> Self::Output
+    fn div(self, rhs: f32) -> Self::Output
     {
         Self(self.0 / rhs)
     }
 }
 
-impl Div<f64> for &ArrayWrapper
+impl Div<f32> for &ArrayWrapper
 {
     type Output = ArrayWrapper;
 
-    fn div(self, rhs: f64) -> Self::Output
+    fn div(self, rhs: f32) -> Self::Output
     {
         ArrayWrapper(&self.0 / rhs)
     }
@@ -1161,9 +1161,9 @@ impl AddAssign for ArrayWrapper
     }
 }
 
-impl DivAssign<f64> for ArrayWrapper
+impl DivAssign<f32> for ArrayWrapper
 {
-    fn div_assign(&mut self, rhs: f64)
+    fn div_assign(&mut self, rhs: f32)
     {
         self.0 = &self.0 / rhs;
     }
@@ -1176,7 +1176,7 @@ impl NetworkType for ArrayWrapper
         Self(arrayfire::constant(0.0, dim4!(previous_size as u64, this_size as u64)))
     }
 
-    fn new_with<F: FnMut() -> f64>(
+    fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
         mut f: F
@@ -1186,7 +1186,7 @@ impl NetworkType for ArrayWrapper
         Self(Array::new(&s, dim4!(previous_size as u64, this_size as u64)))
     }
 
-    fn from_raw<V: Into<Box<[f64]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         Self(Array::new(&values.into(), dim4!(previous_size as u64, this_size as u64)))
     }
@@ -1221,11 +1221,11 @@ impl NetworkType for ArrayWrapper
         );
     }
 
-    fn dot(self, rhs: Self) -> f64
+    fn dot(self, rhs: Self) -> f32
     {
         let d = arrayfire::dot(&self.0, &rhs.0, MatProp::NONE, MatProp::NONE);
 
-        let mut out = [0.0_f64];
+        let mut out = [0.0_f32];
         d.host(&mut out);
 
         out[0]
@@ -1256,14 +1256,14 @@ impl NetworkType for ArrayWrapper
         self.0 = arrayfire::tanh(&self.0);
     }
 
-    fn sum(&self) -> f64
+    fn sum(&self) -> f32
     {
         arrayfire::sum_all(&self.0).0
     }
 
     fn one_minus_this(self) -> Self
     {
-        Self(1.0_f64 - self.0)
+        Self(1.0_f32 - self.0)
     }
 
     fn total_len(&self) -> usize
@@ -1271,9 +1271,9 @@ impl NetworkType for ArrayWrapper
         self.0.elements()
     }
 
-    fn as_vec(&self) -> Vec<f64>
+    fn as_vec(&self) -> Vec<f32>
     {
-        let mut out = vec![0.0_f64; self.0.elements()];
+        let mut out = vec![0.0_f32; self.0.elements()];
         self.0.host(&mut out);
 
         out
