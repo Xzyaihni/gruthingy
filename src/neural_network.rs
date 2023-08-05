@@ -10,6 +10,8 @@ use std::{
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
+use rayon::prelude::*;
+
 // #[allow(unused_imports)]
 // use rnn::{RNN, RNNGradients};
 
@@ -348,7 +350,7 @@ where
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
     for<'a> &'a T: Div<f32, Output=T>,
     for<'a> &'a T: Sub<&'a T, Output=T>,
-    D: NetworkDictionary + Serialize + DeserializeOwned
+    D: NetworkDictionary + Serialize + DeserializeOwned + Send + Sync
 {
     pub fn new(dictionary: D) -> Self
     {
@@ -579,7 +581,7 @@ where
 
             let max_batch_start = inputs.len() - steps_num;
 
-            let gradients = (0..batch_size).map(|b_i|
+            let gradients = (0..batch_size).into_par_iter().map(|b_i|
             {
                 let batch_start = batch_start + b_i * steps_num;
 

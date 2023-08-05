@@ -695,7 +695,7 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 pub trait NetworkType
 where
-    for<'a> Self: Sized + Serialize + Deserialize<'a> + Clone,
+    for<'a> Self: Sized + Serialize + Deserialize<'a> + Clone + Send + Sync,
     for<'a> Self: Mul<f32, Output=Self> + Mul<Self, Output=Self> + Mul<&'a Self, Output=Self>,
     for<'a> Self: Add<Output=Self> + Add<f32, Output=Self> + Add<&'a Self, Output=Self>,
     Self: AddAssign<Self>,

@@ -235,7 +235,7 @@ where
     for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
     for<'a> &'a T: Div<f32, Output=T>,
     for<'a> &'a T: Sub<Output=T>,
-    D: NetworkDictionary + DeserializeOwned + Serialize
+    D: NetworkDictionary + DeserializeOwned + Serialize + Send + Sync
 {
     let text_file = File::open(&text_path)
         .unwrap_or_else(|err|

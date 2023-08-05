@@ -165,7 +165,7 @@ where
             });
 
             acc
-        }).expect("must not be called on an empty iterator (im too lazy)")
+        }).unwrap_or_else(|| GRUFullGradients::new())
     }
 }
 
