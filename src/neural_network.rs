@@ -33,7 +33,7 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 4;
+pub const HIDDEN_AMOUNT: usize = 100;
 pub const LAYERS_AMOUNT: usize = 3;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
