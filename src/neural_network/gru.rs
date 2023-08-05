@@ -383,10 +383,10 @@ where
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
-        let output_untrans = self.output_weights.matmul(&hidden);
+        let mut output_untrans = self.output_weights.matmul(&hidden);
+        output_activation(&mut output_untrans);
 
-        let mut output_gate = output_untrans.clone();
-        output_activation(&mut output_gate);
+        let output_gate = output_untrans;
 
         GRUOutput{
             update: update_gate,
