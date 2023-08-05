@@ -251,14 +251,7 @@ where
 
             let mut hidden_gradient = N::new(HIDDEN_AMOUNT, 1);
 
-            let output_gradient = if last_layer
-            {
-                debug_assert!(0 < output_gradient.len());
-                unsafe{ output_gradient[t].clone() }.clone()
-            } else
-            {
-                output_gradient[t].clone()
-            };
+            let output_gradient = unsafe{ output_gradient.get_unchecked(t) }.clone();
 
             for b_t in (0..=t).rev()
             {
