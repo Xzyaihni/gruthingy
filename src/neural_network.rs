@@ -598,22 +598,23 @@ where
                     batch_gradients.as_mut().map(|batch_gradients|
                     {
                         batch_gradients.iter_mut().zip(gradients.into_iter())
-                            .for_each(|(batch_gradients, gradients)|
+                            .for_each(|(batch_gradients, mut gradients)|
                             {
-                                *batch_gradients += gradients
+                                gradients /= batch_size as f32;
+
+                                *batch_gradients += gradients;
                             });
                     });
                 }
 
                 batch_start += steps_num;
-                if batch_start >= (inputs.len() - 1)
+                if batch_start >= (inputs.len() - steps_num)
                 {
                     batch_start = 0;
                 }
             }
 
-            let mut gradients = batch_gradients.unwrap();
-            gradients.iter_mut().for_each(|gradients| *gradients /= batch_size as f32);
+            let gradients = batch_gradients.unwrap();
 
             self.apply_gradients(gradients);
         }
