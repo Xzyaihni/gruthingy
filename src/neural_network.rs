@@ -622,9 +622,23 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn predict(&mut self, text: &str, amount: usize, temperature: f32) -> String
+    pub fn predict_text(&mut self, text: &str, amount: usize, temperature: f32) -> String
     {
-        let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text.as_bytes());
+        let output = self.predict_inner(text.as_bytes(), amount, temperature)
+            .into_iter().copied()
+            .filter(|&c| c != b'\0').collect::<Vec<_>>();
+        
+        String::from_utf8_lossy(&output).to_string()
+    }
+
+    pub fn predict_bytes(&mut self, text: &str, amount: usize, temperature: f32) -> Box<[u8]>
+    {
+        self.predict_inner(text.as_bytes(), amount, temperature)
+    }
+
+    fn predict_inner(&mut self, start: &[u8], amount: usize, temperature: f32) -> Box<[u8]>
+    {
+        let word_vectorizer = WordVectorizer::new(&mut self.dictionary, start);
 
         let predictor = {
             let words = word_vectorizer.collect::<Vec<_>>();
@@ -637,10 +651,7 @@ where
             Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
-        let output = predictor.predict_bytes(&self.network).into_iter().copied()
-            .filter(|&c| c != b'\0').collect::<Vec<_>>();
-        
-        String::from_utf8_lossy(&output).to_string()
+        predictor.predict_bytes(&self.network)
     }
 }
 

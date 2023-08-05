@@ -1,6 +1,7 @@
 use std::{
     env,
     process,
+    io::Write,
     fs::File,
     ops::{Div, Mul, Sub}
 };
@@ -295,6 +296,8 @@ struct RunConfig
     tokens_amount: usize,
     temperature: f32,
     use_gpu: bool,
+    replace_invalid: bool,
+    save_path: Option<String>,
     network_path: String
 }
 
@@ -305,6 +308,8 @@ impl RunConfig
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
         let mut use_gpu = false;
+        let mut replace_invalid = true;
+        let mut save_path = None;
         let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
 
         while let Some(arg) = args.next()
@@ -333,9 +338,20 @@ impl RunConfig
                             complain(&format!("cant parse the temperature: {err:?}"))
                         });
                 },
+                "-r" | "--raw" =>
+                {
+                    replace_invalid = false;
+                },
                 "-g" | "--gpu" =>
                 {
                     use_gpu = true;
+                },
+                "-o" | "--output" =>
+                {
+                    save_path = Some(args.next().unwrap_or_else(||
+                        {
+                            complain(&format!("expected value after {arg}"))
+                        }));
                 },
                 "-p" | "--path" =>
                 {
@@ -352,6 +368,8 @@ impl RunConfig
             tokens_amount,
             temperature,
             use_gpu,
+            replace_invalid,
+            save_path,
             network_path
         }
     }
@@ -369,16 +387,44 @@ fn run(mut args: impl Iterator<Item=String>)
         let mut network: NeuralNetwork<ArrayWrapper, CharDictionary> =
             NeuralNetwork::load(config.network_path).unwrap();
         
-        network.predict(&text, config.tokens_amount, config.temperature)
+        network.predict_bytes(&text, config.tokens_amount, config.temperature)
     } else
     {
         let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
             NeuralNetwork::load(config.network_path).unwrap();
         
-        network.predict(&text, config.tokens_amount, config.temperature)
+        network.predict_bytes(&text, config.tokens_amount, config.temperature)
     };
 
-    println!("{predicted}");
+    let f = config.save_path.map(|filepath|
+    {
+        File::create(&filepath)
+            .unwrap_or_else(|err|
+            {
+                complain(&format!("couldnt create a file at {filepath}: {err}"))
+            })
+    });
+
+    if config.replace_invalid
+    {
+        let s = String::from_utf8_lossy(&predicted);
+
+        if let Some(mut f) = f
+        {
+            f.write_all(s.as_bytes()).unwrap();
+        } else
+        {
+            println!("{s}");
+        }
+    } else
+    {
+        let mut f = f.unwrap_or_else(||
+        {
+            complain("u must provide a file to save to for a file that doesnt replace invalid unicode")
+        });
+
+        f.write_all(&predicted).unwrap();
+    };
 }
 
 fn debug_network(mut args: impl Iterator<Item=String>)
