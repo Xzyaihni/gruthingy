@@ -579,8 +579,12 @@ where
 
             let mut batch_gradients = None;
 
-            for _ in 0..batch_size
+            let max_batch_start = inputs.len() - steps_num;
+
+            for b_i in 0..batch_size
             {
+                let batch_start = batch_start + b_i * steps_num;
+
                 let values = InputOutput::values_slice(
                     &inputs,
                     |word| self.dictionary.word_to_layer(*word),
@@ -606,12 +610,12 @@ where
                             });
                     });
                 }
+            }
 
-                batch_start += steps_num;
-                if batch_start >= (inputs.len() - steps_num)
-                {
-                    batch_start = 0;
-                }
+            batch_start += batch_size * steps_num;
+            if batch_start >= max_batch_start
+            {
+                batch_start = 0;
             }
 
             let gradients = batch_gradients.unwrap();
