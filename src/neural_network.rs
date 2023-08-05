@@ -36,7 +36,7 @@ pub mod containers;
 pub const HIDDEN_AMOUNT: usize = 100;
 pub const LAYERS_AMOUNT: usize = 3;
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GradientInfo<T>
 {
     m: T,
@@ -59,7 +59,7 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GradientsInfo<T>
 {
     pub input_update_gradients: GradientInfo<T>,
@@ -287,7 +287,7 @@ pub struct TrainingInfo
     pub ignore_loss: bool
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AdamHyperparams
 {
     pub a: f32,
@@ -333,7 +333,7 @@ impl AdamHyperparams
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NeuralNetwork<T, D>
 {
     dictionary: D,

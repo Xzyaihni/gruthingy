@@ -381,6 +381,17 @@ fn run(mut args: impl Iterator<Item=String>)
     println!("{predicted}");
 }
 
+fn debug_network(mut args: impl Iterator<Item=String>)
+{
+    let network_path = args.next()
+        .unwrap_or_else(|| complain("give path to network"));
+    
+    let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+        NeuralNetwork::load(&network_path).unwrap();
+
+    println!("{network:#?}");
+}
+
 fn main()
 {
     let mut args = env::args().skip(1);
@@ -395,6 +406,7 @@ fn main()
         "train" => train(args),
         "run" => run(args),
         "test" => test_loss(args),
+        "dbg" => debug_network(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }
