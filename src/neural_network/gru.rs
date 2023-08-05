@@ -240,6 +240,7 @@ where
         &self,
         word_vector_size: usize,
         starting_hidden: &N,
+        input_ut: &[&N],
         input: &[&N],
         output_gradient: Vec<N>,
         f_output: &[&GRUOutput<N>]
@@ -324,21 +325,15 @@ where
                 }
 
                 let this_input = unsafe{ *input.get_unchecked(b_t) };
-                let mut this_input_t = this_input.clone();
-
-                if !FIRST_LAYER
-                {
-                    this_input_t.leaky_relu();
-                }
 
                 gradients.input_update_gradients
-                    .add_outer_product(&update_gate_derivative, &this_input_t);
+                    .add_outer_product(&update_gate_derivative, this_input);
 
                 gradients.input_reset_gradients
-                    .add_outer_product(&reset_gate_derivative, &this_input_t);
+                    .add_outer_product(&reset_gate_derivative, this_input);
                 
                 gradients.input_activation_gradients
-                    .add_outer_product(&activation_gate_derivative, &this_input_t);
+                    .add_outer_product(&activation_gate_derivative, this_input);
 
                 gradients.update_bias_gradients += update_gate_derivative;
                 gradients.reset_bias_gradients += reset_gate_derivative;
@@ -347,8 +342,12 @@ where
                 let d23 = d19 + d22;
                 let d24 = d12 + d14 + d20;
 
-                let mut this_input_d = this_input.clone();
-                this_input_d.leaky_relu_d();
+                let mut this_input_d = unsafe{ *input_ut.get_unchecked(b_t) }.clone();
+
+                if !FIRST_LAYER
+                {
+                    this_input_d.leaky_relu_d();
+                }
 
                 let input_gradient = this_input_d * d24;
                 *unsafe{ input_gradients.get_unchecked_mut(b_t) } += input_gradient;
@@ -597,22 +596,25 @@ where
                     self.word_vector_size,
                     starting_hidden,
                     &starting_input,
+                    &starting_input,
                     output_gradients,
                     &this_f_output
                 )
             } else
             {
-                let input = f_output.iter().map(|layer|
+                let (input_ut, input): (Vec<_>, Vec<_>) = f_output.iter().map(|layer|
                 {
                     let index = l_i - 1;
 
                     debug_assert!(index < layer.0.len());
-                    unsafe{ &layer.0.get_unchecked(index).output_ut }
-                }).collect::<Vec<_>>();
+                    let prev_layer = unsafe{ layer.0.get_unchecked(index) };
+                    (&prev_layer.output_ut, &prev_layer.output)
+                }).unzip();
 
                 layer.gradients_with_hidden::<false>(
                     self.word_vector_size,
                     starting_hidden,
+                    &input_ut,
                     &input,
                     output_gradients,
                     &this_f_output
