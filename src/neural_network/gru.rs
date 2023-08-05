@@ -236,22 +236,29 @@ where
         word_vector_size: usize,
         starting_hidden: &N,
         input: &[&N],
-        output_gradient: Vec<Vec<N>>,
+        output_gradient: Vec<N>,
         f_output: &[&GRUOutput<N>],
         last_layer: bool
-    ) -> (Vec<Vec<N>>, GRUGradients<N>)
+    ) -> (Vec<N>, GRUGradients<N>)
     {
         let mut gradients = Self::zeroed_gradients(word_vector_size);
 
-        let mut input_gradients = Vec::new();
+        let mut input_gradients = vec![N::new(word_vector_size, 1); input.len()];
 
         for t in 0..input.len()
         {
             let hidden = unsafe{ &f_output.get_unchecked(t).hidden };
 
-            let mut this_input_gradients = Vec::new();
-
             let mut hidden_gradient = N::new(HIDDEN_AMOUNT, 1);
+
+            let output_gradient = if last_layer
+            {
+                debug_assert!(0 < output_gradient.len());
+                unsafe{ output_gradient[t].clone() }.clone()
+            } else
+            {
+                output_gradient[t].clone()
+            };
 
             for b_t in (0..=t).rev()
             {
@@ -266,18 +273,6 @@ where
                 let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
                 let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
                 let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
-
-                let output_gradient = if last_layer
-                {
-                    debug_assert!(0 < output_gradient.len());
-                    unsafe{ output_gradient[t].get_unchecked(0) }.clone()
-                } else
-                {
-                    (t..input.len()).map(|i|
-                    {
-                        output_gradient[i][t].clone()
-                    }).reduce(|acc, this| acc + this).unwrap()
-                };
 
                 // if (!last_layer) || (b_t == t)
                 {
@@ -379,12 +374,10 @@ where
                 let d24 = d12 + d14 + d20;
                 
                 let input_gradient = (this_input * this_input.clone().one_minus_this()) * d24;
-                this_input_gradients.push(input_gradient);
+                input_gradients[b_t] += input_gradient;
 
                 hidden_gradient = d23;
             }
-
-            input_gradients.push(this_input_gradients.into_iter().rev().collect());
         }
 
         (input_gradients, gradients)
@@ -578,7 +571,7 @@ where
 
         let mut gradients = Vec::with_capacity(LAYERS_AMOUNT);
 
-        let mut this_output: Option<Vec<Vec<N>>> = None;
+        let mut this_output: Option<Vec<N>> = None;
 
         for l_i in (0..LAYERS_AMOUNT).rev()
         {
@@ -613,7 +606,7 @@ where
                         expected_output.sum()
                     };
 
-                    vec![predicted_output * expected_sum - expected_output]
+                    predicted_output * expected_sum - expected_output
                 }).collect::<Vec<_>>()
             } else
             {
