@@ -2,5 +2,6 @@
 callgrind.*
 vgcore*
 network*
+weights_image.ppm
 test
 /backup_networks

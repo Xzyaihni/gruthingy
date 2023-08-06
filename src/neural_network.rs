@@ -35,7 +35,7 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 100;
+pub const HIDDEN_AMOUNT: usize = 128;
 pub const LAYERS_AMOUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -377,6 +377,16 @@ where
         let reader = File::open(path)?;
 
         ciborium::from_reader(reader)
+    }
+
+    pub fn words_amount(&self) -> usize
+    {
+        self.dictionary.words_amount()
+    }
+
+    pub fn inner_network(&self) -> &GRU<T>
+    {
+        &self.network
     }
 
     // suckines

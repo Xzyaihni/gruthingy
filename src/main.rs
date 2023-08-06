@@ -1,9 +1,10 @@
 use std::{
     env,
     process,
-    io::Write,
+    path::Path,
+    io::{self, Write},
     fs::File,
-    ops::{Div, Mul, Sub}
+    ops::{Index, IndexMut, Div, Mul, Sub}
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -15,7 +16,9 @@ use neural_network::{
     MatrixWrapper,
     ArrayWrapper,
     GenericContainer,
-    NetworkType
+    NetworkType,
+    HIDDEN_AMOUNT,
+    LAYERS_AMOUNT
 };
 
 #[allow(unused_imports)]
@@ -438,6 +441,222 @@ fn debug_network(mut args: impl Iterator<Item=String>)
     println!("{network:#?}");
 }
 
+#[derive(Clone, Copy)]
+struct Color
+{
+    pub r: u8,
+    pub g: u8,
+    pub b: u8
+}
+
+impl Color
+{
+    pub fn black() -> Self
+    {
+        Self{r: 0, g: 0, b: 0}
+    }
+
+    pub fn lerp(self, other: Self, amount: f32) -> Self
+    {
+        Self{
+            r: Self::lerp_single(self.r, other.r, amount),
+            g: Self::lerp_single(self.g, other.g, amount),
+            b: Self::lerp_single(self.b, other.b, amount)
+        }
+    }
+
+    fn lerp_single(a: u8, b: u8, lerp: f32) -> u8
+    {
+        ((a as f32) * (1.0 - lerp) + (b as f32) * lerp) as u8
+    }
+}
+
+struct PPMImage
+{
+    data: Vec<Color>,
+    width: usize,
+    height: usize
+}
+
+impl PPMImage
+{
+    pub fn new(width: usize, height: usize) -> Self
+    {
+        Self{data: vec![Color::black(); width * height], width, height}
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()>
+    {
+        let mut f = File::create(path)?;
+
+        let header = format!("P6\n{} {}\n255\n", self.width, self.height);
+
+        f.write_all(header.as_bytes())?;
+
+        let data = self.data.iter().flat_map(|c| [c.r, c.g, c.b]).collect::<Vec<u8>>();
+        f.write_all(&data)
+    }
+
+    fn index(&self, pos: (usize, usize)) -> usize
+    {
+        assert!(pos.1 < self.height);
+        assert!(pos.0 < self.width);
+
+        pos.0 + pos.1 * self.width
+    }
+}
+
+impl Index<(usize, usize)> for PPMImage
+{
+    type Output = Color;
+
+    fn index(&self, index: (usize, usize)) -> &Self::Output
+    {
+        &self.data[self.index(index)]
+    }
+}
+
+impl IndexMut<(usize, usize)> for PPMImage
+{
+    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output
+    {
+        let index = self.index(index);
+        &mut self.data[index]
+    }
+}
+
+fn weights_image(mut args: impl Iterator<Item=String>)
+{
+    let network_path = args.next()
+        .unwrap_or_else(|| complain("give path to network"));
+
+    let display_type = args.next()
+        .unwrap_or_else(||
+        {
+            let mut options = String::new();
+
+            let mut add_option = |name|
+            {
+                options += "    ";
+                options += name;
+                options.push(',');
+                options.push('\n');
+            };
+
+            add_option("input_update");
+            add_option("input_reset");
+            add_option("input_activation");
+            add_option("hidden_update");
+            add_option("hidden_reset");
+            add_option("hidden_activation");
+            add_option("output");
+            add_option("biases");
+
+            complain(&format!("give wut to display\noptions:\n{options}"))
+        });
+    
+    let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+        NeuralNetwork::load(&network_path).unwrap();
+
+    let negative_color = Color{r: 255, g: 120, b: 120};
+    let positive_color = Color{r: 120, g: 120, b: 255};
+
+    let words_amount = network.words_amount();
+    
+    let (width, weights_per_hidden) = match display_type.as_ref()
+    {
+        "biases" => (HIDDEN_AMOUNT, 3),
+        "input_update" => (words_amount, HIDDEN_AMOUNT),
+        "input_reset" => (words_amount, HIDDEN_AMOUNT),
+        "input_activation" => (words_amount, HIDDEN_AMOUNT),
+        "output" => (HIDDEN_AMOUNT, words_amount),
+        "hidden_update" => (HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        "hidden_reset" => (HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        "hidden_activation" => (HIDDEN_AMOUNT, HIDDEN_AMOUNT),
+        x => panic!("invalid display type: {}", x)
+    };
+
+    let height = weights_per_hidden * LAYERS_AMOUNT;
+
+    let mut image = PPMImage::new(width, height);
+
+    let mut line_num = 0;
+    for layer in &network.inner_network().layers
+    {
+        let mut display_weights = |weights: &[f32]|
+        {
+            for (i, weight) in weights.iter().enumerate()
+            {
+                let weight_num = i;
+                let weight_value = weight;
+
+                let a = (weight_value + 1.0).max(0.0).min(1.0);
+                image[(weight_num, line_num)] = negative_color.lerp(positive_color, a);
+            }
+
+            line_num += 1;
+        };
+
+        if display_type == "biases"
+        {
+            display_weights(&layer.update_biases.as_vec());
+            display_weights(&layer.reset_biases.as_vec());
+            display_weights(&layer.activation_biases.as_vec());
+        }
+
+        let mut display_weights_m = |weights: Vec<f32>, previous_size: usize|
+        {
+            let this_size = weights.len() / previous_size;
+            let mut this_start = 0;
+
+            for _ in 0..this_size
+            {
+                let this_end = this_start + previous_size;
+                display_weights(&weights[this_start..this_end]);
+
+                this_start += previous_size;
+            }
+        };
+
+        if display_type == "input_update"
+        {
+            display_weights_m(layer.input_update_weights.as_vec(), words_amount);
+        }
+
+        if display_type == "input_reset"
+        {
+            display_weights_m(layer.input_reset_weights.as_vec(), words_amount);
+        }
+
+        if display_type == "input_activation"
+        {
+            display_weights_m(layer.input_activation_weights.as_vec(), words_amount);
+        }
+
+        if display_type == "hidden_update"
+        {
+            display_weights_m(layer.hidden_update_weights.as_vec(), HIDDEN_AMOUNT);
+        }
+
+        if display_type == "hidden_reset"
+        {
+            display_weights_m(layer.hidden_reset_weights.as_vec(), HIDDEN_AMOUNT);
+        }
+
+        if display_type == "hidden_activation"
+        {
+            display_weights_m(layer.hidden_activation_weights.as_vec(), HIDDEN_AMOUNT);
+        }
+        
+        if display_type == "output"
+        {
+            display_weights_m(layer.output_weights.as_vec(), HIDDEN_AMOUNT);
+        }
+    }
+
+    image.save("weights_image.ppm").unwrap();
+}
+
 fn main()
 {
     let mut args = env::args().skip(1);
@@ -453,6 +672,7 @@ fn main()
         "run" => run(args),
         "test" => test_loss(args),
         "dbg" => debug_network(args),
+        "weightsimage" => weights_image(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }
