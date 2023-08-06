@@ -456,6 +456,17 @@ impl Color
         Self{r: 0, g: 0, b: 0}
     }
 
+    pub fn gradient_lerp(gradient: &[Self], amount: f32) -> Self
+    {
+        let colors_amount = gradient.len();
+
+        let amount = amount * (colors_amount - 1) as f32;
+
+        let amount_lower = amount.floor() as usize;
+
+        gradient[amount_lower].lerp(gradient[amount_lower + 1], amount - amount_lower as f32)
+    }
+
     pub fn lerp(self, other: Self, amount: f32) -> Self
     {
         Self{
@@ -558,8 +569,9 @@ fn weights_image(mut args: impl Iterator<Item=String>)
     let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
         NeuralNetwork::load(&network_path).unwrap();
 
-    let negative_color = Color{r: 255, g: 120, b: 120};
-    let positive_color = Color{r: 120, g: 120, b: 255};
+    let negative_color = Color{r: 255, g: 0, b: 0};
+    let none_color = Color{r: 0, g: 0, b: 0};
+    let positive_color = Color{r: 0, g: 0, b: 255};
 
     let words_amount = network.words_amount();
     
@@ -591,7 +603,13 @@ fn weights_image(mut args: impl Iterator<Item=String>)
                 let weight_value = weight;
 
                 let a = ((weight_value + 1.0) / 2.0).max(0.0).min(1.0);
-                image[(weight_num, line_num)] = negative_color.lerp(positive_color, a);
+
+                let weight_color = Color::gradient_lerp(
+                    &[negative_color, none_color, positive_color],
+                    a
+                );
+
+                image[(weight_num, line_num)] = weight_color;
             }
 
             line_num += 1;
