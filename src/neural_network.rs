@@ -584,6 +584,7 @@ where
             let gradients = (0..batch_size).into_par_iter().map(|b_i|
             {
                 let batch_start = batch_start + b_i * steps_num;
+                let batch_start = batch_start % max_batch_start;
 
                 let values = InputOutput::values_slice(
                     &inputs,
