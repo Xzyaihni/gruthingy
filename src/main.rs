@@ -462,7 +462,7 @@ impl Color
 
         let amount = amount * (colors_amount - 1) as f32;
 
-        let amount_lower = amount.floor() as usize;
+        let amount_lower = (amount.floor() as usize).min(colors_amount.saturating_sub(2));
 
         gradient[amount_lower].lerp(gradient[amount_lower + 1], amount - amount_lower as f32)
     }
