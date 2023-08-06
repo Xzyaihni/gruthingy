@@ -590,7 +590,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
                 let weight_num = i;
                 let weight_value = weight;
 
-                let a = (weight_value + 1.0).max(0.0).min(1.0);
+                let a = ((weight_value + 1.0) / 2.0).max(0.0).min(1.0);
                 image[(weight_num, line_num)] = negative_color.lerp(positive_color, a);
             }
 
