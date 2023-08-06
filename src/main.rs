@@ -672,7 +672,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
         }
     }
 
-    image.save("weights_image.ppm").unwrap();
+    image.save(format!("{display_type}.ppm")).unwrap();
 }
 
 fn main()
