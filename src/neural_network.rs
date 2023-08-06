@@ -18,7 +18,7 @@ use rayon::prelude::*;
 #[allow(unused_imports)]
 use gru::{GRU, GRUGradients, GRUOutput, GRUFullGradients};
 
-use super::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
+use crate::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
 
 pub use containers::{
     NetworkType,
