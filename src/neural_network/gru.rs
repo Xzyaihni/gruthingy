@@ -412,7 +412,7 @@ where
         (input_gradients, gradients)
     }
 
-    pub fn feedforward_single<FO>(
+    pub fn feedforward_single<const LAST_LAYER: bool, FO>(
         &self,
         previous_hidden: &N,
         input: &N,
@@ -451,7 +451,13 @@ where
 
         let output_untrans = self.output_weights.matmul(&hidden);
 
-        let output_untrans = output_untrans * &dropout_mask.output;
+        let output_untrans = if LAST_LAYER
+        {
+            output_untrans
+        } else
+        {
+            output_untrans * &dropout_mask.output
+        };
 
         let mut output_gate = output_untrans.clone();
         output_activation(&mut output_gate);
@@ -657,15 +663,13 @@ where
 
                     let expected_output = unsafe{ *output.get_unchecked(t) };
 
-                    let gradient = if ONE_HOT_ENCODED
+                    if ONE_HOT_ENCODED
                     {
                         predicted_output - expected_output
                     } else
                     {
                         predicted_output * expected_output.sum() - expected_output
-                    };
-
-                    gradient * &this_dropout_mask.output
+                    }
                 }).collect::<Vec<_>>()
             } else
             {
@@ -756,7 +760,7 @@ where
             let this_output = if l_i == (LAYERS_AMOUNT - 1)
             {
                 // last layer
-                layer.feedforward_single(
+                layer.feedforward_single::<true, _>(
                     previous_hidden,
                     input,
                     dropout_mask,
@@ -768,7 +772,7 @@ where
                 {
                     AFType::LeakyRelu =>
                     {
-                        layer.feedforward_single(
+                        layer.feedforward_single::<false, _>(
                             previous_hidden,
                             input,
                             dropout_mask,
@@ -777,7 +781,7 @@ where
                     },
                     AFType::Tanh =>
                     {
-                        layer.feedforward_single(
+                        layer.feedforward_single::<false, _>(
                             previous_hidden,
                             input,
                             dropout_mask,
