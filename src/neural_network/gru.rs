@@ -527,6 +527,22 @@ where
         self.loss_unscaled(input) / amount as f32
     }
 
+    #[allow(dead_code)]
+    pub fn loss_unscaled_with_dropout(
+        &self,
+        input: impl Iterator<Item=(N, N)>
+    ) -> f32
+    {
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let f_output = self.feedforward(&self.create_dropout(), input.into_iter());
+
+        Self::cross_entropy(
+            f_output.into_iter().map(|output| output.last_output()),
+            output.into_iter()
+        )
+    }
+
     pub fn loss_unscaled(
         &self,
         input: impl Iterator<Item=(N, N)>
@@ -609,9 +625,6 @@ where
             debug_assert!(l_i < self.layers.len());
             let layer = unsafe{ self.layers.get_unchecked(l_i) };
 
-            debug_assert!(l_i < dropout_masks.len());
-            let dropout_mask = unsafe{ dropout_masks.get_unchecked(l_i) };
-
             let this_f_output = f_output.iter().map(|layer|
             {
                 debug_assert!(l_i < layer.0.len());
@@ -637,6 +650,9 @@ where
                         predicted_output * expected_output.sum() - expected_output
                     };
 
+                    debug_assert!(l_i < dropout_masks.len());
+                    let dropout_mask = unsafe{ dropout_masks.get_unchecked(l_i) };
+
                     gradient * dropout_mask
                 }).collect::<Vec<_>>()
             } else
@@ -653,19 +669,23 @@ where
                     &starting_input,
                     &starting_input,
                     output_gradients,
-                    dropout_mask,
+                    // UNUSED (dropout mask, but theres no dropout on first layer)
+                    starting_hidden,
                     &this_f_output
                 )
             } else
             {
+                let previous_index = l_i - 1;
+
                 let (input_ut, input): (Vec<_>, Vec<_>) = f_output.iter().map(|layer|
                 {
-                    let index = l_i - 1;
-
-                    debug_assert!(index < layer.0.len());
-                    let prev_layer = unsafe{ layer.0.get_unchecked(index) };
+                    debug_assert!(previous_index < layer.0.len());
+                    let prev_layer = unsafe{ layer.0.get_unchecked(previous_index) };
                     (&prev_layer.output_ut, &prev_layer.output)
                 }).unzip();
+
+                debug_assert!(previous_index < dropout_masks.len());
+                let dropout_mask = unsafe{ dropout_masks.get_unchecked(previous_index) };
 
                 layer.gradients_with_hidden::<false>(
                     self.word_vector_size,
@@ -808,6 +828,11 @@ where
 
     pub fn create_dropout(&self) -> Vec<N>
     {
+        #[cfg(test)]
+        {
+            fastrand::seed(12345);
+        }
+
         self.create_dropout_with(||
         {
             // p = 0.5 (dropout chance is 50%)
@@ -1554,7 +1579,7 @@ pub mod tests
             let gradient = {
                 let f = |network: &GRU<_>|
                 {
-                    network.loss_unscaled(input.clone())
+                    network.loss_unscaled_with_dropout(input.clone())
                 };
 
                 let mut change = |c|
