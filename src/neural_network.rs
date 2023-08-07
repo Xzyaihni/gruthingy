@@ -257,7 +257,8 @@ where
 
             let outputs = network.feedforward_single(
                 &previous_hiddens.iter().collect::<Vec<_>>(),
-                this_input
+                this_input,
+                &network.create_empty_dropout()
             );
 
             let output = outputs.last_output_ref().clone();

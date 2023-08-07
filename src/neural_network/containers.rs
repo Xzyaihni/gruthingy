@@ -458,8 +458,17 @@ where
     {
         let rhs = rhs.borrow();
 
-        debug_assert!(self.previous_size == rhs.previous_size);
-        debug_assert!(self.this_size == rhs.this_size);
+        debug_assert!(
+            self.previous_size == rhs.previous_size,
+            "self.previous_size: {}, rhs.previous_size: {}",
+            self.previous_size, rhs.previous_size
+        );
+
+        debug_assert!(
+            self.this_size == rhs.this_size,
+            "self.this_size: {}, rhs.this_size: {}",
+            self.this_size, rhs.this_size
+        );
 
         let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
         {
