@@ -262,14 +262,14 @@ where
     }
 
     // needs to know if its the first layer so it doesnt apply the transfer function
-    pub fn gradients_with_hidden<const FIRST_LAYER: bool>(
+    pub fn gradients_with_hidden(
         &self,
         word_vector_size: usize,
         starting_hidden: &N,
         input_ut: &[&N],
         input: &[&N],
         output_gradient: Vec<N>,
-        dropout_mask: &N,
+        dropout_mask: Option<&N>,
         f_output: &[&GRUOutput<N>]
     ) -> (Vec<N>, GRUGradients<N>)
     {
@@ -386,7 +386,7 @@ where
 
                 let input_gradient = this_input_d * d24;
 
-                let input_gradient = if !FIRST_LAYER
+                let input_gradient = if let Some(dropout_mask) = dropout_mask
                 {
                     input_gradient * dropout_mask
                 } else
@@ -663,14 +663,13 @@ where
             let (input_gradients, this_gradient) = if l_i == 0
             {
                 // if its the first layer
-                layer.gradients_with_hidden::<true>(
+                layer.gradients_with_hidden(
                     self.word_vector_size,
                     starting_hidden,
                     &starting_input,
                     &starting_input,
                     output_gradients,
-                    // UNUSED (dropout mask, but theres no dropout on first layer)
-                    starting_hidden,
+                    None,
                     &this_f_output
                 )
             } else
@@ -687,13 +686,13 @@ where
                 debug_assert!(previous_index < dropout_masks.len());
                 let dropout_mask = unsafe{ dropout_masks.get_unchecked(previous_index) };
 
-                layer.gradients_with_hidden::<false>(
+                layer.gradients_with_hidden(
                     self.word_vector_size,
                     starting_hidden,
                     &input_ut,
                     &input,
                     output_gradients,
-                    dropout_mask,
+                    Some(dropout_mask),
                     &this_f_output
                 )
             };
