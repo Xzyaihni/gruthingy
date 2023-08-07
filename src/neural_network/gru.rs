@@ -22,7 +22,7 @@ enum AFType
     LeakyRelu
 }
 
-const LAYER_ACTIVATION: AFType = AFType::Tanh;
+const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 #[derive(Debug)]
 pub struct GRUOutput<T>
