@@ -156,6 +156,12 @@ where
     }
 }
 
+pub struct DropoutMasksSingle<T>
+{
+    pub hidden: T,
+    pub output: T
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GRULayer<T>
 {
@@ -269,7 +275,8 @@ where
         input_ut: &[&N],
         input: &[&N],
         output_gradient: Vec<N>,
-        dropout_mask: Option<&N>,
+        dropout_mask_output: Option<&N>,
+        dropout_mask_hidden: &N,
         f_output: &[&GRUOutput<N>]
     ) -> (Vec<N>, GRUGradients<N>)
     {
@@ -287,7 +294,7 @@ where
 
             let output_gradient = self.output_weights.matmul_transposed(output_gradient);
 
-            let mut d3 = output_gradient;
+            let mut total_gradient = output_gradient;
 
             for b_t in (0..=t).rev()
             {
@@ -302,6 +309,8 @@ where
                 let this_update = unsafe{ &f_output.get_unchecked(b_t).update };
                 let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
                 let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
+                
+                let d3 = total_gradient * dropout_mask_hidden;
 
                 let d4 = this_update.clone().one_minus_this() * &d3;
 
@@ -386,7 +395,7 @@ where
 
                 let input_gradient = this_input_d * d24;
 
-                let input_gradient = if let Some(dropout_mask) = dropout_mask
+                let input_gradient = if let Some(dropout_mask) = dropout_mask_output
                 {
                     input_gradient * dropout_mask
                 } else
@@ -395,8 +404,8 @@ where
                 };
 
                 *unsafe{ input_gradients.get_unchecked_mut(b_t) } += input_gradient;
-
-                d3 = d23;
+                
+                total_gradient = d23;
             }
         }
 
@@ -407,7 +416,7 @@ where
         &self,
         previous_hidden: &N,
         input: &N,
-        dropout_mask: &N,
+        dropout_mask: &DropoutMasksSingle<N>,
         output_activation: FO
     ) -> GRUOutput<N>
     where
@@ -438,9 +447,11 @@ where
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
+        let hidden = hidden * &dropout_mask.hidden;
+
         let output_untrans = self.output_weights.matmul(&hidden);
 
-        let output_untrans = output_untrans * dropout_mask;
+        let output_untrans = output_untrans * &dropout_mask.output;
 
         let mut output_gate = output_untrans.clone();
         output_activation(&mut output_gate);
@@ -633,6 +644,10 @@ where
 
             let is_last_layer = l_i == (LAYERS_AMOUNT - 1);
 
+            debug_assert!(l_i < dropout_masks.len());
+            let this_dropout_mask = unsafe{ dropout_masks.get_unchecked(l_i) };
+            let dropout_mask_hidden = &this_dropout_mask.hidden;
+
             let output_gradients = if is_last_layer
             {
                 // if its the last layer
@@ -650,10 +665,7 @@ where
                         predicted_output * expected_output.sum() - expected_output
                     };
 
-                    debug_assert!(l_i < dropout_masks.len());
-                    let dropout_mask = unsafe{ dropout_masks.get_unchecked(l_i) };
-
-                    gradient * dropout_mask
+                    gradient * &this_dropout_mask.output
                 }).collect::<Vec<_>>()
             } else
             {
@@ -670,6 +682,7 @@ where
                     &starting_input,
                     output_gradients,
                     None,
+                    dropout_mask_hidden,
                     &this_f_output
                 )
             } else
@@ -692,7 +705,8 @@ where
                     &input_ut,
                     &input,
                     output_gradients,
-                    Some(dropout_mask),
+                    Some(&dropout_mask.output),
+                    dropout_mask_hidden,
                     &this_f_output
                 )
             };
@@ -710,7 +724,7 @@ where
         &self,
         previous_hiddens: &[B],
         input: &N,
-        dropout_masks: &[N]
+        dropout_masks: &[DropoutMasksSingle<N>]
     ) -> GRUOutputLayer<N>
     where
         B: Borrow<N>
@@ -782,7 +796,7 @@ where
     #[allow(dead_code)]
     pub fn feedforward<L>(
         &self,
-        dropout_masks: &[N],
+        dropout_masks: &[DropoutMasksSingle<N>],
         input: impl Iterator<Item=L> + ExactSizeIterator
     ) -> Vec<GRUOutputLayer<N>>
     where
@@ -797,7 +811,7 @@ where
     pub fn feedforward_with_hidden<L, B>(
         &self,
         first_hiddens: &[B],
-        dropout_masks: &[N],
+        dropout_masks: &[DropoutMasksSingle<N>],
         input: impl Iterator<Item=L> + ExactSizeIterator
     ) -> Vec<GRUOutputLayer<N>>
     where
@@ -825,7 +839,7 @@ where
         outputs
     }
 
-    pub fn create_dropout(&self) -> Vec<N>
+    pub fn create_dropout(&self) -> Vec<DropoutMasksSingle<N>>
     {
         #[cfg(test)]
         {
@@ -846,16 +860,19 @@ where
         })
     }
 
-    pub fn create_empty_dropout(&self) -> Vec<N>
+    pub fn create_empty_dropout(&self) -> Vec<DropoutMasksSingle<N>>
     {
         self.create_dropout_with(|| 0.5)
     }
 
-    fn create_dropout_with(&self, mut f: impl FnMut() -> f32) -> Vec<N>
+    fn create_dropout_with(&self, mut f: impl FnMut() -> f32) -> Vec<DropoutMasksSingle<N>>
     {
         (0..LAYERS_AMOUNT).map(|_|
         {
-            N::new_with(self.word_vector_size, 1, &mut f)
+            let output = N::new_with(self.word_vector_size, 1, &mut f);
+            let hidden = N::new_with(HIDDEN_AMOUNT, 1, &mut f);
+
+            DropoutMasksSingle{hidden, output}
         }).collect::<Vec<_>>()
     }
 }
