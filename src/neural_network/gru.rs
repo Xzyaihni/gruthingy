@@ -523,7 +523,7 @@ where
         predicted.zip(target).map(|(predicted, target)|
         {
             let target_index = target.borrow().highest_index();
-            if SoftmaxedLayer::pick_weighed_associated(predicted.borrow(), 1.0) == target_index
+            if predicted.borrow().highest_index() == target_index
             {
                 1
             } else
