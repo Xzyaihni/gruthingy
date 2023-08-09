@@ -40,7 +40,6 @@ fn complain(message: &str) -> !
 struct TrainConfig
 {
     epochs: usize,
-    batch_start: usize,
     batch_size: usize,
     steps_num: usize,
     learning_rate: f32,
@@ -56,7 +55,6 @@ impl TrainConfig
     pub fn parse(mut args: impl Iterator<Item=String>) -> Self
     {
         let mut epochs = 1;
-        let mut batch_start = 0;
         let mut batch_size = 2_usize.pow(6);
         let mut steps_num = 64;
         let mut learning_rate = 0.001;
@@ -103,17 +101,6 @@ impl TrainConfig
                             complain(&format!("cant parse the steps amount: {err:?}"))
                         });
                 },
-                "--start" =>
-                {
-                    batch_start = args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(&format!("cant parse the start offset: {err:?}"))
-                        });
-                },
                 "-l" | "--learning-rate" =>
                 {
                     learning_rate = args.next().unwrap_or_else(||
@@ -157,7 +144,6 @@ impl TrainConfig
 
         Self{
             epochs,
-            batch_start,
             batch_size,
             steps_num,
             learning_rate,
@@ -249,7 +235,6 @@ where
 
     let training_info = TrainingInfo{
         epochs: config.epochs,
-        batch_start: config.batch_start,
         batch_size: config.batch_size,
         steps_num: config.steps_num,
         learning_rate: config.learning_rate,

@@ -282,7 +282,6 @@ where
 pub struct TrainingInfo
 {
     pub epochs: usize,
-    pub batch_start: usize,
     pub batch_size: usize,
     pub steps_num: usize,
     pub learning_rate: f32,
@@ -531,7 +530,6 @@ where
     )
     {
         let TrainingInfo{
-            batch_start,
             batch_size,
             steps_num,
             epochs,
@@ -543,7 +541,6 @@ where
         self.hyper.a = learning_rate;
 
         let batch_step = batch_size * steps_num;
-        let mut batch_start = batch_start * batch_step;
 
         let inputs = self.input_expected_from_text(text);
         let testing_inputs = if info.ignore_loss
@@ -592,10 +589,9 @@ where
 
             let max_batch_start = inputs.len() - steps_num;
 
-            let gradients = (0..batch_size).into_par_iter().map(|b_i|
+            let gradients = (0..batch_size).into_par_iter().map(|_|
             {
-                let batch_start = batch_start + b_i * steps_num;
-                let batch_start = batch_start % max_batch_start;
+                let batch_start = fastrand::usize(0..max_batch_start);
 
                 let values = InputOutput::values_slice(
                     &inputs,
@@ -617,12 +613,6 @@ where
 
                 acc
             }).expect("batch size must not be 0");
-
-            batch_start += batch_size * steps_num;
-            if batch_start >= max_batch_start
-            {
-                batch_start = 0;
-            }
 
             self.apply_gradients(gradients);
         }
