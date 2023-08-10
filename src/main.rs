@@ -27,6 +27,8 @@ use word_vectorizer::{NetworkDictionary, CharDictionary, WordDictionary};
 mod neural_network;
 mod word_vectorizer;
 
+type DictionaryType = CharDictionary;
+
 
 const DEFAULT_NETWORK_NAME: &'static str = "network.nn";
 
@@ -172,13 +174,13 @@ fn test_loss(mut args: impl Iterator<Item=String>)
 
     if config.use_gpu
     {
-        let mut network: NeuralNetwork<ArrayWrapper, CharDictionary> =
+        let mut network: NeuralNetwork<ArrayWrapper, DictionaryType> =
             NeuralNetwork::load(&config.network_path).unwrap();
 
         network.test_loss(text_file, config.calculate_accuracy);
     } else
     {
-        let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+        let mut network: NeuralNetwork<MatrixWrapper, DictionaryType> =
             NeuralNetwork::load(&config.network_path).unwrap();
 
         network.test_loss(text_file, config.calculate_accuracy);
@@ -266,13 +268,13 @@ fn train(mut args: impl Iterator<Item=String>)
     
     if config.use_gpu
     {
-        let network: NeuralNetwork<ArrayWrapper, CharDictionary> =
+        let network: NeuralNetwork<ArrayWrapper, DictionaryType> =
             NeuralNetwork::load(&config.network_path).unwrap();
 
         train_inner(network, text_path, config);
     } else
     {
-        let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+        let network: NeuralNetwork<MatrixWrapper, DictionaryType> =
             NeuralNetwork::load(&config.network_path).unwrap();
 
         train_inner(network, text_path, config);
@@ -372,13 +374,13 @@ fn run(mut args: impl Iterator<Item=String>)
 
     let predicted = if config.use_gpu
     {
-        let mut network: NeuralNetwork<ArrayWrapper, CharDictionary> =
+        let mut network: NeuralNetwork<ArrayWrapper, DictionaryType> =
             NeuralNetwork::load(config.network_path).unwrap();
         
         network.predict_bytes(&text, config.tokens_amount, config.temperature)
     } else
     {
-        let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+        let mut network: NeuralNetwork<MatrixWrapper, DictionaryType> =
             NeuralNetwork::load(config.network_path).unwrap();
         
         network.predict_bytes(&text, config.tokens_amount, config.temperature)
@@ -420,7 +422,7 @@ fn debug_network(mut args: impl Iterator<Item=String>)
     let network_path = args.next()
         .unwrap_or_else(|| complain("give path to network"));
     
-    let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+    let network: NeuralNetwork<MatrixWrapper, DictionaryType> =
         NeuralNetwork::load(&network_path).unwrap();
 
     println!("{network:#?}");
@@ -551,7 +553,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
             complain(&format!("give wut to display\noptions:\n{options}"))
         });
     
-    let network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+    let network: NeuralNetwork<MatrixWrapper, DictionaryType> =
         NeuralNetwork::load(&network_path).unwrap();
 
     let negative_color = Color{r: 255, g: 0, b: 0};
