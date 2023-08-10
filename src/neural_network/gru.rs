@@ -10,19 +10,13 @@ use serde::{Serialize, Deserialize};
 use crate::neural_network::{
     SoftmaxedLayer,
     NetworkType,
+    AFType,
     HIDDEN_AMOUNT,
-    LAYERS_AMOUNT
+    LAYERS_AMOUNT,
+    LAYER_ACTIVATION,
+    USE_DROPOUT
 };
 
-
-#[allow(dead_code)]
-enum AFType
-{
-    Tanh,
-    LeakyRelu
-}
-
-const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 #[derive(Debug)]
 pub struct GRUOutput<T>
@@ -267,7 +261,6 @@ where
         }
     }
 
-    // needs to know if its the first layer so it doesnt apply the transfer function
     pub fn gradients_with_hidden(
         &self,
         word_vector_size: usize,
@@ -310,7 +303,13 @@ where
                 let this_reset = unsafe{ &f_output.get_unchecked(b_t).reset };
                 let this_activation = unsafe{ &f_output.get_unchecked(b_t).activation };
                 
-                let d3 = total_gradient * dropout_mask_hidden;
+                let d3 = if USE_DROPOUT
+                {
+                    total_gradient * dropout_mask_hidden
+                } else
+                {
+                    total_gradient
+                };
 
                 let d4 = this_update.clone().one_minus_this() * &d3;
 
@@ -395,9 +394,15 @@ where
 
                 let input_gradient = this_input_d * d24;
 
-                let input_gradient = if let Some(dropout_mask) = dropout_mask_output
+                let input_gradient = if USE_DROPOUT
                 {
-                    input_gradient * dropout_mask
+                    if let Some(dropout_mask) = dropout_mask_output
+                    {
+                        input_gradient * dropout_mask
+                    } else
+                    {
+                        input_gradient
+                    }
                 } else
                 {
                     input_gradient
@@ -447,11 +452,17 @@ where
         let this_activation = &activation_gate * &update_gate;
         let hidden = update_gate.clone().one_minus_this() * previous_hidden + this_activation;
 
-        let hidden = hidden * &dropout_mask.hidden;
+        let hidden = if USE_DROPOUT
+        {
+            hidden * &dropout_mask.hidden
+        } else
+        {
+            hidden
+        };
 
         let output_untrans = self.output_weights.matmul(&hidden);
 
-        let output_untrans = if LAST_LAYER
+        let output_untrans = if LAST_LAYER || !USE_DROPOUT
         {
             output_untrans
         } else

@@ -38,6 +38,17 @@ pub mod containers;
 pub const HIDDEN_AMOUNT: usize = 128;
 pub const LAYERS_AMOUNT: usize = 3;
 
+pub const USE_DROPOUT: bool = true;
+
+pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
+
+#[allow(dead_code)]
+pub enum AFType
+{
+    Tanh,
+    LeakyRelu
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GradientInfo<T>
 {
@@ -574,6 +585,8 @@ where
             network.test_loss_inner(&testing_inputs, calculate_accuracy);
         };
 
+        let max_batch_start = inputs.len().saturating_sub(steps_num);
+
         // whats an epoch? cool word is wut it is
         // at some point i found out wut it was (going over the whole training data once)
         // but i dont rly feel like changing a silly thing like that
@@ -587,11 +600,15 @@ where
                 output_loss(self);
             }
 
-            let max_batch_start = inputs.len() - steps_num;
-
             let gradients = (0..batch_size).into_par_iter().map(|_|
             {
-                let batch_start = fastrand::usize(0..max_batch_start);
+                let batch_start = if max_batch_start == 0
+                {
+                    0
+                } else
+                {
+                    fastrand::usize(0..max_batch_start)
+                };
 
                 let values = InputOutput::values_slice(
                     &inputs,
