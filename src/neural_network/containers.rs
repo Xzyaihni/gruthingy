@@ -68,6 +68,7 @@ enum LayerOps
     LeakyRelu(LayerChild),
     Sigmoid(LayerChild),
     Tanh(LayerChild),
+    Dot{lhs: LayerType, rhs: LayerType},
     Add{lhs: LayerChild, rhs: LayerChild},
     Sub{lhs: LayerChild, rhs: LayerChild},
     Mul{lhs: LayerChild, rhs: LayerChild},
@@ -470,6 +471,28 @@ where
                 };
 
                 x.derivatives(d.into());
+            },
+            // wait is the derivative for this the EXACT same as normal elementwise multiplication?
+            LayerOps::Dot{lhs, rhs} =>
+            {
+                // nice and short multplication calls
+                {
+                    let d = <&GradientType as Mul<&LayerInnerType>>::mul(
+                        &gradient,
+                        &rhs.value_clone()
+                    );
+
+                    lhs.derivatives(d);
+                }
+
+                {
+                    let d = <&GradientType as Mul<&LayerInnerType>>::mul(
+                        &gradient,
+                        &lhs.value_clone()
+                    );
+
+                    rhs.derivatives(d);
+                }
             },
             LayerOps::Diff =>
             {
@@ -1500,24 +1523,18 @@ impl LayerType
 
     pub fn dot(self, rhs: Self) -> ScalarType
     {
-        let (dot_value, mul_value) = {
-            let l_value = self.value();
+        let value = {
             let r_value = rhs.value();
 
-            (self.value_clone().dot(&r_value), &*l_value * &*r_value)
+            self.value_clone().dot(&r_value)
         };
 
         ScalarType::new_inner(
-            dot_value,
-            LayerOps::SumTensor(
-                Self::new_inner(
-                    mul_value,
-                    LayerOps::Mul{
-                        lhs: LayerChild::Tensor(self),
-                        rhs: LayerChild::Tensor(rhs)
-                    }
-                )
-            )
+            value,
+            LayerOps::Dot{
+                lhs: self,
+                rhs
+            }
         )
     }
 
