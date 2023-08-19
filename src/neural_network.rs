@@ -87,16 +87,16 @@ impl GradientsInfo
     pub fn new(word_vector_size: usize) -> Self
     {
         Self{
-        	input_update_gradients: GradientInfo::new(word_vector_size, HIDDEN_AMOUNT),
-        	input_reset_gradients: GradientInfo::new(word_vector_size, HIDDEN_AMOUNT),
-        	input_activation_gradients: GradientInfo::new(word_vector_size, HIDDEN_AMOUNT),
+        	input_update_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size),
+        	input_reset_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size),
+        	input_activation_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size),
         	hidden_update_gradients: GradientInfo::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
         	hidden_reset_gradients: GradientInfo::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
         	hidden_activation_gradients: GradientInfo::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
             update_bias_gradients: GradientInfo::new(HIDDEN_AMOUNT, 1),
             reset_bias_gradients: GradientInfo::new(HIDDEN_AMOUNT, 1),
             activation_bias_gradients: GradientInfo::new(HIDDEN_AMOUNT, 1),
-            output_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size)
+            output_gradients: GradientInfo::new(word_vector_size, HIDDEN_AMOUNT)
         }
     }
 
@@ -240,7 +240,7 @@ impl<'a> Predictor<'a>
         }
     }
 
-    pub fn predict_bytes(mut self, network: &GRU) -> Box<[u8]>
+    pub fn predict_bytes(mut self, network: &mut GRU) -> Box<[u8]>
     {
         let input_amount = self.words.len();
 
@@ -499,7 +499,7 @@ impl NeuralNetwork
 
 
     fn test_loss_inner(
-        &self,
+        &mut self,
         inputs: &[VectorWord],
         calculate_accuracy: bool
     )
@@ -579,7 +579,7 @@ impl NeuralNetwork
         let epochs_per_input = (inputs.len() / batch_step).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let output_loss = |network: &NeuralNetwork|
+        let output_loss = |network: &mut NeuralNetwork|
         {
             if testing_inputs.is_empty()
             {
@@ -674,7 +674,7 @@ impl NeuralNetwork
             Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
-        predictor.predict_bytes(&self.network)
+        predictor.predict_bytes(&mut self.network)
     }
 }
 

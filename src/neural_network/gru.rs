@@ -223,7 +223,7 @@ impl GRULayer
     }
 
     pub fn feedforward_single<const LAST_LAYER: bool, FO>(
-        &self,
+        &mut self,
         previous_hidden: Option<&LayerType>,
         input: &LayerType,
         dropout_mask: &DropoutMasksSingle,
@@ -323,7 +323,7 @@ impl GRU
 
     #[allow(dead_code)]
     pub fn accuracy(
-        &self,
+        &mut self,
         input: impl Iterator<Item=(LayerType, LayerType)>
     ) -> f32
     {
@@ -361,7 +361,7 @@ impl GRU
 
 
     pub fn loss(
-        &self,
+        &mut self,
         input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
     ) -> f32
     {
@@ -372,7 +372,7 @@ impl GRU
 
     #[allow(dead_code)]
     pub fn loss_unscaled_with_dropout<L>(
-        &self,
+        &mut self,
         dropout: &[DropoutMasksSingle],
         input: impl Iterator<Item=(L, L)>
     ) -> ScalarType
@@ -390,7 +390,7 @@ impl GRU
     }
 
     pub fn loss_unscaled<L>(
-        &self,
+        &mut self,
         input: impl Iterator<Item=(L, L)>
     ) -> f32
     where
@@ -417,7 +417,7 @@ impl GRU
 
     #[inline(always)]
     pub fn feedforward_single<B>(
-        &self,
+        &mut self,
         previous_hiddens: Option<&[B]>,
         input: &LayerType,
         dropout_masks: &[DropoutMasksSingle]
@@ -446,7 +446,7 @@ impl GRU
             };
 
             debug_assert!(l_i < self.layers.len());
-            let layer = unsafe{ self.layers.get_unchecked(l_i) };
+            let layer = unsafe{ self.layers.get_unchecked_mut(l_i) };
 
             let previous_hidden = unsafe{
                 previous_hiddens.map(|ph| ph.get_unchecked(l_i).borrow())
@@ -457,12 +457,14 @@ impl GRU
 
             let this_output = if l_i == (LAYERS_AMOUNT - 1)
             {
+                dbg!("soemthing borked here");
                 // last layer
                 layer.feedforward_single::<true, _>(
                     previous_hidden,
                     input,
                     dropout_mask,
-                    SoftmaxedLayer::softmax
+                    LayerType::sigmoid
+                    // SoftmaxedLayer::softmax
                 )
             } else
             {
@@ -497,7 +499,7 @@ impl GRU
 
     #[allow(dead_code)]
     pub fn feedforward<L>(
-        &self,
+        &mut self,
         dropout_masks: &[DropoutMasksSingle],
         input: impl Iterator<Item=L> + ExactSizeIterator
     ) -> Vec<GRUOutputLayer>

@@ -2,6 +2,7 @@ use std::{
     f32,
     iter,
     rc::Rc,
+    fmt::Debug,
     cell::{self, RefCell},
     borrow::Borrow,
     ops::{Mul, Add, Sub, Div, AddAssign, DivAssign, Neg}
@@ -308,11 +309,22 @@ pub struct DiffType<T>
 
 pub trait DiffBounds
 where
-    Self: Onesable + Clone,
+    Self: Onesable + Clone + TryInto<LayerInnerType>,
+    <Self as TryInto<LayerInnerType>>::Error: Debug,
     for<'a> Self: Mul<&'a Self, Output=Self> + Add<f32, Output=Self> + Neg<Output=Self>,
     for<'a> &'a Self: Mul<&'a Self, Output=Self> + Neg<Output=Self>,
     for<'a> GradientType: Mul<&'a Self, Output=GradientType>
 {
+}
+
+impl TryFrom<f32> for LayerInnerType
+{
+    type Error = ();
+
+    fn try_from(_value: f32) -> Result<Self, Self::Error>
+    {
+        Err(())
+    }
 }
 
 impl DiffBounds for f32 {}
@@ -321,6 +333,7 @@ impl DiffBounds for LayerInnerType {}
 impl<T> DiffType<T>
 where
     T: DiffBounds,
+    <T as TryInto<LayerInnerType>>::Error: Debug,
     for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
     for<'a> GradientType: Mul<&'a T, Output=GradientType>
@@ -335,7 +348,19 @@ where
     // long ass name but i wanna be descriptive about wut this does
     pub fn take_gradient_tensor(&mut self) -> LayerInnerType
     {
-        match self.gradient.take().expect("must have a gradient calculated")
+        let gradient = match self.gradient.take()
+        {
+            Some(x) => x,
+            None =>
+            {
+                let mut value: LayerInnerType = self.value.clone().unwrap().try_into().unwrap();
+                value.fill(0.0);
+
+                return value;
+            }
+        };
+
+        match gradient
         {
             GradientType::Tensor(x) => x,
             _ => panic!("invalid gradient type requested")
@@ -512,6 +537,7 @@ pub struct DiffWrapper<T>(Rc<RefCell<DiffType<T>>>);
 impl<T> DiffWrapper<T>
 where
     T: DiffBounds,
+    <T as TryInto<LayerInnerType>>::Error: Debug,
     for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
     for<'a> GradientType: Mul<&'a T, Output=GradientType>
@@ -1865,6 +1891,22 @@ mod tests
             a.tanh();
 
             a + b
+        })
+    }
+
+    #[test]
+    fn sum_thingy()
+    {
+        check_tensor(|a, b|
+        {
+            let s: ScalarType = iter::repeat(a).take(5).zip(iter::repeat(b).take(5))
+                .map(|(predicted, target)|
+                {
+                    let predicted = predicted.clone();
+                    predicted.dot(target.clone())
+                }).sum();
+
+            a * s
         })
     }
 
