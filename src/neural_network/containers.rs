@@ -1,35 +1,608 @@
 use std::{
     f32,
-    vec,
+    iter,
+    rc::Rc,
+    cell::{self, RefCell},
     borrow::Borrow,
-    ops::{Add, Sub, Mul, Div, AddAssign, DivAssign}
+    ops::{Mul, Add, Sub, Div, AddAssign, DivAssign, Neg}
 };
 
 use nalgebra::DMatrix;
 
-use arrayfire::{Array, MatProp, dim4};
-
 use serde::{Serialize, Deserialize};
 
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SoftmaxedLayer<T>(pub T);
+pub type LayerInnerType = MatrixWrapper;
 
-impl<T> SoftmaxedLayer<T>
+pub const LEAKY_SLOPE: f32 = 0.01;
+
+// i have no clue where else to put this
+fn leaky_relu_d(value: f32) -> f32
+{
+    if value > 0.0
+    {
+        1.0
+    } else
+    {
+        LEAKY_SLOPE
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum LayerChild
+{
+    Tensor(LayerType),
+    Scalar(ScalarType)
+}
+
+impl LayerChild
+{
+    fn derivatives(&mut self, gradient: GradientType)
+    {
+        match self
+        {
+            Self::Tensor(x) => x.derivatives(gradient),
+            Self::Scalar(x) => x.derivatives(gradient)
+        }
+    }
+
+    fn value_clone(&self) -> GradientType
+    {
+        match self
+        {
+            Self::Tensor(x) => GradientType::Tensor(x.value_clone()),
+            Self::Scalar(x) => GradientType::Scalar(x.value_clone())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum LayerOps
+{
+    None,
+    Diff,
+    SumTensor(LayerType),
+    Neg(LayerChild),
+    Exp(LayerChild),
+    Ln(LayerChild),
+    LeakyRelu(LayerChild),
+    Sigmoid(LayerChild),
+    Tanh(LayerChild),
+    Add{lhs: LayerChild, rhs: LayerChild},
+    Sub{lhs: LayerChild, rhs: LayerChild},
+    Mul{lhs: LayerChild, rhs: LayerChild},
+    Div{lhs: LayerChild, rhs: LayerChild},
+    Matmul{lhs: LayerType, rhs: LayerType}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GradientType
+{
+    Tensor(LayerInnerType),
+    Scalar(f32)
+}
+
+impl GradientType
+{
+    pub fn reciprocal(&self) -> Self
+    {
+        match self
+        {
+            Self::Tensor(x) =>
+            {
+                let mut x = x.clone();
+                x.reciprocal();
+
+                Self::Tensor(x)
+            },
+            Self::Scalar(x) => Self::Scalar(x.recip())
+        }
+    }
+
+    pub fn leaky_relu_d(&self) -> Self
+    {
+        match self
+        {
+            Self::Tensor(x) =>
+            {
+                let mut x = x.clone();
+                x.leaky_relu_d();
+
+                Self::Tensor(x)
+            },
+            Self::Scalar(x) => Self::Scalar(leaky_relu_d(*x))
+        }
+    }
+}
+
+impl From<LayerInnerType> for GradientType
+{
+    fn from(value: LayerInnerType) -> Self
+    {
+        Self::Tensor(value)
+    }
+}
+
+impl From<f32> for GradientType
+{
+    fn from(value: f32) -> Self
+    {
+        Self::Scalar(value)
+    }
+}
+
+impl AddAssign for GradientType
+{
+    fn add_assign(&mut self, rhs: Self)
+    {
+        match (self, rhs)
+        {
+            (Self::Tensor(lhs), Self::Tensor(rhs)) =>
+            {
+                *lhs += rhs;
+            },
+            (Self::Scalar(lhs), Self::Scalar(rhs)) =>
+            {
+                *lhs += rhs;
+            },
+            x => unimplemented!("{:?}", x)
+        }
+    }
+}
+
+impl Neg for GradientType
+{
+    type Output = Self;
+
+    fn neg(self) -> Self::Output
+    {
+        match self
+        {
+            Self::Tensor(x) => Self::Tensor(-x),
+            Self::Scalar(x) => Self::Scalar(-x)
+        }
+    }
+}
+
+impl Div<f32> for GradientType
+{
+    type Output = Self;
+
+    fn div(self, rhs: f32) -> Self::Output
+    {
+        match self
+        {
+            Self::Tensor(x) => Self::Tensor(x / rhs),
+            Self::Scalar(x) => Self::Scalar(x / rhs)
+        }
+    }
+}
+
+impl Mul<f32> for GradientType
+{
+    type Output = Self;
+
+    fn mul(self, rhs: f32) -> Self::Output
+    {
+        match self
+        {
+            Self::Tensor(x) => Self::Tensor(x * rhs),
+            Self::Scalar(x) => Self::Scalar(x * rhs)
+        }
+    }
+}
+
+// is there an easier way to do this ;-; (maybe macros...)
+impl<T> Mul<T> for &GradientType
 where
-    T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>,
-    for<'a> &'a T: Sub<&'a T, Output=T>
+    T: Borrow<GradientType>
+{
+    type Output = GradientType;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        match (self, rhs.borrow())
+        {
+            (GradientType::Tensor(lhs), GradientType::Tensor(rhs)) =>
+            {
+                GradientType::Tensor(lhs * rhs)
+            },
+            (GradientType::Scalar(lhs), GradientType::Scalar(rhs)) =>
+            {
+                GradientType::Scalar(lhs * rhs)
+            },
+            (GradientType::Tensor(lhs), GradientType::Scalar(rhs)) =>
+            {
+                GradientType::Tensor(lhs * *rhs)
+            },
+            (GradientType::Scalar(lhs), GradientType::Tensor(rhs)) =>
+            {
+                GradientType::Tensor(rhs * *lhs)
+            }
+        }
+    }
+}
+
+impl<T> Mul<T> for GradientType
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn mul(self, rhs: T) -> Self::Output
+    {
+        match (self, rhs.borrow())
+        {
+            (Self::Tensor(lhs), Self::Tensor(rhs)) => Self::Tensor(lhs * rhs),
+            (Self::Scalar(lhs), Self::Scalar(rhs)) => Self::Scalar(lhs * rhs),
+            (Self::Tensor(lhs), Self::Scalar(rhs)) => Self::Tensor(lhs * *rhs),
+            (Self::Scalar(lhs), Self::Tensor(rhs)) => Self::Tensor(rhs * lhs)
+        }
+    }
+}
+
+impl Mul<&LayerInnerType> for GradientType
+{
+    type Output = Self;
+
+    fn mul(self, rhs: &LayerInnerType) -> Self::Output
+    {
+        match self
+        {
+            Self::Tensor(x) => Self::Tensor(x * rhs),
+            Self::Scalar(x) => Self::Tensor(rhs * x)
+        }
+    }
+}
+
+impl Mul<&LayerInnerType> for &GradientType
+{
+    type Output = GradientType;
+
+    fn mul(self, rhs: &LayerInnerType) -> Self::Output
+    {
+        match self
+        {
+            GradientType::Tensor(x) => GradientType::Tensor(x * rhs),
+            GradientType::Scalar(x) => GradientType::Tensor(rhs * *x)
+        }
+    }
+}
+
+impl Mul<&f32> for GradientType
+{
+    type Output = Self;
+
+    fn mul(self, rhs: &f32) -> Self::Output
+    {
+        match self
+        {
+            Self::Tensor(x) => Self::Tensor(x * *rhs),
+            Self::Scalar(x) => Self::Scalar(rhs * x)
+        }
+    }
+}
+
+impl Mul<GradientType> for LayerInnerType
+{
+    type Output = Self;
+
+    fn mul(self, rhs: GradientType) -> Self::Output
+    {
+        match rhs
+        {
+            GradientType::Tensor(rhs) => self * rhs,
+            GradientType::Scalar(rhs) => self * rhs
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiffType<T>
+{
+    inner: LayerOps,
+    value: Option<T>,
+    gradient: Option<GradientType>
+}
+
+pub trait DiffBounds
+where
+    Self: Onesable + Clone,
+    for<'a> Self: Mul<&'a Self, Output=Self> + Add<f32, Output=Self> + Neg<Output=Self>,
+    for<'a> &'a Self: Mul<&'a Self, Output=Self> + Neg<Output=Self>,
+    for<'a> GradientType: Mul<&'a Self, Output=GradientType>
+{
+}
+
+impl DiffBounds for f32 {}
+impl DiffBounds for LayerInnerType {}
+
+impl<T> DiffType<T>
+where
+    T: DiffBounds,
+    for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
+    for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
+    for<'a> GradientType: Mul<&'a T, Output=GradientType>
+{
+    pub fn calculate_gradients(mut self)
+    {
+        let ones = self.value.as_ref().unwrap().ones();
+
+        self.derivatives(ones);
+    }
+
+    // long ass name but i wanna be descriptive about wut this does
+    pub fn take_gradient_tensor(&mut self) -> LayerInnerType
+    {
+        match self.gradient.take().expect("must have a gradient calculated")
+        {
+            GradientType::Tensor(x) => x,
+            _ => panic!("invalid gradient type requested")
+        }
+    }
+
+    fn derivatives(&mut self, gradient: GradientType)
+    {
+        if self.gradient.is_none()
+        {
+            self.gradient = Some(gradient.clone());
+        } else
+        {
+            *self.gradient.as_mut().unwrap() += gradient.clone();
+        }
+
+        match &mut self.inner
+        {
+            LayerOps::Add{lhs, rhs} =>
+            {
+                lhs.derivatives(gradient.clone());
+                rhs.derivatives(gradient);
+            },
+            LayerOps::Sub{lhs, rhs} =>
+            {
+                lhs.derivatives(gradient.clone());
+                rhs.derivatives(-gradient);
+            },
+            LayerOps::Mul{lhs, rhs} =>
+            {
+                {
+                    let d = &gradient * rhs.value_clone();
+                    lhs.derivatives(d);
+                }
+
+                {
+                    let d = &gradient * lhs.value_clone();
+                    rhs.derivatives(d);
+                }
+            },
+            LayerOps::Div{lhs, rhs} =>
+            {
+                let r_recip = rhs.value_clone().reciprocal();
+
+                {
+                    let d = &r_recip * &gradient;
+
+                    lhs.derivatives(d);
+                }
+
+                {
+                    // my favorite syntax
+                    let recip_squared =
+                        <&GradientType as Mul<&GradientType>>::mul(&r_recip, &r_recip);
+
+                    let d = &gradient * -lhs.value_clone();
+                    let d = <GradientType as Mul<GradientType>>::mul(d, recip_squared);
+
+                    rhs.derivatives(d);
+                }
+            },
+            LayerOps::Exp(x) =>
+            {
+                let d = self.value.as_ref().unwrap();
+
+                x.derivatives(gradient * d);
+            },
+            LayerOps::Sigmoid(x) =>
+            {
+                let value = self.value.as_ref().unwrap();
+
+                // sigmoid(x) * (1.0 - sigmoid(x))
+                let d = (-value + 1.0) * value;
+
+                x.derivatives(gradient * &d);
+            },
+            LayerOps::Tanh(x) =>
+            {
+                let value = self.value.as_ref().unwrap();
+
+                // 1 - tanh^2(x)
+                let d = -(value * value) + 1.0;
+
+                x.derivatives(gradient * &d);
+            },
+            LayerOps::LeakyRelu(x) =>
+            {
+                let d = x.value_clone().leaky_relu_d();
+
+                x.derivatives(<&GradientType as Mul<GradientType>>::mul(&gradient, d));
+            },
+            LayerOps::Ln(x) =>
+            {
+                let d = x.value_clone().reciprocal();
+
+                // why does it want fully qualified syntax im so DONE
+                x.derivatives(<&GradientType as Mul<GradientType>>::mul(&gradient, d));
+            },
+            LayerOps::Neg(x) =>
+            {
+                x.derivatives(-gradient);
+            },
+            LayerOps::Matmul{lhs, rhs} =>
+            {
+                let gradient = match gradient
+                {
+                    GradientType::Tensor(x) => x,
+                    x => panic!("matmul must have a tensor gradient, instead it has {:?}", x)
+                };
+
+                {
+                    let d = rhs.value().matmul_derivative(&gradient);
+                    lhs.derivatives(d.into());
+                }
+
+                {
+                    let d = lhs.value().matmul_transposed(gradient);
+                    rhs.derivatives(d.into());
+                }
+            },
+            LayerOps::SumTensor(x) =>
+            {
+                let d = match gradient
+                {
+                    GradientType::Tensor(gradient) => gradient,
+                    GradientType::Scalar(gradient) =>
+                    {
+                        let mut x = x.value_clone();
+                        x.fill(gradient);
+
+                        x
+                    }
+                };
+
+                x.derivatives(d.into());
+            },
+            LayerOps::Diff =>
+            {
+                dbg!("le diff matrix has arrived");
+            },
+            LayerOps::None =>
+            {
+                dbg!("it shouldnt print this after i optimize stuff");
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffWrapper<T>(Rc<RefCell<DiffType<T>>>);
+
+impl<T> DiffWrapper<T>
+where
+    T: DiffBounds,
+    for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
+    for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
+    for<'a> GradientType: Mul<&'a T, Output=GradientType>
+{
+    pub fn new_diff(value: T) -> Self
+    {
+        Self::new_inner(value, LayerOps::Diff)
+    }
+
+    pub fn clear(&mut self)
+    {
+        *self = Self::new_diff(self.value_take());
+    }
+
+    pub fn take_gradient_tensor(&mut self) -> LayerInnerType
+    {
+        self.this_mut().take_gradient_tensor()
+    }
+
+    pub fn calculate_gradients(self)
+    {
+        self.this_move().calculate_gradients()
+    }
+
+    fn this_move(self) -> DiffType<T>
+    {
+        Rc::into_inner(self.0).expect("this wrapper must have no parents").into_inner()
+    }
+
+    fn new_inner(value: T, ops: LayerOps) -> Self
+    {
+        let diff = DiffType{
+            value: Some(value),
+            inner: ops,
+            gradient: None
+        };
+
+        Self(Rc::new(RefCell::new(diff)))
+    }
+
+    fn derivatives(&mut self, gradient: GradientType)
+    {
+        RefCell::borrow_mut(&self.0).derivatives(gradient);
+    }
+
+    #[allow(dead_code)]
+    fn this_ref(&self) -> cell::Ref<DiffType<T>>
+    {
+        RefCell::borrow(&self.0)
+    }
+
+    fn this_mut(&mut self) -> cell::RefMut<DiffType<T>>
+    {
+        RefCell::borrow_mut(&self.0)
+    }
+
+    pub fn value(&self) -> cell::Ref<T>
+    {
+        cell::Ref::map(RefCell::borrow(&self.0), |v| v.value.as_ref().unwrap())
+    }
+
+    pub fn value_mut(&mut self) -> cell::RefMut<T>
+    {
+        cell::RefMut::map(RefCell::borrow_mut(&self.0), |v| v.value.as_mut().unwrap())
+    }
+
+    pub fn value_clone(&self) -> T
+    {
+        (*RefCell::borrow(&self.0)).value.clone().unwrap()
+    }
+
+    fn value_take(&mut self) -> T
+    {
+        (*RefCell::borrow_mut(&self.0)).value.take().unwrap()
+    }
+}
+
+pub trait Onesable
+{
+    fn ones(&self) -> GradientType;
+}
+
+impl Onesable for LayerInnerType
+{
+    fn ones(&self) -> GradientType
+    {
+        let mut x = self.clone();
+        x.fill(1.0);
+
+        GradientType::Tensor(x)
+    }
+}
+
+impl Onesable for f32
+{
+    fn ones(&self) -> GradientType
+    {
+        GradientType::Scalar(1.0)
+    }
+}
+
+#[derive(Debug)]
+pub struct SoftmaxedLayer(pub LayerType);
+
+impl SoftmaxedLayer
 {
     #[allow(dead_code)]
-    pub fn new(mut layer: T) -> Self
+    pub fn new(mut layer: LayerType) -> Self
     {
         Self::softmax(&mut layer);
         Self(layer)
     }
 
-    pub fn softmax(layer: &mut T) 
+    pub fn softmax(layer: &mut LayerType) 
     {
         layer.exp();
         let s = layer.sum();
@@ -38,7 +611,7 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn from_raw(layer: T) -> Self
+    pub fn from_raw(layer: LayerType) -> Self
     {
         Self(layer)
     }
@@ -46,20 +619,20 @@ where
     #[allow(dead_code)]
     pub fn new_empty(size: usize) -> Self
     {
-        Self(T::new(size, 1))
+        Self(LayerType::new(size, 1))
     }
 
     #[allow(dead_code)]
     pub fn pick_weighed(&self, temperature: f32) -> usize
     {
-        Self::pick_weighed_associated(&self.0, temperature)
+        Self::pick_weighed_associated(&self.0.value(), temperature)
     }
 
-    pub fn pick_weighed_associated(values: &T, temperature: f32) -> usize
+    pub fn pick_weighed_associated(values: &LayerInnerType, temperature: f32) -> usize
     {
         let values = values / temperature;
 
-        values.pick_weighed()
+        Self::pick_weighed_inner(values.iter())
     }
 
     pub fn pick_weighed_inner<'b, I>(mut iter: I) -> usize
@@ -89,791 +662,28 @@ where
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct WeightsIterValue<T>
-{
-    pub previous: usize,
-    pub this: usize,
-    pub value: T
-}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatrixWrapper(DMatrix<f32>);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GenericContainer<T=f32>
-{
-    values: Box<[T]>,
-    previous_size: usize,
-    this_size: usize
-}
-
-impl<T> GenericContainer<T>
-{
-    pub fn new_from(&self, values: &Array<f32>) -> GenericContainer<f32>
-    {
-        debug_assert!(self.previous_size == values.dims()[0] as usize);
-        debug_assert!(self.this_size == values.dims()[1] as usize);
-        debug_assert!(self.values.len() == values.elements());
-
-        let mut values_host = vec![0.0_f32; values.elements()];
-        values.host(&mut values_host);
-
-        GenericContainer{
-            values: values_host.into_boxed_slice(),
-            previous_size: self.previous_size,
-            this_size: self.this_size
-        }
-    }
-
-    #[inline(always)]
-    pub fn dims(&self) -> arrayfire::Dim4
-    {
-        dim4!(self.previous_size as u64, self.this_size as u64)
-    }
-}
-
-impl<T> GenericContainer<T>
-where
-    T: Default
-{
-    pub fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        let values = (0..(previous_size * this_size)).map(|_| T::default()).collect();
-
-        Self{values, previous_size, this_size}
-    }
-}
-
-impl<T> GenericContainer<T>
-where
-    T: Copy
-{
-    #[allow(dead_code)]
-    pub fn iter_pos(&self) -> impl Iterator<Item=WeightsIterValue<T>> + DoubleEndedIterator + '_
-    {
-        self.values.iter().enumerate().map(|(index, &value)|
-        {
-            WeightsIterValue{
-                previous: index % self.previous_size,
-                this: index / self.previous_size,
-                value
-            }
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn map<F>(&mut self, mut f: F)
-    where
-        F: FnMut(T) -> T
-    {
-        self.values.iter_mut().for_each(|v| *v = f(*v));
-    }
-}
-
-impl<T> GenericContainer<T>
-{
-    pub fn new_with<F>(previous_size: usize, this_size: usize, mut f: F) -> Self
-    where
-        F: FnMut() -> T
-    {
-        let values = (0..(previous_size * this_size)).map(|_|
-        {
-            f()
-        }).collect();
-
-        Self{values, previous_size, this_size}
-    }
-
-    #[allow(dead_code)]
-    pub fn from_raw<V>(values: V, previous_size: usize, this_size: usize) -> Self
-    where
-        V: Into<Box<[T]>>
-    {
-        Self{values: values.into(), previous_size, this_size}
-    }
-    
-    #[allow(dead_code)]
-    pub fn this(&self, previous: usize) -> impl Iterator<Item=&T>
-    {
-        (0..self.this_size).map(move |i|
-        {
-            self.weight(previous, i)
-        })
-    }
-
-    #[allow(dead_code)]
-    pub unsafe fn this_unchecked(&self, previous: usize) -> impl Iterator<Item=&T>
-    {
-        (0..self.this_size).map(move |i|
-        {
-            self.weight_unchecked(previous, i)
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn previous_size(&self) -> usize
-    {
-        self.previous_size
-    }
-
-    #[allow(dead_code)]
-    pub fn this_size(&self) -> usize
-    {
-        self.this_size
-    }
-
-    pub fn total_len(&self) -> usize
-    {
-        self.values.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn iter(&self) -> impl Iterator<Item=&T> + ExactSizeIterator
-    {
-        self.values.iter()
-    }
-
-    #[allow(dead_code)]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T> + ExactSizeIterator
-    {
-        self.values.iter_mut()
-    }
-
-    #[inline(always)]
-    fn index_of(&self, previous: usize, this: usize) -> usize
-    {
-        this * self.previous_size + previous
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn weight(&self, previous: usize, this: usize) -> &T
-    {
-        &self.values[self.index_of(previous, this)]
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub unsafe fn weight_unchecked(&self, previous: usize, this: usize) -> &T
-    {
-        debug_assert!(
-            (0..self.previous_size).contains(&previous),
-            "{} >= {}",
-            previous,
-            self.previous_size
-        );
-
-        debug_assert!((0..self.this_size).contains(&this), "{} >= {}", this, self.this_size);
-
-        self.values.get_unchecked(self.index_of(previous, this))
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn weight_mut(&mut self, previous: usize, this: usize) -> &mut T
-    {
-        &mut self.values[self.index_of(previous, this)]
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub unsafe fn weight_unchecked_mut(&mut self, previous: usize, this: usize) -> &mut T
-    {
-        debug_assert!(
-            (0..self.previous_size).contains(&previous),
-            "{} >= {}",
-            previous,
-            self.previous_size
-        );
-        debug_assert!((0..self.this_size).contains(&this), "{} >= {}", this, self.this_size);
-        self.values.get_unchecked_mut(self.index_of(previous, this))
-    }
-}
-
-impl GenericContainer<f32>
-{
-    #[inline(always)]
-    pub fn dot(self, rhs: GenericContainer) -> f32
-    {
-        self.values.into_iter().zip(rhs.values.into_iter()).map(|(v, rhs)| v * rhs).sum()
-    }
-
-    #[inline(always)]
-    pub fn sum(&self) -> f32
-    {
-        self.values.into_iter().sum()
-    }
-
-    #[inline(always)]
-    pub fn one_minus_this(mut self) -> Self
-    {
-        self.iter_mut().for_each(|v| *v = 1.0 - *v);
-
-        self
-    }
-
-    #[inline(always)]
-    pub fn matmul(&self, rhs: impl Borrow<GenericContainer>) -> GenericContainer
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            rhs.total_len() == self.previous_size,
-            "{} != {}",
-            rhs.total_len(),
-            self.previous_size
-        );
-
-        Self{
-            values: (0..self.this_size).map(|i|
-            {
-                (0..self.previous_size).map(|p|
-                {
-                    // no bounds checking, if i messed something up let it burn
-                    unsafe{ self.weight_unchecked(p, i) * rhs.weight_unchecked(p, 0) }
-                }).sum()
-            }).collect(),
-            previous_size: self.this_size,
-            this_size: 1
-        }
-    }
-
-    #[inline(always)]
-    pub fn matmul_transposed(&self, rhs: impl Borrow<GenericContainer>) -> GenericContainer
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            rhs.total_len() == self.this_size,
-            "{} != {}",
-            rhs.total_len(),
-            self.this_size
-        );
-
-        Self{
-            values: (0..self.previous_size).map(|i|
-            {
-                (0..self.this_size).map(|p|
-                {
-                    // no bounds checking, if i messed something up let it burn
-                    unsafe{ self.weight_unchecked(i, p) * rhs.weight_unchecked(p, 0) }
-                }).sum()
-            }).collect(),
-            previous_size: self.previous_size,
-            this_size: 1
-        }
-    }
-
-    #[inline(always)]
-    pub fn apply<F: FnMut(&f32) -> f32>(&mut self, mut f: F)
-    {
-        self.iter_mut().for_each(|v| *v = f(v));
-    }
-
-    #[inline(always)]
-    pub fn applied<F: FnMut(&f32) -> f32>(&self, mut f: F) -> Self
-    {
-        Self{
-            values: self.iter().map(|v| f(v)).collect(),
-            ..*self
-        }
-    }
-
-    // ballin
-    #[inline(always)]
-    pub fn add_outer_product(
-        &mut self,
-        lhs: impl Borrow<GenericContainer>,
-        rhs: impl Borrow<GenericContainer>
-    )
-    {
-        let lhs = lhs.borrow();
-        let rhs = rhs.borrow();
-        
-        debug_assert!(
-            (lhs.total_len() == self.this_size)
-            &&
-            (rhs.total_len() == self.previous_size)
-        );
-
-        let this_size = self.this_size;
-        let previous_size = self.previous_size;
-
-        let mut weights = self.iter_mut();
-        for y in 0..this_size
-        {
-            for x in 0..previous_size
-            {
-                unsafe{
-                    *weights.next().unwrap_unchecked() +=
-                        lhs.weight_unchecked(y, 0)
-                        * rhs.weight_unchecked(x, 0);
-                }
-            }
-        }
-    }
-}
-
-impl Mul<f32> for GenericContainer
-{
-    type Output = Self;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        let values = self.values.into_iter().map(|v|
-        {
-            v * rhs
-        }).collect();
-
-        GenericContainer{
-            values,
-            ..self
-        }
-    }
-}
-
-impl Mul<f32> for &GenericContainer
-{
-    type Output = GenericContainer;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        let values = self.iter().map(|v|
-        {
-            *v * rhs
-        }).collect();
-
-        GenericContainer{
-            values,
-            ..*self
-        }
-    }
-}
-
-impl<T> Mul<T> for GenericContainer
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            self.previous_size == rhs.previous_size,
-            "self.previous_size: {}, rhs.previous_size: {}",
-            self.previous_size, rhs.previous_size
-        );
-
-        debug_assert!(
-            self.this_size == rhs.this_size,
-            "self.this_size: {}, rhs.this_size: {}",
-            self.this_size, rhs.this_size
-        );
-
-        let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
-        {
-            v * rhs
-        }).collect();
-
-        Self{
-            values,
-            ..self
-        }
-    }
-}
-
-impl<T> Mul<T> for &GenericContainer
-where
-    T: Borrow<GenericContainer>
-{
-    type Output = GenericContainer;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(self.previous_size == rhs.previous_size);
-        debug_assert!(self.this_size == rhs.this_size);
-
-        let values = self.iter().zip(rhs.iter()).map(|(v, rhs)|
-        {
-            *v * *rhs
-        }).collect();
-
-        GenericContainer{
-            values,
-            ..*self
-        }
-    }
-}
-
-impl Div<f32> for GenericContainer
-{
-    type Output = Self;
-
-    fn div(self, rhs: f32) -> Self::Output
-    {
-        let values = self.values.into_iter().map(|v|
-        {
-            v / rhs
-        }).collect();
-
-        Self{
-            values,
-            ..self
-        }
-    }
-}
-
-impl Div<f32> for &GenericContainer
-{
-    type Output = GenericContainer;
-
-    fn div(self, rhs: f32) -> Self::Output
-    {
-        let values = self.iter().map(|v|
-        {
-            v / rhs
-        }).collect();
-
-        GenericContainer{
-            values,
-            ..*self
-        }
-    }
-}
-
-impl Div for GenericContainer
-{
-    type Output = Self;
-
-    fn div(self, rhs: Self) -> Self::Output
-    {
-        debug_assert!(self.previous_size == rhs.previous_size);
-        debug_assert!(self.this_size == rhs.this_size);
-
-        let values = self.values.into_iter().zip(rhs.values.into_iter()).map(|(v, rhs)|
-        {
-            v / rhs
-        }).collect();
-
-        Self{
-            values,
-            ..self
-        }
-    }
-}
-
-impl DivAssign<f32> for GenericContainer
-{
-    fn div_assign(&mut self, rhs: f32)
-    {
-        self.values.iter_mut().for_each(|v|
-        {
-            *v /= rhs;
-        });
-    }
-}
-
-impl<V> Sub<V> for GenericContainer
-where
-    V: Borrow<Self>
-{
-    type Output = Self;
-
-    fn sub(self, rhs: V) -> Self::Output
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(self.previous_size == rhs.previous_size);
-        debug_assert!(self.this_size == rhs.this_size);
-
-        let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
-        {
-            v - rhs
-        }).collect();
-
-        Self{
-            values,
-            ..self
-        }
-    }
-}
-
-impl<V> Sub<V> for &GenericContainer
-where
-    V: Borrow<GenericContainer>
-{
-    type Output = GenericContainer;
-
-    fn sub(self, rhs: V) -> Self::Output
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(self.previous_size == rhs.previous_size);
-        debug_assert!(self.this_size == rhs.this_size);
-
-        let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
-        {
-            v - rhs
-        }).collect();
-
-        GenericContainer{
-            values,
-            ..*self
-        }
-    }
-}
-
-impl<V> Add<V> for GenericContainer
-where
-    V: Borrow<Self>
-{
-    type Output = Self;
-
-    fn add(self, rhs: V) -> Self::Output
-    {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            self.previous_size == rhs.previous_size,
-            "self.previous_size: {}, rhs.previous_size: {}",
-            self.previous_size, rhs.previous_size
-        );
-
-        debug_assert!(
-            self.this_size == rhs.this_size,
-            "self.this_size: {}, rhs.this_size: {}",
-            self.this_size, rhs.this_size
-        );
-
-        let values = self.values.into_iter().zip(rhs.iter()).map(|(v, rhs)|
-        {
-            v + rhs
-        }).collect();
-
-        Self{
-            values,
-            ..self
-        }
-    }
-}
-
-impl Add<f32> for GenericContainer
+impl Add<f32> for MatrixWrapper
 {
     type Output = Self;
 
     fn add(self, rhs: f32) -> Self::Output
     {
-        let values = self.values.into_iter().map(|v|
-        {
-            v + rhs
-        }).collect();
-
-        Self{
-            values,
-            ..self
-        }
+        Self(self.0.add_scalar(rhs))
     }
 }
 
-impl<T, R> AddAssign<R> for GenericContainer<T>
-where
-    T: for<'a> AddAssign<&'a T>,
-    R: Borrow<Self>
+impl Add<f32> for &MatrixWrapper
 {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: R)
+    type Output = MatrixWrapper;
+
+    fn add(self, rhs: f32) -> Self::Output
     {
-        let rhs = rhs.borrow();
-
-        debug_assert!(
-            (self.previous_size == rhs.previous_size)
-            &&
-            (self.this_size == rhs.this_size)
-        );
-
-        self.iter_mut().zip(rhs.iter()).for_each(|(this, other)|
-        {
-            *this += other;
-        });
+        MatrixWrapper(self.0.add_scalar(rhs))
     }
 }
-
-pub const LEAKY_SLOPE: f32 = 0.01;
-
-pub trait NetworkType
-where
-    for<'a> Self: Sized + Serialize + Deserialize<'a> + Clone + Send + Sync,
-    for<'a> Self: Mul<f32, Output=Self> + Mul<Self, Output=Self> + Mul<&'a Self, Output=Self>,
-    for<'a> Self: Add<Output=Self> + Add<f32, Output=Self> + Add<&'a Self, Output=Self>,
-    Self: AddAssign<Self>,
-    Self: Div<Output=Self> + Div<f32, Output=Self> + DivAssign<f32>,
-    for<'a> Self: Sub<&'a Self, Output=Self>,
-    for<'a> &'a Self: Sub<&'a Self, Output=Self>,
-    for<'a> &'a Self: Mul<f32, Output=Self> + Mul<&'a Self, Output=Self> + Mul<Self, Output=Self>,
-    for<'a> &'a Self: Div<f32, Output=Self>
-{
-    fn new(previous_size: usize, this_size: usize) -> Self;
-    fn new_with<F: FnMut() -> f32>(
-        previous_size: usize,
-        this_size: usize,
-        f: F
-    )-> Self;
-    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self;
-    
-    fn matmul(&self, rhs: impl Borrow<Self>) -> Self;
-    fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self;
-    fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>);
-    fn dot(self, rhs: Self) -> f32;
-    
-    fn sqrt(&mut self);
-    fn exp(&mut self);
-    fn ln(&mut self);
-    fn sigmoid(&mut self);
-    fn tanh(&mut self);
-
-    fn leaky_relu(&mut self);
-    fn leaky_relu_d(&mut self);
-
-    fn sum(&self) -> f32;
-    
-    fn one_minus_this(self) -> Self;
-
-    fn total_len(&self) -> usize;
-
-    fn as_vec(&self) -> Vec<f32>;
-
-    fn pick_weighed(&self) -> usize;
-    fn highest_index(&self) -> usize;
-
-    fn clone_sqrt(&self) -> Self
-    {
-        let mut out = self.clone();
-        out.sqrt();
-
-        out
-    }
-}
-
-impl NetworkType for GenericContainer
-{
-    fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        GenericContainer::new(previous_size, this_size)
-    }
-
-    fn new_with<F: FnMut() -> f32>(
-        previous_size: usize,
-        this_size: usize,
-        f: F
-    )-> Self
-    {
-        GenericContainer::new_with(previous_size, this_size, f)
-    }
-
-    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
-    {
-        GenericContainer::from_raw(values, previous_size, this_size)
-    }
-
-    fn matmul(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        GenericContainer::matmul(self, rhs)
-    }
-
-    fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        GenericContainer::matmul_transposed(self, rhs)
-    }
-
-    fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
-    {
-        GenericContainer::add_outer_product(self, lhs, rhs);
-    }
-
-    fn dot(self, rhs: Self) -> f32
-    {
-        GenericContainer::dot(self, rhs)
-    }
-
-    fn sqrt(&mut self)
-    {
-        GenericContainer::apply(self, |x| x.sqrt())
-    }
-
-    fn exp(&mut self)
-    {
-        GenericContainer::apply(self, |x| x.exp())
-    }
-
-    fn ln(&mut self)
-    {
-        GenericContainer::apply(self, |x| x.ln())
-    }
-
-    fn sigmoid(&mut self)
-    {
-        GenericContainer::apply(self, |x| 1.0 / (1.0 + (-x).exp()))
-    }
-
-    fn tanh(&mut self)
-    {
-        GenericContainer::apply(self, |x| x.tanh())
-    }
-
-    fn leaky_relu(&mut self)
-    {
-        GenericContainer::apply(self, |x| x.max(LEAKY_SLOPE * x))
-    }
-
-    fn leaky_relu_d(&mut self)
-    {
-        GenericContainer::apply(self, |x|
-        {
-            if *x > 0.0
-            {
-                1.0
-            } else
-            {
-                LEAKY_SLOPE
-            }
-        })
-    }
-
-    fn sum(&self) -> f32
-    {
-        GenericContainer::sum(self)
-    }
-
-    fn one_minus_this(self) -> Self
-    {
-        GenericContainer::one_minus_this(self)
-    }
-
-    fn total_len(&self) -> usize
-    {
-        GenericContainer::total_len(self)
-    }
-
-    fn as_vec(&self) -> Vec<f32>
-    {
-        self.values.clone().to_vec()
-    }
-
-    fn pick_weighed(&self) -> usize
-    {
-        SoftmaxedLayer::<Self>::pick_weighed_inner(self.values.iter())
-    }
-
-    fn highest_index(&self) -> usize
-    {
-        SoftmaxedLayer::<Self>::highest_index(self.values.iter())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatrixWrapper(pub DMatrix<f32>);
 
 impl<T> Add<T> for MatrixWrapper
 where
@@ -887,13 +697,15 @@ where
     }
 }
 
-impl Add<f32> for MatrixWrapper
+impl<T> Add<T> for &MatrixWrapper
+where
+    T: Borrow<MatrixWrapper>
 {
-    type Output = Self;
+    type Output = MatrixWrapper;
 
-    fn add(self, rhs: f32) -> Self::Output
+    fn add(self, rhs: T) -> Self::Output
     {
-        Self(self.0.add_scalar(rhs))
+        MatrixWrapper(&self.0 + &rhs.borrow().0)
     }
 }
 
@@ -921,15 +733,13 @@ where
     }
 }
 
-impl<T> Mul<T> for MatrixWrapper
-where
-    T: Borrow<Self>
+impl Sub<f32> for &MatrixWrapper
 {
-    type Output = Self;
+    type Output = MatrixWrapper;
 
-    fn mul(self, rhs: T) -> Self::Output
+    fn sub(self, rhs: f32) -> Self::Output
     {
-        Self(self.0.component_mul(&rhs.borrow().0))
+        MatrixWrapper(self.0.add_scalar(-rhs))
     }
 }
 
@@ -965,15 +775,15 @@ impl Mul<f32> for &MatrixWrapper
     }
 }
 
-impl<T> Div<T> for MatrixWrapper
+impl<T> Mul<T> for MatrixWrapper
 where
     T: Borrow<Self>
 {
     type Output = Self;
 
-    fn div(self, rhs: T) -> Self::Output
+    fn mul(self, rhs: T) -> Self::Output
     {
-        Self(self.0.component_div(&rhs.borrow().0))
+        Self(self.0.component_mul(&rhs.borrow().0))
     }
 }
 
@@ -997,11 +807,37 @@ impl Div<f32> for &MatrixWrapper
     }
 }
 
-impl AddAssign for MatrixWrapper
+impl<T> Div<T> for MatrixWrapper
+where
+    T: Borrow<Self>
 {
-    fn add_assign(&mut self, rhs: Self)
+    type Output = Self;
+
+    fn div(self, rhs: T) -> Self::Output
     {
-        self.0 += rhs.0;
+        Self(self.0.component_div(&rhs.borrow().0))
+    }
+}
+
+impl<T> Div<T> for &MatrixWrapper
+where
+    T: Borrow<MatrixWrapper>
+{
+    type Output = MatrixWrapper;
+
+    fn div(self, rhs: T) -> Self::Output
+    {
+        MatrixWrapper(self.0.component_div(&rhs.borrow().0))
+    }
+}
+
+impl<T> AddAssign<T> for MatrixWrapper
+where
+    T: Borrow<Self>
+{
+    fn add_assign(&mut self, rhs: T)
+    {
+        self.0 += &rhs.borrow().0;
     }
 }
 
@@ -1013,14 +849,34 @@ impl DivAssign<f32> for MatrixWrapper
     }
 }
 
-impl NetworkType for MatrixWrapper
+impl Neg for MatrixWrapper
 {
-    fn new(previous_size: usize, this_size: usize) -> Self
+    type Output = Self;
+
+    fn neg(self) -> Self::Output
+    {
+        Self(-self.0)
+    }
+}
+
+impl Neg for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn neg(self) -> Self::Output
+    {
+        MatrixWrapper(-&self.0)
+    }
+}
+
+impl MatrixWrapper
+{
+    pub fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self(DMatrix::zeros(previous_size, this_size))
     }
 
-    fn new_with<F: FnMut() -> f32>(
+    pub fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
         mut f: F
@@ -1029,112 +885,131 @@ impl NetworkType for MatrixWrapper
         Self(DMatrix::from_fn(previous_size, this_size, |_, _| f()))
     }
 
-    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    pub fn from_raw<V: Into<Vec<f32>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
-        Self(DMatrix::from_vec(previous_size, this_size, values.into().to_vec()))
+        Self(DMatrix::from_vec(previous_size, this_size, values.into()))
     }
 
-    fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
     {
-        Self(self.0.tr_mul(&rhs.borrow().0))
+        self.0.copy_from_slice(&values.into());
     }
 
-    fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn fill(&mut self, value: f32)
+    {
+        self.0.fill(value);
+    }
+
+    pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
     {
         Self(&self.0 * &rhs.borrow().0)
     }
 
-    fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
+    pub fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
     {
-        let transposed_lhs = lhs.borrow().0.transpose();
-
-        self.0 += &rhs.borrow().0 * transposed_lhs;
+        Self(self.0.tr_mul(&rhs.borrow().0))
     }
 
-    fn dot(self, rhs: Self) -> f32
+    pub fn matmul_derivative(&self, rhs: impl Borrow<Self>) -> Self
+    {
+        Self(&rhs.borrow().0 * self.0.transpose())
+    }
+
+    pub fn dot(self, rhs: &Self) -> f32
     {
         self.0.dot(&rhs.0)
     }
 
-    fn sqrt(&mut self)
+    pub fn sqrt(&mut self)
     {
         self.0.apply(|v| *v = v.sqrt());
     }
 
-    fn exp(&mut self)
+    pub fn clone_sqrt(&self) -> Self
+    {
+        let mut out = self.clone();
+        out.sqrt();
+
+        out
+    }
+
+    pub fn exp(&mut self)
     {
         self.0.apply(|v| *v = v.exp());
     }
 
-    fn ln(&mut self)
+    pub fn ln(&mut self)
     {
         self.0.apply(|v| *v = v.ln());
     }
 
-    fn sigmoid(&mut self)
+    pub fn reciprocal(&mut self)
+    {
+        self.0.apply(|v| *v = 1.0 / *v);
+    }
+
+    pub fn sigmoid(&mut self)
     {
         self.0.apply(|v| *v = 1.0 / (1.0 + (-*v).exp()));
     }
 
-    fn tanh(&mut self)
+    pub fn tanh(&mut self)
     {
         self.0.apply(|v| *v = v.tanh());
     }
 
-    fn leaky_relu(&mut self)
+    pub fn leaky_relu(&mut self)
     {
         self.0.apply(|v| *v = v.max(LEAKY_SLOPE * *v));
     }
 
-    fn leaky_relu_d(&mut self)
+    pub fn leaky_relu_d(&mut self)
     {
-        self.0.apply(|v| 
-        {
-            *v = if *v > 0.0
-            {
-                1.0
-            } else
-            {
-                LEAKY_SLOPE
-            };
-        })
+        self.0.apply(|v| *v = leaky_relu_d(*v));
     }
 
-    fn sum(&self) -> f32
+    pub fn sum(&self) -> f32
     {
         self.0.sum()
     }
 
-    fn one_minus_this(self) -> Self
-    {
-        Self((-self.0).add_scalar(1.0))
-    }
-
-    fn total_len(&self) -> usize
+    pub fn total_len(&self) -> usize
     {
         self.0.as_slice().len()
     }
 
-    fn as_vec(&self) -> Vec<f32>
+    pub fn as_vec(&self) -> Vec<f32>
     {
         self.0.as_slice().to_vec()
     }
 
-    fn pick_weighed(&self) -> usize
+    pub fn iter(&self) -> impl Iterator<Item=&f32> + ExactSizeIterator
     {
-        SoftmaxedLayer::<Self>::pick_weighed_inner(self.0.as_slice().iter())
+        self.0.as_slice().iter()
     }
 
-    fn highest_index(&self) -> usize
+    pub fn pick_weighed(&self, temperature: f32) -> usize
     {
-        SoftmaxedLayer::<Self>::highest_index(self.0.as_slice().iter())
+        SoftmaxedLayer::pick_weighed_associated(self, temperature)
+    }
+
+    pub fn highest_index(&self) -> usize
+    {
+        SoftmaxedLayer::highest_index(self.iter())
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct ArrayWrapper(pub Array<f32>);
+pub type ScalarType = DiffWrapper<f32>;
 
-impl<T> Add<T> for ArrayWrapper
+impl ScalarType
+{
+    pub fn new(value: f32) -> Self
+    {
+        ScalarType::new_inner(value, LayerOps::None)
+    }
+}
+
+impl<T> Add<T> for ScalarType
 where
     T: Borrow<Self>
 {
@@ -1142,21 +1017,142 @@ where
 
     fn add(self, rhs: T) -> Self::Output
     {
-        Self(self.0 + &rhs.borrow().0)
+        let rhs = rhs.borrow();
+        Self::new_inner(
+            self.value_clone() + rhs.value_clone(),
+            LayerOps::Add{
+                lhs: LayerChild::Scalar(self),
+                rhs: LayerChild::Scalar(rhs.clone())
+            }
+        )
     }
 }
 
-impl Add<f32> for ArrayWrapper
+impl<T> Sub<T> for ScalarType
+where
+    T: Borrow<LayerType>
+{
+    type Output = LayerType;
+
+    fn sub(self, rhs: T) -> Self::Output
+    {
+        let rhs = rhs.borrow();
+        LayerType::new_inner(
+            -(&*rhs.value()) + self.value_clone(),
+            LayerOps::Sub{
+                lhs: LayerChild::Scalar(self),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }
+        )
+    }
+}
+
+impl Neg for ScalarType
 {
     type Output = Self;
 
-    fn add(self, rhs: f32) -> Self::Output
+    fn neg(self) -> Self::Output
     {
-        Self(self.0 + rhs)
+        Self::new_inner(
+            // im unwrapping cuz i dont want it to proceed if value is None
+            -self.value_clone(),
+            LayerOps::Neg(LayerChild::Scalar(self))
+        )
     }
 }
 
-impl<T> Sub<T> for ArrayWrapper
+impl iter::Sum for ScalarType
+{
+    fn sum<I>(iter: I) -> Self
+    where
+        I: Iterator<Item=Self>
+    {
+        iter.reduce(|acc, value|
+        {
+            acc + value
+        }).unwrap_or_else(|| ScalarType::new(f32::default()))
+    }
+}
+
+pub type LayerType = DiffWrapper<LayerInnerType>;
+
+impl<T> Add<T> for LayerType
+where
+    T: Borrow<Self>
+{
+    type Output = Self;
+
+    fn add(self, rhs: T) -> Self::Output
+    {
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value + &*r_value
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Add{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }.into()
+        )
+    }
+}
+
+impl<T> Add<T> for &LayerType
+where
+    T: Borrow<LayerType>
+{
+    type Output = LayerType;
+
+    fn add(self, rhs: T) -> Self::Output
+    {
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value + &*r_value
+        };
+
+        LayerType::new_inner(
+            value,
+            LayerOps::Add{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }.into()
+        )
+    }
+}
+
+impl Add<ScalarType> for LayerType
+{
+    type Output = Self;
+
+    fn add(self, rhs: ScalarType) -> Self::Output
+    {
+        let value = {
+            let l_value = self.value();
+
+            &*l_value + rhs.value_clone()
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Add{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        )
+    }
+}
+
+impl<T> Sub<T> for LayerType
 where
     T: Borrow<Self>
 {
@@ -1164,23 +1160,75 @@ where
 
     fn sub(self, rhs: T) -> Self::Output
     {
-        Self(self.0 - &rhs.borrow().0)
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value - &*r_value
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Sub{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }
+        )
     }
 }
 
-impl<T> Sub<T> for &ArrayWrapper
+impl<T> Sub<T> for &LayerType
 where
-    T: Borrow<ArrayWrapper>
+    T: Borrow<LayerType>
 {
-    type Output = ArrayWrapper;
+    type Output = LayerType;
 
     fn sub(self, rhs: T) -> Self::Output
     {
-        ArrayWrapper(&self.0 - &rhs.borrow().0)
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value - &*r_value
+        };
+
+        LayerType::new_inner(
+            value,
+            LayerOps::Sub{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }
+        )
     }
 }
 
-impl<T> Mul<T> for ArrayWrapper
+impl Sub<ScalarType> for LayerType
+{
+    type Output = Self;
+
+    fn sub(self, rhs: ScalarType) -> Self::Output
+    {
+        let value = {
+            let l_value = self.value();
+
+            &*l_value - rhs.value_clone()
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Sub{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        )
+    }
+}
+
+impl<T> Mul<T> for LayerType
 where
     T: Borrow<Self>
 {
@@ -1188,43 +1236,97 @@ where
 
     fn mul(self, rhs: T) -> Self::Output
     {
-        Self(self.0 * &rhs.borrow().0)
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value * &*r_value
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Mul{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Tensor(rhs.borrow().clone())
+            }
+        )
     }
 }
 
-impl<T> Mul<T> for &ArrayWrapper
+impl<T> Mul<T> for &LayerType
 where
-    T: Borrow<ArrayWrapper>
+    T: Borrow<LayerType>
 {
-    type Output = ArrayWrapper;
+    type Output = LayerType;
 
     fn mul(self, rhs: T) -> Self::Output
     {
-        ArrayWrapper(&self.0 * &rhs.borrow().0)
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value * &*r_value
+        };
+
+        LayerType::new_inner(
+            value,
+            LayerOps::Mul{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }
+        )
     }
 }
 
-impl Mul<f32> for ArrayWrapper
+impl Mul<ScalarType> for LayerType
 {
     type Output = Self;
 
-    fn mul(self, rhs: f32) -> Self::Output
+    fn mul(self, rhs: ScalarType) -> Self::Output
     {
-        Self(self.0 * rhs)
+        let value = {
+            let l_value = self.value();
+
+            &*l_value * rhs.value_clone()
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Mul{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        )
     }
 }
 
-impl Mul<f32> for &ArrayWrapper
+impl Mul<ScalarType> for &LayerType
 {
-    type Output = ArrayWrapper;
+    type Output = LayerType;
 
-    fn mul(self, rhs: f32) -> Self::Output
+    fn mul(self, rhs: ScalarType) -> Self::Output
     {
-        ArrayWrapper(&self.0 * rhs)
+        let value = {
+            let l_value = self.value();
+
+            &*l_value * rhs.value_clone()
+        };
+
+        LayerType::new_inner(
+            value,
+            LayerOps::Mul{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        )
     }
 }
 
-impl<T> Div<T> for ArrayWrapper
+impl<T> Div<T> for LayerType
 where
     T: Borrow<Self>
 {
@@ -1232,177 +1334,527 @@ where
 
     fn div(self, rhs: T) -> Self::Output
     {
-        Self(self.0 / &rhs.borrow().0)
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value / &*r_value
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Div{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }
+        )
     }
 }
 
-impl Div<f32> for ArrayWrapper
+impl<T> Div<T> for &LayerType
+where
+    T: Borrow<LayerType>
+{
+    type Output = LayerType;
+
+    fn div(self, rhs: T) -> Self::Output
+    {
+        let rhs = rhs.borrow();
+
+        let value = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            &*l_value / &*r_value
+        };
+
+        LayerType::new_inner(
+            value,
+            LayerOps::Div{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Tensor(rhs.clone())
+            }
+        )
+    }
+}
+
+impl Div<ScalarType> for LayerType
 {
     type Output = Self;
 
-    fn div(self, rhs: f32) -> Self::Output
+    fn div(self, rhs: ScalarType) -> Self::Output
     {
-        Self(self.0 / rhs)
+        let value = {
+            let l_value = self.value();
+
+            &*l_value / rhs.value_clone()
+        };
+
+        Self::new_inner(
+            value,
+            LayerOps::Div{
+                lhs: LayerChild::Tensor(self),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        )
     }
 }
 
-impl Div<f32> for &ArrayWrapper
+impl Div<ScalarType> for &LayerType
 {
-    type Output = ArrayWrapper;
+    type Output = LayerType;
 
-    fn div(self, rhs: f32) -> Self::Output
+    fn div(self, rhs: ScalarType) -> Self::Output
     {
-        ArrayWrapper(&self.0 / rhs)
+        let value = {
+            let l_value = self.value();
+
+            &*l_value / rhs.value_clone()
+        };
+
+        LayerType::new_inner(
+            value,
+            LayerOps::Div{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        )
     }
 }
 
-impl AddAssign for ArrayWrapper
+impl AddAssign for LayerType
 {
     fn add_assign(&mut self, rhs: Self)
     {
-        self.0 += rhs.0;
+        let lhs = self.clone();
+
+        let mut this = self.this_mut();
+
+        *this.value.as_mut().unwrap() += rhs.value_clone();
+        this.inner = LayerOps::Add{
+            lhs: LayerChild::Tensor(lhs),
+            rhs: LayerChild::Tensor(rhs)
+        }.into();
     }
 }
 
-impl DivAssign<f32> for ArrayWrapper
+impl DivAssign<ScalarType> for LayerType
 {
-    fn div_assign(&mut self, rhs: f32)
+    fn div_assign(&mut self, rhs: ScalarType)
     {
-        self.0 = &self.0 / rhs;
+        let lhs = self.clone();
+
+        let mut this = self.this_mut();
+
+        *this.value.as_mut().unwrap() /= rhs.value_clone();
+        this.inner = LayerOps::Div{
+            lhs: LayerChild::Tensor(lhs),
+            rhs: LayerChild::Scalar(rhs)
+        }.into();
     }
 }
 
-impl NetworkType for ArrayWrapper
+impl LayerType
 {
-    fn new(previous_size: usize, this_size: usize) -> Self
+    pub fn new(previous_size: usize, this_size: usize) -> Self
     {
-        Self(arrayfire::constant(0.0, dim4!(previous_size as u64, this_size as u64)))
+        let value = MatrixWrapper::new(previous_size, this_size);
+        Self::new_inner(value, LayerOps::None)
     }
 
-    fn new_with<F: FnMut() -> f32>(
+    pub fn new_with<F: FnMut() -> f32>(
         previous_size: usize,
         this_size: usize,
-        mut f: F
+        f: F
     )-> Self
     {
-        let s = (0..(previous_size * this_size)).map(|_| f()).collect::<Vec<_>>();
-        Self(Array::new(&s, dim4!(previous_size as u64, this_size as u64)))
+        let value = MatrixWrapper::new_with(previous_size, this_size, f);
+        Self::new_inner(value, LayerOps::None)
     }
 
-    fn from_raw<V: Into<Box<[f32]>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    pub fn from_raw<V: Into<Vec<f32>>>(
+        values: V,
+        previous_size: usize,
+        this_size: usize
+    ) -> Self
     {
-        Self(Array::new(&values.into(), dim4!(previous_size as u64, this_size as u64)))
+        let value = MatrixWrapper::from_raw(values, previous_size, this_size);
+        Self::new_inner(value, LayerOps::None)
     }
 
-    fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
     {
-        Self(arrayfire::matmul(
-            &self.0,
-            &rhs.borrow().0,
-            MatProp::TRANS,
-            MatProp::NONE
-        ))
+        let rhs = rhs.borrow();
+
+        let r_value = rhs.value();
+        Self::new_inner(
+            self.value().matmul(&*r_value),
+            LayerOps::Matmul{
+                lhs: self.clone(),
+                rhs: rhs.clone()
+            }
+        )
     }
 
-    fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn dot(self, rhs: Self) -> ScalarType
     {
-        Self(arrayfire::matmul(
-            &self.0,
-            &rhs.borrow().0,
-            MatProp::NONE,
-            MatProp::NONE
-        ))
+        let (dot_value, mul_value) = {
+            let l_value = self.value();
+            let r_value = rhs.value();
+
+            (self.value_clone().dot(&r_value), &*l_value * &*r_value)
+        };
+
+        ScalarType::new_inner(
+            dot_value,
+            LayerOps::SumTensor(
+                Self::new_inner(
+                    mul_value,
+                    LayerOps::Mul{
+                        lhs: LayerChild::Tensor(self),
+                        rhs: LayerChild::Tensor(rhs)
+                    }
+                )
+            )
+        )
     }
 
-    fn add_outer_product(&mut self, lhs: impl Borrow<Self>, rhs: impl Borrow<Self>)
+    pub fn exp(&mut self)
     {
-        self.0 += arrayfire::matmul(
-            &rhs.borrow().0,
-            &lhs.borrow().0,
-            MatProp::NONE,
-            MatProp::TRANS
+        let mut value = self.value_clone();
+        value.exp();
+
+        *self = Self::new_inner(value, LayerOps::Exp(LayerChild::Tensor(self.clone())));
+    }
+
+    pub fn ln(&mut self)
+    {
+        let mut value = self.value_clone();
+        value.ln();
+
+        *self = Self::new_inner(value, LayerOps::Ln(LayerChild::Tensor(self.clone())));
+    }
+
+    pub fn sigmoid(&mut self)
+    {
+        let mut value = self.value_clone();
+        value.sigmoid();
+
+        *self = Self::new_inner(value, LayerOps::Sigmoid(LayerChild::Tensor(self.clone())));
+    }
+
+    pub fn tanh(&mut self)
+    {
+        let mut value = self.value_clone();
+        value.tanh();
+
+        *self = Self::new_inner(value, LayerOps::Tanh(LayerChild::Tensor(self.clone())));
+    }
+
+    pub fn leaky_relu(&mut self)
+    {
+        let mut value = self.value_clone();
+        value.leaky_relu();
+
+        *self = Self::new_inner(value, LayerOps::LeakyRelu(LayerChild::Tensor(self.clone())));
+    }
+
+    pub fn sum(&self) -> ScalarType
+    {
+        ScalarType::new_inner(self.value().sum(), LayerOps::SumTensor(self.clone()))
+    }
+
+    pub fn total_len(&self) -> usize
+    {
+        self.value().total_len()
+    }
+
+    pub fn as_vec(&self) -> Vec<f32>
+    {
+        self.value().as_vec()
+    }
+
+    pub fn pick_weighed(&self, temperature: f32) -> usize
+    {
+        self.value().pick_weighed(temperature)
+    }
+
+    pub fn highest_index(&self) -> usize
+    {
+        self.value().highest_index()
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+    use crate::neural_network::gru::tests::close_enough;
+
+    const LAYER_PREV: usize = 10;
+    const LAYER_CURR: usize = 10;
+
+    fn compare_single(correct: f32, calculated: f32)
+    {
+        let epsilon = 0.05;
+        assert!(
+            close_enough(correct, calculated, epsilon),
+            "correct: {}, calculated: {}",
+            correct, calculated
         );
     }
 
-    fn dot(self, rhs: Self) -> f32
+    #[allow(dead_code)]
+    fn check_tensor_with_dims(
+        a_dims: (usize, usize),
+        b_dims: (usize, usize),
+        f: impl FnMut(&LayerType, &LayerType) -> LayerType
+    )
     {
-        let d = arrayfire::dot(&self.0, &rhs.0, MatProp::NONE, MatProp::NONE);
+        let a = random_tensor(a_dims.0, a_dims.1);
+        let b = random_tensor(b_dims.0, b_dims.1);
 
-        let mut out = [0.0_f32];
-        d.host(&mut out);
-
-        out[0]
+        check_tensor_inner(a, b, f);
     }
 
-    fn sqrt(&mut self)
+    fn check_tensor(f: impl FnMut(&LayerType, &LayerType) -> LayerType)
     {
-        self.0 = arrayfire::sqrt(&self.0);
+        let a = random_tensor(LAYER_PREV, LAYER_CURR);
+        let b = random_tensor(LAYER_PREV, LAYER_CURR);
+
+        check_tensor_inner(a, b, f);
     }
 
-    fn exp(&mut self)
+    fn check_tensor_inner(
+        mut a: LayerType,
+        mut b: LayerType,
+        mut f: impl FnMut(&LayerType, &LayerType) -> LayerType
+    )
     {
-        self.0 = arrayfire::exp(&self.0);
+        let out = f(&a, &b);
+
+        out.calculate_gradients();
+
+        let a_g = a.take_gradient_tensor();
+        let b_g = b.take_gradient_tensor();
+
+        let mut vals = |a: &mut LayerType, b: &mut LayerType|
+        {
+            a.clear();
+            b.clear();
+
+            f(&a, &b).value_take()
+        };
+
+        let orig = vals(&mut a, &mut b);
+
+        let compare_tensor = |correct: LayerInnerType, calculated: LayerInnerType, index|
+        {
+            compare_single(correct.as_vec()[index], calculated.as_vec()[index]);
+        };
+
+        for epsilon_index in 0..orig.total_len()
+        {
+            let epsilon: f32 = 0.0005;
+
+            let mut fg = |value|
+            {
+                let epsilon = one_hot(orig.clone(), epsilon_index, epsilon, 1.0);
+                (value - orig.clone()) / epsilon
+            };
+
+            let fg = &mut fg;
+
+            let epsilon = one_hot(orig.clone(), epsilon_index, epsilon, 0.0);
+
+            let a_fg = {
+                let mut a = LayerType::new_diff(a.value_clone() + &epsilon);
+                fg(vals(&mut a, &mut b))
+            };
+
+            let b_fg = {
+                let mut b = LayerType::new_diff(b.value_clone() + epsilon);
+                fg(vals(&mut a, &mut b))
+            };
+
+            eprintln!("derivative of a");
+            compare_tensor(a_fg, a_g.clone(), epsilon_index);
+
+            eprintln!("derivative of b");
+            compare_tensor(b_fg, b_g.clone(), epsilon_index);
+        }
     }
 
-    fn ln(&mut self)
+    fn one_hot(
+        dimensions_match: LayerInnerType,
+        position: usize,
+        value: f32,
+        d_value: f32
+    ) -> LayerInnerType
     {
-        self.0 = arrayfire::log(&self.0);
+        let values = dimensions_match.as_vec().into_iter().enumerate().map(|(i, _)|
+        {
+            if i == position
+            {
+                value
+            } else
+            {
+                d_value
+            }
+        }).collect::<Vec<_>>();
+
+        let mut layer = dimensions_match.clone();
+        layer.swap_raw_values(values);
+
+        layer
     }
 
-    fn sigmoid(&mut self)
+    fn random_value() -> f32
     {
-        self.0 = arrayfire::sigmoid(&self.0);
+        let m = if fastrand::bool() {1.0} else {-1.0};
+        (fastrand::f32() + 0.05) * m
     }
 
-    fn tanh(&mut self)
+    fn random_tensor(prev: usize, curr: usize) -> LayerType
     {
-        self.0 = arrayfire::tanh(&self.0);
+        LayerType::new_diff(
+            LayerInnerType::new_with(
+                prev,
+                curr,
+                random_value
+            )
+        )
     }
 
-    fn leaky_relu(&mut self)
+    #[test]
+    fn subtraction()
     {
-        self.0 = arrayfire::maxof(&self.0, &(&self.0 * LEAKY_SLOPE), false);
+        check_tensor(|a, b| a - b)
     }
 
-    fn leaky_relu_d(&mut self)
+    #[test]
+    fn addition()
     {
-        let ones = arrayfire::constant(1.0_f32, self.0.dims());
-        let cond = arrayfire::gt(&self.0, &0.0_f32, true);
-        let leakys = arrayfire::constant(LEAKY_SLOPE, self.0.dims());
-
-        self.0 = arrayfire::select(&ones, &cond, &leakys);
+        check_tensor(|a, b| a + b)
     }
 
-    fn sum(&self) -> f32
+    #[test]
+    fn multiplication()
     {
-        arrayfire::sum_all(&self.0).0
+        check_tensor(|a, b| a * b)
     }
 
-    fn one_minus_this(self) -> Self
+    #[test]
+    fn division()
     {
-        Self(1.0_f32 - self.0)
+        check_tensor(|a, b| a / b)
     }
 
-    fn total_len(&self) -> usize
+    #[test]
+    fn basic_combined()
     {
-        self.0.elements()
+        check_tensor(|a, b| a * b + a)
     }
 
-    fn as_vec(&self) -> Vec<f32>
+    #[test]
+    fn complex_combined()
     {
-        let mut out = vec![0.0_f32; self.0.elements()];
-        self.0.host(&mut out);
-
-        out
+        check_tensor(|a, b| a * b + a + b - b * b + a)
     }
 
-    fn pick_weighed(&self) -> usize
+    #[test]
+    fn sum_tensor_product()
     {
-        SoftmaxedLayer::<Self>::pick_weighed_inner(self.as_vec().iter())
+        check_tensor(|a, b| a * b.sum())
     }
 
-    fn highest_index(&self) -> usize
+    #[test]
+    fn sum_tensor_addition()
     {
-        SoftmaxedLayer::<Self>::highest_index(self.as_vec().iter())
+        check_tensor(|a, b| a.clone() + b.sum())
     }
+
+    #[test]
+    fn sum_tensor_product_negative()
+    {
+        check_tensor(|a, b| a * -b.sum())
+    }
+
+    #[test]
+    fn dot_product()
+    {
+        check_tensor(|a, b| a.clone() + a.clone().dot(b.clone()))
+    }
+
+    #[test]
+    fn exponential()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone();
+            a.exp();
+
+            a + b
+        })
+    }
+
+    #[test]
+    fn natural_logarithm()
+    {
+        check_tensor(|a, b|
+        {
+            let a = a * a;
+
+            let mut a = a.clone();
+            a.ln();
+
+            a + b
+        })
+    }
+
+    #[test]
+    fn leaky_relu()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone();
+            a.leaky_relu();
+
+            a + b
+        })
+    }
+
+    // flexing my math functions name knowledge
+    #[test]
+    fn logistic_function()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone();
+            a.sigmoid();
+
+            a + b
+        })
+    }
+
+    #[test]
+    fn hyperbolic_tangent()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone();
+            a.tanh();
+
+            a + b
+        })
+    }
+
+    // i dont know wut the correct derivative is im so DONEEEEEEEEEEEEEEE
+    /*#[test]
+    fn matrix_multiplication()
+    {
+        check_tensor_with_dims((3, 10), (10, 1), |a, b| a.matmul(b))
+    }*/
 }

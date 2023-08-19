@@ -4,43 +4,43 @@ use std::{
     slice,
     io::{self, Read},
     fs::File,
-    path::Path,
-    ops::{Mul, Div, Sub}
+    path::Path
 };
 
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
-
-use rayon::prelude::*;
-
-// #[allow(unused_imports)]
-// use rnn::{RNN, RNNGradients};
+use serde::{Serialize, Deserialize};
 
 #[allow(unused_imports)]
 use gru::{GRU, GRUGradients, GRUOutput, GRUFullGradients};
 
-use crate::word_vectorizer::{NetworkDictionary, WordVectorizer, VectorWord};
+#[allow(unused_imports)]
+use crate::word_vectorizer::{
+    CharDictionary,
+    WordDictionary,
+    NetworkDictionary,
+    WordVectorizer,
+    VectorWord
+};
 
 pub use containers::{
-    NetworkType,
-    MatrixWrapper,
-    ArrayWrapper,
-    GenericContainer,
-    WeightsIterValue,
+    LayerType,
+    ScalarType,
+    LayerInnerType,
     SoftmaxedLayer
 };
 
-// mod rnn;
 mod gru;
 
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 128;
-pub const LAYERS_AMOUNT: usize = 3;
+pub const HIDDEN_AMOUNT: usize = 1;
+pub const LAYERS_AMOUNT: usize = 1;
 
-pub const USE_DROPOUT: bool = true;
+pub const USE_DROPOUT: bool = false;
 
-pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
+pub const LAYER_ACTIVATION: AFType = AFType::Tanh;
+
+pub type DictionaryType = CharDictionary;
 
 #[allow(dead_code)]
 pub enum AFType
@@ -49,50 +49,40 @@ pub enum AFType
     LeakyRelu
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct GradientInfo<T>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GradientInfo
 {
-    m: T,
-    v: T
+    m: LayerInnerType,
+    v: LayerInnerType
 }
 
-impl<T> GradientInfo<T>
-where
-    T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>,
-    for<'a> &'a T: Sub<&'a T, Output=T>
+impl GradientInfo
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: T::new(previous_size, this_size),
-            v: T::new(previous_size, this_size)
+            m: LayerInnerType::new(previous_size, this_size),
+            v: LayerInnerType::new(previous_size, this_size)
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GradientsInfo<T>
+pub struct GradientsInfo
 {
-    pub input_update_gradients: GradientInfo<T>,
-    pub input_reset_gradients: GradientInfo<T>,
-    pub input_activation_gradients: GradientInfo<T>,
-    pub hidden_update_gradients: GradientInfo<T>,
-    pub hidden_reset_gradients: GradientInfo<T>,
-    pub hidden_activation_gradients: GradientInfo<T>,
-    pub update_bias_gradients: GradientInfo<T>,
-    pub reset_bias_gradients: GradientInfo<T>,
-    pub activation_bias_gradients: GradientInfo<T>,
-    pub output_gradients: GradientInfo<T>
+    pub input_update_gradients: GradientInfo,
+    pub input_reset_gradients: GradientInfo,
+    pub input_activation_gradients: GradientInfo,
+    pub hidden_update_gradients: GradientInfo,
+    pub hidden_reset_gradients: GradientInfo,
+    pub hidden_activation_gradients: GradientInfo,
+    pub update_bias_gradients: GradientInfo,
+    pub reset_bias_gradients: GradientInfo,
+    pub activation_bias_gradients: GradientInfo,
+    pub output_gradients: GradientInfo
 }
 
-impl<T> GradientsInfo<T>
-where
-    T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>,
-    for<'a> &'a T: Sub<&'a T, Output=T>
+impl GradientsInfo
 {
     pub fn new(word_vector_size: usize) -> Self
     {
@@ -111,10 +101,10 @@ where
     }
 
     fn gradient_to_change(
-        gradient_info: &mut GradientInfo<T>,
-        gradient: T,
+        gradient_info: &mut GradientInfo,
+        gradient: LayerInnerType,
         hyper: &AdamHyperparams
-    ) -> T
+    ) -> LayerInnerType
     {
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
@@ -223,26 +213,20 @@ where
     }
 }
 
-struct Predictor<'a, N, D>
+struct Predictor<'a>
 {
-    dictionary: &'a mut D,
-    words: Vec<N>,
+    dictionary: &'a mut DictionaryType,
+    words: Vec<LayerType>,
     predicted: Vec<u8>,
     temperature: f32,
     predict_amount: usize
 }
 
-impl<'a, N, D> Predictor<'a, N, D>
-where
-    N: NetworkType,
-    for<'b> &'b N: Mul<f32, Output=N> + Mul<&'b N, Output=N> + Mul<N, Output=N>,
-    for<'b> &'b N: Div<f32, Output=N>,
-    for<'b> &'b N: Sub<Output=N>,
-    D: NetworkDictionary
+impl<'a> Predictor<'a>
 {
     pub fn new(
-        dictionary: &'a mut D,
-        words: Vec<N>,
+        dictionary: &'a mut DictionaryType,
+        words: Vec<LayerType>,
         temperature: f32,
         predict_amount: usize
     ) -> Self
@@ -256,18 +240,18 @@ where
         }
     }
 
-    pub fn predict_bytes(mut self, network: &GRU<N>) -> Box<[u8]>
+    pub fn predict_bytes(mut self, network: &GRU) -> Box<[u8]>
     {
         let input_amount = self.words.len();
 
-        let mut previous_hiddens: Vec<N> = vec![N::new(HIDDEN_AMOUNT, 1); LAYERS_AMOUNT];
+        let mut previous_hiddens = vec![LayerType::new(HIDDEN_AMOUNT, 1); LAYERS_AMOUNT];
         for i in 0..(input_amount + self.predict_amount)
         {
             debug_assert!(i < self.words.len());
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
             let outputs = network.feedforward_single(
-                &previous_hiddens.iter().collect::<Vec<_>>(),
+                Some(&previous_hiddens),
                 this_input,
                 &network.create_empty_dropout()
             );
@@ -277,7 +261,7 @@ where
 
             if i >= (input_amount - 1)
             {
-                let word = SoftmaxedLayer::pick_weighed_associated(&output, self.temperature);
+                let word = output.pick_weighed(self.temperature);
                 let word = VectorWord::from_raw(word);
 
                 self.words.push(self.dictionary.word_to_layer(word));
@@ -347,23 +331,17 @@ impl AdamHyperparams
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct NeuralNetwork<T, D>
+pub struct NeuralNetwork
 {
-    dictionary: D,
-    network: GRU<T>,
-    gradients_info: Vec<GradientsInfo<T>>,
+    dictionary: DictionaryType,
+    network: GRU,
+    gradients_info: Vec<GradientsInfo>,
     hyper: AdamHyperparams
 }
 
-impl<T, D> NeuralNetwork<T, D>
-where
-    T: NetworkType,
-    for<'a> &'a T: Mul<f32, Output=T> + Mul<&'a T, Output=T> + Mul<T, Output=T>,
-    for<'a> &'a T: Div<f32, Output=T>,
-    for<'a> &'a T: Sub<&'a T, Output=T>,
-    D: NetworkDictionary + Serialize + DeserializeOwned + Send + Sync
+impl NeuralNetwork
 {
-    pub fn new(dictionary: D) -> Self
+    pub fn new(dictionary: DictionaryType) -> Self
     {
         let words_vector_size = dictionary.words_amount();
         let network = GRU::new(words_vector_size);
@@ -376,8 +354,11 @@ where
         Self{dictionary, network, gradients_info, hyper}
     }
 
-    pub fn save<P: AsRef<Path>>(&self, path: P)
+    pub fn save<P: AsRef<Path>>(&mut self, path: P)
     {
+        // clear all derivatives info
+        self.network.clear();
+
         let writer = File::create(path).unwrap();
 
         ciborium::into_writer(self, writer).unwrap();
@@ -395,13 +376,13 @@ where
         self.dictionary.words_amount()
     }
 
-    pub fn inner_network(&self) -> &GRU<T>
+    pub fn inner_network(&self) -> &GRU
     {
         &self.network
     }
 
     // suckines
-    pub fn apply_gradients(&mut self, gradients: GRUFullGradients<T>)
+    pub fn apply_gradients(&mut self, gradients: GRUFullGradients)
     {
         let combined_iter = gradients.0.into_iter()
             .zip(self.network.layers.iter_mut()
@@ -425,65 +406,75 @@ where
 
             let hyper = &mut self.hyper;
 
-            network_weights.input_update_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.input_update_gradients,
-                input_update_gradients,
-                hyper
-            );
+            *network_weights.input_update_weights.value_mut() +=
+                GradientsInfo::gradient_to_change(
+                    &mut gradients_info.input_update_gradients,
+                    input_update_gradients,
+                    hyper
+                );
 
-            network_weights.input_reset_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.input_reset_gradients,
-                input_reset_gradients,
-                hyper
-            );
+            *network_weights.input_reset_weights.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.input_reset_gradients,
+                    input_reset_gradients,
+                    hyper
+                );
             
-            network_weights.input_activation_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.input_activation_gradients,
-                input_activation_gradients,
-                hyper
-            );
+            *network_weights.input_activation_weights.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.input_activation_gradients,
+                    input_activation_gradients,
+                    hyper
+                );
 
-            network_weights.hidden_update_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.hidden_update_gradients,
-                hidden_update_gradients,
-                hyper
-            );
+            *network_weights.hidden_update_weights.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.hidden_update_gradients,
+                    hidden_update_gradients,
+                    hyper
+                );
 
-            network_weights.hidden_reset_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.hidden_reset_gradients,
-                hidden_reset_gradients,
-                hyper
-            );
+            *network_weights.hidden_reset_weights.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.hidden_reset_gradients,
+                    hidden_reset_gradients,
+                    hyper
+                );
             
-            network_weights.hidden_activation_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.hidden_activation_gradients,
-                hidden_activation_gradients,
-                hyper
-            );
+            *network_weights.hidden_activation_weights.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.hidden_activation_gradients,
+                    hidden_activation_gradients,
+                    hyper
+                );
             
-            network_weights.update_biases += GradientsInfo::gradient_to_change(
-                &mut gradients_info.update_bias_gradients,
-                update_bias_gradients,
-                hyper
-            );
+            *network_weights.update_biases.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.update_bias_gradients,
+                    update_bias_gradients,
+                    hyper
+                );
             
-            network_weights.reset_biases += GradientsInfo::gradient_to_change(
-                &mut gradients_info.reset_bias_gradients,
-                reset_bias_gradients,
-                hyper
-            );
+            *network_weights.reset_biases.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.reset_bias_gradients,
+                    reset_bias_gradients,
+                    hyper
+                );
             
-            network_weights.activation_biases += GradientsInfo::gradient_to_change(
-                &mut gradients_info.activation_bias_gradients,
-                activation_bias_gradients,
-                hyper
-            );
+            *network_weights.activation_biases.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.activation_bias_gradients,
+                    activation_bias_gradients,
+                    hyper
+                );
             
-            network_weights.output_weights += GradientsInfo::gradient_to_change(
-                &mut gradients_info.output_gradients,
-                output_gradients,
-                hyper
-            );
+            *network_weights.output_weights.value_mut() += 
+				GradientsInfo::gradient_to_change(
+                    &mut gradients_info.output_gradients,
+                    output_gradients,
+                    hyper
+                );
         });
 
         self.hyper.advance_time();
@@ -529,8 +520,21 @@ where
         {
             let loss = self.network.loss(input_outputs);
 
-            println!("loss: {loss}");
+            Self::print_loss(true, loss);
         }
+    }
+
+    fn print_loss(testing: bool, loss: f32)
+    {
+        let loss_type = if testing
+        {
+            "testing"
+        } else
+        {
+            "training"
+        };
+
+        println!("{loss_type} loss: {loss}");
     }
 
     pub fn train<R: Read>(
@@ -554,14 +558,14 @@ where
         let batch_step = batch_size * steps_num;
 
         let inputs = self.input_expected_from_text(text);
-        let testing_inputs = if info.ignore_loss
+        let testing_inputs = if ignore_loss
         {
             Vec::new()
         } else
         {
             match testing_data
             {
-                None => inputs.clone(),
+                None => Vec::new(),
                 Some(testing_data) =>
                 {
                     self.input_expected_from_text(testing_data)
@@ -575,9 +579,9 @@ where
         let epochs_per_input = (inputs.len() / batch_step).max(1);
         println!("calculate loss every {epochs_per_input} epochs");
 
-        let output_loss = |network: &NeuralNetwork<T, D>|
+        let output_loss = |network: &NeuralNetwork|
         {
-            if ignore_loss
+            if testing_inputs.is_empty()
             {
                 return;
             }
@@ -600,7 +604,7 @@ where
                 output_loss(self);
             }
 
-            let gradients = (0..batch_size).into_par_iter().map(|_|
+            let gradients = (0..batch_size).map(|_|
             {
                 let batch_start = if max_batch_start == 0
                 {
@@ -617,11 +621,14 @@ where
                     steps_num
                 );
 
-                let mut gradients = self.network.gradients::<true>(values.iter());
+                let (loss, mut gradients) = self.network.gradients(values.iter());
+
+                Self::print_loss(false, loss);
+
                 gradients /= batch_size as f32;
 
                 gradients
-            }).reduce_with(|mut acc, this|
+            }).reduce(|mut acc, this|
             {
                 acc.0.iter_mut().zip(this.0.into_iter()).for_each(|(acc, this)|
                 {
@@ -675,11 +682,6 @@ where
 mod tests
 {
     use super::*;
-
-    use crate::word_vectorizer::WordDictionary;
-    
-    #[allow(unused_imports)]
-    use arrayfire::af_print;
     
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -689,57 +691,6 @@ mod tests
         }
 
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
-
-    fn test_dictionary() -> WordDictionary
-    {
-        let _words = "test.testing.tester.epic.cool.true";
-
-        // WordDictionary::build(words.as_bytes())
-        
-        let words = "testing test - a b c 6 1 A o l d e f g h i j s o r s m";
-        WordDictionary::no_defaults(words.as_bytes())
-    }
-
-    fn test_network() -> NeuralNetwork<GenericContainer, WordDictionary>
-    {
-        NeuralNetwork::new(test_dictionary())
-    }
-
-    fn test_texts_many() -> Vec<&'static str>
-    {
-        vec![
-            "testing tests or sm",
-            "abcdefghij",
-            "coolllllll",
-            "AAAAAAAAAA"
-        ]
-    }
-
-    fn test_texts_two() -> Vec<&'static str>
-    {
-        vec!["testing-", "ab", "61", "AA"]
-    }
-
-    fn test_texts_three() -> Vec<&'static str>
-    {
-        vec!["testing test", "abc", "611", "AAA"]
-    }
-
-    fn test_input_outputs(
-        test_texts: Vec<&'static str>,
-        network: &mut NeuralNetwork<GenericContainer, WordDictionary>
-    ) -> Vec<InputOutput<GenericContainer>>
-    {
-        test_texts.into_iter().map(|text|
-        {
-            let inputs = network.input_expected_from_text(text.as_bytes());
-
-            InputOutput::new(inputs.iter().map(|word: &VectorWord|
-            {
-                network.dictionary.word_to_layer(*word)
-            }).collect())
-        }).collect()
     }
 
     #[test]
@@ -764,11 +715,11 @@ mod tests
 
             let adam_g = {
                 let mut gradient_info = GradientInfo{
-                    m: GenericContainer::from_raw(m.clone().into_boxed_slice(), 2, 1),
-                    v: GenericContainer::from_raw(v.clone().into_boxed_slice(), 2, 1)
+                    m: LayerInnerType::from_raw(m.clone().into_boxed_slice(), 2, 1),
+                    v: LayerInnerType::from_raw(v.clone().into_boxed_slice(), 2, 1)
                 };
 
-                let gradient = GenericContainer::from_raw(g.clone().into_boxed_slice(), 2, 1);
+                let gradient = LayerInnerType::from_raw(g.clone().into_boxed_slice(), 2, 1);
 
                 let hyper = AdamHyperparams{
                     a,
@@ -786,7 +737,7 @@ mod tests
                     &hyper
                 );
 
-                GenericContainer::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change
+                LayerInnerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change
             };
 
             m = vec![
@@ -819,17 +770,17 @@ mod tests
                 assert_eq!(new_weight[0], 3.2090000000322581);
                 assert_eq!(new_weight[1], 7.6509999998750000);
 
-                let mut adam_g = adam_g.iter();
-                assert_eq!(new_weight[0], *adam_g.next().unwrap());
-                assert_eq!(new_weight[1], *adam_g.next().unwrap());
+                let mut adam_g = adam_g.as_vec().into_iter();
+                assert_eq!(new_weight[0], adam_g.next().unwrap());
+                assert_eq!(new_weight[1], adam_g.next().unwrap());
             } else
             {
                 assert_eq!(new_weight[0], 3.2080334761008376);
                 assert_eq!(new_weight[1], 7.6518864757914067);
 
-                let mut adam_g = adam_g.iter();
-                assert_eq!(new_weight[0], *adam_g.next().unwrap());
-                assert_eq!(new_weight[1], *adam_g.next().unwrap());
+                let mut adam_g = adam_g.as_vec().into_iter();
+                assert_eq!(new_weight[0], adam_g.next().unwrap());
+                assert_eq!(new_weight[1], adam_g.next().unwrap());
             }
 
             t += 1;
@@ -843,166 +794,21 @@ mod tests
     }
 
     #[test]
-    fn matrix_multiplication()
-    {
-        let v = GenericContainer::from_raw(vec![5.0, 0.0, 5.0, 7.0], 4, 1);
-
-        let m = GenericContainer::from_raw(vec![
-            1.0, 2.0, 3.0, 4.0,
-            5.0, 6.0, 7.0, 8.0,
-            9.0, 10.0, 11.0, 12.0,
-            13.0, 14.0, 15.0, 16.0
-        ], 4, 4);
-
-        assert_eq!(
-            m.matmul(&v),
-            GenericContainer::from_raw(vec![48.0, 116.0, 184.0, 252.0], 4, 1)
-        );
-
-        assert_eq!(
-            m.matmul_transposed(&v),
-            GenericContainer::from_raw(vec![141.0, 158.0, 175.0, 192.0], 4, 1)
-        );
-    }
-
-    #[test]
     fn softmax()
     {
-        let test_layer = GenericContainer::from_raw([1.0, 2.0, 8.0], 3, 1);
+        let test_layer = LayerType::from_raw([1.0, 2.0, 8.0], 3, 1);
 
         let softmaxed = SoftmaxedLayer::new(test_layer);
 
-        softmaxed.0.iter().zip([0.001, 0.002, 0.997].iter()).for_each(|(softmaxed, correct)|
-        {
-            assert!(
-                close_enough(*softmaxed, *correct, 0.2),
-                "softmaxed: {}, correct: {}",
-                *softmaxed,
-                *correct
-            );
-        });
-    }
-
-    #[test]
-    fn loss()
-    {
-        let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_many(), &mut network);
-
-        let l = inputs.len() as f32;
-        let this_loss = inputs.into_iter().map(|input|
-        {
-            network.network.loss(input.iter().map(|(a, b)| (a.clone(), b.clone())))
-        }).sum::<f32>() / l;
-
-        let predicted_loss = (network.dictionary.words_amount() as f32).ln();
-
-        assert!(
-            close_enough(this_loss, predicted_loss, 0.1),
-            "this_loss: {this_loss}, predicted_loss: {predicted_loss}"
-        );
-    }
-
-    #[ignore]
-    #[test]
-    fn gradients_check_many()
-    {
-        let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_many(), &mut network);
-
-        gradients_check(&mut network, inputs);
-    }
-
-    #[ignore]
-    #[test]
-    fn gradients_check_two()
-    {
-        let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_two(), &mut network);
-
-        gradients_check(&mut network, inputs);
-    }
-
-    #[ignore]
-    #[test]
-    fn gradients_check_three()
-    {
-        let mut network = test_network();
-        let inputs = test_input_outputs(test_texts_three(), &mut network);
-
-        gradients_check(&mut network, inputs);
-    }
-
-    fn print_status(description: &str, f: impl FnOnce())
-    {
-        print!("checking {description}: ⛔ ");
-        f();
-        println!("\rchecking {description}: ✔️");
-    }
-
-    fn gradients_check(
-        network: &mut NeuralNetwork<GenericContainer, WordDictionary>,
-        inputs: Vec<InputOutput<GenericContainer>>
-    )
-    {
-        let network = &mut network.network;
-
-        for l_i in (0..LAYERS_AMOUNT).rev()
-        {
-            println!("layer {l_i}");
-
-            inputs.iter().for_each(|input|
+        softmaxed.0.as_vec().into_iter().zip([0.001, 0.002, 0.997].iter())
+            .for_each(|(softmaxed, correct)|
             {
-                print_status("output gradients", ||
-                {
-                    gru::tests::output_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("hidden update gradients", ||
-                {
-                    gru::tests::hidden_update_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("hidden reset gradients", ||
-                {
-                    gru::tests::hidden_reset_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("hidden activation gradients", ||
-                {
-                    gru::tests::hidden_activation_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("update bias gradients", ||
-                {
-                    gru::tests::update_bias_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("reset bias gradients", ||
-                {
-                    gru::tests::reset_bias_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("activation bias gradients", ||
-                {
-                    gru::tests::activation_bias_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("input update gradients", ||
-                {
-                    gru::tests::input_update_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("input reset gradients", ||
-                {
-                    gru::tests::input_reset_gradients_check(network, l_i, input.iter())
-                });
-
-                print_status("input activation gradients", ||
-                {
-                    gru::tests::input_activation_gradients_check(network, l_i, input.iter())
-                });
+                assert!(
+                    close_enough(softmaxed, *correct, 0.2),
+                    "softmaxed: {}, correct: {}",
+                    softmaxed,
+                    *correct
+                );
             });
-        }
     }
 }

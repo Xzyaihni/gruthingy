@@ -3,7 +3,6 @@
 use std::ffi::{CStr, CString, c_char};
 
 use neural_network::*;
-use word_vectorizer::*;
 
 mod word_vectorizer;
 mod neural_network;
@@ -28,7 +27,7 @@ pub extern "C" fn predict(
         let text = unsafe{ CStr::from_ptr(text) };
         let text = text.to_str().unwrap();
 
-        let mut network: NeuralNetwork<MatrixWrapper, CharDictionary> =
+        let mut network: NeuralNetwork =
             NeuralNetwork::load(&network_path).unwrap();
 
         network.predict_text(text, amount as usize, temperature)
