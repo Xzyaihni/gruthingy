@@ -1,9 +1,6 @@
 # gruthingy
 a gru neural network. cool.
 
-i have no clue why it segfaults for me randomly sometimes after adding arrayfire and im so done
-is it some nvidia stupidity?
-
 # how to do
 ```
 git clone https://github.com/Xzyaihni/gruthingy
