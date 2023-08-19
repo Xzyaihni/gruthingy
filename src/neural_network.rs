@@ -33,10 +33,10 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 1;
-pub const LAYERS_AMOUNT: usize = 1;
+pub const HIDDEN_AMOUNT: usize = 128;
+pub const LAYERS_AMOUNT: usize = 3;
 
-pub const USE_DROPOUT: bool = false;
+pub const USE_DROPOUT: bool = true;
 
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
@@ -111,7 +111,7 @@ impl GradientsInfo
 
         let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
 
-        (&gradient_info.m * -a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
+        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
     }
 }
 
@@ -294,7 +294,6 @@ pub struct AdamHyperparams
     pub t: i32,
     pub one_minus_b1_t: f32,
     pub one_minus_b2_t: f32
-
 }
 
 impl AdamHyperparams
@@ -406,70 +405,70 @@ impl NeuralNetwork
 
             let hyper = &mut self.hyper;
 
-            *network_weights.input_update_weights.value_mut() +=
+            *network_weights.input_update_weights.value_mut() -=
                 GradientsInfo::gradient_to_change(
                     &mut gradients_info.input_update_gradients,
                     input_update_gradients,
                     hyper
                 );
 
-            *network_weights.input_reset_weights.value_mut() += 
+            *network_weights.input_reset_weights.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.input_reset_gradients,
                     input_reset_gradients,
                     hyper
                 );
             
-            *network_weights.input_activation_weights.value_mut() += 
+            *network_weights.input_activation_weights.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.input_activation_gradients,
                     input_activation_gradients,
                     hyper
                 );
 
-            *network_weights.hidden_update_weights.value_mut() += 
+            *network_weights.hidden_update_weights.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.hidden_update_gradients,
                     hidden_update_gradients,
                     hyper
                 );
 
-            *network_weights.hidden_reset_weights.value_mut() += 
+            *network_weights.hidden_reset_weights.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.hidden_reset_gradients,
                     hidden_reset_gradients,
                     hyper
                 );
             
-            *network_weights.hidden_activation_weights.value_mut() += 
+            *network_weights.hidden_activation_weights.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.hidden_activation_gradients,
                     hidden_activation_gradients,
                     hyper
                 );
             
-            *network_weights.update_biases.value_mut() += 
+            *network_weights.update_biases.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.update_bias_gradients,
                     update_bias_gradients,
                     hyper
                 );
             
-            *network_weights.reset_biases.value_mut() += 
+            *network_weights.reset_biases.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.reset_bias_gradients,
                     reset_bias_gradients,
                     hyper
                 );
             
-            *network_weights.activation_biases.value_mut() += 
+            *network_weights.activation_biases.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.activation_bias_gradients,
                     activation_bias_gradients,
                     hyper
                 );
             
-            *network_weights.output_weights.value_mut() += 
+            *network_weights.output_weights.value_mut() -= 
 				GradientsInfo::gradient_to_change(
                     &mut gradients_info.output_gradients,
                     output_gradients,
@@ -761,23 +760,17 @@ mod tests
             ];
 
             let new_weight = vec![
-                old_weight[0] - a * m_hat[0] / (v_hat[0].sqrt() + epsilon),
-                old_weight[1] - a * m_hat[1] / (v_hat[1].sqrt() + epsilon)
+                old_weight[0] + a * m_hat[0] / (v_hat[0].sqrt() + epsilon),
+                old_weight[1] + a * m_hat[1] / (v_hat[1].sqrt() + epsilon)
             ];
 
             if t == 1
             {
-                assert_eq!(new_weight[0], 3.2090000000322581);
-                assert_eq!(new_weight[1], 7.6509999998750000);
-
                 let mut adam_g = adam_g.as_vec().into_iter();
                 assert_eq!(new_weight[0], adam_g.next().unwrap());
                 assert_eq!(new_weight[1], adam_g.next().unwrap());
             } else
             {
-                assert_eq!(new_weight[0], 3.2080334761008376);
-                assert_eq!(new_weight[1], 7.6518864757914067);
-
                 let mut adam_g = adam_g.as_vec().into_iter();
                 assert_eq!(new_weight[0], adam_g.next().unwrap());
                 assert_eq!(new_weight[1], adam_g.next().unwrap());

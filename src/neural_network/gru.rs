@@ -268,7 +268,7 @@ impl GRULayer
             ScalarType::new(1.0) - &update_gate * previous_hidden + this_activation
         } else
         {
-            this_activation
+            this_activation + ScalarType::new(1.0)
         };
 
         let hidden = if USE_DROPOUT
@@ -537,6 +537,7 @@ impl GRU
         let inputs_amount = input.len();
 
         let dropout = self.create_dropout();
+        
         let loss = self.loss_unscaled_with_dropout(&dropout, input);
 
         let loss_value = loss.value_clone() / inputs_amount as f32;
@@ -548,25 +549,25 @@ impl GRU
             {
                 GRUGradients{
                     input_update_gradients:
-                        -layer.input_update_weights.take_gradient_tensor(),
+                        layer.input_update_weights.take_gradient(),
                     hidden_update_gradients:
-                        -layer.hidden_update_weights.take_gradient_tensor(),
+                        layer.hidden_update_weights.take_gradient(),
                     update_bias_gradients:
-                        -layer.update_biases.take_gradient_tensor(),
+                        layer.update_biases.take_gradient(),
                     input_reset_gradients:
-                        -layer.input_reset_weights.take_gradient_tensor(),
+                        layer.input_reset_weights.take_gradient(),
                     hidden_reset_gradients:
-                        -layer.hidden_reset_weights.take_gradient_tensor(),
+                        layer.hidden_reset_weights.take_gradient(),
                     reset_bias_gradients:
-                        -layer.reset_biases.take_gradient_tensor(),
+                        layer.reset_biases.take_gradient(),
                     input_activation_gradients:
-                        -layer.input_activation_weights.take_gradient_tensor(),
+                        layer.input_activation_weights.take_gradient(),
                     hidden_activation_gradients:
-                        -layer.hidden_activation_weights.take_gradient_tensor(),
+                        layer.hidden_activation_weights.take_gradient(),
                     activation_bias_gradients:
-                        -layer.activation_biases.take_gradient_tensor(),
+                        layer.activation_biases.take_gradient(),
                     output_gradients:
-                        -layer.output_weights.take_gradient_tensor(),
+                        layer.output_weights.take_gradient(),
                 }
             }).collect()
         );
@@ -581,23 +582,35 @@ impl GRU
             fastrand::seed(12345);
         }
 
-        self.create_dropout_with(||
+        if USE_DROPOUT
         {
-            // p = 0.5 (dropout chance is 50%)
-            let dropout = fastrand::bool();
-            if dropout
+            self.create_dropout_with(||
             {
-                0.0
-            } else
-            {
-                1.0
-            }
-        })
+                // p = 0.5 (dropout chance is 50%)
+                let dropout = fastrand::bool();
+                if dropout
+                {
+                    0.0
+                } else
+                {
+                    1.0
+                }
+            })
+        } else
+        {
+            self.create_dropout_with(|| 1.0)
+        }
     }
 
     pub fn create_empty_dropout(&self) -> Vec<DropoutMasksSingle>
     {
-        self.create_dropout_with(|| 0.5)
+        if USE_DROPOUT
+        {
+            self.create_dropout_with(|| 0.5)
+        } else
+        {
+            self.create_dropout_with(|| 1.0)
+        }
     }
 
     fn create_dropout_with(&self, mut f: impl FnMut() -> f32) -> Vec<DropoutMasksSingle>

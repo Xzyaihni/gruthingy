@@ -8,9 +8,12 @@ use std::{
     ops::{Mul, Add, Sub, Div, AddAssign, DivAssign, Neg}
 };
 
-use nalgebra::DMatrix;
-
 use serde::{Serialize, Deserialize};
+
+#[allow(unused_imports)]
+use matrix_wrapper::MatrixWrapper;
+
+mod matrix_wrapper;
 
 
 pub type LayerInnerType = MatrixWrapper;
@@ -18,7 +21,7 @@ pub type LayerInnerType = MatrixWrapper;
 pub const LEAKY_SLOPE: f32 = 0.01;
 
 // i have no clue where else to put this
-fn leaky_relu_d(value: f32) -> f32
+pub fn leaky_relu_d(value: f32) -> f32
 {
     if value > 0.0
     {
@@ -42,8 +45,27 @@ impl LayerChild
     {
         match self
         {
-            Self::Tensor(x) => x.derivatives(gradient),
-            Self::Scalar(x) => x.derivatives(gradient)
+            Self::Tensor(x) =>
+            {
+                x.derivatives(LayerInnerType::from_gradient(gradient, || unreachable!()));
+                return;
+            },
+            Self::Scalar(_) => ()
+        }
+
+        let value = f32::from_gradient(gradient, ||
+        {
+            match self
+            {
+                Self::Tensor(x) => x.value_clone(),
+                _ => unreachable!()
+            }
+        });
+
+        match self
+        {
+            Self::Scalar(x) => x.derivatives(value),
+            _ => unreachable!()
         }
     }
 
@@ -285,6 +307,20 @@ impl Mul<&f32> for GradientType
     }
 }
 
+impl Mul<&f32> for &GradientType
+{
+    type Output = GradientType;
+
+    fn mul(self, rhs: &f32) -> Self::Output
+    {
+        match self
+        {
+            GradientType::Tensor(x) => GradientType::Tensor(x * *rhs),
+            GradientType::Scalar(x) => GradientType::Scalar(rhs * x)
+        }
+    }
+}
+
 impl Mul<GradientType> for LayerInnerType
 {
     type Output = Self;
@@ -299,22 +335,83 @@ impl Mul<GradientType> for LayerInnerType
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DiffType<T>
+pub trait Fillable
 {
-    inner: LayerOps,
-    value: Option<T>,
-    gradient: Option<GradientType>,
-    calculate_gradient: bool
+    fn fill(&mut self, value: f32);
+}
+
+impl Fillable for f32
+{
+    fn fill(&mut self, value: f32)
+    {
+        *self = value;
+    }
+}
+
+impl Fillable for LayerInnerType
+{
+    fn fill(&mut self, value: f32)
+    {
+        self.fill(value);
+    }
+}
+
+pub trait FromGradient
+{
+    fn from_gradient<F: FnOnce() -> LayerInnerType>(
+        gradient: GradientType,
+        value_getter: F
+    ) -> Self;
+}
+
+impl FromGradient for f32
+{
+    fn from_gradient<F: FnOnce() -> LayerInnerType>(
+        gradient: GradientType,
+        _value_getter: F
+    ) -> Self
+    {
+        match gradient
+        {
+            GradientType::Scalar(x) => x,
+            GradientType::Tensor(tensor) =>
+            {
+                tensor.sum()
+            }
+        }
+    }
+}
+
+impl FromGradient for LayerInnerType
+{
+    fn from_gradient<F: FnOnce() -> LayerInnerType>(
+        gradient: GradientType,
+        value_getter: F
+    ) -> Self
+    {
+        match gradient
+        {
+            GradientType::Tensor(x) => x,
+            GradientType::Scalar(scalar) =>
+            {
+                let mut value = value_getter();
+                value.fill(scalar);
+
+                value
+            }
+        }
+    }
 }
 
 pub trait DiffBounds
 where
-    Self: Onesable + Clone + TryInto<LayerInnerType>,
+    Self: Fillable + FromGradient + Clone + Into<GradientType> + TryInto<LayerInnerType>,
     <Self as TryInto<LayerInnerType>>::Error: Debug,
-    for<'a> Self: Mul<&'a Self, Output=Self> + Add<f32, Output=Self> + Neg<Output=Self>,
+    Self: AddAssign<Self> + Add<f32, Output=Self> + Neg<Output=Self>,
+    for<'a> Self: Mul<&'a Self, Output=Self>,
     for<'a> &'a Self: Mul<&'a Self, Output=Self> + Neg<Output=Self>,
-    for<'a> GradientType: Mul<&'a Self, Output=GradientType>
+    for<'a> GradientType: Mul<&'a Self, Output=GradientType>,
+    for<'a> &'a GradientType: Mul<&'a Self, Output=GradientType>
 {
 }
 
@@ -331,6 +428,15 @@ impl TryFrom<f32> for LayerInnerType
 impl DiffBounds for f32 {}
 impl DiffBounds for LayerInnerType {}
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiffType<T>
+{
+    inner: LayerOps,
+    value: Option<T>,
+    gradient: Option<T>,
+    calculate_gradient: bool
+}
+
 impl<T> DiffType<T>
 {
     fn maybe_gradient<A>(&self, rhs: &DiffType<A>) -> bool
@@ -343,40 +449,36 @@ impl<T> DiffType<T>
 where
     T: DiffBounds,
     <T as TryInto<LayerInnerType>>::Error: Debug,
-    for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
+    for<'a> T: Mul<&'a T, Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
-    for<'a> GradientType: Mul<&'a T, Output=GradientType>
+    for<'a> GradientType: Mul<&'a T, Output=GradientType>,
+    for<'a> &'a GradientType: Mul<&'a T, Output=GradientType>
 {
     pub fn calculate_gradients(mut self)
     {
-        let ones = self.value.as_ref().unwrap().ones();
+        let mut ones = self.value.clone().unwrap();
+        ones.fill(1.0);
 
         self.derivatives(ones, false);
     }
 
     // long ass name but i wanna be descriptive about wut this does
-    pub fn take_gradient_tensor(&mut self) -> LayerInnerType
+    pub fn take_gradient(&mut self) -> T
     {
-        let gradient = match self.gradient.take()
+        match self.gradient.take()
         {
             Some(x) => x,
             None =>
             {
-                let mut value: LayerInnerType = self.value.clone().unwrap().try_into().unwrap();
+                let mut value = self.value.clone().unwrap();
                 value.fill(0.0);
 
                 return value;
             }
-        };
-
-        match gradient
-        {
-            GradientType::Tensor(x) => x,
-            _ => panic!("invalid gradient type requested")
         }
     }
 
-    fn derivatives(&mut self, gradient: GradientType, multiple_parents: bool)
+    fn derivatives(&mut self, starting_gradient: T, multiple_parents: bool)
     {
         if !self.calculate_gradient
         {
@@ -394,35 +496,38 @@ where
             }
         };
 
+        add_gradients(starting_gradient);
+
         if multiple_parents
         {
-            add_gradients(gradient.clone());
             return;
         }
+
+        let gradient = self.gradient.clone().unwrap();
 
         match &mut self.inner
         {
             LayerOps::Add{lhs, rhs} =>
             {
-                lhs.derivatives(gradient.clone());
-                rhs.derivatives(gradient);
+                lhs.derivatives(gradient.clone().into());
+                rhs.derivatives(gradient.into());
             },
             LayerOps::Sub{lhs, rhs} =>
             {
-                lhs.derivatives(gradient.clone());
-                rhs.derivatives(-gradient);
+                lhs.derivatives(gradient.clone().into());
+                rhs.derivatives((-gradient).into());
             },
             LayerOps::Mul{lhs, rhs} =>
             {
                 let lhs_value = lhs.value_clone();
                 {
-                    let d = &gradient * rhs.value_clone();
-                    lhs.derivatives(d);
+                    let d = rhs.value_clone() * &gradient;
+                    lhs.derivatives(d.into());
                 }
 
                 {
-                    let d = &gradient * lhs_value;
-                    rhs.derivatives(d);
+                    let d = lhs_value * &gradient;
+                    rhs.derivatives(d.into());
                 }
             },
             LayerOps::Div{lhs, rhs} =>
@@ -441,7 +546,7 @@ where
                     let recip_squared =
                         <&GradientType as Mul<&GradientType>>::mul(&r_recip, &r_recip);
 
-                    let d = &gradient * -lhs_value;
+                    let d = -lhs_value * &gradient;
                     let d = <GradientType as Mul<GradientType>>::mul(d, recip_squared);
 
                     rhs.derivatives(d);
@@ -451,7 +556,7 @@ where
             {
                 let d = self.value.as_ref().unwrap();
 
-                x.derivatives(gradient * d);
+                x.derivatives((gradient * d).into());
             },
             LayerOps::Sigmoid(x) =>
             {
@@ -460,7 +565,7 @@ where
                 // sigmoid(x) * (1.0 - sigmoid(x))
                 let d = (-value + 1.0) * value;
 
-                x.derivatives(gradient * &d);
+                x.derivatives((gradient * &d).into());
             },
             LayerOps::Tanh(x) =>
             {
@@ -469,37 +574,33 @@ where
                 // 1 - tanh^2(x)
                 let d = -(value * value) + 1.0;
 
-                x.derivatives(gradient * &d);
+                x.derivatives((gradient * &d).into());
             },
             LayerOps::LeakyRelu(x) =>
             {
                 let d = x.value_clone().leaky_relu_d();
 
-                x.derivatives(<&GradientType as Mul<GradientType>>::mul(&gradient, d));
+                x.derivatives(d * &gradient);
             },
             LayerOps::Ln(x) =>
             {
                 let d = x.value_clone().reciprocal();
 
-                // why does it want fully qualified syntax im so DONE
-                x.derivatives(<&GradientType as Mul<GradientType>>::mul(&gradient, d));
+                x.derivatives(d * &gradient);
             },
             LayerOps::Neg(x) =>
             {
-                x.derivatives(-gradient);
+                x.derivatives((-gradient).into());
             },
             LayerOps::Matmul{lhs, rhs} =>
             {
-                let gradient = match gradient
-                {
-                    GradientType::Tensor(x) => x,
-                    x => panic!("matmul must have a tensor gradient, instead it has {:?}", x)
-                };
+                let gradient: LayerInnerType = gradient.try_into()
+                    .expect("matmul must be a tensor");
 
                 let rhs_d = lhs.value().matmul_transposed(&gradient);
 
                 {
-                    let d = rhs.value().matmul_derivative(gradient);
+                    let d = gradient.matmul_by_transposed(&*rhs.value());
                     lhs.derivatives(d.into());
                 }
 
@@ -507,50 +608,36 @@ where
             },
             LayerOps::SumTensor(x) =>
             {
-                let d = match gradient
+                let d = LayerInnerType::from_gradient(gradient.into(), ||
                 {
-                    GradientType::Tensor(gradient) => gradient,
-                    GradientType::Scalar(gradient) =>
-                    {
-                        let mut x = x.value_clone();
-                        x.fill(gradient);
+                    x.value_clone()
+                });
 
-                        x
-                    }
-                };
-
-                x.derivatives(d.into());
+                x.derivatives(d);
             },
             // wait is the derivative for this the EXACT same as normal elementwise multiplication?
             LayerOps::Dot{lhs, rhs} =>
             {
+                let gradient = LayerInnerType::from_gradient(gradient.into(), ||
+                {
+                    lhs.value_clone()
+                });
+
                 let lhs_value = lhs.value_clone();
                 // nice and short multplication calls
                 {
-                    let d = <&GradientType as Mul<&LayerInnerType>>::mul(
-                        &gradient,
-                        &rhs.value_clone()
-                    );
-
-                    lhs.derivatives(d);
+                    let d = &gradient * rhs.value_clone();
+ 
+                    lhs.derivatives(d.into());
                 }
 
                 {
-                    let d = <&GradientType as Mul<&LayerInnerType>>::mul(
-                        &gradient,
-                        &lhs_value
-                    );
+                    let d = &gradient * lhs_value;
 
-                    rhs.derivatives(d);
+                    rhs.derivatives(d.into());
                 }
             },
-            LayerOps::Diff =>
-            {
-                if !multiple_parents
-                {
-                    add_gradients(gradient.clone());
-                }
-            },
+            LayerOps::Diff => (),
             LayerOps::None => ()
         }
     }
@@ -565,7 +652,8 @@ where
     <T as TryInto<LayerInnerType>>::Error: Debug,
     for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
-    for<'a> GradientType: Mul<&'a T, Output=GradientType>
+    for<'a> GradientType: Mul<&'a T, Output=GradientType>,
+    for<'a> &'a GradientType: Mul<&'a T, Output=GradientType>
 {
     pub fn new_diff(value: T) -> Self
     {
@@ -577,9 +665,9 @@ where
         *self = Self::new_diff(self.value_take());
     }
 
-    pub fn take_gradient_tensor(&mut self) -> LayerInnerType
+    pub fn take_gradient(&mut self) -> T
     {
-        self.this_mut().take_gradient_tensor()
+        self.this_mut().take_gradient()
     }
 
     pub fn calculate_gradients(self)
@@ -606,7 +694,7 @@ where
         Self(Some(Rc::new(RefCell::new(diff))))
     }
 
-    fn derivatives(&mut self, gradient: GradientType)
+    fn derivatives(&mut self, gradient: T)
     {
         let multiple_parents = Rc::strong_count(self.0.as_ref().unwrap()) > 1;
 
@@ -674,30 +762,6 @@ impl<T> DiffWrapper<T>
     fn this_mut(&mut self) -> cell::RefMut<DiffType<T>>
     {
         RefCell::borrow_mut(self.0.as_ref().unwrap())
-    }
-}
-
-pub trait Onesable
-{
-    fn ones(&self) -> GradientType;
-}
-
-impl Onesable for LayerInnerType
-{
-    fn ones(&self) -> GradientType
-    {
-        let mut x = self.clone();
-        x.fill(1.0);
-
-        GradientType::Tensor(x)
-    }
-}
-
-impl Onesable for f32
-{
-    fn ones(&self) -> GradientType
-    {
-        GradientType::Scalar(1.0)
     }
 }
 
@@ -770,343 +834,6 @@ impl SoftmaxedLayer
         {
             a.1.partial_cmp(b.1).unwrap()
         }).unwrap().0
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatrixWrapper(DMatrix<f32>);
-
-impl Add<f32> for MatrixWrapper
-{
-    type Output = Self;
-
-    fn add(self, rhs: f32) -> Self::Output
-    {
-        Self(self.0.add_scalar(rhs))
-    }
-}
-
-impl Add<f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn add(self, rhs: f32) -> Self::Output
-    {
-        MatrixWrapper(self.0.add_scalar(rhs))
-    }
-}
-
-impl<T> Add<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn add(self, rhs: T) -> Self::Output
-    {
-        Self(self.0 + &rhs.borrow().0)
-    }
-}
-
-impl<T> Add<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn add(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(&self.0 + &rhs.borrow().0)
-    }
-}
-
-impl<T> Sub<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn sub(self, rhs: T) -> Self::Output
-    {
-        Self(self.0 - &rhs.borrow().0)
-    }
-}
-
-impl<T> Sub<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn sub(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(&self.0 - &rhs.borrow().0)
-    }
-}
-
-impl Sub<f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn sub(self, rhs: f32) -> Self::Output
-    {
-        MatrixWrapper(self.0.add_scalar(-rhs))
-    }
-}
-
-impl<T> Mul<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(self.0.component_mul(&rhs.borrow().0))
-    }
-}
-
-impl Mul<f32> for MatrixWrapper
-{
-    type Output = Self;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        Self(self.0 * rhs)
-    }
-}
-
-impl Mul<f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        MatrixWrapper(&self.0 * rhs)
-    }
-}
-
-impl<T> Mul<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        Self(self.0.component_mul(&rhs.borrow().0))
-    }
-}
-
-impl Div<f32> for MatrixWrapper
-{
-    type Output = Self;
-
-    fn div(self, rhs: f32) -> Self::Output
-    {
-        Self(self.0 / rhs)
-    }
-}
-
-impl Div<f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn div(self, rhs: f32) -> Self::Output
-    {
-        MatrixWrapper(&self.0 / rhs)
-    }
-}
-
-impl<T> Div<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn div(self, rhs: T) -> Self::Output
-    {
-        Self(self.0.component_div(&rhs.borrow().0))
-    }
-}
-
-impl<T> Div<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn div(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(self.0.component_div(&rhs.borrow().0))
-    }
-}
-
-impl<T> AddAssign<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    fn add_assign(&mut self, rhs: T)
-    {
-        self.0 += &rhs.borrow().0;
-    }
-}
-
-impl DivAssign<f32> for MatrixWrapper
-{
-    fn div_assign(&mut self, rhs: f32)
-    {
-        self.0 /= rhs;
-    }
-}
-
-impl Neg for MatrixWrapper
-{
-    type Output = Self;
-
-    fn neg(self) -> Self::Output
-    {
-        Self(-self.0)
-    }
-}
-
-impl Neg for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn neg(self) -> Self::Output
-    {
-        MatrixWrapper(-&self.0)
-    }
-}
-
-impl MatrixWrapper
-{
-    pub fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        Self(DMatrix::zeros(previous_size, this_size))
-    }
-
-    pub fn new_with<F: FnMut() -> f32>(
-        previous_size: usize,
-        this_size: usize,
-        mut f: F
-    )-> Self
-    {
-        Self(DMatrix::from_fn(previous_size, this_size, |_, _| f()))
-    }
-
-    pub fn from_raw<V: Into<Vec<f32>>>(values: V, previous_size: usize, this_size: usize) -> Self
-    {
-        Self(DMatrix::from_vec(previous_size, this_size, values.into()))
-    }
-
-    pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
-    {
-        self.0.copy_from_slice(&values.into());
-    }
-
-    pub fn fill(&mut self, value: f32)
-    {
-        self.0.fill(value);
-    }
-
-    pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        Self(&self.0 * &rhs.borrow().0)
-    }
-
-    pub fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        Self(self.0.tr_mul(&rhs.borrow().0))
-    }
-
-    pub fn matmul_derivative(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        Self(&rhs.borrow().0 * self.0.transpose())
-    }
-
-    pub fn dot(self, rhs: &Self) -> f32
-    {
-        self.0.dot(&rhs.0)
-    }
-
-    pub fn sqrt(&mut self)
-    {
-        self.0.apply(|v| *v = v.sqrt());
-    }
-
-    pub fn clone_sqrt(&self) -> Self
-    {
-        let mut out = self.clone();
-        out.sqrt();
-
-        out
-    }
-
-    pub fn exp(&mut self)
-    {
-        self.0.apply(|v| *v = v.exp());
-    }
-
-    pub fn ln(&mut self)
-    {
-        self.0.apply(|v| *v = v.ln());
-    }
-
-    pub fn reciprocal(&mut self)
-    {
-        self.0.apply(|v| *v = 1.0 / *v);
-    }
-
-    pub fn sigmoid(&mut self)
-    {
-        self.0.apply(|v| *v = 1.0 / (1.0 + (-*v).exp()));
-    }
-
-    pub fn tanh(&mut self)
-    {
-        self.0.apply(|v| *v = v.tanh());
-    }
-
-    pub fn leaky_relu(&mut self)
-    {
-        self.0.apply(|v| *v = v.max(LEAKY_SLOPE * *v));
-    }
-
-    pub fn leaky_relu_d(&mut self)
-    {
-        self.0.apply(|v| *v = leaky_relu_d(*v));
-    }
-
-    pub fn sum(&self) -> f32
-    {
-        self.0.sum()
-    }
-
-    pub fn total_len(&self) -> usize
-    {
-        self.0.as_slice().len()
-    }
-
-    pub fn as_vec(&self) -> Vec<f32>
-    {
-        self.0.as_slice().to_vec()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item=&f32> + ExactSizeIterator
-    {
-        self.0.as_slice().iter()
-    }
-
-    pub fn pick_weighed(&self, temperature: f32) -> usize
-    {
-        SoftmaxedLayer::pick_weighed_associated(self, temperature)
-    }
-
-    pub fn highest_index(&self) -> usize
-    {
-        SoftmaxedLayer::highest_index(self.iter())
     }
 }
 
@@ -1801,8 +1528,8 @@ mod tests
 
         out.calculate_gradients();
 
-        let a_g = a.take_gradient_tensor();
-        let b_g = b.take_gradient_tensor();
+        let a_g = a.take_gradient();
+        let b_g = b.take_gradient();
 
         let mut vals = |a: &mut LayerType, b: &mut LayerType|
         {
@@ -1831,15 +1558,16 @@ mod tests
 
             let fg = &mut fg;
 
-            let epsilon = one_hot(orig.clone(), epsilon_index, epsilon, 0.0);
+            let a_epsilon = one_hot(a.value_clone(), epsilon_index, epsilon, 0.0);
+            let b_epsilon = one_hot(b.value_clone(), epsilon_index, epsilon, 0.0);
 
             let a_fg = {
-                let mut a = LayerType::new_diff(a.value_clone() + &epsilon);
+                let mut a = LayerType::new_diff(a.value_clone() + a_epsilon);
                 fg(vals(&mut a, &mut b))
             };
 
             let b_fg = {
-                let mut b = LayerType::new_diff(b.value_clone() + epsilon);
+                let mut b = LayerType::new_diff(b.value_clone() + b_epsilon);
                 fg(vals(&mut a, &mut b))
             };
 
@@ -1917,6 +1645,18 @@ mod tests
     }
 
     #[test]
+    fn division_sum_inplace()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone();
+            a /= b.sum();
+
+            a
+        })
+    }
+
+    #[test]
     fn basic_combined()
     {
         check_tensor(|a, b| a * b + a)
@@ -1950,6 +1690,18 @@ mod tests
     fn dot_product()
     {
         check_tensor(|a, b| a.clone() + a.clone().dot(b.clone()))
+    }
+
+    #[test]
+    fn dot_product_complex()
+    {
+        check_tensor(|a, b| a.clone() + a * a.clone().dot(b.clone()) - b)
+    }
+
+    #[test]
+    fn scalar_minus_tensor()
+    {
+        check_tensor(|a, b| a.sum() - b)
     }
 
     #[test]
@@ -2031,10 +1783,9 @@ mod tests
         })
     }
 
-    // i dont know wut the correct derivative is im so DONEEEEEEEEEEEEEEE
-    /*#[test]
+    #[test]
     fn matrix_multiplication()
     {
-        check_tensor_with_dims((3, 10), (10, 1), |a, b| a.matmul(b))
-    }*/
+        check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmul(b) + b.sum())
+    }
 }
