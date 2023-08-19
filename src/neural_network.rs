@@ -38,7 +38,7 @@ pub const LAYERS_AMOUNT: usize = 1;
 
 pub const USE_DROPOUT: bool = false;
 
-pub const LAYER_ACTIVATION: AFType = AFType::Tanh;
+pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 pub type DictionaryType = CharDictionary;
 

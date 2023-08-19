@@ -351,7 +351,7 @@ where
     {
         let ones = self.value.as_ref().unwrap().ones();
 
-        self.derivatives(ones);
+        self.derivatives(ones, false);
     }
 
     // long ass name but i wanna be descriptive about wut this does
@@ -376,10 +376,27 @@ where
         }
     }
 
-    fn derivatives(&mut self, gradient: GradientType)
+    fn derivatives(&mut self, gradient: GradientType, multiple_parents: bool)
     {
         if !self.calculate_gradient
         {
+            return;
+        }
+
+        let mut add_gradients = |gradient|
+        {
+            if self.gradient.is_none()
+            {
+                self.gradient = Some(gradient);
+            } else
+            {
+                *self.gradient.as_mut().unwrap() += gradient;
+            }
+        };
+
+        if multiple_parents
+        {
+            add_gradients(gradient.clone());
             return;
         }
 
@@ -397,19 +414,21 @@ where
             },
             LayerOps::Mul{lhs, rhs} =>
             {
+                let lhs_value = lhs.value_clone();
                 {
                     let d = &gradient * rhs.value_clone();
                     lhs.derivatives(d);
                 }
 
                 {
-                    let d = &gradient * lhs.value_clone();
+                    let d = &gradient * lhs_value;
                     rhs.derivatives(d);
                 }
             },
             LayerOps::Div{lhs, rhs} =>
             {
                 let r_recip = rhs.value_clone().reciprocal();
+                let lhs_value = lhs.value_clone();
 
                 {
                     let d = &r_recip * &gradient;
@@ -422,7 +441,7 @@ where
                     let recip_squared =
                         <&GradientType as Mul<&GradientType>>::mul(&r_recip, &r_recip);
 
-                    let d = &gradient * -lhs.value_clone();
+                    let d = &gradient * -lhs_value;
                     let d = <GradientType as Mul<GradientType>>::mul(d, recip_squared);
 
                     rhs.derivatives(d);
@@ -477,15 +496,14 @@ where
                     x => panic!("matmul must have a tensor gradient, instead it has {:?}", x)
                 };
 
+                let rhs_d = lhs.value().matmul_transposed(&gradient);
+
                 {
-                    let d = rhs.value().matmul_derivative(&gradient);
+                    let d = rhs.value().matmul_derivative(gradient);
                     lhs.derivatives(d.into());
                 }
 
-                {
-                    let d = lhs.value().matmul_transposed(gradient);
-                    rhs.derivatives(d.into());
-                }
+                rhs.derivatives(rhs_d.into());
             },
             LayerOps::SumTensor(x) =>
             {
@@ -506,6 +524,7 @@ where
             // wait is the derivative for this the EXACT same as normal elementwise multiplication?
             LayerOps::Dot{lhs, rhs} =>
             {
+                let lhs_value = lhs.value_clone();
                 // nice and short multplication calls
                 {
                     let d = <&GradientType as Mul<&LayerInnerType>>::mul(
@@ -519,7 +538,7 @@ where
                 {
                     let d = <&GradientType as Mul<&LayerInnerType>>::mul(
                         &gradient,
-                        &lhs.value_clone()
+                        &lhs_value
                     );
 
                     rhs.derivatives(d);
@@ -527,12 +546,9 @@ where
             },
             LayerOps::Diff =>
             {
-                if self.gradient.is_none()
+                if !multiple_parents
                 {
-                    self.gradient = Some(gradient.clone());
-                } else
-                {
-                    *self.gradient.as_mut().unwrap() += gradient.clone();
+                    add_gradients(gradient.clone());
                 }
             },
             LayerOps::None => ()
@@ -541,7 +557,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffWrapper<T>(Rc<RefCell<DiffType<T>>>);
+pub struct DiffWrapper<T>(Option<Rc<RefCell<DiffType<T>>>>);
 
 impl<T> DiffWrapper<T>
 where
@@ -573,7 +589,9 @@ where
 
     fn this_move(self) -> DiffType<T>
     {
-        Rc::into_inner(self.0).expect("this wrapper must have no parents").into_inner()
+        Rc::into_inner(
+            self.0.unwrap()
+        ).expect("this wrapper must have no parents").into_inner()
     }
 
     fn new_inner(value: T, ops: LayerOps, calculate_gradient: bool) -> Self
@@ -585,32 +603,53 @@ where
             calculate_gradient
         };
 
-        Self(Rc::new(RefCell::new(diff)))
+        Self(Some(Rc::new(RefCell::new(diff))))
     }
 
     fn derivatives(&mut self, gradient: GradientType)
     {
-        RefCell::borrow_mut(&self.0).derivatives(gradient);
+        let multiple_parents = Rc::strong_count(self.0.as_ref().unwrap()) > 1;
+
+        {
+            let mut this = RefCell::borrow_mut(self.0.as_ref().unwrap());
+
+            this.derivatives(gradient, multiple_parents);
+        }
+
+        self.drop_child();
+    }
+
+    // nice name lmao
+    fn drop_child(&mut self)
+    {
+        // drop this pointer to decrease the parents amount
+        let _ = self.0.take();
     }
 
     pub fn value(&self) -> cell::Ref<T>
     {
-        cell::Ref::map(RefCell::borrow(&self.0), |v| v.value.as_ref().unwrap())
+        cell::Ref::map(
+            RefCell::borrow(self.0.as_ref().unwrap()),
+            |v| v.value.as_ref().unwrap()
+        )
     }
 
     pub fn value_mut(&mut self) -> cell::RefMut<T>
     {
-        cell::RefMut::map(RefCell::borrow_mut(&self.0), |v| v.value.as_mut().unwrap())
+        cell::RefMut::map(
+            RefCell::borrow_mut(self.0.as_ref().unwrap()),
+            |v| v.value.as_mut().unwrap()
+        )
     }
 
     pub fn value_clone(&self) -> T
     {
-        (*RefCell::borrow(&self.0)).value.clone().unwrap()
+        (*RefCell::borrow(self.0.as_ref().unwrap())).value.clone().unwrap()
     }
 
     fn value_take(&mut self) -> T
     {
-        (*RefCell::borrow_mut(&self.0)).value.take().unwrap()
+        (*RefCell::borrow_mut(self.0.as_ref().unwrap())).value.take().unwrap()
     }
 }
 
@@ -629,12 +668,12 @@ impl<T> DiffWrapper<T>
     #[allow(dead_code)]
     fn this_ref(&self) -> cell::Ref<DiffType<T>>
     {
-        RefCell::borrow(&self.0)
+        RefCell::borrow(self.0.as_ref().unwrap())
     }
 
     fn this_mut(&mut self) -> cell::RefMut<DiffType<T>>
     {
-        RefCell::borrow_mut(&self.0)
+        RefCell::borrow_mut(self.0.as_ref().unwrap())
     }
 }
 

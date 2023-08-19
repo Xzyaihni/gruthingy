@@ -534,10 +534,12 @@ impl GRU
     {
         self.clear();
 
+        let inputs_amount = input.len();
+
         let dropout = self.create_dropout();
         let loss = self.loss_unscaled_with_dropout(&dropout, input);
 
-        let loss_value = loss.value_clone();
+        let loss_value = loss.value_clone() / inputs_amount as f32;
 
         loss.calculate_gradients();
 
@@ -546,25 +548,25 @@ impl GRU
             {
                 GRUGradients{
                     input_update_gradients:
-                        layer.input_update_weights.take_gradient_tensor(),
+                        -layer.input_update_weights.take_gradient_tensor(),
                     hidden_update_gradients:
-                        layer.hidden_update_weights.take_gradient_tensor(),
+                        -layer.hidden_update_weights.take_gradient_tensor(),
                     update_bias_gradients:
-                        layer.update_biases.take_gradient_tensor(),
+                        -layer.update_biases.take_gradient_tensor(),
                     input_reset_gradients:
-                        layer.input_reset_weights.take_gradient_tensor(),
+                        -layer.input_reset_weights.take_gradient_tensor(),
                     hidden_reset_gradients:
-                        layer.hidden_reset_weights.take_gradient_tensor(),
+                        -layer.hidden_reset_weights.take_gradient_tensor(),
                     reset_bias_gradients:
-                        layer.reset_biases.take_gradient_tensor(),
+                        -layer.reset_biases.take_gradient_tensor(),
                     input_activation_gradients:
-                        layer.input_activation_weights.take_gradient_tensor(),
+                        -layer.input_activation_weights.take_gradient_tensor(),
                     hidden_activation_gradients:
-                        layer.hidden_activation_weights.take_gradient_tensor(),
+                        -layer.hidden_activation_weights.take_gradient_tensor(),
                     activation_bias_gradients:
-                        layer.activation_biases.take_gradient_tensor(),
+                        -layer.activation_biases.take_gradient_tensor(),
                     output_gradients:
-                        layer.output_weights.take_gradient_tensor(),
+                        -layer.output_weights.take_gradient_tensor(),
                 }
             }).collect()
         );
