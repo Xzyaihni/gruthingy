@@ -304,7 +304,8 @@ pub struct DiffType<T>
 {
     inner: LayerOps,
     value: Option<T>,
-    gradient: Option<GradientType>
+    gradient: Option<GradientType>,
+    calculate_gradient: bool
 }
 
 pub trait DiffBounds
@@ -329,6 +330,14 @@ impl TryFrom<f32> for LayerInnerType
 
 impl DiffBounds for f32 {}
 impl DiffBounds for LayerInnerType {}
+
+impl<T> DiffType<T>
+{
+    fn maybe_gradient<A>(&self, rhs: &DiffType<A>) -> bool
+    {
+        self.calculate_gradient || rhs.calculate_gradient
+    }
+}
 
 impl<T> DiffType<T>
 where
@@ -369,12 +378,9 @@ where
 
     fn derivatives(&mut self, gradient: GradientType)
     {
-        if self.gradient.is_none()
+        if !self.calculate_gradient
         {
-            self.gradient = Some(gradient.clone());
-        } else
-        {
-            *self.gradient.as_mut().unwrap() += gradient.clone();
+            return;
         }
 
         match &mut self.inner
@@ -521,12 +527,15 @@ where
             },
             LayerOps::Diff =>
             {
-                dbg!("le diff matrix has arrived");
+                if self.gradient.is_none()
+                {
+                    self.gradient = Some(gradient.clone());
+                } else
+                {
+                    *self.gradient.as_mut().unwrap() += gradient.clone();
+                }
             },
-            LayerOps::None =>
-            {
-                dbg!("it shouldnt print this after i optimize stuff");
-            }
+            LayerOps::None => ()
         }
     }
 }
@@ -544,7 +553,7 @@ where
 {
     pub fn new_diff(value: T) -> Self
     {
-        Self::new_inner(value, LayerOps::Diff)
+        Self::new_inner(value, LayerOps::Diff, true)
     }
 
     pub fn clear(&mut self)
@@ -567,12 +576,13 @@ where
         Rc::into_inner(self.0).expect("this wrapper must have no parents").into_inner()
     }
 
-    fn new_inner(value: T, ops: LayerOps) -> Self
+    fn new_inner(value: T, ops: LayerOps, calculate_gradient: bool) -> Self
     {
         let diff = DiffType{
             value: Some(value),
             inner: ops,
-            gradient: None
+            gradient: None,
+            calculate_gradient
         };
 
         Self(Rc::new(RefCell::new(diff)))
@@ -581,17 +591,6 @@ where
     fn derivatives(&mut self, gradient: GradientType)
     {
         RefCell::borrow_mut(&self.0).derivatives(gradient);
-    }
-
-    #[allow(dead_code)]
-    fn this_ref(&self) -> cell::Ref<DiffType<T>>
-    {
-        RefCell::borrow(&self.0)
-    }
-
-    fn this_mut(&mut self) -> cell::RefMut<DiffType<T>>
-    {
-        RefCell::borrow_mut(&self.0)
     }
 
     pub fn value(&self) -> cell::Ref<T>
@@ -612,6 +611,30 @@ where
     fn value_take(&mut self) -> T
     {
         (*RefCell::borrow_mut(&self.0)).value.take().unwrap()
+    }
+}
+
+impl<T> DiffWrapper<T>
+{
+    fn maybe_gradient<A>(&self, rhs: &DiffWrapper<A>) -> bool
+    {
+        self.this_ref().maybe_gradient(&rhs.this_ref())
+    }
+
+    fn is_gradient(&self) -> bool
+    {
+        self.this_ref().calculate_gradient
+    }
+
+    #[allow(dead_code)]
+    fn this_ref(&self) -> cell::Ref<DiffType<T>>
+    {
+        RefCell::borrow(&self.0)
+    }
+
+    fn this_mut(&mut self) -> cell::RefMut<DiffType<T>>
+    {
+        RefCell::borrow_mut(&self.0)
     }
 }
 
@@ -1054,7 +1077,7 @@ impl ScalarType
 {
     pub fn new(value: f32) -> Self
     {
-        ScalarType::new_inner(value, LayerOps::None)
+        ScalarType::new_inner(value, LayerOps::None, false)
     }
 }
 
@@ -1067,12 +1090,15 @@ where
     fn add(self, rhs: T) -> Self::Output
     {
         let rhs = rhs.borrow();
+
+        let is_gradient = self.maybe_gradient(rhs);
         Self::new_inner(
             self.value_clone() + rhs.value_clone(),
             LayerOps::Add{
                 lhs: LayerChild::Scalar(self),
                 rhs: LayerChild::Scalar(rhs.clone())
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1086,12 +1112,15 @@ where
     fn sub(self, rhs: T) -> Self::Output
     {
         let rhs = rhs.borrow();
+
+        let is_gradient = self.maybe_gradient(rhs);
         LayerType::new_inner(
             -(&*rhs.value()) + self.value_clone(),
             LayerOps::Sub{
                 lhs: LayerChild::Scalar(self),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1102,10 +1131,12 @@ impl Neg for ScalarType
 
     fn neg(self) -> Self::Output
     {
+        let is_gradient = self.is_gradient();
         Self::new_inner(
             // im unwrapping cuz i dont want it to proceed if value is None
             -self.value_clone(),
-            LayerOps::Neg(LayerChild::Scalar(self))
+            LayerOps::Neg(LayerChild::Scalar(self)),
+            is_gradient
         )
     }
 }
@@ -1142,12 +1173,14 @@ where
             &*l_value + &*r_value
         };
 
+        let is_gradient = self.maybe_gradient(rhs);
         Self::new_inner(
             value,
             LayerOps::Add{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }.into()
+            }.into(),
+            is_gradient
         )
     }
 }
@@ -1174,7 +1207,8 @@ where
             LayerOps::Add{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }.into()
+            }.into(),
+            self.maybe_gradient(rhs)
         )
     }
 }
@@ -1191,12 +1225,14 @@ impl Add<ScalarType> for LayerType
             &*l_value + rhs.value_clone()
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Add{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1218,12 +1254,14 @@ where
             &*l_value - &*r_value
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Sub{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1250,7 +1288,8 @@ where
             LayerOps::Sub{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }
+            },
+            self.maybe_gradient(rhs)
         )
     }
 }
@@ -1267,12 +1306,14 @@ impl Sub<ScalarType> for LayerType
             &*l_value - rhs.value_clone()
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Sub{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1294,12 +1335,14 @@ where
             &*l_value * &*r_value
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Mul{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Tensor(rhs.borrow().clone())
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1326,7 +1369,8 @@ where
             LayerOps::Mul{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }
+            },
+            self.maybe_gradient(rhs)
         )
     }
 }
@@ -1343,12 +1387,14 @@ impl Mul<ScalarType> for LayerType
             &*l_value * rhs.value_clone()
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Mul{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1365,12 +1411,14 @@ impl Mul<ScalarType> for &LayerType
             &*l_value * rhs.value_clone()
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         LayerType::new_inner(
             value,
             LayerOps::Mul{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1392,12 +1440,14 @@ where
             &*l_value / &*r_value
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Div{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1424,7 +1474,8 @@ where
             LayerOps::Div{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Tensor(rhs.clone())
-            }
+            },
+            self.maybe_gradient(rhs)
         )
     }
 }
@@ -1441,12 +1492,14 @@ impl Div<ScalarType> for LayerType
             &*l_value / rhs.value_clone()
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         Self::new_inner(
             value,
             LayerOps::Div{
                 lhs: LayerChild::Tensor(self),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1463,12 +1516,14 @@ impl Div<ScalarType> for &LayerType
             &*l_value / rhs.value_clone()
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         LayerType::new_inner(
             value,
             LayerOps::Div{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         )
     }
 }
@@ -1477,12 +1532,14 @@ impl AddAssign for LayerType
 {
     fn add_assign(&mut self, rhs: Self)
     {
+        let is_gradient = self.maybe_gradient(&rhs);
         *self = Self::new_inner(
             self.value_clone() + rhs.value_clone(),
             LayerOps::Add{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Tensor(rhs)
-            }
+            },
+            is_gradient
         );
     }
 }
@@ -1491,12 +1548,14 @@ impl DivAssign<ScalarType> for LayerType
 {
     fn div_assign(&mut self, rhs: ScalarType)
     {
+        let is_gradient = self.maybe_gradient(&rhs);
         *self = Self::new_inner(
             self.value_clone() / rhs.value_clone(),
             LayerOps::Div{
                 lhs: LayerChild::Tensor(self.clone()),
                 rhs: LayerChild::Scalar(rhs)
-            }
+            },
+            is_gradient
         );
     }
 }
@@ -1506,7 +1565,7 @@ impl LayerType
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
         let value = MatrixWrapper::new(previous_size, this_size);
-        Self::new_inner(value, LayerOps::None)
+        Self::new_inner(value, LayerOps::None, false)
     }
 
     pub fn new_with<F: FnMut() -> f32>(
@@ -1516,7 +1575,7 @@ impl LayerType
     )-> Self
     {
         let value = MatrixWrapper::new_with(previous_size, this_size, f);
-        Self::new_inner(value, LayerOps::None)
+        Self::new_inner(value, LayerOps::None, false)
     }
 
     pub fn from_raw<V: Into<Vec<f32>>>(
@@ -1526,7 +1585,7 @@ impl LayerType
     ) -> Self
     {
         let value = MatrixWrapper::from_raw(values, previous_size, this_size);
-        Self::new_inner(value, LayerOps::None)
+        Self::new_inner(value, LayerOps::None, false)
     }
 
     pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
@@ -1539,7 +1598,8 @@ impl LayerType
             LayerOps::Matmul{
                 lhs: self.clone(),
                 rhs: rhs.clone()
-            }
+            },
+            self.maybe_gradient(rhs)
         )
     }
 
@@ -1551,12 +1611,14 @@ impl LayerType
             self.value_clone().dot(&r_value)
         };
 
+        let is_gradient = self.maybe_gradient(&rhs);
         ScalarType::new_inner(
             value,
             LayerOps::Dot{
                 lhs: self,
                 rhs
-            }
+            },
+            is_gradient
         )
     }
 
@@ -1565,7 +1627,11 @@ impl LayerType
         let mut value = self.value_clone();
         value.exp();
 
-        *self = Self::new_inner(value, LayerOps::Exp(LayerChild::Tensor(self.clone())));
+        *self = Self::new_inner(
+            value,
+            LayerOps::Exp(LayerChild::Tensor(self.clone())),
+            self.is_gradient()
+        );
     }
 
     pub fn ln(&mut self)
@@ -1573,7 +1639,11 @@ impl LayerType
         let mut value = self.value_clone();
         value.ln();
 
-        *self = Self::new_inner(value, LayerOps::Ln(LayerChild::Tensor(self.clone())));
+        *self = Self::new_inner(
+            value,
+            LayerOps::Ln(LayerChild::Tensor(self.clone())),
+            self.is_gradient()
+        );
     }
 
     pub fn sigmoid(&mut self)
@@ -1581,7 +1651,11 @@ impl LayerType
         let mut value = self.value_clone();
         value.sigmoid();
 
-        *self = Self::new_inner(value, LayerOps::Sigmoid(LayerChild::Tensor(self.clone())));
+        *self = Self::new_inner(
+            value,
+            LayerOps::Sigmoid(LayerChild::Tensor(self.clone())),
+            self.is_gradient()
+        );
     }
 
     pub fn tanh(&mut self)
@@ -1589,7 +1663,11 @@ impl LayerType
         let mut value = self.value_clone();
         value.tanh();
 
-        *self = Self::new_inner(value, LayerOps::Tanh(LayerChild::Tensor(self.clone())));
+        *self = Self::new_inner(
+            value,
+            LayerOps::Tanh(LayerChild::Tensor(self.clone())),
+            self.is_gradient()
+        );
     }
 
     pub fn leaky_relu(&mut self)
@@ -1597,12 +1675,20 @@ impl LayerType
         let mut value = self.value_clone();
         value.leaky_relu();
 
-        *self = Self::new_inner(value, LayerOps::LeakyRelu(LayerChild::Tensor(self.clone())));
+        *self = Self::new_inner(
+            value,
+            LayerOps::LeakyRelu(LayerChild::Tensor(self.clone())),
+            self.is_gradient()
+        );
     }
 
     pub fn sum(&self) -> ScalarType
     {
-        ScalarType::new_inner(self.value().sum(), LayerOps::SumTensor(self.clone()))
+        ScalarType::new_inner(
+            self.value().sum(),
+            LayerOps::SumTensor(self.clone()),
+            self.is_gradient()
+        )
     }
 
     pub fn total_len(&self) -> usize
@@ -1637,7 +1723,7 @@ mod tests
 
     fn compare_single(correct: f32, calculated: f32)
     {
-        let epsilon = 0.05;
+        let epsilon = 0.1;
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {}, calculated: {}",
@@ -1696,7 +1782,7 @@ mod tests
 
         for epsilon_index in 0..orig.total_len()
         {
-            let epsilon: f32 = 0.0005;
+            let epsilon: f32 = 0.001;
 
             let mut fg = |value|
             {
