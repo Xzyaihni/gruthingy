@@ -463,8 +463,7 @@ impl GRU
                     previous_hidden,
                     input,
                     dropout_mask,
-                    LayerType::sigmoid
-                    // SoftmaxedLayer::softmax
+                    SoftmaxedLayer::softmax
                 )
             } else
             {

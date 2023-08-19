@@ -1477,15 +1477,13 @@ impl AddAssign for LayerType
 {
     fn add_assign(&mut self, rhs: Self)
     {
-        let lhs = self.clone();
-
-        let mut this = self.this_mut();
-
-        *this.value.as_mut().unwrap() += rhs.value_clone();
-        this.inner = LayerOps::Add{
-            lhs: LayerChild::Tensor(lhs),
-            rhs: LayerChild::Tensor(rhs)
-        }.into();
+        *self = Self::new_inner(
+            self.value_clone() + rhs.value_clone(),
+            LayerOps::Add{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Tensor(rhs)
+            }
+        );
     }
 }
 
@@ -1493,15 +1491,13 @@ impl DivAssign<ScalarType> for LayerType
 {
     fn div_assign(&mut self, rhs: ScalarType)
     {
-        let lhs = self.clone();
-
-        let mut this = self.this_mut();
-
-        *this.value.as_mut().unwrap() /= rhs.value_clone();
-        this.inner = LayerOps::Div{
-            lhs: LayerChild::Tensor(lhs),
-            rhs: LayerChild::Scalar(rhs)
-        }.into();
+        *self = Self::new_inner(
+            self.value_clone() / rhs.value_clone(),
+            LayerOps::Div{
+                lhs: LayerChild::Tensor(self.clone()),
+                rhs: LayerChild::Scalar(rhs)
+            }
+        );
     }
 }
 
