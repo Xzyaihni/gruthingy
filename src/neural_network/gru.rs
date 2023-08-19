@@ -457,7 +457,6 @@ impl GRU
 
             let this_output = if l_i == (LAYERS_AMOUNT - 1)
             {
-                dbg!("soemthing borked here");
                 // last layer
                 layer.feedforward_single::<true, _>(
                     previous_hidden,
