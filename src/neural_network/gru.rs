@@ -167,18 +167,18 @@ impl GRULayer
 
         Self{
         	input_update_weights: LayerType::new_diff(LayerInnerType::new_with(
-                word_vector_size,
                 HIDDEN_AMOUNT,
+                word_vector_size,
                 || weights_init(word_vector_size as f32)
             )),
         	input_reset_weights: LayerType::new_diff(LayerInnerType::new_with(
-				word_vector_size,
 				HIDDEN_AMOUNT,
+				word_vector_size,
 				|| weights_init(word_vector_size as f32)
 			)),
         	input_activation_weights: LayerType::new_diff(LayerInnerType::new_with(
-				word_vector_size,
 				HIDDEN_AMOUNT,
+				word_vector_size,
 				|| weights_init(word_vector_size as f32)
 			)),
         	hidden_update_weights: LayerType::new_diff(LayerInnerType::new_with(
@@ -201,8 +201,8 @@ impl GRULayer
             reset_biases: LayerType::new_diff(LayerInnerType::new(HIDDEN_AMOUNT, 1)),
             activation_biases: LayerType::new_diff(LayerInnerType::new(HIDDEN_AMOUNT, 1)),
             output_weights: LayerType::new_diff(LayerInnerType::new_with(
-                HIDDEN_AMOUNT,
                 word_vector_size,
+                HIDDEN_AMOUNT,
                 || weights_init(HIDDEN_AMOUNT as f32)
             ))
         }
