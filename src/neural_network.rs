@@ -603,6 +603,7 @@ impl NeuralNetwork
                 output_loss(self);
             }
 
+            let mut batch_loss = 0.0;
             let gradients = (0..batch_size).map(|_|
             {
                 let batch_start = if max_batch_start == 0
@@ -622,8 +623,7 @@ impl NeuralNetwork
 
                 let (loss, mut gradients) = self.network.gradients(values.iter());
 
-                Self::print_loss(false, loss);
-
+                batch_loss += loss / batch_size as f32;
                 gradients /= batch_size as f32;
 
                 gradients
@@ -636,6 +636,8 @@ impl NeuralNetwork
 
                 acc
             }).expect("batch size must not be 0");
+
+            Self::print_loss(false, batch_loss);
 
             self.apply_gradients(gradients);
         }
