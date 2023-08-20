@@ -15,8 +15,7 @@ use crate::neural_network::{
     LayerInnerType,
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT,
-    LAYER_ACTIVATION,
-    USE_DROPOUT
+    LAYER_ACTIVATION
 };
 
 
@@ -133,12 +132,6 @@ impl DivAssign<f32> for GRUFullGradients
     }
 }
 
-pub struct DropoutMasksSingle
-{
-    pub hidden: LayerType,
-    pub output: LayerType
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GRULayer
 {
@@ -226,7 +219,6 @@ impl GRULayer
         &mut self,
         previous_hidden: Option<&LayerType>,
         input: &LayerType,
-        dropout_mask: &DropoutMasksSingle,
         output_activation: FO
     ) -> GRUOutput
     where
@@ -271,23 +263,7 @@ impl GRULayer
             this_activation + ScalarType::new(1.0)
         };
 
-        let hidden = if USE_DROPOUT
-        {
-            hidden * &dropout_mask.hidden
-        } else
-        {
-            hidden
-        };
-
         let output_untrans = self.output_weights.matmul(&hidden);
-
-        let output_untrans = if LAST_LAYER || !USE_DROPOUT
-        {
-            output_untrans
-        } else
-        {
-            output_untrans * &dropout_mask.output
-        };
 
         let mut output_gate = output_untrans.clone();
         output_activation(&mut output_gate);
@@ -330,7 +306,7 @@ impl GRU
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let amount = input.len();
 
-        let f_output = self.feedforward(&self.create_empty_dropout(), input.into_iter());
+        let f_output = self.feedforward(input.into_iter());
 
         Self::correct_guesses(
             f_output.into_iter().map(|output| output.last_output()),
@@ -360,20 +336,21 @@ impl GRU
     }
 
 
-    pub fn loss(
+    pub fn loss<L>(
         &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
-    ) -> f32
+        input: impl Iterator<Item=(L, L)> + ExactSizeIterator
+    ) -> ScalarType
+    where
+        L: Borrow<LayerType>
     {
         let amount = input.len();
 
-        self.loss_unscaled(input) / amount as f32
+        self.loss_unscaled(input) / ScalarType::new(amount as f32)
     }
 
     #[allow(dead_code)]
-    pub fn loss_unscaled_with_dropout<L>(
+    pub fn loss_unscaled<L>(
         &mut self,
-        dropout: &[DropoutMasksSingle],
         input: impl Iterator<Item=(L, L)>
     ) -> ScalarType
     where
@@ -381,23 +358,12 @@ impl GRU
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        let f_output = self.feedforward(dropout, input.into_iter());
+        let f_output = self.feedforward(input.into_iter());
 
         Self::cross_entropy(
             f_output.into_iter().map(|output| output.last_output()),
             output.into_iter().map(|x| x.borrow().clone())
         )
-    }
-
-    pub fn loss_unscaled<L>(
-        &mut self,
-        input: impl Iterator<Item=(L, L)>
-    ) -> f32
-    where
-        L: Borrow<LayerType>
-    {
-        let dropout = self.create_empty_dropout();
-        *self.loss_unscaled_with_dropout(&dropout, input.into_iter()).value()
     }
 
     fn cross_entropy(
@@ -419,8 +385,7 @@ impl GRU
     pub fn feedforward_single<B>(
         &mut self,
         previous_hiddens: Option<&[B]>,
-        input: &LayerType,
-        dropout_masks: &[DropoutMasksSingle]
+        input: &LayerType
     ) -> GRUOutputLayer
     where
         B: Borrow<LayerType>
@@ -452,16 +417,12 @@ impl GRU
                 previous_hiddens.map(|ph| ph.get_unchecked(l_i).borrow())
             };
 
-            debug_assert!(l_i < dropout_masks.len());
-            let dropout_mask = unsafe{ dropout_masks.get_unchecked(l_i) };
-
             let this_output = if l_i == (LAYERS_AMOUNT - 1)
             {
                 // last layer
                 layer.feedforward_single::<true, _>(
                     previous_hidden,
                     input,
-                    dropout_mask,
                     SoftmaxedLayer::softmax
                 )
             } else
@@ -473,7 +434,6 @@ impl GRU
                         layer.feedforward_single::<false, _>(
                             previous_hidden,
                             input,
-                            dropout_mask,
                             LayerType::leaky_relu
                         )
                     },
@@ -482,7 +442,6 @@ impl GRU
                         layer.feedforward_single::<false, _>(
                             previous_hidden,
                             input,
-                            dropout_mask,
                             LayerType::tanh
                         )
                     }
@@ -498,7 +457,6 @@ impl GRU
     #[allow(dead_code)]
     pub fn feedforward<L>(
         &mut self,
-        dropout_masks: &[DropoutMasksSingle],
         input: impl Iterator<Item=L> + ExactSizeIterator
     ) -> Vec<GRUOutputLayer>
     where
@@ -512,11 +470,11 @@ impl GRU
 
             let output = if t == 0
             {
-                self.feedforward_single::<&LayerType>(None, this_input, &dropout_masks)
+                self.feedforward_single::<&LayerType>(None, this_input)
             } else
             {
                 let previous_hidden = unsafe{ &outputs.get_unchecked(t - 1).hiddens_ref() };
-                self.feedforward_single(Some(previous_hidden), this_input, &dropout_masks)
+                self.feedforward_single(Some(previous_hidden), this_input)
             };
 
             outputs.push(output);
@@ -534,13 +492,9 @@ impl GRU
     {
         self.clear();
 
-        let inputs_amount = input.len();
+        let loss = self.loss(input);
 
-        let dropout = self.create_dropout();
-        
-        let loss = self.loss_unscaled_with_dropout(&dropout, input);
-
-        let loss_value = loss.value_clone() / inputs_amount as f32;
+        let loss_value = loss.value_clone();
 
         loss.calculate_gradients();
 
@@ -573,55 +527,6 @@ impl GRU
         );
 
         (loss_value, gradients)
-    }
-
-    pub fn create_dropout(&self) -> Vec<DropoutMasksSingle>
-    {
-        #[cfg(test)]
-        {
-            fastrand::seed(12345);
-        }
-
-        if USE_DROPOUT
-        {
-            self.create_dropout_with(||
-            {
-                // p = 0.5 (dropout chance is 50%)
-                let dropout = fastrand::bool();
-                if dropout
-                {
-                    0.0
-                } else
-                {
-                    1.0
-                }
-            })
-        } else
-        {
-            self.create_dropout_with(|| 1.0)
-        }
-    }
-
-    pub fn create_empty_dropout(&self) -> Vec<DropoutMasksSingle>
-    {
-        if USE_DROPOUT
-        {
-            self.create_dropout_with(|| 0.5)
-        } else
-        {
-            self.create_dropout_with(|| 1.0)
-        }
-    }
-
-    fn create_dropout_with(&self, mut f: impl FnMut() -> f32) -> Vec<DropoutMasksSingle>
-    {
-        (0..LAYERS_AMOUNT).map(|_|
-        {
-            let output = LayerType::new_with(self.word_vector_size, 1, &mut f);
-            let hidden = LayerType::new_with(HIDDEN_AMOUNT, 1, &mut f);
-
-            DropoutMasksSingle{hidden, output}
-        }).collect::<Vec<_>>()
     }
 }
 

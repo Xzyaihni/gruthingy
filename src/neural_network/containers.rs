@@ -891,6 +891,28 @@ where
     }
 }
 
+impl<T> Div<T> for ScalarType
+where
+    T: Borrow<ScalarType>
+{
+    type Output = ScalarType;
+
+    fn div(self, rhs: T) -> Self::Output
+    {
+        let rhs = rhs.borrow();
+
+        let is_gradient = self.maybe_gradient(rhs);
+        ScalarType::new_inner(
+            self.value_clone() / rhs.value_clone(),
+            LayerOps::Div{
+                lhs: LayerChild::Scalar(self),
+                rhs: LayerChild::Scalar(rhs.clone())
+            },
+            is_gradient
+        )
+    }
+}
+
 impl Neg for ScalarType
 {
     type Output = Self;

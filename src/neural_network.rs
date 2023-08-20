@@ -36,8 +36,6 @@ pub mod containers;
 pub const HIDDEN_AMOUNT: usize = 128;
 pub const LAYERS_AMOUNT: usize = 3;
 
-pub const USE_DROPOUT: bool = true;
-
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 // these 2 r related, WordDictionary uses a dictionary and CharDictionary doesnt
@@ -254,8 +252,7 @@ impl<'a> Predictor<'a>
 
             let outputs = network.feedforward_single(
                 Some(&previous_hiddens),
-                this_input,
-                &network.create_empty_dropout()
+                this_input
             );
 
             let output = outputs.last_output_ref().clone();
@@ -521,7 +518,7 @@ impl NeuralNetwork
         {
             let loss = self.network.loss(input_outputs);
 
-            Self::print_loss(true, loss);
+            Self::print_loss(true, loss.value_clone());
         }
     }
 
