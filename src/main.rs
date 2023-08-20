@@ -12,6 +12,7 @@ use neural_network::{
     TrainingInfo,
     NeuralNetwork,
     DictionaryType,
+    USES_DICTIONARY,
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT
 };
@@ -166,19 +167,24 @@ fn test_loss(mut args: impl Iterator<Item=String>)
 
 fn train_new(mut args: impl Iterator<Item=String>)
 {
-    /*let dictionary_path = args.next()
-        .unwrap_or_else(|| complain("give path to a file with text for a dictionary"));
-
-    let dictionary_file = File::open(dictionary_path)
-        .unwrap_or_else(|err| complain(&format!("give a valid file plz ({err})")));*/
-
     let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text training data"));
     
-    let config = TrainConfig::parse(args);
+    let dictionary = if USES_DICTIONARY
+    {
+        let dictionary_path = args.next()
+            .unwrap_or_else(|| complain("give path to a file with text for a dictionary"));
 
-    // let dictionary = WordDictionary::build(dictionary_file);
-    let dictionary = CharDictionary::new();
+        let dictionary_file = File::open(dictionary_path)
+            .unwrap_or_else(|err| complain(&format!("give a valid file plz ({err})")));
+
+        DictionaryType::build(dictionary_file)
+    } else
+    {
+        DictionaryType::new()
+    };
+
+    let config = TrainConfig::parse(args);
 
     let network = NeuralNetwork::new(dictionary);
 

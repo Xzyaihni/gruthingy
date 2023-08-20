@@ -40,6 +40,8 @@ pub const USE_DROPOUT: bool = true;
 
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
+// these 2 r related, WordDictionary uses a dictionary and CharDictionary doesnt
+pub const USES_DICTIONARY: bool = false;
 pub type DictionaryType = CharDictionary;
 
 #[allow(dead_code)]

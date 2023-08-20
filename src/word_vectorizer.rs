@@ -2,6 +2,7 @@ use std::{
     hash::Hash,
     borrow::Borrow,
     iter::Peekable,
+    fs::File,
     collections::{HashMap, HashSet},
     io::{
         Read,
@@ -141,6 +142,12 @@ pub struct CharDictionary
 impl CharDictionary
 {
     #[allow(dead_code)]
+    pub fn build(_: File) -> Self
+    {
+        unimplemented!();
+    }
+
+    #[allow(dead_code)]
     pub fn new() -> Self
     {
         Self{}
@@ -185,6 +192,12 @@ impl WordDictionary
         }).collect::<HashSet<_>>();
 
         Self::build_inner(default_words, words)
+    }
+
+    #[allow(dead_code)]
+    pub fn new() -> Self
+    {
+        unimplemented!();
     }
 
     #[allow(dead_code)]
