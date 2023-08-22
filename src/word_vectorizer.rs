@@ -134,12 +134,12 @@ pub trait NetworkDictionary
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CharDictionary
+pub struct ByteDictionary
 {
 
 }
 
-impl CharDictionary
+impl ByteDictionary
 {
     #[allow(dead_code)]
     pub fn build(_: File) -> Self
@@ -154,7 +154,7 @@ impl CharDictionary
     }
 }
 
-impl NetworkDictionary for CharDictionary
+impl NetworkDictionary for ByteDictionary
 {
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
@@ -398,7 +398,7 @@ mod tests
     #[test]
     fn encodes_decodes_char()
     {
-        let dictionary = CharDictionary::new();
+        let dictionary = ByteDictionary::new();
 
         encode_decode_test(dictionary);
     }

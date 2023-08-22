@@ -17,9 +17,6 @@ use neural_network::{
     LAYERS_AMOUNT
 };
 
-#[allow(unused_imports)]
-use word_vectorizer::{NetworkDictionary, CharDictionary, WordDictionary};
-
 mod neural_network;
 mod word_vectorizer;
 
