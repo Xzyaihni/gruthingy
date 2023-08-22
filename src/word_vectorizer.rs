@@ -273,6 +273,13 @@ impl NetworkDictionary for CharDictionary
                 {
                     None =>
                     {
+                        if max_valid == 0
+                        {
+                            // file ends with invalid unicode or something? not sure but just
+                            // return None in that case
+                            return None;
+                        }
+
                         s_to_c(str::from_utf8(&buffer[..max_valid]).unwrap())
                     },
                     Some(_len) =>

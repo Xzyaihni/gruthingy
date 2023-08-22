@@ -15,6 +15,7 @@ use gru::{GRU, GRUGradients, GRUOutput, GRUFullGradients};
 #[allow(unused_imports)]
 use crate::word_vectorizer::{
     ByteDictionary,
+    CharDictionary,
     WordDictionary,
     NetworkDictionary,
     WordVectorizer,
@@ -33,14 +34,14 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 25;
+pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
-pub type DictionaryType = WordDictionary;
+pub type DictionaryType = CharDictionary;
 
 #[allow(dead_code)]
 pub enum AFType
