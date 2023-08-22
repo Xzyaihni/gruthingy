@@ -3,7 +3,7 @@ use std::{
     hash::Hash,
     borrow::Borrow,
     iter::Peekable,
-    collections::{HashMap, HashSet},
+    collections::{VecDeque, HashMap, HashSet},
     io::{
         Read,
         BufRead,
@@ -180,7 +180,10 @@ impl NetworkDictionary for ByteDictionary
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CharDictionary
 {
-    dictionary: Bimap<char, VectorWord>
+    dictionary: Bimap<char, VectorWord>,
+    // WHY DO I HAVE TO DO THIS??
+    chars_buffer: VecDeque<char>,
+    leftover: Vec<u8>
 }
 
 impl CharDictionary
@@ -200,7 +203,7 @@ impl CharDictionary
             (c, VectorWord::new(index))
         }).collect::<Bimap<_, _>>();
 
-        Self{dictionary}
+        Self{dictionary, chars_buffer: VecDeque::new(), leftover: Vec::new()}
     }
 
     #[allow(dead_code)]
@@ -246,59 +249,60 @@ impl NetworkDictionary for CharDictionary
         // but also we should remove rust
         // >deletes useful functions
         // >yea just use a crate
-        let buffer = bytes.fill_buf().expect("io error, skill issue");
-
-        if buffer.len() == 0
+        // WHAT CRATE IVE BEEN SEARCHING THERE R NONE
+        if self.chars_buffer.is_empty()
         {
-            return None;
-        }
+            let buffer = bytes.fill_buf().expect("io error, skill issue");
 
-        let buf_len = buffer.len().min(4);
+            let consumed_amount = buffer.len();
 
-        let buffer = &buffer[..buf_len];
+            // shamelessly stolen from rust docs
+            let combined_buffer = [&self.leftover, buffer].concat();
+            let mut combined_buffer: &[u8] = &combined_buffer;
 
-        let s_to_c = |s: &str|
-        {
-            s.chars().next().unwrap()
-        };
-
-        // am i doing this right?
-        let c = match str::from_utf8(buffer)
-        {
-            Ok(x) => s_to_c(x),
-            Err(err) =>
+            let mut add_str = |s: &str|
             {
-                let max_valid = err.valid_up_to();
-                match err.error_len()
+                self.chars_buffer.extend(s.chars());
+            };
+
+            loop
+            {
+                match str::from_utf8(&combined_buffer)
                 {
-                    None =>
+                    Ok(x) =>
                     {
-                        if max_valid == 0
-                        {
-                            // file ends with invalid unicode or something? not sure but just
-                            // return None in that case
-                            return None;
+                        add_str(x);
+                        break;
+                    },
+                    Err(err) =>
+                    {
+                        let (valid, after) = combined_buffer.split_at(err.valid_up_to());
+
+                        unsafe{
+                            let s = str::from_utf8_unchecked(valid);
+                            add_str(s);
                         }
 
-                        s_to_c(str::from_utf8(&buffer[..max_valid]).unwrap())
-                    },
-                    Some(_len) =>
-                    {
-                        if max_valid != 0
+                        add_str("�");
+                        match err.error_len()
                         {
-                            s_to_c(str::from_utf8(&buffer[..max_valid]).unwrap())
-                        } else
-                        {
-                            char::REPLACEMENT_CHARACTER
+                            Some(slen) =>
+                            {
+                                combined_buffer = &after[slen..];
+                            },
+                            None =>
+                            {
+                                break;
+                            }
                         }
                     }
-                }
+                };
             }
-        };
 
-        let consumed_amount = c.len_utf8();
-        bytes.consume(consumed_amount);
+            bytes.consume(consumed_amount);
+        }
 
+        let c = self.chars_buffer.pop_front()?;
         Some(self.character_match(c))
     }
 }

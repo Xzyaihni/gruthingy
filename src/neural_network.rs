@@ -109,6 +109,15 @@ impl GradientsInfo
     {
         let gradient = Self::gradient_clipped(gradient);
 
+        Self::gradient_to_change_no_clip(gradient_info, gradient, hyper)
+    }
+
+    fn gradient_to_change_no_clip(
+        gradient_info: &mut GradientInfo,
+        gradient: LayerInnerType,
+        hyper: &AdamHyperparams
+    ) -> LayerInnerType
+    {
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
@@ -741,7 +750,7 @@ mod tests
                     one_minus_b2_t: 1.0 - b2.powi(t)
                 };
 
-                let change = GradientsInfo::gradient_to_change(
+                let change = GradientsInfo::gradient_to_change_no_clip(
                     &mut gradient_info,
                     gradient.clone(),
                     &hyper
