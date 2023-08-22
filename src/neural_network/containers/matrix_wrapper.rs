@@ -332,6 +332,11 @@ impl MatrixWrapper
         self.0.sum()
     }
 
+    pub fn cap_magnitude(&self, cap: f32) -> Self
+    {
+        Self(self.0.cap_magnitude(cap))
+    }
+
     pub fn total_len(&self) -> usize
     {
         self.0.as_slice().len()

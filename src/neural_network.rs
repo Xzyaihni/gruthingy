@@ -106,12 +106,21 @@ impl GradientsInfo
         hyper: &AdamHyperparams
     ) -> LayerInnerType
     {
+        let gradient = Self::gradient_clipped(gradient);
+
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
         let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
 
         (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
+    }
+
+    fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
+    {
+        let gradient_clip = 1.0;
+
+        gradient.cap_magnitude(gradient_clip)
     }
 }
 
