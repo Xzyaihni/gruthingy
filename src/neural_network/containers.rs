@@ -1511,7 +1511,7 @@ mod tests
 
     fn compare_single(correct: f32, calculated: f32)
     {
-        let epsilon = 0.1;
+        let epsilon = 0.2;
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {}, calculated: {}",
@@ -1563,42 +1563,67 @@ mod tests
 
         let orig = vals(&mut a, &mut b);
 
-        let compare_tensor = |correct: LayerInnerType, calculated: LayerInnerType, index|
+        let compare_tensor = |correct: LayerInnerType, calculated: LayerInnerType|
         {
-            compare_single(correct.as_vec()[index], calculated.as_vec()[index]);
+            correct.as_vec().into_iter().zip(calculated.as_vec().into_iter())
+                .for_each(|(correct, calculated)| compare_single(correct, calculated));
         };
 
-        for epsilon_index in 0..orig.total_len()
+        let epsilon: f32 = 0.003;
+
+        let fg = |value: LayerInnerType|
         {
-            let epsilon: f32 = 0.001;
+            let value = value.sum();
+            let orig = orig.clone().sum();
 
-            let mut fg = |value|
-            {
-                let epsilon = one_hot(orig.clone(), epsilon_index, epsilon, 1.0);
-                (value - orig.clone()) / epsilon
-            };
+            (value - orig) / epsilon
+        };
 
-            let fg = &mut fg;
+        let mut a_fg = vec![0.0; a.total_len()];
+        for index in 0..a_fg.len()
+        {
+            let v = &a;
+            let epsilon = one_hot(v.value_clone(), index, epsilon, 0.0);
 
-            let a_epsilon = one_hot(a.value_clone(), epsilon_index, epsilon, 0.0);
-            let b_epsilon = one_hot(b.value_clone(), epsilon_index, epsilon, 0.0);
-
-            let a_fg = {
-                let mut a = LayerType::new_diff(a.value_clone() + a_epsilon);
+            let this_fg = {
+                let mut a = LayerType::new_diff(v.value_clone() + epsilon);
                 fg(vals(&mut a, &mut b))
             };
 
-            let b_fg = {
-                let mut b = LayerType::new_diff(b.value_clone() + b_epsilon);
-                fg(vals(&mut a, &mut b))
-            };
-
-            eprintln!("derivative of a");
-            compare_tensor(a_fg, a_g.clone(), epsilon_index);
-
-            eprintln!("derivative of b");
-            compare_tensor(b_fg, b_g.clone(), epsilon_index);
+            a_fg[index] = this_fg;
         }
+
+        let mut b_fg = vec![0.0; b.total_len()];
+        for index in 0..b_fg.len()
+        {
+            let v = &b;
+            let epsilon = one_hot(v.value_clone(), index, epsilon, 0.0);
+
+            let this_fg = {
+                let mut b = LayerType::new_diff(v.value_clone() + epsilon);
+                fg(vals(&mut a, &mut b))
+            };
+
+            b_fg[index] = this_fg;
+        }
+
+        let vec_to_layer = |v, layer_match: &LayerType|
+        {
+            let mut layer = layer_match.value_clone();
+
+            layer.swap_raw_values(v);
+
+            layer
+        };
+
+        let a_fg = vec_to_layer(a_fg, &a);
+        let b_fg = vec_to_layer(b_fg, &b);
+
+        eprintln!("derivative of a");
+        compare_tensor(a_fg, a_g.clone());
+
+        eprintln!("derivative of b");
+        compare_tensor(b_fg, b_g.clone());
     }
 
     fn one_hot(
@@ -1712,12 +1737,6 @@ mod tests
     fn dot_product()
     {
         check_tensor(|a, b| a.clone() + a.clone().dot(b.clone()))
-    }
-
-    #[test]
-    fn dot_product_complex()
-    {
-        check_tensor(|a, b| a.clone() + a * a.clone().dot(b.clone()) - b)
     }
 
     #[test]

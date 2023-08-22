@@ -33,14 +33,14 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 128;
-pub const LAYERS_AMOUNT: usize = 3;
+pub const HIDDEN_AMOUNT: usize = 25;
+pub const LAYERS_AMOUNT: usize = 4;
 
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 // these 2 r related, WordDictionary uses a dictionary and CharDictionary doesnt
-pub const USES_DICTIONARY: bool = false;
-pub type DictionaryType = CharDictionary;
+pub const USES_DICTIONARY: bool = true;
+pub type DictionaryType = WordDictionary;
 
 #[allow(dead_code)]
 pub enum AFType
