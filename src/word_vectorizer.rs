@@ -1,8 +1,8 @@
 use std::{
+    str,
     hash::Hash,
     borrow::Borrow,
     iter::Peekable,
-    fs::File,
     collections::{HashMap, HashSet},
     io::{
         Read,
@@ -86,6 +86,11 @@ where
     {
         self.v_map.get(value)
     }
+
+    pub fn len(&self) -> usize
+    {
+        self.k_map.len()
+    }
 }
 
 impl<K, V> FromIterator<(K, V)> for Bimap<K, V>
@@ -142,7 +147,7 @@ pub struct ByteDictionary
 impl ByteDictionary
 {
     #[allow(dead_code)]
-    pub fn build(_: File) -> Self
+    pub fn build(_: impl Read) -> Self
     {
         unimplemented!();
     }
@@ -173,10 +178,128 @@ impl NetworkDictionary for ByteDictionary
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct CharDictionary
+{
+    dictionary: Bimap<char, VectorWord>
+}
+
+impl CharDictionary
+{
+    #[allow(dead_code)]
+    pub fn build(mut bytes: impl Read) -> Self
+    {
+        let mut s = String::new();
+        bytes.read_to_string(&mut s).expect("invalid unicode in dictionary");
+
+        let mut unique_chars = s.chars().collect::<Vec<char>>();
+        unique_chars.sort_unstable();
+        unique_chars.dedup();
+
+        let dictionary = unique_chars.into_iter().enumerate().map(|(index, c)|
+        {
+            (c, VectorWord::new(index))
+        }).collect::<Bimap<_, _>>();
+
+        Self{dictionary}
+    }
+
+    #[allow(dead_code)]
+    pub fn new() -> Self
+    {
+        unimplemented!();
+    }
+
+    fn character_match(&self, c: char) -> VectorWord
+    {
+        let index = self.dictionary.by_key(&c).copied();
+
+        index.unwrap_or_else(||
+        {
+            // replacement character VectorWord
+            VectorWord::new(self.dictionary.len())
+        })
+    }
+}
+
+impl NetworkDictionary for CharDictionary
+{
+    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    {
+        let c = self.dictionary.by_value(&word).cloned()
+            .unwrap_or(char::REPLACEMENT_CHARACTER);
+
+        let mut s = [0_u8; 4];
+        let s = c.encode_utf8(&mut s);
+
+        s.as_bytes().into()
+    }
+
+    fn words_amount(&self) -> usize
+    {
+        // +1 for replacement character
+        self.dictionary.len() + 1
+    }
+
+    fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>
+    {
+        // i hate unicode, we should remove all languages and characters
+        // but also we should remove rust
+        // >deletes useful functions
+        // >yea just use a crate
+        let buffer = bytes.fill_buf().expect("io error, skill issue");
+
+        if buffer.len() == 0
+        {
+            return None;
+        }
+
+        let buf_len = buffer.len().min(4);
+
+        let buffer = &buffer[..buf_len];
+
+        let s_to_c = |s: &str|
+        {
+            s.chars().next().unwrap()
+        };
+
+        // am i doing this right?
+        let c = match str::from_utf8(buffer)
+        {
+            Ok(x) => s_to_c(x),
+            Err(err) =>
+            {
+                let max_valid = err.valid_up_to();
+                match err.error_len()
+                {
+                    None =>
+                    {
+                        s_to_c(str::from_utf8(&buffer[..max_valid]).unwrap())
+                    },
+                    Some(_len) =>
+                    {
+                        if max_valid != 0
+                        {
+                            s_to_c(str::from_utf8(&buffer[..max_valid]).unwrap())
+                        } else
+                        {
+                            char::REPLACEMENT_CHARACTER
+                        }
+                    }
+                }
+            }
+        };
+
+        let consumed_amount = c.len_utf8();
+        bytes.consume(consumed_amount);
+
+        Some(self.character_match(c))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WordDictionary
 {
     dictionary: Bimap<Box<[u8]>, VectorWord>,
-    words_amount: usize,
     longest_word: usize,
     c_word: Vec<u8>
 }
@@ -209,7 +332,6 @@ impl WordDictionary
     fn build_inner(defaults: HashSet<Box<[u8]>>, words: impl Read) -> Self
     {
         let all_words = Self::unique_words(defaults, words);
-        let words_amount = all_words.len();
 
         let mut longest_word = 1;
         let dictionary = all_words.into_iter().enumerate().map(|(i, bytes)|
@@ -222,7 +344,7 @@ impl WordDictionary
             (bytes, VectorWord::new(i as usize))
         }).collect::<Bimap<_, _>>();
 
-        Self{dictionary, words_amount, longest_word, c_word: Vec::new()}
+        Self{dictionary, longest_word, c_word: Vec::new()}
     }
 
     fn unique_words(default_words: HashSet<Box<[u8]>>, words: impl Read) -> HashSet<Box<[u8]>>
@@ -291,7 +413,7 @@ impl WordDictionary
 
     pub fn bytes_to_word(&self, bytes: &[u8]) -> Option<VectorWord>
     {
-        self.dictionary.by_key(bytes).cloned()
+        self.dictionary.by_key(bytes).copied()
     }
 
     #[allow(dead_code)]
@@ -312,7 +434,7 @@ impl NetworkDictionary for WordDictionary
 
     fn words_amount(&self) -> usize
     {
-        self.words_amount
+        self.dictionary.len()
     }
 
     fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>
@@ -398,12 +520,31 @@ mod tests
     #[test]
     fn encodes_decodes_char()
     {
+        let dictionary = CharDictionary::build("h elow / im tsngaCLcdr()lyfk".as_bytes());
+
+        encode_decode_test_lossy(
+            dictionary,
+            "hello world im testing a C��L encoder (not rly) fake and gay"
+        );
+    }
+
+    #[test]
+    fn encodes_decodes_bytes()
+    {
         let dictionary = ByteDictionary::new();
 
         encode_decode_test(dictionary);
     }
 
-    fn encode_decode_test(mut dictionary: impl NetworkDictionary)
+    fn encode_decode_test(dictionary: impl NetworkDictionary)
+    {
+        encode_decode_test_lossy(
+            dictionary,
+            "hello world im testing a COOL encoder (not rly) fake and gay"
+        );
+    }
+
+    fn encode_decode_test_lossy(mut dictionary: impl NetworkDictionary, expected: &str)
     {
         let original_bytes = "hello world im testing a COOL encoder (not rly) fake and gay";
 
@@ -420,7 +561,7 @@ mod tests
 
         assert_eq!(
             decoded_bytes,
-            original_bytes.bytes().collect::<Vec<u8>>(),
+            expected.bytes().collect::<Vec<u8>>(),
             "decoded: {}, original: {}",
             &String::from_utf8_lossy(&decoded_bytes),
             original_bytes
