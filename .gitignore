@@ -3,5 +3,5 @@ callgrind.*
 vgcore*
 network*
 *.ppm
-test
+test*
 /backup_networks
