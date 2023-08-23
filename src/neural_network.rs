@@ -361,6 +361,7 @@ impl NeuralNetwork
     pub fn new(dictionary: DictionaryType) -> Self
     {
         let words_vector_size = dictionary.words_amount();
+
         let network = GRU::new(words_vector_size);
 
         let gradients_info = (0..LAYERS_AMOUNT).map(|_| GradientsInfo::new(words_vector_size))
@@ -589,6 +590,10 @@ impl NeuralNetwork
                 }
             }
         };
+
+        println!("input vector size: {}", self.dictionary.words_amount());
+
+        println!("parameters amount: {}", self.network.parameters_amount());
 
         println!("batch size: {batch_size}");
         println!("steps amount: {steps_num}");

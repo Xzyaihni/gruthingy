@@ -298,6 +298,17 @@ impl GRU
     }
 
     #[allow(dead_code)]
+    pub fn parameters_amount(&self) -> u128
+    {
+        let i = self.word_vector_size as u128;
+        let h = HIDDEN_AMOUNT as u128;
+        let l = LAYERS_AMOUNT as u128;
+
+        // i hope i calculated this right
+        ((4 * i * h) + (3 * h * h) + (3 * h)) * l
+    }
+
+    #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
         input: impl Iterator<Item=(LayerType, LayerType)>
