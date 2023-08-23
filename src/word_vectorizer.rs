@@ -292,6 +292,8 @@ impl NetworkDictionary for CharDictionary
                             },
                             None =>
                             {
+                                self.leftover = after.to_vec();
+
                                 break;
                             }
                         }
