@@ -253,6 +253,10 @@ impl NetworkDictionary for CharDictionary
         if self.chars_buffer.is_empty()
         {
             let buffer = bytes.fill_buf().expect("io error, skill issue");
+            if buffer.len() == 0
+            {
+                return None;
+            }
 
             let consumed_amount = buffer.len();
 
