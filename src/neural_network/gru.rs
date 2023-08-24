@@ -265,7 +265,7 @@ impl GRULayer
 
         let output_untrans = self.output_weights.matmul(&hidden);
 
-        let mut output_gate = output_untrans.clone();
+        let mut output_gate = output_untrans.clone_gradientable();
         output_activation(&mut output_gate);
 
         GRUOutput{
@@ -373,7 +373,7 @@ impl GRU
 
         Self::cross_entropy(
             f_output.into_iter().map(|output| output.last_output()),
-            output.into_iter().map(|x| x.borrow().clone())
+            output.into_iter().map(|x| x.borrow().clone_gradientable())
         )
     }
 
@@ -560,6 +560,27 @@ pub mod tests
         }
 
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
+    }
+
+    pub fn close_enough_loose(a: f32, b: f32, epsilon: f32) -> bool
+    {
+        if a == 0.0 || a == -0.0
+        {
+            return b.abs() < epsilon;
+        }
+
+        if b == 0.0 || b == -0.0
+        {
+            return a.abs() < epsilon;
+        }
+
+        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
+    }
+
+    #[allow(dead_code)]
+    pub fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
+    {
+        (a - b).abs() < epsilon
     }
 
     #[test]

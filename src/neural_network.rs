@@ -26,7 +26,8 @@ pub use containers::{
     LayerType,
     ScalarType,
     LayerInnerType,
-    SoftmaxedLayer
+    SoftmaxedLayer,
+    CloneableWrapper
 };
 
 mod gru;
@@ -263,7 +264,9 @@ impl<'a> Predictor<'a>
     {
         let input_amount = self.words.len();
 
-        let mut previous_hiddens = vec![LayerType::new(HIDDEN_AMOUNT, 1); LAYERS_AMOUNT];
+        let mut previous_hiddens = (0..LAYERS_AMOUNT).map(|_| LayerType::new(HIDDEN_AMOUNT, 1))
+            .collect::<Vec<_>>();
+
         for i in 0..(input_amount + self.predict_amount)
         {
             debug_assert!(i < self.words.len());
@@ -274,7 +277,7 @@ impl<'a> Predictor<'a>
                 this_input
             );
 
-            let output = outputs.last_output_ref().clone();
+            let output = outputs.last_output_ref().clone_gradientable();
             previous_hiddens = outputs.hiddens();
 
             if i >= (input_amount - 1)
@@ -298,6 +301,7 @@ pub struct TrainingInfo
     pub batch_size: usize,
     pub steps_num: usize,
     pub learning_rate: f32,
+    pub calculate_loss: bool,
     pub calculate_accuracy: bool,
     pub ignore_loss: bool
 }
@@ -508,33 +512,36 @@ impl NeuralNetwork
         word_vectorizer.collect()
     }
 
-    pub fn test_loss(&mut self, file: impl Read, calculate_accuracy: bool)
+    pub fn test_loss(&mut self, file: impl Read, calculate_loss: bool, calculate_accuracy: bool)
     {
         let inputs = self.input_expected_from_text(file);
 
-        self.test_loss_inner(&inputs, calculate_accuracy);
+        self.test_loss_inner(&inputs, calculate_loss, calculate_accuracy);
     }
 
 
     fn test_loss_inner(
         &mut self,
         inputs: &[VectorWord],
+        calculate_loss: bool,
         calculate_accuracy: bool
     )
     {
         let input_outputs = InputOutputIter::new(
             inputs.iter().map(|word|
             {
-                self.dictionary.word_to_layer(*word)
+                CloneableWrapper(self.dictionary.word_to_layer(*word))
             })
-        );
+        ).map(|(a, b)| (a.0, b.0));
 
         if calculate_accuracy
         {
-            let accuracy = self.network.accuracy(input_outputs);
+            let accuracy = self.network.accuracy(input_outputs.clone());
 
             println!("accuracy: {}%", accuracy * 100.0);
-        } else
+        }
+
+        if calculate_loss
         {
             let loss = self.network.loss(input_outputs);
 
@@ -567,6 +574,7 @@ impl NeuralNetwork
             steps_num,
             epochs,
             learning_rate,
+            calculate_loss,
             calculate_accuracy,
             ignore_loss
         } = info;
@@ -608,7 +616,7 @@ impl NeuralNetwork
                 return;
             }
 
-            network.test_loss_inner(&testing_inputs, calculate_accuracy);
+            network.test_loss_inner(&testing_inputs, calculate_loss, calculate_accuracy);
         };
 
         let max_batch_start = inputs.len().saturating_sub(steps_num);

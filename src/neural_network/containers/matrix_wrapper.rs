@@ -34,6 +34,16 @@ impl Add<f32> for &MatrixWrapper
     }
 }
 
+impl Add<&f32> for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn add(self, rhs: &f32) -> Self::Output
+    {
+        MatrixWrapper(self.0.add_scalar(*rhs))
+    }
+}
+
 impl<T> Add<T> for MatrixWrapper
 where
     T: Borrow<Self>
@@ -92,6 +102,16 @@ impl Sub<f32> for &MatrixWrapper
     }
 }
 
+impl Sub<&f32> for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn sub(self, rhs: &f32) -> Self::Output
+    {
+        MatrixWrapper(self.0.add_scalar(-rhs))
+    }
+}
+
 impl<T> Mul<T> for &MatrixWrapper
 where
     T: Borrow<MatrixWrapper>
@@ -124,6 +144,16 @@ impl Mul<f32> for &MatrixWrapper
     }
 }
 
+impl Mul<&f32> for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn mul(self, rhs: &f32) -> Self::Output
+    {
+        MatrixWrapper(&self.0 * *rhs)
+    }
+}
+
 impl<T> Mul<T> for MatrixWrapper
 where
     T: Borrow<Self>
@@ -153,6 +183,16 @@ impl Div<f32> for &MatrixWrapper
     fn div(self, rhs: f32) -> Self::Output
     {
         MatrixWrapper(&self.0 / rhs)
+    }
+}
+
+impl Div<&f32> for &MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn div(self, rhs: &f32) -> Self::Output
+    {
+        MatrixWrapper(&self.0 / *rhs)
     }
 }
 

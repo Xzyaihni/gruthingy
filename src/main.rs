@@ -36,6 +36,7 @@ struct TrainConfig
     batch_size: usize,
     steps_num: usize,
     learning_rate: f32,
+    calculate_loss: bool,
     calculate_accuracy: bool,
     ignore_loss: bool,
     testing_data: Option<String>,
@@ -50,6 +51,7 @@ impl TrainConfig
         let mut batch_size = 2_usize.pow(6);
         let mut steps_num = 64;
         let mut learning_rate = 0.001;
+        let mut calculate_loss = true;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
         let mut testing_data = None;
@@ -119,6 +121,11 @@ impl TrainConfig
                 },
                 "-a" | "--accuracy" =>
                 {
+                    calculate_loss = false;
+                    calculate_accuracy = true;
+                },
+                "--and-accuracy" =>
+                {
                     calculate_accuracy = true;
                 },
                 "-i" | "--ignore-loss" =>
@@ -134,6 +141,7 @@ impl TrainConfig
             batch_size,
             steps_num,
             learning_rate,
+            calculate_loss,
             calculate_accuracy,
             ignore_loss,
             testing_data,
@@ -159,7 +167,7 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     let mut network: NeuralNetwork =
         NeuralNetwork::load(&config.network_path).unwrap();
 
-    network.test_loss(text_file, config.calculate_accuracy);
+    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
 }
 
 fn train_new(mut args: impl Iterator<Item=String>)
@@ -206,6 +214,7 @@ fn train_inner(
         batch_size: config.batch_size,
         steps_num: config.steps_num,
         learning_rate: config.learning_rate,
+        calculate_loss: config.calculate_loss,
         calculate_accuracy: config.calculate_accuracy,
         ignore_loss: config.ignore_loss
     };
