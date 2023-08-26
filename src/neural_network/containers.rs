@@ -170,7 +170,8 @@ enum LayerOps
     Sub{lhs: LayerChild, rhs: LayerChild},
     Mul{lhs: LayerChild, rhs: LayerChild},
     Div{lhs: LayerChild, rhs: LayerChild},
-    Matmul{lhs: LayerType, rhs: LayerType}
+    Matmul{lhs: LayerType, rhs: LayerType},
+    SoftmaxCrossEntropy{values: LayerType, targets: LayerInnerType}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,8 +480,10 @@ impl FromGradient for LayerInnerType
 
 pub trait DiffBounds
 where
-    Self: Fillable + FromGradient + Clone + Into<GradientType> + TryInto<LayerInnerType>,
+    Self: Fillable + FromGradient + Clone + Into<GradientType>,
+    Self: TryInto<LayerInnerType> + TryInto<f32>,
     <Self as TryInto<LayerInnerType>>::Error: Debug,
+    <Self as TryInto<f32>>::Error: Debug,
     Self: AddAssign<Self> + Add<f32, Output=Self> + Neg<Output=Self>,
     for<'a> Self: Mul<&'a Self, Output=Self>,
     for<'a> &'a Self: Mul<&'a Self, Output=Self> + Neg<Output=Self>,
@@ -494,6 +497,16 @@ impl TryFrom<f32> for LayerInnerType
     type Error = ();
 
     fn try_from(_value: f32) -> Result<Self, Self::Error>
+    {
+        Err(())
+    }
+}
+
+impl TryFrom<LayerInnerType> for f32
+{
+    type Error = ();
+
+    fn try_from(_value: LayerInnerType) -> Result<Self, Self::Error>
     {
         Err(())
     }
@@ -517,6 +530,7 @@ impl<T> DiffType<T>
 where
     T: DiffBounds,
     <T as TryInto<LayerInnerType>>::Error: Debug,
+    <T as TryInto<f32>>::Error: Debug,
     for<'a> T: Mul<&'a T, Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
     for<'a> GradientType: Mul<&'a T, Output=GradientType>,
@@ -730,7 +744,6 @@ where
                     x.derivatives(d);
                 }
             },
-            // wait is the derivative for this the EXACT same as normal elementwise multiplication?
             LayerOps::Dot{lhs, rhs} =>
             {
                 let gradient = LayerInnerType::from_gradient(gradient.into(), ||
@@ -756,6 +769,30 @@ where
                     let d = &gradient * lhs_value;
 
                     rhs.derivatives(d.into());
+                }
+            },
+            LayerOps::SoftmaxCrossEntropy{values, targets} =>
+            {
+                if values.is_gradient()
+                {
+                    let gradient = LayerInnerType::from_gradient(gradient.into(), ||
+                    {
+                        values.value_clone()
+                    });
+
+                    let softmaxed_values = {
+                        // softmax
+                        let mut values = values.value_clone();
+                        values.exp();
+                        let s = values.sum();
+
+                        values /= s;
+
+                        values
+                    };
+
+                    let d = gradient * (softmaxed_values - targets);
+                    values.derivatives(d.into());
                 }
             },
             LayerOps::Diff => (),
@@ -800,6 +837,7 @@ impl<T> DiffWrapper<T>
 where
     T: DiffBounds,
     <T as TryInto<LayerInnerType>>::Error: Debug,
+    <T as TryInto<f32>>::Error: Debug,
     for<'a> T: Mul<&'a T, Output=T> + Add<f32, Output=T> + Neg<Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
     for<'a> GradientType: Mul<&'a T, Output=GradientType>,
@@ -853,7 +891,7 @@ where
         (*RefCell::borrow(self.0.as_ref().unwrap())).value.clone().unwrap()
     }
 
-    fn value_take(&mut self) -> T
+    pub fn value_take(&mut self) -> T
     {
         (*RefCell::borrow_mut(self.0.as_mut().unwrap())).value.take().unwrap()
     }
@@ -943,18 +981,18 @@ impl<T> DiffWrapper<T>
 }
 
 #[derive(Debug)]
-pub struct SoftmaxedLayer(pub LayerType);
+pub struct Softmaxer;
 
-impl SoftmaxedLayer
+impl Softmaxer
 {
-    #[allow(dead_code)]
-    pub fn new(mut layer: LayerType) -> Self
+    pub fn softmax_temperature(layer: &mut LayerInnerType, temperature: f32) 
     {
-        Self::softmax(&mut layer);
-        Self(layer)
+        *layer /= temperature;
+
+        Self::softmax(layer)
     }
 
-    pub fn softmax(layer: &mut LayerType) 
+    pub fn softmax(layer: &mut LayerInnerType) 
     {
         layer.exp();
         let s = layer.sum();
@@ -962,28 +1000,8 @@ impl SoftmaxedLayer
         *layer /= s;
     }
 
-    #[allow(dead_code)]
-    pub fn from_raw(layer: LayerType) -> Self
+    pub fn pick_weighed_associated(values: &LayerInnerType) -> usize
     {
-        Self(layer)
-    }
-
-    #[allow(dead_code)]
-    pub fn new_empty(size: usize) -> Self
-    {
-        Self(LayerType::new(size, 1))
-    }
-
-    #[allow(dead_code)]
-    pub fn pick_weighed(&self, temperature: f32) -> usize
-    {
-        Self::pick_weighed_associated(&self.0.value(), temperature)
-    }
-
-    pub fn pick_weighed_associated(values: &LayerInnerType, temperature: f32) -> usize
-    {
-        let values = values / temperature;
-
         Self::pick_weighed_inner(values.iter())
     }
 
@@ -1220,6 +1238,14 @@ impl iter::Sum for ScalarType
     }
 }
 
+impl AddAssign for ScalarType
+{
+    fn add_assign(&mut self, rhs: Self)
+    {
+        *self = &*self + rhs;
+    }
+}
+
 pub type LayerType = DiffWrapper<LayerInnerType>;
 
 op_impl!{LayerType, LayerType, LayerType, Add, add}
@@ -1273,6 +1299,22 @@ impl LayerType
     {
         let value = MatrixWrapper::from_raw(values, previous_size, this_size);
         Self::new_inner(value, LayerOps::None, false)
+    }
+
+    pub fn softmax_cross_entropy(self, targets: LayerInnerType) -> ScalarType
+    {
+        let is_lhs_gradient = self.is_gradient();
+
+        let value = self.value_clone().softmax_cross_entropy(&targets);
+
+        ScalarType::new_inner(
+            value,
+            LayerOps::SoftmaxCrossEntropy{
+                values: self,
+                targets
+            },
+            is_lhs_gradient
+        )
     }
 
     pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
@@ -1349,9 +1391,9 @@ impl LayerType
         self.value().as_vec()
     }
 
-    pub fn pick_weighed(&self, temperature: f32) -> usize
+    pub fn pick_weighed(&self) -> usize
     {
-        self.value().pick_weighed(temperature)
+        self.value().pick_weighed()
     }
 
     pub fn highest_index(&self) -> usize
@@ -1377,6 +1419,12 @@ mod tests
             "correct: {}, calculated: {}",
             correct, calculated
         );
+    }
+
+    fn compare_tensor(correct: LayerInnerType, calculated: LayerInnerType)
+    {
+        correct.as_vec().into_iter().zip(calculated.as_vec().into_iter())
+            .for_each(|(correct, calculated)| compare_single(correct, calculated));
     }
 
     #[allow(dead_code)]
@@ -1422,12 +1470,6 @@ mod tests
         };
 
         let orig = vals(&mut a, &mut b);
-
-        let compare_tensor = |correct: LayerInnerType, calculated: LayerInnerType|
-        {
-            correct.as_vec().into_iter().zip(calculated.as_vec().into_iter())
-                .for_each(|(correct, calculated)| compare_single(correct, calculated));
-        };
 
         let epsilon: f32 = 0.009;
 
@@ -1614,6 +1656,12 @@ mod tests
     }
 
     #[test]
+    fn scalar_minus_tensor_stuff()
+    {
+        check_tensor(|a, b| ScalarType::new(2.0) - (a.sum() - b))
+    }
+
+    #[test]
     fn exponential()
     {
         check_tensor(|a, b|
@@ -1696,5 +1744,33 @@ mod tests
     fn matrix_multiplication()
     {
         check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmul(b) + b.sum())
+    }
+
+    fn create_targets() -> LayerInnerType
+    {
+        let m = random_tensor(LAYER_PREV, LAYER_CURR).value_take();
+
+        let pos = fastrand::usize(0..m.total_len());
+        one_hot(m, pos, 1.0, 0.0)
+    }
+
+    #[test]
+    fn softmax_cross_entropy()
+    {
+        let targets = create_targets();
+        check_tensor(|a, b|
+        {
+            b + a.clone_gradientable().softmax_cross_entropy(targets.clone())
+        })
+    }
+
+    #[test]
+    fn softmax_cross_entropy_complicated()
+    {
+        let targets = create_targets();
+        check_tensor(|a, b|
+        {
+            a + (a + b + ScalarType::new(2.0)).softmax_cross_entropy(targets.clone())
+        })
     }
 }

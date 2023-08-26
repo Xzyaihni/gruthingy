@@ -8,7 +8,7 @@ use std::{
 use serde::{Serialize, Deserialize};
 
 use crate::neural_network::{
-    SoftmaxedLayer,
+    Softmaxer,
     AFType,
     LayerType,
     ScalarType,
@@ -19,57 +19,10 @@ use crate::neural_network::{
 };
 
 
-#[derive(Debug)]
-pub struct GRUOutput
+pub struct GRUOutput<H, O>
 {
-    pub hidden: LayerType,
-    pub output: LayerType
-}
-
-pub struct GRUOutputLayer(pub Vec<GRUOutput>);
-
-impl GRUOutputLayer
-{
-    pub fn with_capacity(capacity: usize) -> Self
-    {
-        Self(Vec::with_capacity(capacity))
-    }
-
-    pub fn push(&mut self, value: GRUOutput)
-    {
-        self.0.push(value);
-    }
-
-    pub fn last_output_ref(&self) -> &LayerType
-    {
-        &self.0.iter().rev().next().unwrap().output
-    }
-
-    pub fn last_output(self) -> LayerType
-    {
-        self.0.into_iter().rev().next().unwrap().output
-    }
-
-    pub fn hiddens(self) -> Vec<LayerType>
-    {
-        self.0.into_iter().map(|output|
-        {
-            let GRUOutput{
-                hidden,
-                ..
-            } = output;
-
-            hidden
-        }).collect()
-    }
-
-    pub fn hiddens_ref(&self) -> Vec<&LayerType>
-    {
-        self.0.iter().map(|output|
-        {
-            &output.hidden
-        }).collect()
-    }
+    pub hidden: H,
+    pub output: O
 }
 
 #[derive(Debug)]
@@ -215,14 +168,11 @@ impl GRULayer
         self.output_weights.clear();
     }
 
-    pub fn feedforward_single<const LAST_LAYER: bool, FO>(
+    fn feedforward_single_untrans(
         &mut self,
         previous_hidden: Option<&LayerType>,
-        input: &LayerType,
-        output_activation: FO
-    ) -> GRUOutput
-    where
-        FO: FnOnce(&mut LayerType)
+        input: &LayerType
+    ) -> GRUOutput<LayerType, LayerType>
     {
         let mut update_gate = self.input_update_weights.matmul(input) + &self.update_biases;
 
@@ -265,12 +215,50 @@ impl GRULayer
 
         let output_untrans = self.output_weights.matmul(&hidden);
 
-        let mut output_gate = output_untrans.clone_gradientable();
-        output_activation(&mut output_gate);
+        GRUOutput{
+            hidden,
+            output: output_untrans
+        }
+    }
+
+    pub fn feedforward_single(
+        &mut self,
+        previous_hidden: Option<&LayerType>,
+        input: &LayerType
+    ) -> GRUOutput<LayerType, LayerType>
+    {
+        let mut output = self.feedforward_single_untrans(previous_hidden, input);
+
+        match LAYER_ACTIVATION
+        {
+            AFType::LeakyRelu =>
+            {
+                output.output.leaky_relu();
+            },
+            AFType::Tanh =>
+            {
+                output.output.tanh();
+            }
+        }
+
+        output
+    }
+
+    pub fn feedforward_single_last(
+        &mut self,
+        previous_hidden: Option<&LayerType>,
+        input: &LayerType,
+        targets: LayerInnerType
+    ) -> GRUOutput<LayerType, ScalarType>
+    {
+        let GRUOutput{
+            hidden,
+            output
+        } = self.feedforward_single_untrans(previous_hidden, input);
 
         GRUOutput{
             hidden,
-            output: output_gate
+            output: output.softmax_cross_entropy(targets)
         }
     }
 }
@@ -317,10 +305,10 @@ impl GRU
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
         let amount = input.len();
 
-        let f_output = self.feedforward(input.into_iter());
+        let f_output = self.predict(input.into_iter());
 
         Self::correct_guesses(
-            f_output.into_iter().map(|output| output.last_output()),
+            f_output.into_iter(),
             output.into_iter()
         ) as f32 / amount as f32
     }
@@ -330,7 +318,7 @@ impl GRU
         target: impl Iterator<Item=T>
     ) -> usize
     where
-        P: Borrow<LayerType>,
+        P: Borrow<LayerInnerType>,
         T: Borrow<LayerType>
     {
         predicted.zip(target).map(|(predicted, target)|
@@ -346,164 +334,185 @@ impl GRU
         }).sum()
     }
 
-
-    pub fn loss<L>(
+    fn feedforward_single_inner<F, T>(
         &mut self,
-        input: impl Iterator<Item=(L, L)> + ExactSizeIterator
-    ) -> ScalarType
-    where
-        L: Borrow<LayerType>
-    {
-        let amount = input.len();
-
-        self.loss_unscaled(input) / ScalarType::new(amount as f32)
-    }
-
-    #[allow(dead_code)]
-    pub fn loss_unscaled<L>(
-        &mut self,
-        input: impl Iterator<Item=(L, L)>
-    ) -> ScalarType
-    where
-        L: Borrow<LayerType>
-    {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-
-        let f_output = self.feedforward(input.into_iter());
-
-        Self::cross_entropy(
-            f_output.into_iter().map(|output| output.last_output()),
-            output.into_iter().map(|x| x.borrow().clone_gradientable())
-        )
-    }
-
-    fn cross_entropy(
-        predicted: impl Iterator<Item=LayerType>,
-        target: impl Iterator<Item=LayerType>
-    ) -> ScalarType
-    {
-        let s: ScalarType = predicted.zip(target).map(|(mut predicted, target)|
-        {
-            predicted.ln();
-
-            predicted.dot(target)
-        }).sum();
-
-        -s
-    }
-
-    #[inline(always)]
-    pub fn feedforward_single<B>(
-        &mut self,
-        previous_hiddens: Option<&[B]>,
+        last_f: F,
+        previous_hiddens: Option<Vec<LayerType>>,
         input: &LayerType
-    ) -> GRUOutputLayer
+    ) -> GRUOutput<Vec<LayerType>, T>
     where
-        B: Borrow<LayerType>
+        F: FnOnce(&mut GRULayer, Option<&LayerType>, &LayerType) -> GRUOutput<LayerType, T>
     {
-        if let Some(previous_hiddens) = previous_hiddens
-        {
-            debug_assert!(previous_hiddens.len() == LAYERS_AMOUNT);
-        }
+        let mut output: Option<T> = None;
+        let mut last_output: Option<LayerType> = None;
 
-        let mut output: GRUOutputLayer = GRUOutputLayer::with_capacity(LAYERS_AMOUNT);
+        let mut hiddens = Vec::with_capacity(LAYERS_AMOUNT);
 
         for l_i in 0..LAYERS_AMOUNT
         {
-            let input = if l_i == 0
-            {
-                input
-            } else
-            {
-                let index = l_i - 1;
-
-                debug_assert!(index < output.0.len());
-                unsafe{ &output.0.get_unchecked(index).output }
-            };
+            let input = last_output.as_ref().unwrap_or(input);
 
             debug_assert!(l_i < self.layers.len());
             let layer = unsafe{ self.layers.get_unchecked_mut(l_i) };
 
             let previous_hidden = unsafe{
-                previous_hiddens.map(|ph| ph.get_unchecked(l_i).borrow())
+                previous_hiddens.as_ref().map(|previous_hidden|
+                {
+                    previous_hidden.get_unchecked(l_i)
+                })
             };
 
-            let this_output = if l_i == (LAYERS_AMOUNT - 1)
+            if l_i == (LAYERS_AMOUNT - 1)
             {
                 // last layer
-                layer.feedforward_single::<true, _>(
-                    previous_hidden,
-                    input,
-                    SoftmaxedLayer::softmax
-                )
+                let GRUOutput{
+                    hidden,
+                    output: this_output
+                } = last_f(layer, previous_hidden, input);
+
+                output = Some(this_output);
+
+                hiddens.push(hidden);
+
+                // i like how rust cant figure out that the last index is the last iteration
+                // without this
+                break;
             } else
             {
-                match LAYER_ACTIVATION
-                {
-                    AFType::LeakyRelu =>
-                    {
-                        layer.feedforward_single::<false, _>(
-                            previous_hidden,
-                            input,
-                            LayerType::leaky_relu
-                        )
-                    },
-                    AFType::Tanh =>
-                    {
-                        layer.feedforward_single::<false, _>(
-                            previous_hidden,
-                            input,
-                            LayerType::tanh
-                        )
-                    }
-                }
-            };
+                let GRUOutput{
+                    hidden,
+                    output: this_output
+                } = layer.feedforward_single(
+                    previous_hidden,
+                    input
+                );
 
-            output.push(this_output);
+                last_output = Some(this_output);
+
+                hiddens.push(hidden);
+            }
         }
 
-        output
+        GRUOutput{
+            hidden: hiddens,
+            output: output.unwrap()
+        }
+    }
+
+    pub fn feedforward_single(
+        &mut self,
+        previous_hiddens: Option<Vec<LayerType>>,
+        input: &LayerType,
+        targets: LayerInnerType
+    ) -> GRUOutput<Vec<LayerType>, ScalarType>
+    {
+        self.feedforward_single_inner(|layer, previous_hidden, input|
+        {
+            layer.feedforward_single_last(
+                previous_hidden,
+                input,
+                targets
+            )
+        }, previous_hiddens, input)
+    }
+
+    pub fn predict_single(
+        &mut self,
+        previous_hiddens: Option<Vec<LayerType>>,
+        input: &LayerType,
+        temperature: f32
+    ) -> GRUOutput<Vec<LayerType>, LayerInnerType>
+    {
+        self.feedforward_single_inner(|layer, previous_hidden, input|
+        {
+            let GRUOutput{
+                hidden,
+                mut output
+            } = layer.feedforward_single(
+                previous_hidden,
+                input
+            );
+
+            let mut output = output.value_take();
+
+            Softmaxer::softmax_temperature(&mut output, temperature);
+
+            GRUOutput{
+                hidden,
+                output
+            }
+        }, previous_hiddens, input)
     }
 
     #[allow(dead_code)]
-    pub fn feedforward<L>(
+    pub fn predict(
         &mut self,
-        input: impl Iterator<Item=L> + ExactSizeIterator
-    ) -> Vec<GRUOutputLayer>
-    where
-        L: Borrow<LayerType>
+        input: impl Iterator<Item=LayerType> + ExactSizeIterator
+    ) -> Vec<LayerInnerType>
     {
-        let mut outputs: Vec<GRUOutputLayer> = Vec::with_capacity(input.len());
+        let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
+        let mut previous_hiddens: Option<Vec<LayerType>> = None;
 
-        for (t, this_input) in input.enumerate()
+        for this_input in input
         {
-            let this_input = this_input.borrow();
+            let GRUOutput{
+                hidden,
+                output: this_output
+            } = self.predict_single(
+                previous_hiddens.take(),
+                &this_input,
+                1.0
+            );
 
-            let output = if t == 0
-            {
-                self.feedforward_single::<&LayerType>(None, this_input)
-            } else
-            {
-                let previous_hidden = unsafe{ &outputs.get_unchecked(t - 1).hiddens_ref() };
-                self.feedforward_single(Some(previous_hidden), this_input)
-            };
-
-            outputs.push(output);
+            outputs.push(this_output);
+            previous_hiddens = Some(hidden);
         }
 
         outputs
     }
 
-    pub fn gradients<L>(
+    #[allow(dead_code)]
+    pub fn feedforward(
         &mut self,
-        input: impl Iterator<Item=(L, L)> + ExactSizeIterator
+        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
+    ) -> ScalarType
+    {
+        let mut output: Option<ScalarType> = None;
+        let mut previous_hiddens: Option<Vec<LayerType>> = None;
+
+        for (this_input, mut this_output) in input
+        {
+            let GRUOutput{
+                hidden,
+                output: this_output
+            } = self.feedforward_single(
+                previous_hiddens.take(),
+                &this_input,
+                this_output.value_take()
+            );
+
+            if let Some(output) = output.as_mut()
+            {
+                *output += this_output;
+            } else
+            {
+                output = Some(this_output)
+            }
+
+            previous_hiddens = Some(hidden);
+        }
+
+        output.unwrap()
+    }
+
+    pub fn gradients(
+        &mut self,
+        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
     ) -> (f32, GRUFullGradients)
-    where
-        L: Borrow<LayerType>
     {
         self.clear();
 
-        let loss = self.loss(input);
+        let loss = self.feedforward(input);
 
         let loss_value = loss.value_clone();
 
@@ -545,8 +554,8 @@ impl GRU
 pub mod tests
 {
     use super::*;
-    use crate::neural_network::LayerType;
 
+    #[allow(dead_code)]
     pub fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
@@ -581,37 +590,5 @@ pub mod tests
     pub fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
     {
         (a - b).abs() < epsilon
-    }
-
-    #[test]
-    fn loss_correct()
-    {
-        let c = |v: Vec<f32>|
-        {
-            let len = v.len();
-            LayerType::from_raw(v, len, 1)
-        };
-
-        let predicted = vec![
-            c(vec![0.25, 0.25, 0.25, 0.25]),
-            c(vec![0.01, 0.01, 0.01, 0.96])
-        ];
-
-        let target = vec![
-            c(vec![0.0, 0.0, 0.0, 1.0]),
-            c(vec![0.0, 0.0, 0.0, 1.0])
-        ];
-
-        let amount = target.len() as f32;
-
-        let loss = GRU::cross_entropy(
-            predicted.into_iter(),
-            target.into_iter()
-        ).value_clone() / amount;
-
-        assert!(
-            close_enough(loss, 0.71355817782, 0.000001),
-            "loss: {loss}"
-        );
     }
 }

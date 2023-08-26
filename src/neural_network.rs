@@ -26,7 +26,7 @@ pub use containers::{
     LayerType,
     ScalarType,
     LayerInnerType,
-    SoftmaxedLayer,
+    Softmaxer,
     CloneableWrapper
 };
 
@@ -272,17 +272,20 @@ impl<'a> Predictor<'a>
             debug_assert!(i < self.words.len());
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
-            let outputs = network.feedforward_single(
-                Some(&previous_hiddens),
-                this_input
+            let GRUOutput{
+                hidden,
+                output
+            } = network.predict_single(
+                Some(previous_hiddens),
+                this_input,
+                self.temperature
             );
 
-            let output = outputs.last_output_ref().clone_gradientable();
-            previous_hiddens = outputs.hiddens();
+            previous_hiddens = hidden;
 
             if i >= (input_amount - 1)
             {
-                let word = output.pick_weighed(self.temperature);
+                let word = output.pick_weighed();
                 let word = VectorWord::from_raw(word);
 
                 self.words.push(self.dictionary.word_to_layer(word));
@@ -543,9 +546,9 @@ impl NeuralNetwork
 
         if calculate_loss
         {
-            let loss = self.network.loss(input_outputs);
+            let loss = self.network.feedforward(input_outputs);
 
-            Self::print_loss(true, loss.value_clone());
+            Self::print_loss(true, loss.value_clone() / inputs.len() as f32);
         }
     }
 
@@ -647,12 +650,16 @@ impl NeuralNetwork
 
                 let values = InputOutput::values_slice(
                     &inputs,
-                    |word| self.dictionary.word_to_layer(*word),
+                    |word| CloneableWrapper(self.dictionary.word_to_layer(*word)),
                     batch_start,
                     steps_num
                 );
 
-                let (loss, mut gradients) = self.network.gradients(values.iter());
+                let (loss, mut gradients) = {
+                    let values = values.iter().map(|(a, b)| (a.clone().0, b.clone().0));
+
+                    self.network.gradients(values)
+                };
 
                 batch_loss += loss / batch_size as f32;
                 gradients /= batch_size as f32;
@@ -668,7 +675,7 @@ impl NeuralNetwork
                 acc
             }).expect("batch size must not be 0");
 
-            Self::print_loss(false, batch_loss);
+            Self::print_loss(false, batch_loss / steps_num as f32);
 
             self.apply_gradients(gradients);
         }
@@ -822,11 +829,12 @@ mod tests
     #[test]
     fn softmax()
     {
-        let test_layer = LayerType::from_raw([1.0, 2.0, 8.0], 3, 1);
+        let mut test_layer = LayerType::from_raw([1.0, 2.0, 8.0], 3, 1).value_clone();
+        Softmaxer::softmax(&mut test_layer);
 
-        let softmaxed = SoftmaxedLayer::new(test_layer);
+        let softmaxed = test_layer;
 
-        softmaxed.0.as_vec().into_iter().zip([0.001, 0.002, 0.997].iter())
+        softmaxed.as_vec().into_iter().zip([0.001, 0.002, 0.997].iter())
             .for_each(|(softmaxed, correct)|
             {
                 assert!(

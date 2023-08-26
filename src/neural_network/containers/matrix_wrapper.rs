@@ -9,7 +9,7 @@ use serde::{Serialize, Deserialize};
 
 use nalgebra::DMatrix;
 
-use super::{SoftmaxedLayer, LEAKY_SLOPE, leaky_relu_d};
+use super::{Softmaxer, LEAKY_SLOPE, leaky_relu_d};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
@@ -299,6 +299,18 @@ impl MatrixWrapper
         self.0.fill(value);
     }
 
+    pub fn softmax_cross_entropy(mut self, targets: &Self) -> f32
+    {
+        Softmaxer::softmax(&mut self);
+
+        // assumes that targets r either 0 or 1
+        self.ln();
+
+        let s = self.dot(targets);
+
+        -s
+    }
+
     pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
     {
         Self(&self.0 * &rhs.borrow().0)
@@ -392,14 +404,14 @@ impl MatrixWrapper
         self.0.as_slice().iter()
     }
 
-    pub fn pick_weighed(&self, temperature: f32) -> usize
+    pub fn pick_weighed(&self) -> usize
     {
-        SoftmaxedLayer::pick_weighed_associated(self, temperature)
+        Softmaxer::pick_weighed_associated(self)
     }
 
     pub fn highest_index(&self) -> usize
     {
-        SoftmaxedLayer::highest_index(self.iter())
+        Softmaxer::highest_index(self.iter())
     }
 }
 

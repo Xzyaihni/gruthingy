@@ -13,7 +13,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::{SoftmaxedLayer, LayerType};
+use super::neural_network::{LayerInnerType, LayerType};
 
 
 #[allow(dead_code)]
@@ -130,19 +130,16 @@ pub trait NetworkDictionary
         LayerType::from_raw(layer, self.words_amount(), 1)
     }
 
-    fn layer_to_word(&self, layer: &SoftmaxedLayer, temperature: f32) -> VectorWord
+    fn layer_to_word(&self, layer: LayerInnerType) -> VectorWord
     {
-        let index = layer.pick_weighed(temperature);
+        let index = layer.pick_weighed();
 
         VectorWord::new(index)
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ByteDictionary
-{
-
-}
+pub struct ByteDictionary;
 
 impl ByteDictionary
 {
@@ -571,7 +568,7 @@ mod tests
         let decoded_bytes = decoded_bytes.into_iter().flat_map(|word|
         {
             let layer = dictionary.word_to_layer(word);
-            let word = dictionary.layer_to_word(&SoftmaxedLayer::from_raw(layer), 1.0);
+            let word = dictionary.layer_to_word(layer.value_clone());
 
             dictionary.word_to_bytes(word).into_vec().into_iter()
         }).collect::<Vec<u8>>();
