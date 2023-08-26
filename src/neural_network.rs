@@ -706,6 +706,8 @@ impl NeuralNetwork
     {
         let word_vectorizer = WordVectorizer::new(&mut self.dictionary, start);
 
+        self.network.disable_gradients();
+
         let predictor = {
             let words = word_vectorizer.collect::<Vec<_>>();
 
@@ -717,7 +719,11 @@ impl NeuralNetwork
             Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
-        predictor.predict_bytes(&mut self.network)
+        let predicted = predictor.predict_bytes(&mut self.network);
+
+        self.network.enable_gradients();
+
+        predicted
     }
 }
 
