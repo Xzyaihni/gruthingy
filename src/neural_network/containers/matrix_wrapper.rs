@@ -299,16 +299,17 @@ impl MatrixWrapper
         self.0.fill(value);
     }
 
-    pub fn softmax_cross_entropy(mut self, targets: &Self) -> f32
+    pub fn softmax_cross_entropy(mut self, targets: &Self) -> (Self, f32)
     {
         Softmaxer::softmax(&mut self);
+        let softmaxed = self.clone();
 
         // assumes that targets r either 0 or 1
         self.ln();
 
         let s = self.dot(targets);
 
-        -s
+        (softmaxed, -s)
     }
 
     pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self

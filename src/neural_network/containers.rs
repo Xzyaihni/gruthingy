@@ -1,5 +1,6 @@
 use std::{
     f32,
+    mem,
     iter,
     rc::Rc,
     fmt::Debug,
@@ -171,7 +172,11 @@ enum LayerOps
     Mul{lhs: LayerChild, rhs: LayerChild},
     Div{lhs: LayerChild, rhs: LayerChild},
     Matmul{lhs: LayerType, rhs: LayerType},
-    SoftmaxCrossEntropy{values: LayerType, targets: LayerInnerType}
+    SoftmaxCrossEntropy{
+        values: LayerType,
+        softmaxed_values: LayerInnerType,
+        targets: LayerInnerType
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,9 +582,9 @@ where
 
         let gradient = self.gradient.clone().unwrap();
 
-        match &mut self.inner
+        match mem::replace(&mut self.inner, LayerOps::None)
         {
-            LayerOps::Add{lhs, rhs} =>
+            LayerOps::Add{mut lhs, mut rhs} =>
             {
                 if lhs.is_gradient()
                 {
@@ -591,7 +596,7 @@ where
                     rhs.derivatives(gradient.into());
                 }
             },
-            LayerOps::Sub{lhs, rhs} =>
+            LayerOps::Sub{mut lhs, mut rhs} =>
             {
                 if lhs.is_gradient()
                 {
@@ -603,7 +608,7 @@ where
                     rhs.derivatives((-gradient).into());
                 }
             },
-            LayerOps::Mul{lhs, rhs} =>
+            LayerOps::Mul{mut lhs, mut rhs} =>
             {
                 let rhs_cg = rhs.is_gradient();
                 let lhs_value = rhs_cg.then(|| lhs.value_clone());
@@ -623,7 +628,7 @@ where
                     rhs.derivatives(d.into());
                 }
             },
-            LayerOps::Div{lhs, rhs} =>
+            LayerOps::Div{mut lhs, mut rhs} =>
             {
                 let r_recip = rhs.value_clone().reciprocal();
                 
@@ -652,7 +657,7 @@ where
                     rhs.derivatives(d);
                 }
             },
-            LayerOps::Exp(x) =>
+            LayerOps::Exp(mut x) =>
             {
                 if x.is_gradient()
                 {
@@ -661,7 +666,7 @@ where
                     x.derivatives((gradient * d).into());
                 }
             },
-            LayerOps::Sigmoid(x) =>
+            LayerOps::Sigmoid(mut x) =>
             {
                 if x.is_gradient()
                 {
@@ -673,7 +678,7 @@ where
                     x.derivatives((gradient * &d).into());
                 }
             },
-            LayerOps::Tanh(x) =>
+            LayerOps::Tanh(mut x) =>
             {
                 if x.is_gradient()
                 {
@@ -685,7 +690,7 @@ where
                     x.derivatives((gradient * &d).into());
                 }
             },
-            LayerOps::LeakyRelu(x) =>
+            LayerOps::LeakyRelu(mut x) =>
             {
                 if x.is_gradient()
                 {
@@ -694,7 +699,7 @@ where
                     x.derivatives(d * &gradient);
                 }
             },
-            LayerOps::Ln(x) =>
+            LayerOps::Ln(mut x) =>
             {
                 if x.is_gradient()
                 {
@@ -703,14 +708,14 @@ where
                     x.derivatives(d * &gradient);
                 }
             },
-            LayerOps::Neg(x) =>
+            LayerOps::Neg(mut x) =>
             {
                 if x.is_gradient()
                 {
                     x.derivatives((-gradient).into());
                 }
             },
-            LayerOps::Matmul{lhs, rhs} =>
+            LayerOps::Matmul{mut lhs, mut rhs} =>
             {
                 let gradient: LayerInnerType = gradient.try_into()
                     .expect("matmul must be a tensor");
@@ -732,7 +737,7 @@ where
                     rhs.derivatives(rhs_d.into());
                 }
             },
-            LayerOps::SumTensor(x) =>
+            LayerOps::SumTensor(mut x) =>
             {
                 if x.is_gradient()
                 {
@@ -744,7 +749,7 @@ where
                     x.derivatives(d);
                 }
             },
-            LayerOps::Dot{lhs, rhs} =>
+            LayerOps::Dot{mut lhs, mut rhs} =>
             {
                 let gradient = LayerInnerType::from_gradient(gradient.into(), ||
                 {
@@ -771,7 +776,7 @@ where
                     rhs.derivatives(d.into());
                 }
             },
-            LayerOps::SoftmaxCrossEntropy{values, targets} =>
+            LayerOps::SoftmaxCrossEntropy{mut values, softmaxed_values, targets} =>
             {
                 if values.is_gradient()
                 {
@@ -779,17 +784,6 @@ where
                     {
                         values.value_clone()
                     });
-
-                    let softmaxed_values = {
-                        // softmax
-                        let mut values = values.value_clone();
-                        values.exp();
-                        let s = values.sum();
-
-                        values /= s;
-
-                        values
-                    };
 
                     let d = gradient * (softmaxed_values - targets);
                     values.derivatives(d.into());
@@ -1333,12 +1327,13 @@ impl LayerType
     {
         let is_lhs_gradient = self.is_gradient();
 
-        let value = self.value_clone().softmax_cross_entropy(&targets);
+        let (softmaxed, value) = self.value_clone().softmax_cross_entropy(&targets);
 
         let ops = if is_lhs_gradient
         {
             LayerOps::SoftmaxCrossEntropy{
                 values: self,
+                softmaxed_values: softmaxed,
                 targets
             }
         } else
