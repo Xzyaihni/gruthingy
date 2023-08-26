@@ -917,6 +917,16 @@ impl<T> DiffWrapper<T>
         Self(Some(Rc::new(RefCell::new(diff))))
     }
 
+    pub fn enable_gradients(&mut self)
+    {
+        self.this_mut().calculate_gradient = true;
+    }
+
+    pub fn disable_gradients(&mut self)
+    {
+        self.this_mut().calculate_gradient = false;
+    }
+
     // i love dropping children
     fn drop_child(&mut self)
     {
@@ -1176,13 +1186,23 @@ macro_rules! inner_from_value
             let is_lhs_gradient = $lhs.is_gradient();
             let is_rhs_gradient = $rhs.is_gradient();
 
-            $out::new_inner(
-                $value,
+            let is_gradient = is_lhs_gradient || is_rhs_gradient;
+
+            let ops = if is_gradient
+            {
                 LayerOps::$op{
                     lhs: $lhs.into_child(is_lhs_gradient),
                     rhs: $rhs.into_child(is_rhs_gradient)
-                },
-                is_lhs_gradient || is_rhs_gradient
+                }
+            } else
+            {
+                LayerOps::None
+            };
+
+            $out::new_inner(
+                $value,
+                ops,
+                is_gradient
             )
         }
     }
@@ -1195,9 +1215,17 @@ macro_rules! inner_single_from_value
         {
             let is_gradient = $this.is_gradient();
 
+            let ops = if is_gradient
+            {
+                LayerOps::$op($this.into_child(is_gradient))
+            } else
+            {
+                LayerOps::None
+            };
+
             $out::new_inner(
                 $value,
-                LayerOps::$op($this.into_child(is_gradient)),
+                ops,
                 is_gradient
             )
         }
@@ -1307,12 +1335,20 @@ impl LayerType
 
         let value = self.value_clone().softmax_cross_entropy(&targets);
 
-        ScalarType::new_inner(
-            value,
+        let ops = if is_lhs_gradient
+        {
             LayerOps::SoftmaxCrossEntropy{
                 values: self,
                 targets
-            },
+            }
+        } else
+        {
+            LayerOps::None
+        };
+
+        ScalarType::new_inner(
+            value,
+            ops,
             is_lhs_gradient
         )
     }

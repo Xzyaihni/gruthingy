@@ -180,8 +180,11 @@ fn train_new(mut args: impl Iterator<Item=String>)
         let dictionary_path = args.next()
             .unwrap_or_else(|| complain("give path to a file with text for a dictionary"));
 
-        let dictionary_file = File::open(dictionary_path)
-            .unwrap_or_else(|err| complain(&format!("give a valid file plz ({err})")));
+        let dictionary_file = File::open(&dictionary_path)
+            .unwrap_or_else(|err|
+            {
+                complain(&format!("give a valid file plz, cant open {dictionary_path} ({err})"))
+            });
 
         DictionaryType::build(dictionary_file)
     } else

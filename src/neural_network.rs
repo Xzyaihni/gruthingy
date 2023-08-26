@@ -35,8 +35,8 @@ mod gru;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 256;
-pub const LAYERS_AMOUNT: usize = 4;
+pub const HIDDEN_AMOUNT: usize = 32;
+pub const LAYERS_AMOUNT: usize = 2;
 
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
@@ -537,6 +537,8 @@ impl NeuralNetwork
             })
         ).map(|(a, b)| (a.0, b.0));
 
+        self.network.disable_gradients();
+
         if calculate_accuracy
         {
             let accuracy = self.network.accuracy(input_outputs.clone());
@@ -550,6 +552,8 @@ impl NeuralNetwork
 
             Self::print_loss(true, loss.value_clone() / inputs.len() as f32);
         }
+
+        self.network.enable_gradients();
     }
 
     fn print_loss(testing: bool, loss: f32)

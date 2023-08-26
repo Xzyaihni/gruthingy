@@ -154,18 +154,33 @@ impl GRULayer
         }
     }
 
+    fn for_weights(&mut self, mut f: impl FnMut(&mut LayerType))
+    {
+		f(&mut self.input_update_weights);
+		f(&mut self.input_reset_weights);
+		f(&mut self.input_activation_weights);
+		f(&mut self.hidden_update_weights);
+		f(&mut self.hidden_reset_weights);
+		f(&mut self.hidden_activation_weights);
+		f(&mut self.update_biases);
+		f(&mut self.reset_biases);
+		f(&mut self.activation_biases);
+		f(&mut self.output_weights);
+    }
+
     pub fn clear(&mut self)
     {
-        self.input_update_weights.clear();
-        self.input_reset_weights.clear();
-        self.input_activation_weights.clear();
-        self.hidden_update_weights.clear();
-        self.hidden_reset_weights.clear();
-        self.hidden_activation_weights.clear();
-        self.update_biases.clear();
-        self.reset_biases.clear();
-        self.activation_biases.clear();
-        self.output_weights.clear();
+        self.for_weights(|v| v.clear());
+    }
+
+    pub fn enable_gradients(&mut self)
+    {
+        self.for_weights(|v| v.enable_gradients());
+    }
+
+    pub fn disable_gradients(&mut self)
+    {
+        self.for_weights(|v| v.disable_gradients());
     }
 
     fn feedforward_single_untrans(
@@ -283,6 +298,23 @@ impl GRU
     pub fn clear(&mut self)
     {
         self.layers.iter_mut().for_each(|layer| layer.clear());
+    }
+
+    // oh my god wut am i even doing at this point its so over
+    pub fn enable_gradients(&mut self)
+    {
+        self.layers.iter_mut().for_each(|layer|
+        {
+            layer.enable_gradients();
+        });
+    }
+
+    pub fn disable_gradients(&mut self)
+    {
+        self.layers.iter_mut().for_each(|layer|
+        {
+            layer.disable_gradients();
+        });
     }
 
     #[allow(dead_code)]
