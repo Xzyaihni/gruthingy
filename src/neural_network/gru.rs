@@ -19,10 +19,20 @@ use crate::neural_network::{
 };
 
 
+pub type GRUState<H> = Vec<H>;
+
 pub struct GRUOutput<H, O>
 {
     pub hidden: H,
     pub output: O
+}
+
+impl<H, O> GRUOutput<Vec<H>, O>
+{
+    pub fn into_state(self) -> GRUState<H>
+    {
+        self.hidden
+    }
 }
 
 #[derive(Debug)]

@@ -9,8 +9,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-#[allow(unused_imports)]
-use gru::{GRU, GRUGradients, GRUOutput, GRUFullGradients};
+use network_unit::*;
 
 #[allow(unused_imports)]
 use crate::word_vectorizer::{
@@ -30,6 +29,7 @@ pub use containers::{
     CloneableWrapper
 };
 
+mod network_unit;
 mod gru;
 
 pub mod containers;
@@ -260,38 +260,34 @@ impl<'a> Predictor<'a>
         }
     }
 
-    pub fn predict_bytes(mut self, network: &mut GRU) -> Box<[u8]>
+    pub fn predict_bytes(mut self, network: &mut NetworkUnit) -> Box<[u8]>
     {
         let input_amount = self.words.len();
 
-        let mut previous_hiddens = (0..LAYERS_AMOUNT).map(|_| LayerType::new(HIDDEN_AMOUNT, 1))
-            .collect::<Vec<_>>();
+        let mut previous_state: Option<_> = None;
 
         for i in 0..(input_amount + self.predict_amount)
         {
             debug_assert!(i < self.words.len());
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
-            let GRUOutput{
-                hidden,
-                output
-            } = network.predict_single(
-                Some(previous_hiddens),
+            let f_output = network.predict_single(
+                previous_state.take(),
                 this_input,
                 self.temperature
             );
 
-            previous_hiddens = hidden;
-
             if i >= (input_amount - 1)
             {
-                let word = output.pick_weighed();
+                let word = f_output.output.pick_weighed();
                 let word = VectorWord::from_raw(word);
 
                 self.words.push(self.dictionary.word_to_layer(word));
 
                 self.predicted.extend(self.dictionary.word_to_bytes(word).into_iter());
             }
+
+            previous_state = Some(f_output.into_state());
         }
 
         self.predicted.into_boxed_slice()
@@ -358,7 +354,7 @@ impl AdamHyperparams
 pub struct NeuralNetwork
 {
     dictionary: DictionaryType,
-    network: GRU,
+    network: NetworkUnit,
     gradients_info: Vec<GradientsInfo>,
     hyper: AdamHyperparams
 }
@@ -369,7 +365,7 @@ impl NeuralNetwork
     {
         let words_vector_size = dictionary.words_amount();
 
-        let network = GRU::new(words_vector_size);
+        let network = NetworkUnit::new(words_vector_size);
 
         let gradients_info = (0..LAYERS_AMOUNT).map(|_| GradientsInfo::new(words_vector_size))
             .collect::<Vec<_>>();
@@ -401,13 +397,13 @@ impl NeuralNetwork
         self.dictionary.words_amount()
     }
 
-    pub fn inner_network(&self) -> &GRU
+    pub fn inner_network(&self) -> &NetworkUnit
     {
         &self.network
     }
 
     // suckines
-    pub fn apply_gradients(&mut self, gradients: GRUFullGradients)
+    pub fn apply_gradients(&mut self, gradients: NetworkFullWeights)
     {
         let combined_iter = gradients.0.into_iter()
             .zip(self.network.layers.iter_mut()
@@ -416,7 +412,7 @@ impl NeuralNetwork
 
         combined_iter.for_each(|(gradients, (network_weights, gradients_info))|
         {
-            let GRUGradients{
+            let NetworkWeights{
                 input_update_gradients,
                 input_reset_gradients,
                 input_activation_gradients,
