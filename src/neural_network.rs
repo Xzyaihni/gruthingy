@@ -9,7 +9,8 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use network_unit::*;
+use network::{NewableLayer, NetworkOutput, Network};
+use network_unit::NetworkUnit;
 
 #[allow(unused_imports)]
 use crate::word_vectorizer::{
@@ -29,7 +30,11 @@ pub use containers::{
     CloneableWrapper
 };
 
+#[allow(unused_imports)]
+use gru::GRU;
+
 mod network_unit;
+mod network;
 mod gru;
 
 pub mod containers;
@@ -39,6 +44,8 @@ pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
+
+pub type CurrentNetworkUnit = GRU;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
@@ -58,80 +65,14 @@ pub struct GradientInfo
     v: LayerInnerType
 }
 
-impl GradientInfo
+impl NewableLayer for GradientInfo
 {
-    pub fn new(previous_size: usize, this_size: usize) -> Self
+    fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
             m: LayerInnerType::new(previous_size, this_size),
             v: LayerInnerType::new(previous_size, this_size)
         }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GradientsInfo
-{
-    pub input_update_gradients: GradientInfo,
-    pub input_reset_gradients: GradientInfo,
-    pub input_activation_gradients: GradientInfo,
-    pub hidden_update_gradients: GradientInfo,
-    pub hidden_reset_gradients: GradientInfo,
-    pub hidden_activation_gradients: GradientInfo,
-    pub update_bias_gradients: GradientInfo,
-    pub reset_bias_gradients: GradientInfo,
-    pub activation_bias_gradients: GradientInfo,
-    pub output_gradients: GradientInfo
-}
-
-impl GradientsInfo
-{
-    pub fn new(word_vector_size: usize) -> Self
-    {
-        Self{
-        	input_update_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size),
-        	input_reset_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size),
-        	input_activation_gradients: GradientInfo::new(HIDDEN_AMOUNT, word_vector_size),
-        	hidden_update_gradients: GradientInfo::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        	hidden_reset_gradients: GradientInfo::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        	hidden_activation_gradients: GradientInfo::new(HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-            update_bias_gradients: GradientInfo::new(HIDDEN_AMOUNT, 1),
-            reset_bias_gradients: GradientInfo::new(HIDDEN_AMOUNT, 1),
-            activation_bias_gradients: GradientInfo::new(HIDDEN_AMOUNT, 1),
-            output_gradients: GradientInfo::new(word_vector_size, HIDDEN_AMOUNT)
-        }
-    }
-
-    fn gradient_to_change(
-        gradient_info: &mut GradientInfo,
-        gradient: LayerInnerType,
-        hyper: &AdamHyperparams
-    ) -> LayerInnerType
-    {
-        let gradient = Self::gradient_clipped(gradient);
-
-        Self::gradient_to_change_no_clip(gradient_info, gradient, hyper)
-    }
-
-    fn gradient_to_change_no_clip(
-        gradient_info: &mut GradientInfo,
-        gradient: LayerInnerType,
-        hyper: &AdamHyperparams
-    ) -> LayerInnerType
-    {
-        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
-        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
-
-        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
-
-        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
-    }
-
-    fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
-    {
-        let gradient_clip = 1.0;
-
-        gradient.cap_magnitude(gradient_clip)
     }
 }
 
@@ -260,7 +201,7 @@ impl<'a> Predictor<'a>
         }
     }
 
-    pub fn predict_bytes(mut self, network: &mut NetworkUnit) -> Box<[u8]>
+    pub fn predict_bytes(mut self, network: &mut Network<CurrentNetworkUnit>) -> Box<[u8]>
     {
         let input_amount = self.words.len();
 
@@ -271,7 +212,10 @@ impl<'a> Predictor<'a>
             debug_assert!(i < self.words.len());
             let this_input = unsafe{ self.words.get_unchecked(i) };
 
-            let f_output = network.predict_single(
+            let NetworkOutput{
+                state,
+                output
+            } = network.predict_single(
                 previous_state.take(),
                 this_input,
                 self.temperature
@@ -279,7 +223,7 @@ impl<'a> Predictor<'a>
 
             if i >= (input_amount - 1)
             {
-                let word = f_output.output.pick_weighed();
+                let word = output.pick_weighed();
                 let word = VectorWord::from_raw(word);
 
                 self.words.push(self.dictionary.word_to_layer(word));
@@ -287,7 +231,7 @@ impl<'a> Predictor<'a>
                 self.predicted.extend(self.dictionary.word_to_bytes(word).into_iter());
             }
 
-            previous_state = Some(f_output.into_state());
+            previous_state = Some(state);
         }
 
         self.predicted.into_boxed_slice()
@@ -350,12 +294,15 @@ impl AdamHyperparams
     }
 }
 
+type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
+type GradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<GradientInfo>;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NeuralNetwork
 {
     dictionary: DictionaryType,
-    network: NetworkUnit,
-    gradients_info: Vec<GradientsInfo>,
+    network: Network<CurrentNetworkUnit>,
+    gradients_info: Vec<GradientsContainer>,
     hyper: AdamHyperparams
 }
 
@@ -365,10 +312,12 @@ impl NeuralNetwork
     {
         let words_vector_size = dictionary.words_amount();
 
-        let network = NetworkUnit::new(words_vector_size);
+        let network = Network::new(words_vector_size);
 
-        let gradients_info = (0..LAYERS_AMOUNT).map(|_| GradientsInfo::new(words_vector_size))
-            .collect::<Vec<_>>();
+        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
+        {
+            GradientsContainer::new_container(words_vector_size)
+        }).collect::<Vec<_>>();
 
         let hyper = AdamHyperparams::new();
 
@@ -397,108 +346,65 @@ impl NeuralNetwork
         self.dictionary.words_amount()
     }
 
-    pub fn inner_network(&self) -> &NetworkUnit
+    pub fn inner_network(&self) -> &Network<CurrentNetworkUnit>
     {
         &self.network
     }
 
-    // suckines
-    pub fn apply_gradients(&mut self, gradients: NetworkFullWeights)
+    pub fn apply_gradients(&mut self, gradients: Vec<OutputGradients>)
     {
-        let combined_iter = gradients.0.into_iter()
+        let combined_iter = gradients.into_iter()
             .zip(self.network.layers.iter_mut()
                  .zip(self.gradients_info.iter_mut())
             );
 
         combined_iter.for_each(|(gradients, (network_weights, gradients_info))|
         {
-            let NetworkWeights{
-                input_update_gradients,
-                input_reset_gradients,
-                input_activation_gradients,
-                hidden_update_gradients,
-                hidden_reset_gradients,
-                hidden_activation_gradients,
-                update_bias_gradients,
-                reset_bias_gradients,
-                activation_bias_gradients,
-                output_gradients
-            } = gradients;
+            let change = gradients_info.iter_mut().zip(gradients.into_iter())
+                .map(|(info, gradient)|
+                {
+                    Self::gradient_to_change(info, gradient, &mut self.hyper)
+                });
 
-            let hyper = &mut self.hyper;
-
-            *network_weights.input_update_weights.value_mut() -=
-                GradientsInfo::gradient_to_change(
-                    &mut gradients_info.input_update_gradients,
-                    input_update_gradients,
-                    hyper
-                );
-
-            *network_weights.input_reset_weights.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.input_reset_gradients,
-                    input_reset_gradients,
-                    hyper
-                );
-            
-            *network_weights.input_activation_weights.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.input_activation_gradients,
-                    input_activation_gradients,
-                    hyper
-                );
-
-            *network_weights.hidden_update_weights.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.hidden_update_gradients,
-                    hidden_update_gradients,
-                    hyper
-                );
-
-            *network_weights.hidden_reset_weights.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.hidden_reset_gradients,
-                    hidden_reset_gradients,
-                    hyper
-                );
-            
-            *network_weights.hidden_activation_weights.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.hidden_activation_gradients,
-                    hidden_activation_gradients,
-                    hyper
-                );
-            
-            *network_weights.update_biases.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.update_bias_gradients,
-                    update_bias_gradients,
-                    hyper
-                );
-            
-            *network_weights.reset_biases.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.reset_bias_gradients,
-                    reset_bias_gradients,
-                    hyper
-                );
-            
-            *network_weights.activation_biases.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.activation_bias_gradients,
-                    activation_bias_gradients,
-                    hyper
-                );
-            
-            *network_weights.output_weights.value_mut() -= 
-				GradientsInfo::gradient_to_change(
-                    &mut gradients_info.output_gradients,
-                    output_gradients,
-                    hyper
-                );
+            network_weights.iter_mut().zip(change).for_each(|(weight, change)|
+            {
+                *weight.value_mut() -= change;
+            });
         });
 
         self.hyper.advance_time();
+    }
+
+    fn gradient_to_change(
+        gradient_info: &mut GradientInfo,
+        gradient: LayerInnerType,
+        hyper: &AdamHyperparams
+    ) -> LayerInnerType
+    {
+        let gradient = Self::gradient_clipped(gradient);
+
+        Self::gradient_to_change_no_clip(gradient_info, gradient, hyper)
+    }
+
+    fn gradient_to_change_no_clip(
+        gradient_info: &mut GradientInfo,
+        gradient: LayerInnerType,
+        hyper: &AdamHyperparams
+    ) -> LayerInnerType
+    {
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+
+        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
+
+        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
+    }
+
+    fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
+    {
+        let gradient_clip = 1.0;
+
+        gradient.cap_magnitude(gradient_clip)
     }
 
     pub fn input_expected_from_text(
@@ -662,12 +568,12 @@ impl NeuralNetwork
                 };
 
                 batch_loss += loss / batch_size as f32;
-                gradients /= batch_size as f32;
+                gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);
 
                 gradients
             }).reduce(|mut acc, this|
             {
-                acc.0.iter_mut().zip(this.0.into_iter()).for_each(|(acc, this)|
+                acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
                 {
                     *acc += this;
                 });
@@ -776,7 +682,7 @@ mod tests
                     one_minus_b2_t: 1.0 - b2.powi(t)
                 };
 
-                let change = GradientsInfo::gradient_to_change_no_clip(
+                let change = NeuralNetwork::gradient_to_change_no_clip(
                     &mut gradient_info,
                     gradient.clone(),
                     &hyper

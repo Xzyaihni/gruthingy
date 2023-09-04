@@ -479,8 +479,10 @@ impl IndexMut<(usize, usize)> for PPMImage
     }
 }
 
-fn weights_image(mut args: impl Iterator<Item=String>)
+fn weights_image(mut _args: impl Iterator<Item=String>)
 {
+    unimplemented!();
+    /*
     let network_path = args.next()
         .unwrap_or_else(|| complain("give path to network"));
 
@@ -616,6 +618,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
     }
 
     image.save(format!("{display_type}.ppm")).unwrap();
+    */
 }
 
 fn main()

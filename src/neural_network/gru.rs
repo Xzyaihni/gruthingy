@@ -1,118 +1,138 @@
 use std::{
     f32,
-    borrow::Borrow,
-    collections::VecDeque,
+    array,
     ops::{DivAssign, AddAssign}
 };
 
+use strum::EnumCount;
+use strum_macros::EnumCount;
+
 use serde::{Serialize, Deserialize};
 
-use crate::neural_network::{
-    Softmaxer,
-    AFType,
-    LayerType,
-    ScalarType,
-    LayerInnerType,
-    HIDDEN_AMOUNT,
-    LAYERS_AMOUNT,
-    LAYER_ACTIVATION
+use crate::{
+    create_weights_container,
+    neural_network::{
+        LayerType,
+        ScalarType,
+        LayerInnerType,
+        HIDDEN_AMOUNT,
+        network::{NetworkOutput, NewableLayer},
+        network_unit::NetworkUnit
+    }
 };
 
 
-pub type GRUState<H> = Vec<H>;
+pub type GRU = WeightsContainer<LayerType>;
 
-pub struct GRUOutput<H, O>
+#[repr(usize)]
+#[derive(Debug, EnumCount)]
+pub enum WeightIndex
 {
-    pub hidden: H,
-    pub output: O
+    InputUpdate = 0,
+    InputReset,
+    InputActivation,
+    HiddenUpdate,
+    HiddenReset,
+    HiddenActivation,
+    UpdateBias,
+    ResetBias,
+    ActivationBias,
+    Output
 }
 
-impl<H, O> GRUOutput<Vec<H>, O>
+// create_weights_container!{WeightIndex}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeightsContainer<T>([T; WeightIndex::COUNT]);
+
+impl<T> IntoIterator for WeightsContainer<T>
 {
-    pub fn into_state(self) -> GRUState<H>
+    type Item = T;
+    type IntoIter = array::IntoIter<T, { WeightIndex::COUNT }>;
+
+    fn into_iter(self) -> Self::IntoIter
     {
-        self.hidden
+        self.0.into_iter()
     }
 }
 
-#[derive(Debug)]
-pub struct GRUGradients
+impl<T> FromIterator<T> for WeightsContainer<T>
 {
-    pub input_update_gradients: LayerInnerType,
-    pub input_reset_gradients: LayerInnerType,
-    pub input_activation_gradients: LayerInnerType,
-    pub hidden_update_gradients: LayerInnerType,
-    pub hidden_reset_gradients: LayerInnerType,
-    pub hidden_activation_gradients: LayerInnerType,
-    pub update_bias_gradients: LayerInnerType,
-    pub reset_bias_gradients: LayerInnerType,
-    pub activation_bias_gradients: LayerInnerType,
-    pub output_gradients: LayerInnerType
+    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self
+    {
+        let inner = iter.into_iter().collect::<Vec<_>>().try_into().map_err(|_|
+        {
+            "iterator length doesnt match"
+        }).unwrap();
+
+        Self(inner)
+    }
 }
 
-impl DivAssign<f32> for GRUGradients
+impl<T: NewableLayer> WeightsContainer<T>
+{
+    pub fn new_container(input_size: usize) -> Self
+    {
+        let weights = [
+            (HIDDEN_AMOUNT, input_size, Some(input_size)),
+            (HIDDEN_AMOUNT, input_size, Some(input_size)),
+            (HIDDEN_AMOUNT, input_size, Some(input_size)),
+            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+            (HIDDEN_AMOUNT, 1, None),
+            (HIDDEN_AMOUNT, 1, None),
+            (HIDDEN_AMOUNT, 1, None),
+            (input_size, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+        ];
+
+        weights.into_iter().map(|(previous, current, _prev_layer)|
+        {
+            T::new(previous, current)
+        }).collect()
+    }
+}
+
+impl<T: DivAssign<f32>> DivAssign<f32> for WeightsContainer<T>
 {
     fn div_assign(&mut self, rhs: f32)
     {
-		self.input_update_gradients /= rhs;
-		self.input_reset_gradients /= rhs;
-		self.input_activation_gradients /= rhs;
-		self.hidden_update_gradients /= rhs;
-		self.hidden_reset_gradients /= rhs;
-		self.hidden_activation_gradients /= rhs;
-		self.update_bias_gradients /= rhs;
-		self.reset_bias_gradients /= rhs;
-		self.activation_bias_gradients /= rhs;
-		self.output_gradients /= rhs;
+        self.0.iter_mut().for_each(|value|
+        {
+            *value /= rhs;
+        });
     }
 }
 
-impl AddAssign for GRUGradients
+impl<T: AddAssign<T>> AddAssign for WeightsContainer<T>
 {
     fn add_assign(&mut self, rhs: Self)
     {
-		self.input_update_gradients += rhs.input_update_gradients;
-		self.input_reset_gradients += rhs.input_reset_gradients;
-		self.input_activation_gradients += rhs.input_activation_gradients;
-		self.hidden_update_gradients += rhs.hidden_update_gradients;
-		self.hidden_reset_gradients += rhs.hidden_reset_gradients;
-		self.hidden_activation_gradients += rhs.hidden_activation_gradients;
-		self.update_bias_gradients += rhs.update_bias_gradients;
-		self.reset_bias_gradients += rhs.reset_bias_gradients;
-		self.activation_bias_gradients += rhs.activation_bias_gradients;
-		self.output_gradients += rhs.output_gradients;
+        self.0.iter_mut().zip(rhs.0.into_iter()).for_each(|(value, rhs)|
+        {
+            *value += rhs;
+        });
     }
 }
 
-#[derive(Debug)]
-pub struct GRUFullGradients(pub VecDeque<GRUGradients>);
-
-impl DivAssign<f32> for GRUFullGradients
+impl<T> WeightsContainer<T>
 {
-    fn div_assign(&mut self, rhs: f32)
+    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
     {
-        self.0.iter_mut().for_each(|v| *v /= rhs);
+        self.0.iter_mut()
+    }
+
+    pub fn weight(&self, index: WeightIndex) -> &T
+    {
+        &self.0[index as usize]
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GRULayer
+impl NetworkUnit for GRU
 {
-	pub input_update_weights: LayerType,
-	pub input_reset_weights: LayerType,
-	pub input_activation_weights: LayerType,
-	pub hidden_update_weights: LayerType,
-	pub hidden_reset_weights: LayerType,
-	pub hidden_activation_weights: LayerType,
-	pub update_biases: LayerType,
-	pub reset_biases: LayerType,
-	pub activation_biases: LayerType,
-	pub output_weights: LayerType
-}
+    type State = LayerType;
+    type WeightsContainer<T> = WeightsContainer<T>;
 
-impl GRULayer
-{
-    pub fn new(word_vector_size: usize) -> Self
+    fn new(input_size: usize) -> Self
     {
         let weights_init = |previous: f32|
         {
@@ -121,474 +141,94 @@ impl GRULayer
             (fastrand::f32() * 2.0 - 1.0) * v
         };
 
-        Self{
-        	input_update_weights: LayerType::new_diff(LayerInnerType::new_with(
-                HIDDEN_AMOUNT,
-                word_vector_size,
-                || weights_init(word_vector_size as f32)
-            )),
-        	input_reset_weights: LayerType::new_diff(LayerInnerType::new_with(
-				HIDDEN_AMOUNT,
-				word_vector_size,
-				|| weights_init(word_vector_size as f32)
-			)),
-        	input_activation_weights: LayerType::new_diff(LayerInnerType::new_with(
-				HIDDEN_AMOUNT,
-				word_vector_size,
-				|| weights_init(word_vector_size as f32)
-			)),
-        	hidden_update_weights: LayerType::new_diff(LayerInnerType::new_with(
-				HIDDEN_AMOUNT,
-				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f32)
-			)),
-        	hidden_reset_weights: LayerType::new_diff(LayerInnerType::new_with(
-				HIDDEN_AMOUNT,
-				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f32)
-			)),
-        	hidden_activation_weights: LayerType::new_diff(LayerInnerType::new_with(
-				HIDDEN_AMOUNT,
-				HIDDEN_AMOUNT,
-				|| weights_init(HIDDEN_AMOUNT as f32)
-			)),
-            // initialize biases to 0 cuz i read somewhere thats good
-            update_biases: LayerType::new_diff(LayerInnerType::new(HIDDEN_AMOUNT, 1)),
-            reset_biases: LayerType::new_diff(LayerInnerType::new(HIDDEN_AMOUNT, 1)),
-            activation_biases: LayerType::new_diff(LayerInnerType::new(HIDDEN_AMOUNT, 1)),
-            output_weights: LayerType::new_diff(LayerInnerType::new_with(
-                word_vector_size,
-                HIDDEN_AMOUNT,
-                || weights_init(HIDDEN_AMOUNT as f32)
-            ))
-        }
-    }
+        let weights = [
+            (HIDDEN_AMOUNT, input_size, Some(input_size)),
+            (HIDDEN_AMOUNT, input_size, Some(input_size)),
+            (HIDDEN_AMOUNT, input_size, Some(input_size)),
+            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+            (HIDDEN_AMOUNT, 1, None),
+            (HIDDEN_AMOUNT, 1, None),
+            (HIDDEN_AMOUNT, 1, None),
+            (input_size, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+        ];
 
-    fn for_weights(&mut self, mut f: impl FnMut(&mut LayerType))
-    {
-		f(&mut self.input_update_weights);
-		f(&mut self.input_reset_weights);
-		f(&mut self.input_activation_weights);
-		f(&mut self.hidden_update_weights);
-		f(&mut self.hidden_reset_weights);
-		f(&mut self.hidden_activation_weights);
-		f(&mut self.update_biases);
-		f(&mut self.reset_biases);
-		f(&mut self.activation_biases);
-		f(&mut self.output_weights);
-    }
-
-    pub fn clear(&mut self)
-    {
-        self.for_weights(|v| v.clear());
-    }
-
-    pub fn enable_gradients(&mut self)
-    {
-        self.for_weights(|v| v.enable_gradients());
-    }
-
-    pub fn disable_gradients(&mut self)
-    {
-        self.for_weights(|v| v.disable_gradients());
+        weights.into_iter().map(|(previous, current, prev_layer)|
+        {
+            LayerType::new_diff(
+                if let Some(prev_layer) = prev_layer
+                {
+                    LayerInnerType::new_with(previous, current, || weights_init(prev_layer as f32))
+                } else
+                {
+                    LayerInnerType::new(previous, current)
+                }
+            )
+        }).collect()
     }
 
     fn feedforward_single_untrans(
         &mut self,
-        previous_hidden: Option<&LayerType>,
+        previous_state: Option<&LayerType>,
         input: &LayerType
-    ) -> GRUOutput<LayerType, LayerType>
+    ) -> NetworkOutput<LayerType, LayerType>
     {
-        let mut update_gate = self.input_update_weights.matmul(input) + &self.update_biases;
+        let mut update_gate = self.weight(WeightIndex::InputUpdate).matmul(input)
+            + self.weight(WeightIndex::UpdateBias);
 
-        if let Some(previous_hidden) = previous_hidden
+        let mut reset_gate = self.weight(WeightIndex::InputReset).matmul(input)
+            + self.weight(WeightIndex::ResetBias);
+
+        let mut activation_gate = self.weight(WeightIndex::InputActivation).matmul(input)
+            + self.weight(WeightIndex::ActivationBias);
+
+        if let Some(previous_state) = previous_state
         {
-            update_gate += self.hidden_update_weights.matmul(previous_hidden);
+            update_gate += self.weight(WeightIndex::HiddenUpdate).matmul(previous_state);
+            reset_gate += self.weight(WeightIndex::HiddenReset).matmul(previous_state);
         }
 
         update_gate.sigmoid();
-
-        let mut reset_gate = self.input_reset_weights.matmul(input) + &self.reset_biases;
-
-        if let Some(previous_hidden) = previous_hidden
-        {
-            reset_gate += self.hidden_reset_weights.matmul(previous_hidden);
-        }
-
         reset_gate.sigmoid();
 
-        let mut activation_gate = self.input_activation_weights.matmul(input)
-            + &self.activation_biases;
-
-        if let Some(previous_hidden) = previous_hidden
+        if let Some(previous_state) = previous_state
         {
-            let activation_v = &reset_gate * previous_hidden;
-            activation_gate += self.hidden_activation_weights.matmul(activation_v);
+            let activation_v = &reset_gate * previous_state;
+            activation_gate += self.weight(WeightIndex::HiddenActivation).matmul(activation_v);
         }
 
         activation_gate.tanh();
 
         let this_activation = &activation_gate * &update_gate;
 
-        let hidden = if let Some(previous_hidden) = previous_hidden
+        let state = if let Some(previous_state) = previous_state
         {
-            ScalarType::new(1.0) - &update_gate * previous_hidden + this_activation
+            ScalarType::new(1.0) - &update_gate * previous_state + this_activation
         } else
         {
             this_activation + ScalarType::new(1.0)
         };
 
-        let output_untrans = self.output_weights.matmul(&hidden);
+        let output_untrans = self.weight(WeightIndex::Output).matmul(&state);
 
-        GRUOutput{
-            hidden,
+        NetworkOutput{
+            state,
             output: output_untrans
         }
     }
 
-    pub fn feedforward_single(
-        &mut self,
-        previous_hidden: Option<&LayerType>,
-        input: &LayerType
-    ) -> GRUOutput<LayerType, LayerType>
+    fn parameters_amount(&self, i: u128) -> u128
     {
-        let mut output = self.feedforward_single_untrans(previous_hidden, input);
-
-        match LAYER_ACTIVATION
-        {
-            AFType::LeakyRelu =>
-            {
-                output.output.leaky_relu();
-            },
-            AFType::Tanh =>
-            {
-                output.output.tanh();
-            }
-        }
-
-        output
-    }
-
-    pub fn feedforward_single_last(
-        &mut self,
-        previous_hidden: Option<&LayerType>,
-        input: &LayerType,
-        targets: LayerInnerType
-    ) -> GRUOutput<LayerType, ScalarType>
-    {
-        let GRUOutput{
-            hidden,
-            output
-        } = self.feedforward_single_untrans(previous_hidden, input);
-
-        GRUOutput{
-            hidden,
-            output: output.softmax_cross_entropy(targets)
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GRU
-{
-    pub layers: Vec<GRULayer>,
-    word_vector_size: usize
-}
-
-impl GRU
-{
-    pub fn new(word_vector_size: usize) -> Self
-    {
-        Self{
-            layers: (0..LAYERS_AMOUNT).map(|_| GRULayer::new(word_vector_size)).collect(),
-            word_vector_size
-        }
-    }
-
-    pub fn clear(&mut self)
-    {
-        self.layers.iter_mut().for_each(|layer| layer.clear());
-    }
-
-    // oh my god wut am i even doing at this point its so over
-    pub fn enable_gradients(&mut self)
-    {
-        self.layers.iter_mut().for_each(|layer|
-        {
-            layer.enable_gradients();
-        });
-    }
-
-    pub fn disable_gradients(&mut self)
-    {
-        self.layers.iter_mut().for_each(|layer|
-        {
-            layer.disable_gradients();
-        });
-    }
-
-    #[allow(dead_code)]
-    pub fn parameters_amount(&self) -> u128
-    {
-        let i = self.word_vector_size as u128;
         let h = HIDDEN_AMOUNT as u128;
-        let l = LAYERS_AMOUNT as u128;
 
         // i hope i calculated this right
-        ((4 * i * h) + (3 * h * h) + (3 * h)) * l
+        (4 * i * h) + (3 * h * h) + (3 * h)
     }
 
-    #[allow(dead_code)]
-    pub fn accuracy(
-        &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)>
-    ) -> f32
+    fn weights_mut(&mut self) -> &mut [LayerType]
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let amount = input.len();
-
-        let f_output = self.predict(input.into_iter());
-
-        Self::correct_guesses(
-            f_output.into_iter(),
-            output.into_iter()
-        ) as f32 / amount as f32
-    }
-
-    fn correct_guesses<P, T>(
-        predicted: impl Iterator<Item=P>,
-        target: impl Iterator<Item=T>
-    ) -> usize
-    where
-        P: Borrow<LayerInnerType>,
-        T: Borrow<LayerType>
-    {
-        predicted.zip(target).map(|(predicted, target)|
-        {
-            let target_index = target.borrow().highest_index();
-            if predicted.borrow().highest_index() == target_index
-            {
-                1
-            } else
-            {
-                0
-            }
-        }).sum()
-    }
-
-    fn feedforward_single_inner<F, T>(
-        &mut self,
-        last_f: F,
-        previous_hiddens: Option<Vec<LayerType>>,
-        input: &LayerType
-    ) -> GRUOutput<Vec<LayerType>, T>
-    where
-        F: FnOnce(&mut GRULayer, Option<&LayerType>, &LayerType) -> GRUOutput<LayerType, T>
-    {
-        let mut output: Option<T> = None;
-        let mut last_output: Option<LayerType> = None;
-
-        let mut hiddens = Vec::with_capacity(LAYERS_AMOUNT);
-
-        for l_i in 0..LAYERS_AMOUNT
-        {
-            let input = last_output.as_ref().unwrap_or(input);
-
-            debug_assert!(l_i < self.layers.len());
-            let layer = unsafe{ self.layers.get_unchecked_mut(l_i) };
-
-            let previous_hidden = unsafe{
-                previous_hiddens.as_ref().map(|previous_hidden|
-                {
-                    previous_hidden.get_unchecked(l_i)
-                })
-            };
-
-            if l_i == (LAYERS_AMOUNT - 1)
-            {
-                // last layer
-                let GRUOutput{
-                    hidden,
-                    output: this_output
-                } = last_f(layer, previous_hidden, input);
-
-                output = Some(this_output);
-
-                hiddens.push(hidden);
-
-                // i like how rust cant figure out that the last index is the last iteration
-                // without this
-                break;
-            } else
-            {
-                let GRUOutput{
-                    hidden,
-                    output: this_output
-                } = layer.feedforward_single(
-                    previous_hidden,
-                    input
-                );
-
-                last_output = Some(this_output);
-
-                hiddens.push(hidden);
-            }
-        }
-
-        GRUOutput{
-            hidden: hiddens,
-            output: output.unwrap()
-        }
-    }
-
-    pub fn feedforward_single(
-        &mut self,
-        previous_hiddens: Option<Vec<LayerType>>,
-        input: &LayerType,
-        targets: LayerInnerType
-    ) -> GRUOutput<Vec<LayerType>, ScalarType>
-    {
-        self.feedforward_single_inner(|layer, previous_hidden, input|
-        {
-            layer.feedforward_single_last(
-                previous_hidden,
-                input,
-                targets
-            )
-        }, previous_hiddens, input)
-    }
-
-    pub fn predict_single(
-        &mut self,
-        previous_hiddens: Option<Vec<LayerType>>,
-        input: &LayerType,
-        temperature: f32
-    ) -> GRUOutput<Vec<LayerType>, LayerInnerType>
-    {
-        self.feedforward_single_inner(|layer, previous_hidden, input|
-        {
-            let GRUOutput{
-                hidden,
-                mut output
-            } = layer.feedforward_single(
-                previous_hidden,
-                input
-            );
-
-            let mut output = output.value_take();
-
-            Softmaxer::softmax_temperature(&mut output, temperature);
-
-            GRUOutput{
-                hidden,
-                output
-            }
-        }, previous_hiddens, input)
-    }
-
-    #[allow(dead_code)]
-    pub fn predict(
-        &mut self,
-        input: impl Iterator<Item=LayerType> + ExactSizeIterator
-    ) -> Vec<LayerInnerType>
-    {
-        let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
-        let mut previous_hiddens: Option<Vec<LayerType>> = None;
-
-        for this_input in input
-        {
-            let GRUOutput{
-                hidden,
-                output: this_output
-            } = self.predict_single(
-                previous_hiddens.take(),
-                &this_input,
-                1.0
-            );
-
-            outputs.push(this_output);
-            previous_hiddens = Some(hidden);
-        }
-
-        outputs
-    }
-
-    #[allow(dead_code)]
-    pub fn feedforward(
-        &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
-    ) -> ScalarType
-    {
-        let mut output: Option<ScalarType> = None;
-        let mut previous_hiddens: Option<Vec<LayerType>> = None;
-
-        for (this_input, mut this_output) in input
-        {
-            let GRUOutput{
-                hidden,
-                output: this_output
-            } = self.feedforward_single(
-                previous_hiddens.take(),
-                &this_input,
-                this_output.value_take()
-            );
-
-            if let Some(output) = output.as_mut()
-            {
-                *output += this_output;
-            } else
-            {
-                output = Some(this_output)
-            }
-
-            previous_hiddens = Some(hidden);
-        }
-
-        output.unwrap()
-    }
-
-    pub fn gradients(
-        &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
-    ) -> (f32, GRUFullGradients)
-    {
-        self.clear();
-
-        let loss = self.feedforward(input);
-
-        let loss_value = loss.value_clone();
-
-        loss.calculate_gradients();
-
-        let gradients = GRUFullGradients(
-            self.layers.iter_mut().map(|layer|
-            {
-                GRUGradients{
-                    input_update_gradients:
-                        layer.input_update_weights.take_gradient(),
-                    hidden_update_gradients:
-                        layer.hidden_update_weights.take_gradient(),
-                    update_bias_gradients:
-                        layer.update_biases.take_gradient(),
-                    input_reset_gradients:
-                        layer.input_reset_weights.take_gradient(),
-                    hidden_reset_gradients:
-                        layer.hidden_reset_weights.take_gradient(),
-                    reset_bias_gradients:
-                        layer.reset_biases.take_gradient(),
-                    input_activation_gradients:
-                        layer.input_activation_weights.take_gradient(),
-                    hidden_activation_gradients:
-                        layer.hidden_activation_weights.take_gradient(),
-                    activation_bias_gradients:
-                        layer.activation_biases.take_gradient(),
-                    output_gradients:
-                        layer.output_weights.take_gradient(),
-                }
-            }).collect()
-        );
-
-        (loss_value, gradients)
+        &mut self.0
     }
 }
 

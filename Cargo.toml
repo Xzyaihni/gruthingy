@@ -15,6 +15,8 @@ ciborium = "0.2.1"
 fastrand = "1.9.0"
 nalgebra = { version = "0.32.3", features = ["serde-serialize"] }
 serde = { version = "1.0.171", features = ["rc"] }
+strum = "0.25.0"
+strum_macros = "0.25.2"
 
 [profile.release]
 panic = "abort"
