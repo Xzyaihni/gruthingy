@@ -13,7 +13,6 @@ use crate::{
     create_weights_container,
     neural_network::{
         LayerType,
-        ScalarType,
         LayerInnerType,
         HIDDEN_AMOUNT,
         network::{NetworkOutput, NewableLayer, WeightInfo},
@@ -22,31 +21,37 @@ use crate::{
 };
 
 
-pub type GRU = WeightsContainer<LayerType>;
+pub type LSTM = WeightsContainer<LayerType>;
 
 #[repr(usize)]
 #[derive(Debug, EnumCount)]
 pub enum WeightIndex
 {
     InputUpdate = 0,
-    InputReset,
-    InputActivation,
+    InputForget,
+    InputOutput,
+    InputMemory,
     HiddenUpdate,
-    HiddenReset,
-    HiddenActivation,
+    HiddenForget,
+    HiddenOutput,
+    HiddenMemory,
     UpdateBias,
-    ResetBias,
-    ActivationBias,
+    ForgetBias,
+    OutputBias,
+    MemoryBias,
     Output
 }
 
-const WEIGHTS_INFO: [(WeightInfo, WeightInfo, Option<WeightInfo>); 10] = [
+const WEIGHTS_INFO: [(WeightInfo, WeightInfo, Option<WeightInfo>); 13] = [
+    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
     (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
     (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
     (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
     (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
     (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
     (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+    (WeightInfo::Hidden, WeightInfo::One, None),
     (WeightInfo::Hidden, WeightInfo::One, None),
     (WeightInfo::Hidden, WeightInfo::One, None),
     (WeightInfo::Hidden, WeightInfo::One, None),
@@ -55,9 +60,15 @@ const WEIGHTS_INFO: [(WeightInfo, WeightInfo, Option<WeightInfo>); 10] = [
 
 create_weights_container!{WeightIndex, WEIGHTS_INFO}
 
-impl NetworkUnit for GRU
+pub struct LSTMState
 {
-    type State = LayerType;
+    hidden: LayerType,
+    memory: LayerType
+}
+
+impl NetworkUnit for LSTM
+{
+    type State = LSTMState;
     type WeightsContainer<T> = WeightsContainer<T>;
 
     fn new(input_size: usize) -> Self
@@ -93,43 +104,54 @@ impl NetworkUnit for GRU
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
+        let mut forget_gate = self.weight(WeightIndex::InputForget).matmul(input)
+            + self.weight(WeightIndex::ForgetBias);
+
         let mut update_gate = self.weight(WeightIndex::InputUpdate).matmul(input)
             + self.weight(WeightIndex::UpdateBias);
 
-        let mut reset_gate = self.weight(WeightIndex::InputReset).matmul(input)
-            + self.weight(WeightIndex::ResetBias);
+        let mut output_gate = self.weight(WeightIndex::InputOutput).matmul(input)
+            + self.weight(WeightIndex::OutputBias);
 
-        let mut activation_gate = self.weight(WeightIndex::InputActivation).matmul(input)
-            + self.weight(WeightIndex::ActivationBias);
+        let mut memory_gate = self.weight(WeightIndex::InputMemory).matmul(input)
+            + self.weight(WeightIndex::MemoryBias);
 
         if let Some(previous_state) = previous_state
         {
-            update_gate += self.weight(WeightIndex::HiddenUpdate).matmul(previous_state);
-            reset_gate += self.weight(WeightIndex::HiddenReset).matmul(previous_state);
+            forget_gate += self.weight(WeightIndex::HiddenForget).matmul(&previous_state.hidden);
+            update_gate += self.weight(WeightIndex::HiddenUpdate).matmul(&previous_state.hidden);
+            output_gate += self.weight(WeightIndex::HiddenOutput).matmul(&previous_state.hidden);
+            memory_gate += self.weight(WeightIndex::HiddenMemory).matmul(&previous_state.hidden);
         }
 
+        forget_gate.sigmoid();
         update_gate.sigmoid();
-        reset_gate.sigmoid();
+        output_gate.sigmoid();
+        memory_gate.tanh();
 
-        if let Some(previous_state) = previous_state
+        let this_memory_rhs = update_gate * memory_gate;
+
+        let this_memory = if let Some(previous_state) = previous_state
         {
-            let activation_v = &reset_gate * previous_state;
-            activation_gate += self.weight(WeightIndex::HiddenActivation).matmul(activation_v);
-        }
-
-        activation_gate.tanh();
-
-        let this_activation = &activation_gate * &update_gate;
-
-        let state = if let Some(previous_state) = previous_state
-        {
-            ScalarType::new(1.0) - &update_gate * previous_state + this_activation
+            forget_gate * &previous_state.memory + this_memory_rhs
         } else
         {
-            this_activation + ScalarType::new(1.0)
+            this_memory_rhs
         };
 
-        let output_untrans = self.weight(WeightIndex::Output).matmul(&state);
+        let hidden = {
+            let mut memory = this_memory.clone_gradientable();
+            memory.tanh();
+
+            output_gate * memory
+        };
+
+        let output_untrans = self.weight(WeightIndex::Output).matmul(&hidden);
+
+        let state = LSTMState{
+            hidden,
+            memory: this_memory
+        };
 
         NetworkOutput{
             state,
@@ -141,55 +163,11 @@ impl NetworkUnit for GRU
     {
         let h = HIDDEN_AMOUNT as u128;
 
-        // i hope i calculated this right
-        (4 * i * h) + (3 * h * h) + (3 * h)
+        (5 * i * h) + (4 * h * h) + (4 * h)
     }
 
     fn weights_mut(&mut self) -> &mut [LayerType]
     {
         &mut self.0
-    }
-}
-
-#[cfg(test)]
-pub mod tests
-{
-    use super::*;
-
-    #[allow(dead_code)]
-    pub fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
-        {
-            return true;
-        }
-
-        if a.signum() != b.signum()
-        {
-            return false;
-        }
-
-        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
-
-    pub fn close_enough_loose(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if a == 0.0 || a == -0.0
-        {
-            return b.abs() < epsilon;
-        }
-
-        if b == 0.0 || b == -0.0
-        {
-            return a.abs() < epsilon;
-        }
-
-        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
-
-    #[allow(dead_code)]
-    pub fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        (a - b).abs() < epsilon
     }
 }

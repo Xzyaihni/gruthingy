@@ -33,9 +33,13 @@ pub use containers::{
 #[allow(unused_imports)]
 use gru::GRU;
 
+#[allow(unused_imports)]
+use lstm::LSTM;
+
 mod network_unit;
 mod network;
 mod gru;
+mod lstm;
 
 pub mod containers;
 
