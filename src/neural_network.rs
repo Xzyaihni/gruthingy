@@ -341,11 +341,7 @@ impl NeuralNetwork
         ciborium::from_reader(reader)
     }
 
-    pub fn words_amount(&self) -> usize
-    {
-        self.dictionary.words_amount()
-    }
-
+    #[allow(dead_code)]
     pub fn inner_network(&self) -> &Network<CurrentNetworkUnit>
     {
         &self.network

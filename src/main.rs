@@ -392,6 +392,7 @@ struct Color
     pub b: u8
 }
 
+#[allow(dead_code)]
 impl Color
 {
     pub fn black() -> Self
@@ -432,6 +433,7 @@ struct PPMImage
     height: usize
 }
 
+#[allow(dead_code)]
 impl PPMImage
 {
     pub fn new(width: usize, height: usize) -> Self
@@ -481,35 +483,9 @@ impl IndexMut<(usize, usize)> for PPMImage
 
 fn weights_image(mut _args: impl Iterator<Item=String>)
 {
-    unimplemented!();
-    /*
-    let network_path = args.next()
+    unimplemented!("im too lazy to do this, its useless anyway");
+    /*let network_path = args.next()
         .unwrap_or_else(|| complain("give path to network"));
-
-    let display_type = args.next()
-        .unwrap_or_else(||
-        {
-            let mut options = String::new();
-
-            let mut add_option = |name|
-            {
-                options += "    ";
-                options += name;
-                options.push(',');
-                options.push('\n');
-            };
-
-            add_option("input_update");
-            add_option("input_reset");
-            add_option("input_activation");
-            add_option("hidden_update");
-            add_option("hidden_reset");
-            add_option("hidden_activation");
-            add_option("output");
-            add_option("biases");
-
-            complain(&format!("give wut to display\noptions:\n{options}"))
-        });
     
     let network: NeuralNetwork =
         NeuralNetwork::load(&network_path).unwrap();
@@ -517,21 +493,6 @@ fn weights_image(mut _args: impl Iterator<Item=String>)
     let negative_color = Color{r: 255, g: 0, b: 0};
     let none_color = Color{r: 0, g: 0, b: 0};
     let positive_color = Color{r: 0, g: 0, b: 255};
-
-    let words_amount = network.words_amount();
-    
-    let (width, weights_per_hidden) = match display_type.as_ref()
-    {
-        "biases" => (HIDDEN_AMOUNT, 3),
-        "input_update" => (words_amount, HIDDEN_AMOUNT),
-        "input_reset" => (words_amount, HIDDEN_AMOUNT),
-        "input_activation" => (words_amount, HIDDEN_AMOUNT),
-        "output" => (HIDDEN_AMOUNT, words_amount),
-        "hidden_update" => (HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        "hidden_reset" => (HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        "hidden_activation" => (HIDDEN_AMOUNT, HIDDEN_AMOUNT),
-        x => panic!("invalid display type: {}", x)
-    };
 
     let height = weights_per_hidden * LAYERS_AMOUNT;
 
@@ -617,8 +578,7 @@ fn weights_image(mut _args: impl Iterator<Item=String>)
         }
     }
 
-    image.save(format!("{display_type}.ppm")).unwrap();
-    */
+    image.save(format!("{display_type}.ppm")).unwrap();*/
 }
 
 fn main()
