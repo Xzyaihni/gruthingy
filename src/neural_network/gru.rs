@@ -16,7 +16,7 @@ use crate::{
         ScalarType,
         LayerInnerType,
         HIDDEN_AMOUNT,
-        network::{NetworkOutput, NewableLayer},
+        network::{NetworkOutput, NewableLayer, WeightInfo},
         network_unit::NetworkUnit
     }
 };
@@ -40,92 +40,20 @@ pub enum WeightIndex
     Output
 }
 
-// create_weights_container!{WeightIndex}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WeightsContainer<T>([T; WeightIndex::COUNT]);
+const WEIGHTS_INFO: [(WeightInfo, WeightInfo, Option<WeightInfo>); 10] = [
+    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
+    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
+    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
+    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+    (WeightInfo::Hidden, WeightInfo::One, None),
+    (WeightInfo::Hidden, WeightInfo::One, None),
+    (WeightInfo::Hidden, WeightInfo::One, None),
+    (WeightInfo::Input, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+];
 
-impl<T> IntoIterator for WeightsContainer<T>
-{
-    type Item = T;
-    type IntoIter = array::IntoIter<T, { WeightIndex::COUNT }>;
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self.0.into_iter()
-    }
-}
-
-impl<T> FromIterator<T> for WeightsContainer<T>
-{
-    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self
-    {
-        let inner = iter.into_iter().collect::<Vec<_>>().try_into().map_err(|_|
-        {
-            "iterator length doesnt match"
-        }).unwrap();
-
-        Self(inner)
-    }
-}
-
-impl<T: NewableLayer> WeightsContainer<T>
-{
-    pub fn new_container(input_size: usize) -> Self
-    {
-        let weights = [
-            (HIDDEN_AMOUNT, input_size, Some(input_size)),
-            (HIDDEN_AMOUNT, input_size, Some(input_size)),
-            (HIDDEN_AMOUNT, input_size, Some(input_size)),
-            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-            (HIDDEN_AMOUNT, 1, None),
-            (HIDDEN_AMOUNT, 1, None),
-            (HIDDEN_AMOUNT, 1, None),
-            (input_size, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-        ];
-
-        weights.into_iter().map(|(previous, current, _prev_layer)|
-        {
-            T::new(previous, current)
-        }).collect()
-    }
-}
-
-impl<T: DivAssign<f32>> DivAssign<f32> for WeightsContainer<T>
-{
-    fn div_assign(&mut self, rhs: f32)
-    {
-        self.0.iter_mut().for_each(|value|
-        {
-            *value /= rhs;
-        });
-    }
-}
-
-impl<T: AddAssign<T>> AddAssign for WeightsContainer<T>
-{
-    fn add_assign(&mut self, rhs: Self)
-    {
-        self.0.iter_mut().zip(rhs.0.into_iter()).for_each(|(value, rhs)|
-        {
-            *value += rhs;
-        });
-    }
-}
-
-impl<T> WeightsContainer<T>
-{
-    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
-    {
-        self.0.iter_mut()
-    }
-
-    pub fn weight(&self, index: WeightIndex) -> &T
-    {
-        &self.0[index as usize]
-    }
-}
+create_weights_container!{WeightIndex, WEIGHTS_INFO}
 
 impl NetworkUnit for GRU
 {
@@ -141,21 +69,12 @@ impl NetworkUnit for GRU
             (fastrand::f32() * 2.0 - 1.0) * v
         };
 
-        let weights = [
-            (HIDDEN_AMOUNT, input_size, Some(input_size)),
-            (HIDDEN_AMOUNT, input_size, Some(input_size)),
-            (HIDDEN_AMOUNT, input_size, Some(input_size)),
-            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-            (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-            (HIDDEN_AMOUNT, 1, None),
-            (HIDDEN_AMOUNT, 1, None),
-            (HIDDEN_AMOUNT, 1, None),
-            (input_size, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-        ];
-
-        weights.into_iter().map(|(previous, current, prev_layer)|
+        WEIGHTS_INFO.into_iter().map(|(previous, current, prev_layer)|
         {
+            let previous = previous.into_value(input_size);
+            let current = current.into_value(input_size);
+            let prev_layer = prev_layer.map(|prev_layer| prev_layer.into_value(input_size));
+
             LayerType::new_diff(
                 if let Some(prev_layer) = prev_layer
                 {
