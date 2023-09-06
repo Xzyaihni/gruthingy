@@ -47,12 +47,19 @@ pub mod containers;
 pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
+// options: SDG, Adam
+pub type CurrentOptimizer = Adam;
+
+// options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
+// options: GRU, LSTM
 pub type CurrentNetworkUnit = GRU;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
+
+// options: WordDictionary, ByteDictionary, CharDictionary
 pub type DictionaryType = CharDictionary;
 
 #[allow(dead_code)]
@@ -301,13 +308,98 @@ impl AdamHyperparams
 type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
 type GradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<GradientInfo>;
 
+pub trait Optimizer
+{
+    type HyperParams;
+    type WeightParam;
+
+    fn new(words_vector_size: usize) -> Self;
+
+    fn gradient_to_change_indexed(
+        &mut self,
+        layer_index: usize,
+        weight_index: usize,
+        gradient: LayerInnerType
+    ) -> LayerInnerType;
+
+    fn gradient_to_change(
+        gradient_info: &mut Self::WeightParam,
+        gradient: LayerInnerType,
+        hyper: &Self::HyperParams
+    ) -> LayerInnerType;
+
+    fn advance_time(&mut self);
+    fn set_learning_rate(&mut self, learning_rate: f32);
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Adam
+{
+    gradients_info: Vec<GradientsContainer>,
+    hyper: AdamHyperparams
+}
+
+impl Optimizer for Adam
+{
+    type HyperParams = AdamHyperparams;
+    type WeightParam = GradientInfo;
+
+    fn new(words_vector_size: usize) -> Self
+    {
+        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
+        {
+            GradientsContainer::new_container(words_vector_size)
+        }).collect::<Vec<_>>();
+
+        let hyper = AdamHyperparams::new();
+
+        Self{gradients_info, hyper}
+    }
+
+    fn gradient_to_change_indexed(
+        &mut self,
+        layer_index: usize,
+        weight_index: usize,
+        gradient: LayerInnerType
+    ) -> LayerInnerType
+    {
+        let gradient_info = self.gradients_info[layer_index]
+            .raw_index_mut(weight_index);
+
+        Self::gradient_to_change(gradient_info, gradient, &self.hyper)
+    }
+
+    fn gradient_to_change(
+        gradient_info: &mut Self::WeightParam,
+        gradient: LayerInnerType,
+        hyper: &Self::HyperParams
+    ) -> LayerInnerType
+    {
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+
+        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
+
+        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
+    }
+
+    fn advance_time(&mut self)
+    {
+        self.hyper.advance_time();
+    }
+
+    fn set_learning_rate(&mut self, learning_rate: f32)
+    {
+        self.hyper.a = learning_rate;
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NeuralNetwork
 {
     dictionary: DictionaryType,
     network: Network<CurrentNetworkUnit>,
-    gradients_info: Vec<GradientsContainer>,
-    hyper: AdamHyperparams
+    optimizer: CurrentOptimizer
 }
 
 impl NeuralNetwork
@@ -317,15 +409,9 @@ impl NeuralNetwork
         let words_vector_size = dictionary.words_amount();
 
         let network = Network::new(words_vector_size);
+        let optimizer = CurrentOptimizer::new(words_vector_size);
 
-        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
-        {
-            GradientsContainer::new_container(words_vector_size)
-        }).collect::<Vec<_>>();
-
-        let hyper = AdamHyperparams::new();
-
-        Self{dictionary, network, gradients_info, hyper}
+        Self{dictionary, network, optimizer}
     }
 
     pub fn save<P: AsRef<Path>>(&mut self, path: P)
@@ -354,50 +440,24 @@ impl NeuralNetwork
     pub fn apply_gradients(&mut self, gradients: Vec<OutputGradients>)
     {
         let combined_iter = gradients.into_iter()
-            .zip(self.network.layers.iter_mut()
-                 .zip(self.gradients_info.iter_mut())
-            );
+            .zip(self.network.layers.iter_mut());
 
-        combined_iter.for_each(|(gradients, (network_weights, gradients_info))|
+        combined_iter.enumerate().for_each(|(layer_index, (gradients, network_weights))|
         {
-            let change = gradients_info.iter_mut().zip(gradients.into_iter())
-                .map(|(info, gradient)|
+            network_weights.iter_mut().zip(gradients).enumerate()
+                .for_each(|(weight_index, (weight, gradient))|
                 {
-                    Self::gradient_to_change(info, gradient, &mut self.hyper)
-                });
+                    let change = self.optimizer.gradient_to_change_indexed(
+                        layer_index,
+                        weight_index,
+                        Self::gradient_clipped(gradient)
+                    );
 
-            network_weights.iter_mut().zip(change).for_each(|(weight, change)|
-            {
-                *weight.value_mut() -= change;
-            });
+                    *weight.value_mut() -= change;
+                });
         });
 
-        self.hyper.advance_time();
-    }
-
-    fn gradient_to_change(
-        gradient_info: &mut GradientInfo,
-        gradient: LayerInnerType,
-        hyper: &AdamHyperparams
-    ) -> LayerInnerType
-    {
-        let gradient = Self::gradient_clipped(gradient);
-
-        Self::gradient_to_change_no_clip(gradient_info, gradient, hyper)
-    }
-
-    fn gradient_to_change_no_clip(
-        gradient_info: &mut GradientInfo,
-        gradient: LayerInnerType,
-        hyper: &AdamHyperparams
-    ) -> LayerInnerType
-    {
-        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
-        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
-
-        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
-
-        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
+        self.optimizer.advance_time();
     }
 
     fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
@@ -488,7 +548,7 @@ impl NeuralNetwork
             ignore_loss
         } = info;
 
-        self.hyper.a = learning_rate;
+        self.optimizer.set_learning_rate(learning_rate);
 
         let batch_step = batch_size * steps_num;
 
@@ -682,7 +742,7 @@ mod tests
                     one_minus_b2_t: 1.0 - b2.powi(t)
                 };
 
-                let change = NeuralNetwork::gradient_to_change_no_clip(
+                let change = Adam::gradient_to_change(
                     &mut gradient_info,
                     gradient.clone(),
                     &hyper

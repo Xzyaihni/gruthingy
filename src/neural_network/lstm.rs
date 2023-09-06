@@ -171,3 +171,89 @@ impl NetworkUnit for LSTM
         &mut self.0
     }
 }
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+    
+    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
+    {
+        if a == b
+        {
+            return true;
+        }
+
+        let relative_diff = (a - b).abs() / (a.abs() + b.abs());
+
+        relative_diff < epsilon
+    }
+
+    fn assert_close_enough(a: f32, b: f32, epsilon: f32)
+    {
+        assert!(close_enough(a, b, epsilon), "a: {a}, b: {b}");
+    }
+
+    #[test]
+    fn lstm_works()
+    {
+        let one_weight = |value: f32|
+        {
+            LayerType::new_diff(LayerInnerType::from_raw([value], 1, 1))
+        };
+
+        /*
+        InputUpdate
+        InputForget
+        InputOutput
+        InputMemory
+        HiddenUpdate
+        HiddenForget
+        HiddenOutput
+        HiddenMemory
+        UpdateBias
+        ForgetBias
+        OutputBias
+        MemoryBias
+        Output
+        */
+
+        let mut lstm = WeightsContainer([
+            one_weight(1.65),
+            one_weight(1.63),
+            one_weight(-0.19),
+            one_weight(0.94),
+
+            one_weight(2.00),
+            one_weight(2.70),
+            one_weight(4.38),
+            one_weight(1.41),
+
+            one_weight(0.62),
+            one_weight(1.62),
+            one_weight(0.59),
+            one_weight(-0.32),
+
+            one_weight(1.0)
+        ]);
+
+        let state = LSTMState{
+            memory: one_weight(2.0),
+            hidden: one_weight(1.0)
+        };
+
+        let input = one_weight(1.0);
+
+        let output = lstm.feedforward_single_untrans(Some(&state), &input);
+
+        let epsilon = 0.0001;
+
+        let single_value = |l: &LayerType|
+        {
+            l.as_vec()[0]
+        };
+
+        assert_close_enough(single_value(&output.state.memory), 2.947, epsilon);
+        assert_close_enough(single_value(&output.state.hidden), 0.986229, epsilon);
+    }
+}
