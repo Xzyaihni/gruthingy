@@ -48,7 +48,7 @@ pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
 // options: SDG, Adam
-pub type CurrentOptimizer = Adam;
+pub type CurrentOptimizer = SGD;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
@@ -260,6 +260,75 @@ pub struct TrainingInfo
     pub ignore_loss: bool
 }
 
+type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
+type GradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<GradientInfo>;
+
+pub trait Optimizer
+{
+    type HyperParams;
+    type WeightParam;
+
+    fn new(words_vector_size: usize) -> Self;
+
+    fn gradient_to_change_indexed(
+        &mut self,
+        layer_index: usize,
+        weight_index: usize,
+        gradient: LayerInnerType
+    ) -> LayerInnerType;
+
+    fn gradient_to_change(
+        gradient_info: &mut Self::WeightParam,
+        gradient: LayerInnerType,
+        hyper: &Self::HyperParams
+    ) -> LayerInnerType;
+
+    fn advance_time(&mut self);
+    fn set_learning_rate(&mut self, learning_rate: f32);
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SGD
+{
+    learning_rate: f32
+}
+
+impl Optimizer for SGD
+{
+    type HyperParams = f32;
+    type WeightParam = ();
+
+    fn new(_words_vector_size: usize) -> Self
+    {
+        Self{learning_rate: 0.001}
+    }
+
+    fn gradient_to_change_indexed(
+        &mut self,
+        _layer_index: usize,
+        _weight_index: usize,
+        gradient: LayerInnerType
+    ) -> LayerInnerType
+    {
+        Self::gradient_to_change(&mut (), gradient, &self.learning_rate)
+    }
+
+    fn gradient_to_change(
+        _gradient_info: &mut Self::WeightParam,
+        gradient: LayerInnerType,
+        hyper: &Self::HyperParams
+    ) -> LayerInnerType
+    {
+        gradient * (-hyper)
+    }
+
+    fn advance_time(&mut self) {}
+    fn set_learning_rate(&mut self, learning_rate: f32)
+    {
+        self.learning_rate = learning_rate;
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdamHyperparams
 {
@@ -303,33 +372,6 @@ impl AdamHyperparams
 
         self.update_t_vars();
     }
-}
-
-type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
-type GradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<GradientInfo>;
-
-pub trait Optimizer
-{
-    type HyperParams;
-    type WeightParam;
-
-    fn new(words_vector_size: usize) -> Self;
-
-    fn gradient_to_change_indexed(
-        &mut self,
-        layer_index: usize,
-        weight_index: usize,
-        gradient: LayerInnerType
-    ) -> LayerInnerType;
-
-    fn gradient_to_change(
-        gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType,
-        hyper: &Self::HyperParams
-    ) -> LayerInnerType;
-
-    fn advance_time(&mut self);
-    fn set_learning_rate(&mut self, learning_rate: f32);
 }
 
 #[derive(Debug, Serialize, Deserialize)]
