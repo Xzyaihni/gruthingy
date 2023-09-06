@@ -44,8 +44,8 @@ mod lstm;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 32;
-pub const LAYERS_AMOUNT: usize = 2;
+pub const HIDDEN_AMOUNT: usize = 256;
+pub const LAYERS_AMOUNT: usize = 4;
 
 // options: SDG, Adam
 pub type CurrentOptimizer = SGD;
