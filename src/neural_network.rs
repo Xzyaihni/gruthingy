@@ -48,7 +48,7 @@ pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
 // options: SDG, Adam
-pub type CurrentOptimizer = SGD;
+pub type CurrentOptimizer = Adam;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
@@ -300,7 +300,7 @@ impl Optimizer for SGD
 
     fn new(_words_vector_size: usize) -> Self
     {
-        Self{learning_rate: 0.1}
+        Self{learning_rate: 0.001}
     }
 
     fn gradient_to_change_indexed(
