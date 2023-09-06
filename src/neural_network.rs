@@ -44,8 +44,8 @@ mod lstm;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 256;
-pub const LAYERS_AMOUNT: usize = 4;
+pub const HIDDEN_AMOUNT: usize = 32;
+pub const LAYERS_AMOUNT: usize = 2;
 
 // options: SDG, Adam
 pub type CurrentOptimizer = SGD;
@@ -300,7 +300,7 @@ impl Optimizer for SGD
 
     fn new(_words_vector_size: usize) -> Self
     {
-        Self{learning_rate: 0.001}
+        Self{learning_rate: 0.1}
     }
 
     fn gradient_to_change_indexed(
@@ -319,7 +319,7 @@ impl Optimizer for SGD
         hyper: &Self::HyperParams
     ) -> LayerInnerType
     {
-        gradient * (-hyper)
+        gradient * *hyper
     }
 
     fn advance_time(&mut self) {}
@@ -615,10 +615,18 @@ impl NeuralNetwork
         println!("parameters amount: {}", self.network.parameters_amount());
 
         println!("batch size: {batch_size}");
-        println!("steps amount: {steps_num}");
+
+        let steps_deviation = steps_num / 10;
+        let steps_half_deviation = steps_deviation / 2;
+
+        println!(
+            "steps amount: {} to {}",
+            steps_num - steps_half_deviation,
+            steps_num + steps_half_deviation
+        );
         
-        let epochs_per_input = (inputs.len() / batch_step).max(1);
-        println!("calculate loss every {epochs_per_input} epochs");
+        let inputs_per_epoch = (inputs.len() / batch_step).max(1);
+        println!("calculate loss every ~{inputs_per_epoch} inputs");
 
         let output_loss = |network: &mut NeuralNetwork|
         {
@@ -630,16 +638,20 @@ impl NeuralNetwork
             network.test_loss_inner(&testing_inputs, calculate_loss, calculate_accuracy);
         };
 
-        let max_batch_start = inputs.len().saturating_sub(steps_num);
-
-        // whats an epoch? cool word is wut it is
-        // at some point i found out wut it was (going over the whole training data once)
-        // but i dont rly feel like changing a silly thing like that
-        for epoch in 0..epochs
+        for input_index in 0..epochs
         {
-            eprintln!("epoch: {epoch}");
+            eprintln!("iteration: {input_index}");
 
-            let print_loss = (epoch % epochs_per_input) == epochs_per_input - 1;
+            let steps_num = {
+                let this_dev = fastrand::i32(0..(steps_deviation as i32 + 1));
+                let this_dev = this_dev - steps_half_deviation as i32;
+
+                (steps_num as i32 + this_dev) as usize
+            };
+
+            let max_batch_start = inputs.len().saturating_sub(steps_num);
+
+            let print_loss = (input_index % inputs_per_epoch) == inputs_per_epoch - 1;
             if print_loss
             {
                 output_loss(self);
