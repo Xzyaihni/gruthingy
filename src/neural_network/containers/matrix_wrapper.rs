@@ -327,6 +327,14 @@ impl MatrixWrapper
         Self(&self.0 * rhs.borrow().0.transpose())
     }
 
+    pub fn max(&mut self, rhs: &Self)
+    {
+        self.0.zip_apply(&rhs.0, |lhs, rhs|
+        {
+            *lhs = lhs.max(rhs);
+        });
+    }
+
     pub fn dot(self, rhs: &Self) -> f32
     {
         self.0.dot(&rhs.0)

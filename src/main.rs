@@ -35,7 +35,7 @@ struct TrainConfig
     epochs: usize,
     batch_size: usize,
     steps_num: usize,
-    learning_rate: f32,
+    learning_rate: Option<f32>,
     calculate_loss: bool,
     calculate_accuracy: bool,
     ignore_loss: bool,
@@ -50,7 +50,7 @@ impl TrainConfig
         let mut epochs = 1;
         let mut batch_size = 2_usize.pow(6);
         let mut steps_num = 64;
-        let mut learning_rate = 0.001;
+        let mut learning_rate = None;
         let mut calculate_loss = true;
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
@@ -96,14 +96,14 @@ impl TrainConfig
                 },
                 "-l" | "--learning-rate" =>
                 {
-                    learning_rate = args.next().unwrap_or_else(||
+                    learning_rate = Some(args.next().unwrap_or_else(||
                         {
                             complain(&format!("expected value after {arg}"))
                         }).parse()
                         .unwrap_or_else(|err|
                         {
                             complain(&format!("cant parse the learning rate: {err:?}"))
-                        });
+                        }));
                 },
                 "-t" | "--testing" =>
                 {

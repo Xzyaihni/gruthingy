@@ -47,8 +47,8 @@ pub mod containers;
 pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
-// options: SDG, Adam
-pub type CurrentOptimizer = Adam;
+// options: SDG, Adam, AdamX
+pub type CurrentOptimizer = AdamX;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
@@ -67,24 +67,6 @@ pub enum AFType
 {
     Tanh,
     LeakyRelu
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GradientInfo
-{
-    m: LayerInnerType,
-    v: LayerInnerType
-}
-
-impl NewableLayer for GradientInfo
-{
-    fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        Self{
-            m: LayerInnerType::new(previous_size, this_size),
-            v: LayerInnerType::new(previous_size, this_size)
-        }
-    }
 }
 
 pub struct InputOutput<T>
@@ -254,14 +236,53 @@ pub struct TrainingInfo
     pub epochs: usize,
     pub batch_size: usize,
     pub steps_num: usize,
-    pub learning_rate: f32,
+    pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
     pub ignore_loss: bool
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdamGradientInfo
+{
+    m: LayerInnerType,
+    v: LayerInnerType
+}
+
+impl NewableLayer for AdamGradientInfo
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self{
+            m: LayerInnerType::new(previous_size, this_size),
+            v: LayerInnerType::new(previous_size, this_size)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdamXGradientInfo
+{
+    m: LayerInnerType,
+    v: LayerInnerType,
+    v_hat: Option<LayerInnerType>
+}
+
+impl NewableLayer for AdamXGradientInfo
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self{
+            m: LayerInnerType::new(previous_size, this_size),
+            v: LayerInnerType::new(previous_size, this_size),
+            v_hat: None
+        }
+    }
+}
+
 type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
-type GradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<GradientInfo>;
+type AdamGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<AdamGradientInfo>;
+type AdamXGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<AdamXGradientInfo>;
 
 pub trait Optimizer
 {
@@ -330,6 +351,122 @@ impl Optimizer for SGD
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct AdamXHyperparams
+{
+    pub a: f32,
+    pub b1: f32,
+    pub b2: f32,
+    pub epsilon: f32,
+    pub t: i32
+}
+
+impl AdamXHyperparams
+{
+    pub fn new() -> Self
+    {
+        Self{
+            a: 0.0001,
+            b1: 0.9,
+            b2: 0.999,
+            epsilon: 10e-8,
+            t: 1
+        }
+    }
+
+    pub fn decay_function(value: f32, t: i32) -> f32
+    {
+        // value.powi(self.t)
+        value / t as f32
+    }
+
+    pub fn advance_time(&mut self)
+    {
+        self.t += 1;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AdamX
+{
+    gradients_info: Vec<AdamXGradientsContainer>,
+    hyper: AdamXHyperparams
+}
+
+impl Optimizer for AdamX
+{
+    type HyperParams = AdamXHyperparams;
+    type WeightParam = AdamXGradientInfo;
+
+    fn new(words_vector_size: usize) -> Self
+    {
+        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
+        {
+            AdamXGradientsContainer::new_container(words_vector_size)
+        }).collect::<Vec<_>>();
+
+        let hyper = AdamXHyperparams::new();
+
+        Self{gradients_info, hyper}
+    }
+
+    fn gradient_to_change_indexed(
+        &mut self,
+        layer_index: usize,
+        weight_index: usize,
+        gradient: LayerInnerType
+    ) -> LayerInnerType
+    {
+        let gradient_info = self.gradients_info[layer_index]
+            .raw_index_mut(weight_index);
+
+        Self::gradient_to_change(gradient_info, gradient, &self.hyper)
+    }
+
+    fn gradient_to_change(
+        gradient_info: &mut Self::WeightParam,
+        gradient: LayerInnerType,
+        hyper: &Self::HyperParams
+    ) -> LayerInnerType
+    {
+        let one_minus_b1_t = 1.0 - AdamXHyperparams::decay_function(hyper.b1, hyper.t);
+
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * one_minus_b1_t;
+        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+
+        if let Some(v_hat) = gradient_info.v_hat.as_mut()
+        {
+            let one_minus_b1_tlast = 1.0 - AdamXHyperparams::decay_function(hyper.b1, hyper.t - 1);
+
+            let lhs = (one_minus_b1_t).powi(2) / (one_minus_b1_tlast).powi(2);
+
+            let mut new_v_hat = &*v_hat * lhs;
+            new_v_hat.max(&gradient_info.v);
+
+            *v_hat = new_v_hat;
+        } else
+        {
+            gradient_info.v_hat = Some(gradient_info.v.clone());
+        }
+
+        // it can be a / t.sqrt() but this is fine
+        let a_t = hyper.a;
+
+        let rhs = gradient_info.v_hat.as_ref().unwrap().clone_sqrt() + hyper.epsilon;
+        (&gradient_info.m * a_t) / rhs
+    }
+
+    fn advance_time(&mut self)
+    {
+        self.hyper.advance_time();
+    }
+
+    fn set_learning_rate(&mut self, learning_rate: f32)
+    {
+        self.hyper.a = learning_rate;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AdamHyperparams
 {
     pub a: f32,
@@ -377,20 +514,20 @@ impl AdamHyperparams
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Adam
 {
-    gradients_info: Vec<GradientsContainer>,
+    gradients_info: Vec<AdamGradientsContainer>,
     hyper: AdamHyperparams
 }
 
 impl Optimizer for Adam
 {
     type HyperParams = AdamHyperparams;
-    type WeightParam = GradientInfo;
+    type WeightParam = AdamGradientInfo;
 
     fn new(words_vector_size: usize) -> Self
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            GradientsContainer::new_container(words_vector_size)
+            AdamGradientsContainer::new_container(words_vector_size)
         }).collect::<Vec<_>>();
 
         let hyper = AdamHyperparams::new();
@@ -590,7 +727,10 @@ impl NeuralNetwork
             ignore_loss
         } = info;
 
-        self.optimizer.set_learning_rate(learning_rate);
+        if let Some(learning_rate) = learning_rate
+        {
+            self.optimizer.set_learning_rate(learning_rate);
+        }
 
         let batch_step = batch_size * steps_num;
 
@@ -779,7 +919,7 @@ mod tests
             let epsilon = 10e-8;
 
             let adam_g = {
-                let mut gradient_info = GradientInfo{
+                let mut gradient_info = AdamGradientInfo{
                     m: LayerInnerType::from_raw(m.clone().into_boxed_slice(), 2, 1),
                     v: LayerInnerType::from_raw(v.clone().into_boxed_slice(), 2, 1)
                 };
