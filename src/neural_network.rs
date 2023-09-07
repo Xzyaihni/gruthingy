@@ -48,7 +48,7 @@ pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
 // options: SDG, Adam, AdamX
-pub type CurrentOptimizer = AdamX;
+pub type CurrentOptimizer = Adam;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
