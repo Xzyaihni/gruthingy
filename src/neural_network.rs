@@ -48,13 +48,13 @@ pub const HIDDEN_AMOUNT: usize = 256;
 pub const LAYERS_AMOUNT: usize = 4;
 
 // options: SDG, Adam, AdamX
-pub type CurrentOptimizer = Adam;
+pub type CurrentOptimizer = AdamX;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 // options: GRU, LSTM
-pub type CurrentNetworkUnit = GRU;
+pub type CurrentNetworkUnit = LSTM;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
@@ -365,10 +365,10 @@ impl AdamXHyperparams
     pub fn new() -> Self
     {
         Self{
-            a: 0.0001,
+            a: 0.001,
             b1: 0.9,
             b2: 0.999,
-            epsilon: 10e-8,
+            epsilon: 1e-8,
             t: 1
         }
     }
@@ -428,9 +428,10 @@ impl Optimizer for AdamX
         hyper: &Self::HyperParams
     ) -> LayerInnerType
     {
-        let one_minus_b1_t = 1.0 - AdamXHyperparams::decay_function(hyper.b1, hyper.t);
+        let b1_t = AdamXHyperparams::decay_function(hyper.b1, hyper.t);
+        let one_minus_b1_t = 1.0 - b1_t;
 
-        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * one_minus_b1_t;
+        gradient_info.m = &gradient_info.m * b1_t + &gradient * one_minus_b1_t;
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
         if let Some(v_hat) = gradient_info.v_hat.as_mut()
@@ -452,6 +453,7 @@ impl Optimizer for AdamX
         let a_t = hyper.a;
 
         let rhs = gradient_info.v_hat.as_ref().unwrap().clone_sqrt() + hyper.epsilon;
+
         (&gradient_info.m * a_t) / rhs
     }
 

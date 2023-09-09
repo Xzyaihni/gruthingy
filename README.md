@@ -8,6 +8,8 @@ cd gruthingy
 cargo b -r
 ```
 
+u can change network parameters and stuff in src/neural\_network.rs
+
 then do
 ```
 ./target/release/gruthingy train_new ~/path/to/some/cool/text/file.txt -e 100
