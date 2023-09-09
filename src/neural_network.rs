@@ -375,7 +375,7 @@ impl AdamXHyperparams
 
     pub fn decay_function(value: f32, t: i32) -> f32
     {
-        // value.powi(self.t)
+        // value.powi(t)
         value / t as f32
     }
 
@@ -488,7 +488,7 @@ impl AdamHyperparams
             a: 0.001,
             b1: 0.9,
             b2: 0.999,
-            epsilon: 10e-8,
+            epsilon: 1e-8,
             t: 1,
             one_minus_b1_t: 0.0,
             one_minus_b2_t: 0.0
