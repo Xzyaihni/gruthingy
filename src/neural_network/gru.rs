@@ -40,6 +40,20 @@ pub enum WeightIndex
     Output
 }
 
+impl WeightIndex
+{
+    pub fn is_hidden(self) -> bool
+    {
+        match self
+        {
+            Self::HiddenUpdate => true,
+            Self::HiddenReset => true,
+            Self::HiddenActivation => true,
+            _ => false
+        }
+    }
+}
+
 const WEIGHTS_INFO: [(WeightInfo, WeightInfo, Option<WeightInfo>); 10] = [
     (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
     (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
@@ -137,9 +151,14 @@ impl NetworkUnit for GRU
         }
     }
 
-    fn weights_with_sizes(&self, input_size: usize) -> Vec<WeightsSize>
+    fn weights_size(&self, input_size: usize) -> Vec<WeightsSize<&LayerType>>
     {
-        self.inner_weights_with_sizes(input_size).collect()
+        self.inner_weights_size(input_size).collect()
+    }
+
+    fn weights_info(&self, input_size: usize) -> Vec<WeightsNamed<&LayerType>>
+    {
+        self.inner_weights_info(input_size).collect()
     }
 
     fn parameters_amount(&self, i: u128) -> u128
@@ -148,6 +167,11 @@ impl NetworkUnit for GRU
 
         // i hope i calculated this right
         (4 * i * h) + (3 * h * h) + (3 * h)
+    }
+
+    fn weights(&self) -> &[LayerType]
+    {
+        &self.0
     }
 
     fn weights_mut(&mut self) -> &mut [LayerType]

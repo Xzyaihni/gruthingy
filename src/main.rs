@@ -13,6 +13,7 @@ use neural_network::{
     TrainingInfo,
     NeuralNetwork,
     DictionaryType,
+    WeightsNamed,
     USES_DICTIONARY,
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT
@@ -507,7 +508,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
     let network: NeuralNetwork =
         NeuralNetwork::load(&network_path).unwrap();
 
-    let weights = network.inner_network().weights_with_sizes();
+    let weights = network.inner_network().weights_info();
 
     let output_folder = PathBuf::from(output_folder);
 
@@ -519,19 +520,24 @@ fn weights_image(mut args: impl Iterator<Item=String>)
 
         for weights in layer
         {
-            let mut image = PPMImage::new(weights.previous_size, weights.current_size);
+            let WeightsNamed{
+                name,
+                weights_size
+            } = weights;
 
-            for (index, weight) in weights.weights.into_iter().enumerate()
+            let mut image = PPMImage::new(weights_size.previous_size, weights_size.current_size);
+
+            for (index, weight) in weights_size.weights.as_vec().into_iter().enumerate()
             {
                 let color = weight_color(weight);
 
-                let x = index % weights.previous_size;
-                let y = index / weights.previous_size;
+                let x = index % weights_size.previous_size;
+                let y = index / weights_size.previous_size;
 
                 image[(x, y)] = color;
             }
 
-            let name = weights.name.chars().filter(|c|
+            let name = name.chars().filter(|c|
             {
                 c.is_ascii_alphanumeric()
             }).collect::<String>();

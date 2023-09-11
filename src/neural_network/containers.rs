@@ -801,17 +801,7 @@ impl<T: Clone> Clone for CloneableWrapper<T>
 {
     fn clone(&self) -> Self
     {
-        let this = self.0.this_ref();
-
-        let wrapper = if this.calculate_gradient
-        {
-            DiffWrapper::new_diff(this.value.clone().unwrap())
-        } else
-        {
-            DiffWrapper::new_inner(this.value.clone().unwrap(), LayerOps::None, false)
-        };
-
-        Self(wrapper)
+        Self(self.0.recreate())
     }
 }
 
@@ -878,6 +868,22 @@ where
     pub fn value_clone(&self) -> T
     {
         (*RefCell::borrow(self.0.as_ref().unwrap())).value.clone().unwrap()
+    }
+}
+
+impl<T: Clone> DiffWrapper<T>
+{
+    pub fn recreate(&self) -> Self
+    {
+        let this = self.this_ref();
+
+        if this.calculate_gradient
+        {
+            DiffWrapper::new_diff(this.value.clone().unwrap())
+        } else
+        {
+            DiffWrapper::new_inner(this.value.clone().unwrap(), LayerOps::None, false)
+        }
     }
 }
 

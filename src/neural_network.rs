@@ -22,6 +22,8 @@ use crate::word_vectorizer::{
     VectorWord
 };
 
+pub use network::WeightsNamed;
+
 pub use containers::{
     LayerType,
     ScalarType,
@@ -627,7 +629,7 @@ impl NeuralNetwork
     pub fn apply_gradients(&mut self, gradients: Vec<OutputGradients>)
     {
         let combined_iter = gradients.into_iter()
-            .zip(self.network.layers.iter_mut());
+            .zip(self.network.layers_mut().iter_mut());
 
         combined_iter.enumerate().for_each(|(layer_index, (gradients, network_weights))|
         {
