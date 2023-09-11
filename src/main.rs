@@ -1,7 +1,8 @@
 use std::{
     env,
+    fs,
     process,
-    path::Path,
+    path::{PathBuf, Path},
     io::{self, Write},
     fs::File,
     ops::{Index, IndexMut}
@@ -481,104 +482,66 @@ impl IndexMut<(usize, usize)> for PPMImage
     }
 }
 
-fn weights_image(mut _args: impl Iterator<Item=String>)
+fn weight_color(value: f32) -> Color
 {
-    unimplemented!("im too lazy to do this, its useless anyway");
-    /*let network_path = args.next()
-        .unwrap_or_else(|| complain("give path to network"));
-    
-    let network: NeuralNetwork =
-        NeuralNetwork::load(&network_path).unwrap();
-
     let negative_color = Color{r: 255, g: 0, b: 0};
     let none_color = Color{r: 0, g: 0, b: 0};
     let positive_color = Color{r: 0, g: 0, b: 255};
 
-    let height = weights_per_hidden * LAYERS_AMOUNT;
+    let a = ((value + 1.0) / 2.0).max(0.0).min(1.0);
 
-    let mut image = PPMImage::new(width, height);
+    Color::gradient_lerp(
+        &[negative_color, none_color, positive_color],
+        a
+    )
+}
 
-    let mut line_num = 0;
-    for layer in &network.inner_network().layers
+fn weights_image(mut args: impl Iterator<Item=String>)
+{
+    let network_path = args.next()
+        .unwrap_or_else(|| complain("give path to network"));
+
+    let output_folder = args.next()
+        .unwrap_or_else(|| "output".to_owned());
+    
+    let network: NeuralNetwork =
+        NeuralNetwork::load(&network_path).unwrap();
+
+    let weights = network.inner_network().weights_with_sizes();
+
+    let output_folder = PathBuf::from(output_folder);
+
+    for (layer_index, layer) in weights.into_iter().enumerate()
     {
-        let mut display_weights = |weights: &[f32]|
+        let layer_name = format!("layer{layer_index}");
+        let layer_folder = output_folder.join(layer_name);
+        fs::create_dir_all(&layer_folder).unwrap();
+
+        for weights in layer
         {
-            for (i, weight) in weights.iter().enumerate()
+            let mut image = PPMImage::new(weights.previous_size, weights.current_size);
+
+            for (index, weight) in weights.weights.into_iter().enumerate()
             {
-                let weight_num = i;
-                let weight_value = weight;
+                let color = weight_color(weight);
 
-                let a = ((weight_value + 1.0) / 2.0).max(0.0).min(1.0);
+                let x = index % weights.previous_size;
+                let y = index / weights.previous_size;
 
-                let weight_color = Color::gradient_lerp(
-                    &[negative_color, none_color, positive_color],
-                    a
-                );
-
-                image[(weight_num, line_num)] = weight_color;
+                image[(x, y)] = color;
             }
 
-            line_num += 1;
-        };
-
-        if display_type == "biases"
-        {
-            display_weights(&layer.update_biases.as_vec());
-            display_weights(&layer.reset_biases.as_vec());
-            display_weights(&layer.activation_biases.as_vec());
-        }
-
-        let mut display_weights_m = |weights: Vec<f32>, previous_size: usize|
-        {
-            let this_size = weights.len() / previous_size;
-            let mut this_start = 0;
-
-            for _ in 0..this_size
+            let name = weights.name.chars().filter(|c|
             {
-                let this_end = this_start + previous_size;
-                display_weights(&weights[this_start..this_end]);
+                c.is_ascii_alphanumeric()
+            }).collect::<String>();
 
-                this_start += previous_size;
-            }
-        };
+            let filename = format!("{name}.ppm");
+            let full_path = layer_folder.join(filename);
 
-        if display_type == "input_update"
-        {
-            display_weights_m(layer.input_update_weights.as_vec(), words_amount);
-        }
-
-        if display_type == "input_reset"
-        {
-            display_weights_m(layer.input_reset_weights.as_vec(), words_amount);
-        }
-
-        if display_type == "input_activation"
-        {
-            display_weights_m(layer.input_activation_weights.as_vec(), words_amount);
-        }
-
-        if display_type == "hidden_update"
-        {
-            display_weights_m(layer.hidden_update_weights.as_vec(), HIDDEN_AMOUNT);
-        }
-
-        if display_type == "hidden_reset"
-        {
-            display_weights_m(layer.hidden_reset_weights.as_vec(), HIDDEN_AMOUNT);
-        }
-
-        if display_type == "hidden_activation"
-        {
-            display_weights_m(layer.hidden_activation_weights.as_vec(), HIDDEN_AMOUNT);
-        }
-        
-        if display_type == "output"
-        {
-            display_weights_m(layer.output_weights.as_vec(), HIDDEN_AMOUNT);
+            image.save(full_path).unwrap();
         }
     }
-
-    image.save(format!("{display_type}.ppm")).unwrap();*/
 }
 
 fn main()

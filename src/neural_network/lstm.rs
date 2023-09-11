@@ -5,7 +5,7 @@ use std::{
 };
 
 use strum::EnumCount;
-use strum_macros::EnumCount;
+use strum_macros::{FromRepr, EnumCount};
 
 use serde::{Serialize, Deserialize};
 
@@ -24,7 +24,7 @@ use crate::{
 pub type LSTM = WeightsContainer<LayerType>;
 
 #[repr(usize)]
-#[derive(Debug, EnumCount)]
+#[derive(Debug, EnumCount, FromRepr)]
 pub enum WeightIndex
 {
     InputUpdate = 0,
@@ -157,6 +157,11 @@ impl NetworkUnit for LSTM
             state,
             output: output_untrans
         }
+    }
+
+    fn weights_with_sizes(&self, input_size: usize) -> Vec<WeightsSize>
+    {
+        self.inner_weights_with_sizes(input_size).collect()
     }
 
     fn parameters_amount(&self, i: u128) -> u128

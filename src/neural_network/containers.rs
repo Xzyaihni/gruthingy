@@ -826,6 +826,17 @@ impl<T> Drop for DiffWrapper<T>
     }
 }
 
+impl<T> Into<Vec<f32>> for &DiffWrapper<T>
+where
+    for<'b> &'b T: Into<Vec<f32>>
+{
+    fn into(self) -> Vec<f32>
+    {
+        let value = self.value();
+        (&*value).into()
+    }
+}
+
 impl<T> DiffWrapper<T>
 // i dont even need these wut am i doing?
 where
@@ -864,30 +875,9 @@ where
         self.drop_child();
     }
 
-    pub fn value(&self) -> cell::Ref<T>
-    {
-        cell::Ref::map(
-            RefCell::borrow(self.0.as_ref().unwrap()),
-            |v| v.value.as_ref().unwrap()
-        )
-    }
-
-    pub fn value_mut(&mut self) -> cell::RefMut<T>
-    {
-        cell::RefMut::map(
-            RefCell::borrow_mut(self.0.as_mut().unwrap()),
-            |v| v.value.as_mut().unwrap()
-        )
-    }
-
     pub fn value_clone(&self) -> T
     {
         (*RefCell::borrow(self.0.as_ref().unwrap())).value.clone().unwrap()
-    }
-
-    pub fn value_take(&mut self) -> T
-    {
-        (*RefCell::borrow_mut(self.0.as_mut().unwrap())).value.take().unwrap()
     }
 }
 
@@ -981,6 +971,27 @@ impl<T> DiffWrapper<T>
     {
         // this should kinda be &mut self but im lazy
         RefCell::borrow_mut(self.0.as_ref().unwrap())
+    }
+
+    pub fn value(&self) -> cell::Ref<T>
+    {
+        cell::Ref::map(
+            RefCell::borrow(self.0.as_ref().unwrap()),
+            |v| v.value.as_ref().unwrap()
+        )
+    }
+
+    pub fn value_mut(&mut self) -> cell::RefMut<T>
+    {
+        cell::RefMut::map(
+            RefCell::borrow_mut(self.0.as_mut().unwrap()),
+            |v| v.value.as_mut().unwrap()
+        )
+    }
+
+    pub fn value_take(&mut self) -> T
+    {
+        (*RefCell::borrow_mut(self.0.as_mut().unwrap())).value.take().unwrap()
     }
 }
 
@@ -1292,6 +1303,14 @@ impl DivAssign<ScalarType> for LayerType
     fn div_assign(&mut self, rhs: ScalarType)
     {
         *self = &*self / rhs;
+    }
+}
+
+impl Into<Vec<f32>> for &LayerType
+{
+    fn into(self) -> Vec<f32>
+    {
+        self.as_vec()
     }
 }
 
