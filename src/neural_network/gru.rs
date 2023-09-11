@@ -87,7 +87,7 @@ impl NetworkUnit for GRU
         }).collect()
     }
 
-    fn feedforward_single_untrans(
+    fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
         input: &LayerType

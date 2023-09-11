@@ -44,8 +44,11 @@ mod lstm;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 256;
+pub const HIDDEN_AMOUNT: usize = 25;
 pub const LAYERS_AMOUNT: usize = 4;
+
+pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
+pub const DROPOUT_PROBABILITY: f32 = 0.5;
 
 // options: SDG, Adam, AdamX
 pub type CurrentOptimizer = AdamX;
@@ -200,6 +203,8 @@ impl<'a> Predictor<'a>
 
         let mut previous_state: Option<_> = None;
 
+        let dropout_masks = network.create_dropout_masks(self.dictionary.words_amount(), 0.0);
+
         for i in 0..(input_amount + self.predict_amount)
         {
             debug_assert!(i < self.words.len());
@@ -208,8 +213,9 @@ impl<'a> Predictor<'a>
             let NetworkOutput{
                 state,
                 output
-            } = network.predict_single(
+            } = network.predict_single_input(
                 previous_state.take(),
+                &dropout_masks,
                 this_input,
                 self.temperature
             );

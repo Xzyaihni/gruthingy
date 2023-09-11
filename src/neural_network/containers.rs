@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
     cell::{self, RefCell},
     borrow::Borrow,
-    ops::{Mul, Add, Sub, Div, AddAssign, DivAssign, Neg}
+    ops::{Mul, Add, Sub, Div, AddAssign, MulAssign, DivAssign, Neg}
 };
 
 use serde::{Serialize, Deserialize};
@@ -1295,6 +1295,15 @@ impl AddAssign for LayerType
     fn add_assign(&mut self, rhs: Self)
     {
         *self = &*self + rhs;
+    }
+}
+
+// why did i write these if im still not doing them inplace? oh well
+impl MulAssign<&LayerType> for LayerType
+{
+    fn mul_assign(&mut self, rhs: &Self)
+    {
+        *self = &*self * rhs;
     }
 }
 

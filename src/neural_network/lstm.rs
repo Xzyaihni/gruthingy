@@ -98,7 +98,7 @@ impl NetworkUnit for LSTM
         }).collect()
     }
 
-    fn feedforward_single_untrans(
+    fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
         input: &LayerType
@@ -249,7 +249,7 @@ mod tests
 
         let input = one_weight(1.0);
 
-        let output = lstm.feedforward_single_untrans(Some(&state), &input);
+        let output = lstm.feedforward_unit(Some(&state), &input);
 
         let epsilon = 0.0001;
 
