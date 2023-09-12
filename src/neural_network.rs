@@ -52,6 +52,8 @@ pub const LAYERS_AMOUNT: usize = 4;
 pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
 pub const DROPOUT_PROBABILITY: f32 = 0.5;
 
+pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Division;
+
 // options: SDG, Adam, AdamX
 pub type CurrentOptimizer = AdamX;
 
@@ -66,6 +68,25 @@ pub const USES_DICTIONARY: bool = true;
 
 // options: WordDictionary, ByteDictionary, CharDictionary
 pub type DictionaryType = CharDictionary;
+
+#[allow(dead_code)]
+pub enum DecayFunction
+{
+    Power,
+    Division
+}
+
+impl DecayFunction
+{
+    fn decay(&self, value: f32, t: i32) -> f32
+    {
+        match self
+        {
+            DecayFunction::Power => value.powi(t),
+            DecayFunction::Division => value / t as f32
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub enum AFType
@@ -381,12 +402,6 @@ impl AdamXHyperparams
         }
     }
 
-    pub fn decay_function(value: f32, t: i32) -> f32
-    {
-        // value.powi(t)
-        value / t as f32
-    }
-
     pub fn advance_time(&mut self)
     {
         self.t += 1;
@@ -436,7 +451,7 @@ impl Optimizer for AdamX
         hyper: &Self::HyperParams
     ) -> LayerInnerType
     {
-        let b1_t = AdamXHyperparams::decay_function(hyper.b1, hyper.t);
+        let b1_t = DECAY_FUNCTION.decay(hyper.b1, hyper.t);
         let one_minus_b1_t = 1.0 - b1_t;
 
         gradient_info.m = &gradient_info.m * b1_t + &gradient * one_minus_b1_t;
@@ -444,7 +459,7 @@ impl Optimizer for AdamX
 
         if let Some(v_hat) = gradient_info.v_hat.as_mut()
         {
-            let one_minus_b1_tlast = 1.0 - AdamXHyperparams::decay_function(hyper.b1, hyper.t - 1);
+            let one_minus_b1_tlast = 1.0 - DECAY_FUNCTION.decay(hyper.b1, hyper.t - 1);
 
             let lhs = (one_minus_b1_t).powi(2) / (one_minus_b1_tlast).powi(2);
 
@@ -483,41 +498,25 @@ pub struct AdamHyperparams
     pub b1: f32,
     pub b2: f32,
     pub epsilon: f32,
-    pub t: i32,
-    pub one_minus_b1_t: f32,
-    pub one_minus_b2_t: f32
+    pub t: i32
 }
 
 impl AdamHyperparams
 {
     pub fn new() -> Self
     {
-        let mut this = Self{
+        Self{
             a: 0.001,
             b1: 0.9,
             b2: 0.999,
             epsilon: 1e-8,
-            t: 1,
-            one_minus_b1_t: 0.0,
-            one_minus_b2_t: 0.0
-        };
-
-        this.update_t_vars();
-
-        this
-    }
-
-    fn update_t_vars(&mut self)
-    {
-        self.one_minus_b1_t = 1.0 - self.b1.powi(self.t);
-        self.one_minus_b2_t = 1.0 - self.b2.powi(self.t);
+            t: 1
+        }
     }
 
     pub fn advance_time(&mut self)
     {
         self.t += 1;
-
-        self.update_t_vars();
     }
 }
 
@@ -564,10 +563,13 @@ impl Optimizer for Adam
         hyper: &Self::HyperParams
     ) -> LayerInnerType
     {
+        let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(hyper.b1, hyper.t);
+        let one_minus_b2_t = 1.0 - DECAY_FUNCTION.decay(hyper.b2, hyper.t);
+
         gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
         gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
 
-        let a_t = hyper.a * hyper.one_minus_b2_t.sqrt() / hyper.one_minus_b1_t;
+        let a_t = hyper.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
 
         (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
     }
@@ -941,9 +943,7 @@ mod tests
                     b1,
                     b2,
                     epsilon,
-                    t,
-                    one_minus_b1_t: 1.0 - b1.powi(t),
-                    one_minus_b2_t: 1.0 - b2.powi(t)
+                    t
                 };
 
                 let change = Adam::gradient_to_change(
