@@ -54,10 +54,11 @@ pub const DROPOUT_PROBABILITY: f32 = 0.5;
 
 pub const GRADIENT_CLIP: f32 = 1.0;
 
+// options: Power, Division
 pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Division;
 
-// options: SDG, Adam, AdamX
-pub type CurrentOptimizer = AdamX;
+// options: SDG, Adam, AdamX, PowerSign (garbage (maybe i did it wrong))
+pub type CurrentOptimizer = Adam;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
@@ -311,9 +312,26 @@ impl NewableLayer for AdamXGradientInfo
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PowerSignGradientInfo
+{
+    m: LayerInnerType
+}
+
+impl NewableLayer for PowerSignGradientInfo
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self{
+            m: LayerInnerType::new(previous_size, this_size)
+        }
+    }
+}
+
 type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
 type AdamGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<AdamGradientInfo>;
 type AdamXGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<AdamXGradientInfo>;
+type PowerSignGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<PowerSignGradientInfo>;
 
 pub trait Optimizer
 {
@@ -378,6 +396,95 @@ impl Optimizer for SGD
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PowerSignHyperparams
+{
+    pub b1: f32,
+    pub learning_rate: f32,
+    pub t: i32
+}
+
+impl PowerSignHyperparams
+{
+    pub fn new() -> Self
+    {
+        Self{
+            b1: 0.9,
+            learning_rate: 0.1,
+            t: 1
+        }
+    }
+
+    pub fn advance_time(&mut self)
+    {
+        self.t += 1;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PowerSign
+{
+    gradients_info: Vec<PowerSignGradientsContainer>,
+    hyper: PowerSignHyperparams
+}
+
+impl Optimizer for PowerSign
+{
+    type HyperParams = PowerSignHyperparams;
+    type WeightParam = PowerSignGradientInfo;
+
+    fn new(words_vector_size: usize) -> Self
+    {
+        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
+        {
+            PowerSignGradientsContainer::new_container(words_vector_size)
+        }).collect::<Vec<_>>();
+
+        let hyper = PowerSignHyperparams::new();
+
+        Self{gradients_info, hyper}
+    }
+
+    fn gradient_to_change_indexed(
+        &mut self,
+        layer_index: usize,
+        weight_index: usize,
+        gradient: LayerInnerType
+    ) -> LayerInnerType
+    {
+        let gradient_info = self.gradients_info[layer_index]
+            .raw_index_mut(weight_index);
+
+        Self::gradient_to_change(gradient_info, gradient, &self.hyper)
+    }
+
+    fn gradient_to_change(
+        gradient_info: &mut Self::WeightParam,
+        gradient: LayerInnerType,
+        hyper: &Self::HyperParams
+    ) -> LayerInnerType
+    {
+        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+
+        let decay = DECAY_FUNCTION.decay(hyper.learning_rate, hyper.t);
+
+        let mut this = gradient.signum() * gradient_info.m.signum() * decay;
+        this.exp();
+
+        this * gradient
+    }
+
+    fn advance_time(&mut self)
+    {
+        self.hyper.advance_time();
+    }
+
+    fn set_learning_rate(&mut self, learning_rate: f32)
+    {
+        self.hyper.learning_rate = learning_rate;
     }
 }
 

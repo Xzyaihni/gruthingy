@@ -393,6 +393,14 @@ impl MatrixWrapper
         self.0.sum()
     }
 
+    pub fn signum(&self) -> Self
+    {
+        let mut this = self.0.clone();
+        this.apply(|v| *v = v.signum());
+
+        Self(this)
+    }
+
     pub fn cap_magnitude(&self, cap: f32) -> Self
     {
         Self(self.0.cap_magnitude(cap))
