@@ -52,6 +52,8 @@ pub const LAYERS_AMOUNT: usize = 4;
 pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
 pub const DROPOUT_PROBABILITY: f32 = 0.5;
 
+pub const GRADIENT_CLIP: f32 = 1.0;
+
 pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Division;
 
 // options: SDG, Adam, AdamX
@@ -653,9 +655,7 @@ impl NeuralNetwork
 
     fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
     {
-        let gradient_clip = 1.0;
-
-        gradient.cap_magnitude(gradient_clip)
+        gradient.cap_magnitude(GRADIENT_CLIP)
     }
 
     pub fn input_expected_from_text(
