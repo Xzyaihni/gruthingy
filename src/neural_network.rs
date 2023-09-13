@@ -55,7 +55,7 @@ pub const DROPOUT_PROBABILITY: f32 = 0.5;
 pub const GRADIENT_CLIP: f32 = 1.0;
 
 // options: Power, Division
-pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Division;
+pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 
 // options: SDG, Adam, AdamX, PowerSign (garbage (maybe i did it wrong))
 pub type CurrentOptimizer = Adam;
