@@ -327,6 +327,14 @@ impl MatrixWrapper
         Self(&self.0 * rhs.borrow().0.transpose())
     }
 
+    pub fn matmul_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    {
+        let mut this = added.borrow().0.clone();
+        this.gemm(1.0, &self.0, &rhs.borrow().0, 1.0);
+
+        Self(this)
+    }
+
     pub fn max(&mut self, rhs: &Self)
     {
         self.0.zip_apply(&rhs.0, |lhs, rhs|

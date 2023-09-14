@@ -119,17 +119,17 @@ impl NetworkUnit for LSTM
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let mut forget_gate = self.weight(WeightIndex::InputForget).matmul(input)
-            + self.weight(WeightIndex::ForgetBias);
+        let mut forget_gate = self.weight(WeightIndex::InputForget)
+            .matmul_add(input, self.weight(WeightIndex::ForgetBias));
 
-        let mut update_gate = self.weight(WeightIndex::InputUpdate).matmul(input)
-            + self.weight(WeightIndex::UpdateBias);
+        let mut update_gate = self.weight(WeightIndex::InputUpdate)
+            .matmul_add(input, self.weight(WeightIndex::UpdateBias));
 
-        let mut output_gate = self.weight(WeightIndex::InputOutput).matmul(input)
-            + self.weight(WeightIndex::OutputBias);
+        let mut output_gate = self.weight(WeightIndex::InputOutput)
+            .matmul_add(input, self.weight(WeightIndex::OutputBias));
 
-        let mut memory_gate = self.weight(WeightIndex::InputMemory).matmul(input)
-            + self.weight(WeightIndex::MemoryBias);
+        let mut memory_gate = self.weight(WeightIndex::InputMemory)
+            .matmul_add(input, self.weight(WeightIndex::MemoryBias));
 
         if let Some(previous_state) = previous_state
         {

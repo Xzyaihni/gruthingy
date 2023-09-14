@@ -172,6 +172,7 @@ enum LayerOps
     Mul{lhs: LayerChild, rhs: LayerChild},
     Div{lhs: LayerChild, rhs: LayerChild},
     Matmul{lhs: LayerType, rhs: LayerType},
+    MatmulAdd{lhs: LayerType, rhs: LayerType, added: LayerType},
     SoftmaxCrossEntropy{
         values: LayerType,
         softmaxed_values: LayerInnerType,
@@ -735,6 +736,33 @@ where
                     let rhs_d = unsafe{ rhs_d.unwrap_unchecked() };
 
                     rhs.derivatives(rhs_d.into());
+                }
+            },
+            LayerOps::MatmulAdd{mut lhs, mut rhs, mut added} =>
+            {
+                let gradient: LayerInnerType = gradient.try_into()
+                    .expect("matmul must be a tensor");
+                
+                let rhs_cg = rhs.is_gradient();
+                let rhs_d = rhs_cg.then(|| lhs.value().matmul_transposed(&gradient));
+
+                if lhs.is_gradient()
+                {
+                    let d = gradient.matmul_by_transposed(&*rhs.value());
+                    lhs.derivatives(d.into());
+                }
+
+                if rhs_cg
+                {
+                    debug_assert!(rhs_d.is_some());
+                    let rhs_d = unsafe{ rhs_d.unwrap_unchecked() };
+
+                    rhs.derivatives(rhs_d.into());
+                }
+
+                if added.is_gradient()
+                {
+                    added.derivatives(gradient.into());
                 }
             },
             LayerOps::SumTensor(mut x) =>
@@ -1387,6 +1415,43 @@ impl LayerType
         let rhs = rhs.borrow();
 
         op_impl_inner!(self, rhs, Self, Matmul, matmul)
+    }
+
+    pub fn matmul_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    {
+        let rhs = rhs.borrow();
+        let added = added.borrow();
+
+        let value = {
+            let rhs = rhs.value();
+            let added = added.value();
+
+            self.value().matmul_add(&*rhs, &*added)
+        };
+
+        let is_lhs_gradient = self.is_gradient();
+        let is_rhs_gradient = rhs.is_gradient();
+        let is_added_gradient = added.is_gradient();
+
+        let is_gradient = is_lhs_gradient || is_rhs_gradient || is_added_gradient;
+
+        let ops = if is_gradient
+        {
+            LayerOps::MatmulAdd{
+                lhs: self.into_child(is_lhs_gradient),
+                rhs: rhs.into_child(is_rhs_gradient),
+                added: added.into_child(is_added_gradient)
+            }
+        } else
+        {
+            LayerOps::None
+        };
+
+        Self::new_inner(
+            value,
+            ops,
+            is_gradient
+        )
     }
 
     pub fn dot(self, rhs: Self) -> ScalarType
