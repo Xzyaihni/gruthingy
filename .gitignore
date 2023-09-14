@@ -1,7 +1,7 @@
 /target
 callgrind.*
 vgcore*
-network*
+/network*
 *.ppm
 test*
 /backup_networks

@@ -1536,10 +1536,24 @@ impl LayerType
 mod tests
 {
     use super::*;
-    use crate::neural_network::gru::tests::close_enough_loose;
 
     const LAYER_PREV: usize = 10;
     const LAYER_CURR: usize = 10;
+
+    pub fn close_enough_loose(a: f32, b: f32, epsilon: f32) -> bool
+    {
+        if a == 0.0 || a == -0.0
+        {
+            return b.abs() < epsilon;
+        }
+
+        if b == 0.0 || b == -0.0
+        {
+            return a.abs() < epsilon;
+        }
+
+        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
+    }
 
     fn compare_single(correct: f32, calculated: f32)
     {

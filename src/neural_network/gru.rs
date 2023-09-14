@@ -201,21 +201,6 @@ pub mod tests
         ((a - b).abs() / (a.abs() + b.abs())) < epsilon
     }
 
-    pub fn close_enough_loose(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if a == 0.0 || a == -0.0
-        {
-            return b.abs() < epsilon;
-        }
-
-        if b == 0.0 || b == -0.0
-        {
-            return a.abs() < epsilon;
-        }
-
-        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
-
     #[allow(dead_code)]
     pub fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
     {
