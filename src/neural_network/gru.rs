@@ -107,14 +107,14 @@ impl NetworkUnit for GRU
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let mut update_gate = self.weight(WeightIndex::InputUpdate).matmul(input)
-            + self.weight(WeightIndex::UpdateBias);
+        let mut update_gate = self.weight(WeightIndex::InputUpdate)
+            .matmul_add(input, self.weight(WeightIndex::UpdateBias));
 
-        let mut reset_gate = self.weight(WeightIndex::InputReset).matmul(input)
-            + self.weight(WeightIndex::ResetBias);
+        let mut reset_gate = self.weight(WeightIndex::InputReset)
+            .matmul_add(input, self.weight(WeightIndex::ResetBias));
 
-        let mut activation_gate = self.weight(WeightIndex::InputActivation).matmul(input)
-            + self.weight(WeightIndex::ActivationBias);
+        let mut activation_gate = self.weight(WeightIndex::InputActivation)
+            .matmul_add(input, self.weight(WeightIndex::ActivationBias));
 
         if let Some(previous_state) = previous_state
         {
