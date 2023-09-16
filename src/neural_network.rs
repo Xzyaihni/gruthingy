@@ -344,7 +344,7 @@ pub trait Optimizer
     type HyperParams;
     type WeightParam;
 
-    fn new(words_vector_size: usize) -> Self;
+    fn new() -> Self;
 
     fn gradient_to_change_indexed(
         &mut self,
@@ -374,7 +374,7 @@ impl Optimizer for SGD
     type HyperParams = f32;
     type WeightParam = ();
 
-    fn new(_words_vector_size: usize) -> Self
+    fn new() -> Self
     {
         Self{learning_rate: 0.001}
     }
@@ -442,11 +442,11 @@ impl Optimizer for PowerSign
     type HyperParams = PowerSignHyperparams;
     type WeightParam = PowerSignGradientInfo;
 
-    fn new(words_vector_size: usize) -> Self
+    fn new() -> Self
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            PowerSignGradientsContainer::new_container(words_vector_size)
+            PowerSignGradientsContainer::new_container()
         }).collect::<Vec<_>>();
 
         let hyper = PowerSignHyperparams::new();
@@ -535,11 +535,11 @@ impl Optimizer for AdamX
     type HyperParams = AdamXHyperparams;
     type WeightParam = AdamXGradientInfo;
 
-    fn new(words_vector_size: usize) -> Self
+    fn new() -> Self
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            AdamXGradientsContainer::new_container(words_vector_size)
+            AdamXGradientsContainer::new_container()
         }).collect::<Vec<_>>();
 
         let hyper = AdamXHyperparams::new();
@@ -647,11 +647,11 @@ impl Optimizer for Adam
     type HyperParams = AdamHyperparams;
     type WeightParam = AdamGradientInfo;
 
-    fn new(words_vector_size: usize) -> Self
+    fn new() -> Self
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            AdamGradientsContainer::new_container(words_vector_size)
+            AdamGradientsContainer::new_container()
         }).collect::<Vec<_>>();
 
         let hyper = AdamHyperparams::new();
@@ -712,10 +712,8 @@ impl NeuralNetwork
 {
     pub fn new(dictionary: DictionaryType) -> Self
     {
-        let words_vector_size = dictionary.words_amount_trait();
-
-        let network = Network::new(words_vector_size);
-        let optimizer = CurrentOptimizer::new(words_vector_size);
+        let network = Network::new();
+        let optimizer = CurrentOptimizer::new();
 
         Self{dictionary, network, optimizer}
     }

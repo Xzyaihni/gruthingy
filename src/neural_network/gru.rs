@@ -16,6 +16,7 @@ use crate::{
         ScalarType,
         LayerInnerType,
         HIDDEN_AMOUNT,
+        INPUT_SIZE,
         network::{NetworkOutput, NewableLayer, WeightInfo},
         network_unit::NetworkUnit
     }
@@ -82,7 +83,7 @@ impl NetworkUnit for GRU
     where
         T: 'a;
 
-    fn new(input_size: usize) -> Self
+    fn new() -> Self
     {
         let weights_init = |previous: f32|
         {
@@ -93,9 +94,9 @@ impl NetworkUnit for GRU
 
         WEIGHTS_INFO.into_iter().map(|(previous, current, prev_layer)|
         {
-            let previous = previous.into_value(input_size);
-            let current = current.into_value(input_size);
-            let prev_layer = prev_layer.map(|prev_layer| prev_layer.into_value(input_size));
+            let previous = previous.into_value();
+            let current = current.into_value();
+            let prev_layer = prev_layer.map(|prev_layer| prev_layer.into_value());
 
             LayerType::new_diff(
                 if let Some(prev_layer) = prev_layer
@@ -159,18 +160,19 @@ impl NetworkUnit for GRU
         }
     }
 
-    fn weights_size(&self, input_size: usize) -> Vec<WeightsSize<&LayerType>>
+    fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>
     {
-        self.inner_weights_size(input_size).collect()
+        self.inner_weights_size().collect()
     }
 
-    fn weights_info(&self, input_size: usize) -> Vec<WeightsNamed<&LayerType>>
+    fn weights_info(&self) -> Vec<WeightsNamed<&LayerType>>
     {
-        self.inner_weights_info(input_size).collect()
+        self.inner_weights_info().collect()
     }
 
-    fn parameters_amount(&self, i: u128) -> u128
+    fn parameters_amount(&self) -> u128
     {
+        let i = INPUT_SIZE as u128;
         let h = HIDDEN_AMOUNT as u128;
 
         // i hope i calculated this right

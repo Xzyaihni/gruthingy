@@ -26,7 +26,7 @@ where
         Self: 'a,
         T: 'a;
 
-    fn new(input_size: usize) -> Self;
+    fn new() -> Self;
 
     fn feedforward_unit(
         &mut self,
@@ -78,10 +78,10 @@ where
         output
     }
 
-    fn weights_size(&self, input_size: usize) -> Vec<WeightsSize<&LayerType>>;
-    fn weights_info(&self, input_size: usize) -> Vec<WeightsNamed<&LayerType>>;
+    fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>;
+    fn weights_info(&self) -> Vec<WeightsNamed<&LayerType>>;
 
-    fn parameters_amount(&self, inputs_amount: u128) -> u128;
+    fn parameters_amount(&self) -> u128;
 
     fn iter<'a>(&'a self) -> Self::Iter<'a, LayerType>;
     fn iter_mut<'a>(&'a mut self) -> Self::IterMut<'a, LayerType>;
@@ -91,11 +91,11 @@ where
         self.iter_mut().for_each(f);
     }
 
-    fn clone_weights_with_info<F>(&self, mut f: F, input_size: usize) -> Self
+    fn clone_weights_with_info<F>(&self, mut f: F) -> Self
     where
         F: FnMut(&LayerType, WeightsSize<&LayerType>) -> LayerType
     {
-        self.iter().zip(self.weights_size(input_size).into_iter()).map(|(layer, info)|
+        self.iter().zip(self.weights_size().into_iter()).map(|(layer, info)|
         {
             f(layer, info)
         }).collect()

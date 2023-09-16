@@ -12,6 +12,7 @@ use crate::neural_network::{
     LayerInnerType,
     LAYERS_AMOUNT,
     HIDDEN_AMOUNT,
+    INPUT_SIZE,
     DROPOUT_PROBABILITY,
     DROPCONNECT_PROBABILITY,
     network_unit::NetworkUnit
@@ -27,12 +28,12 @@ pub enum WeightInfo
 
 impl WeightInfo
 {
-    pub fn into_value(self, input_size: usize) -> usize
+    pub fn into_value(self) -> usize
     {
         match self
         {
             Self::Hidden => HIDDEN_AMOUNT,
-            Self::Input => input_size,
+            Self::Input => INPUT_SIZE,
             Self::One => 1
         }
     }
@@ -117,12 +118,12 @@ macro_rules! create_weights_container
         impl<T: NewableLayer> WeightsContainer<T>
         {
             #[allow(dead_code)]
-            pub fn new_container(input_size: usize) -> Self
+            pub fn new_container() -> Self
             {
                 $weights_info.into_iter().map(|(previous, current, _prev_layer)|
                 {
-                    let previous = previous.into_value(input_size);
-                    let current = current.into_value(input_size);
+                    let previous = previous.into_value();
+                    let current = current.into_value();
 
                     T::new(previous, current)
                 }).collect()
@@ -131,16 +132,13 @@ macro_rules! create_weights_container
 
         impl<T> WeightsContainer<T>
         {
-            pub fn inner_weights_size(
-                &self,
-                input_size: usize
-            ) -> impl Iterator<Item=WeightsSize<&T>> + '_
+            pub fn inner_weights_size(&self) -> impl Iterator<Item=WeightsSize<&T>> + '_
             {
                 self.0.iter().zip($weights_info.into_iter()).enumerate()
                     .map(move |(index, (weights, (previous, current, _prev_layer)))|
                     {
-                        let previous = previous.into_value(input_size);
-                        let current = current.into_value(input_size);
+                        let previous = previous.into_value();
+                        let current = current.into_value();
 
                         let this_enum = $index_enum::from_repr(index).unwrap();
 
@@ -153,12 +151,9 @@ macro_rules! create_weights_container
                     })
             }
 
-            pub fn inner_weights_info(
-                &self,
-                input_size: usize
-            ) -> impl Iterator<Item=WeightsNamed<&T>> + '_
+            pub fn inner_weights_info(&self) -> impl Iterator<Item=WeightsNamed<&T>> + '_
             {
-                self.inner_weights_size(input_size).enumerate()
+                self.inner_weights_size().enumerate()
                     .map(move |(index, weights_size)|
                     {
                         let this_enum = $index_enum::from_repr(index).unwrap();
@@ -236,8 +231,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> NetworkDropped<Layer>
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Network<Layer>
 {
-    layers: Vec<Layer>,
-    word_vector_size: usize
+    layers: Vec<Layer>
 }
 
 impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
@@ -261,15 +255,12 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
                 {
                     weights.recreate()
                 }
-            }, self.word_vector_size);
+            });
 
             layer
         }).collect::<Vec<Layer>>();
 
-        NetworkDropped(Self{
-            layers,
-            word_vector_size: self.word_vector_size
-        })
+        NetworkDropped(Self{layers})
     }
 
     pub fn clear(&mut self)
@@ -303,7 +294,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
     {
         self.layers.iter().map(|layer|
         {
-            layer.weights_info(self.word_vector_size)
+            layer.weights_info()
         }).collect()
     }
 
@@ -312,7 +303,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
     {
         self.layers.iter().map(|layer|
         {
-            layer.parameters_amount(self.word_vector_size as u128)
+            layer.parameters_amount()
         }).sum()
     }
 
@@ -450,7 +441,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
         let mut output: Option<ScalarType> = None;
         let mut previous_states: Option<Vec<Layer::State>> = None;
 
-        let dropout_masks = self.create_dropout_masks(self.word_vector_size, DROPOUT_PROBABILITY);
+        let dropout_masks = self.create_dropout_masks(INPUT_SIZE, DROPOUT_PROBABILITY);
 
         for (this_input, mut this_output) in input
         {
@@ -525,7 +516,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
         let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
         let mut previous_state: Option<Vec<_>> = None;
 
-        let dropout_masks = self.create_dropout_masks(self.word_vector_size, 0.0);
+        let dropout_masks = self.create_dropout_masks(INPUT_SIZE, 0.0);
 
         for this_input in input
         {
@@ -583,14 +574,13 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
 
 impl<Layer: NetworkUnit> Network<Layer>
 {
-    pub fn new(word_vector_size: usize) -> Self
+    pub fn new() -> Self
     {
         let layers: Vec<_> =
-            (0..LAYERS_AMOUNT).map(|_| Layer::new(word_vector_size)).collect();
+            (0..LAYERS_AMOUNT).map(|_| Layer::new()).collect();
 
         Self{
-            layers,
-            word_vector_size
+            layers
         }
     }
 }
