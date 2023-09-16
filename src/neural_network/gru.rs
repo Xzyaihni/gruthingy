@@ -72,7 +72,15 @@ create_weights_container!{WeightIndex, WEIGHTS_INFO}
 impl NetworkUnit for GRU
 {
     type State = LayerType;
-    type WeightsContainer<T> = WeightsContainer<T>;
+    type ThisWeightsContainer<T> = WeightsContainer<T>;
+
+    type Iter<'a, T> = std::slice::Iter<'a, T>
+    where
+        T: 'a;
+
+    type IterMut<'a, T> = std::slice::IterMut<'a, T>
+    where
+        T: 'a;
 
     fn new(input_size: usize) -> Self
     {
@@ -169,14 +177,14 @@ impl NetworkUnit for GRU
         (4 * i * h) + (3 * h * h) + (3 * h)
     }
 
-    fn weights(&self) -> &[LayerType]
+    fn iter(&self) -> Self::Iter<'_, LayerType>
     {
-        &self.0
+        self.0.iter()
     }
 
-    fn weights_mut(&mut self) -> &mut [LayerType]
+    fn iter_mut(&mut self) -> Self::IterMut<'_, LayerType>
     {
-        &mut self.0
+        self.0.iter_mut()
     }
 }
 

@@ -214,7 +214,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> NetworkDropped<Layer>
     pub fn gradients(
         &mut self,
         input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
-    ) -> (f32, Vec<Layer::WeightsContainer<LayerInnerType>>)
+    ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
     {
         self.0.clear();
 
@@ -226,8 +226,8 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> NetworkDropped<Layer>
 
         let gradients = self.0.layers.iter_mut().map(|layer|
         {
-            layer.weights_mut().iter_mut().map(|weight| weight.take_gradient()).collect()
-        }).collect();
+            layer.map_weights_mut(|weight| weight.take_gradient())
+        }).collect::<Vec<_>>();
 
         (loss_value, gradients)
     }
@@ -246,15 +246,13 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
     {
         let layers = self.layers.iter().map(|layer|
         {
-            let weights_size = layer.weights_size(self.word_vector_size);
-
-            layer.weights().iter().zip(weights_size).map(|(weights, weights_size)|
+            let layer: Layer = layer.clone_weights_with_info(|weights, info|
             {
-                if weights_size.is_hidden
+                if info.is_hidden
                 {
                     let dropconnect_mask = self.create_dropout_mask(
-                        weights_size.previous_size,
-                        weights_size.current_size,
+                        info.previous_size,
+                        info.current_size,
                         DROPCONNECT_PROBABILITY
                     );
 
@@ -263,8 +261,10 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
                 {
                     weights.recreate()
                 }
-            }).collect::<Layer>()
-        }).collect::<Vec<_>>();
+            }, self.word_vector_size);
+
+            layer
+        }).collect::<Vec<Layer>>();
 
         NetworkDropped(Self{
             layers,
@@ -481,7 +481,7 @@ impl<Layer: NetworkUnit + FromIterator<LayerType>> Network<Layer>
     pub fn gradients(
         &mut self,
         input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
-    ) -> (f32, Vec<Layer::WeightsContainer<LayerInnerType>>)
+    ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
     {
         let mut dropped = self.dropconnected();
 

@@ -9,9 +9,22 @@ use crate::neural_network::{
 
 
 pub trait NetworkUnit
+where
+    Self: Sized + FromIterator<LayerType>
 {
     type State;
-    type WeightsContainer<T>: IntoIterator<Item=T> + FromIterator<T>;
+    // i could probably rewrite stuff to remove this but im lazy
+    type ThisWeightsContainer<T>: FromIterator<T>;
+
+    type Iter<'a, T>: Iterator<Item=&'a T>
+    where
+        Self: 'a,
+        T: 'a;
+
+    type IterMut<'a, T>: Iterator<Item=&'a mut T>
+    where
+        Self: 'a,
+        T: 'a;
 
     fn new(input_size: usize) -> Self;
 
@@ -70,21 +83,43 @@ pub trait NetworkUnit
 
     fn parameters_amount(&self, inputs_amount: u128) -> u128;
 
-    fn weights(&self) -> &[LayerType];
-    fn weights_mut(&mut self) -> &mut [LayerType];
+    fn iter<'a>(&'a self) -> Self::Iter<'a, LayerType>;
+    fn iter_mut<'a>(&'a mut self) -> Self::IterMut<'a, LayerType>;
+
+    fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F)
+    {
+        self.iter_mut().for_each(f);
+    }
+
+    fn clone_weights_with_info<F>(&self, mut f: F, input_size: usize) -> Self
+    where
+        F: FnMut(&LayerType, WeightsSize<&LayerType>) -> LayerType
+    {
+        self.iter().zip(self.weights_size(input_size).into_iter()).map(|(layer, info)|
+        {
+            f(layer, info)
+        }).collect()
+    }
+
+    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::ThisWeightsContainer<U>
+    where
+        F: FnMut(&mut LayerType) -> U
+    {
+        self.iter_mut().map(f).collect()
+    }
 
     fn clear(&mut self)
     {
-        self.weights_mut().iter_mut().for_each(|v| v.clear());
+        self.for_each_weight(|v| v.clear());
     }
 
     fn enable_gradients(&mut self)
     {
-        self.weights_mut().iter_mut().for_each(|v| v.enable_gradients());
+        self.for_each_weight(|v| v.enable_gradients());
     }
 
     fn disable_gradients(&mut self)
     {
-        self.weights_mut().iter_mut().for_each(|v| v.disable_gradients());
+        self.for_each_weight(|v| v.disable_gradients());
     }
 }

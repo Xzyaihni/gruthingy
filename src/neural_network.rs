@@ -35,13 +35,13 @@ pub use containers::{
 #[allow(unused_imports)]
 use gru::GRU;
 
-#[allow(unused_imports)]
-use lstm::LSTM;
+// #[allow(unused_imports)]
+// use lstm::LSTM;
 
 mod network_unit;
 mod network;
 mod gru;
-mod lstm;
+// mod lstm;
 
 pub mod containers;
 
@@ -64,7 +64,7 @@ pub type CurrentOptimizer = Adam;
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 // options: GRU, LSTM
-pub type CurrentNetworkUnit = LSTM;
+pub type CurrentNetworkUnit = GRU;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
@@ -328,10 +328,10 @@ impl NewableLayer for PowerSignGradientInfo
     }
 }
 
-type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<LayerInnerType>;
-type AdamGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<AdamGradientInfo>;
-type AdamXGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<AdamXGradientInfo>;
-type PowerSignGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::WeightsContainer<PowerSignGradientInfo>;
+type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<LayerInnerType>;
+type AdamGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<AdamGradientInfo>;
+type AdamXGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<AdamXGradientInfo>;
+type PowerSignGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<PowerSignGradientInfo>;
 
 pub trait Optimizer
 {
