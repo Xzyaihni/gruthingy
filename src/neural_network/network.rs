@@ -35,21 +35,26 @@ pub struct WeightsNamed<T>
 #[macro_export]
 macro_rules! create_weights_container
 {
-    ($index_enum:ident, $weights_info:expr) =>
+    ($(($name:ident, $is_hidden:expr, $previous_size:expr, $current_size:expr, $previous_layer:expr)),+) =>
     {
-        use crate::neural_network::network::{WeightsNamed, WeightsSize};
+        use crate::neural_network::network::{NewableLayer, WeightsNamed, WeightsSize};
 
         #[derive(Debug, Serialize, Deserialize)]
-        pub struct WeightsContainer<T>([T; $index_enum::COUNT]);
+        pub struct WeightsContainer<T>
+        {
+            $(
+                $name: T,
+            )+
+        }
 
         impl<T> IntoIterator for WeightsContainer<T>
         {
             type Item = T;
-            type IntoIter = array::IntoIter<T, { $index_enum::COUNT }>;
+            type IntoIter = std::vec::IntoIter<T>;
 
             fn into_iter(self) -> Self::IntoIter
             {
-                self.0.into_iter()
+                todo!();
             }
         }
 
@@ -57,18 +62,7 @@ macro_rules! create_weights_container
         {
             fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self
             {
-                let v = iter.into_iter().collect::<Vec<_>>();
-
-                let v_len = v.len();
-                let inner = v.try_into().map_err(|_|
-                {
-                    format!(
-                        "iterator length doesnt match (expected {}, got {v_len})",
-                        $index_enum::COUNT
-                    )
-                }).unwrap();
-
-                Self(inner)
+                todo!();
             }
         }
 
@@ -76,10 +70,7 @@ macro_rules! create_weights_container
         {
             fn div_assign(&mut self, rhs: f32)
             {
-                self.0.iter_mut().for_each(|value|
-                {
-                    *value /= rhs;
-                });
+                todo!();
             }
         }
 
@@ -87,10 +78,7 @@ macro_rules! create_weights_container
         {
             fn add_assign(&mut self, rhs: Self)
             {
-                self.0.iter_mut().zip(rhs.0.into_iter()).for_each(|(value, rhs)|
-                {
-                    *value += rhs;
-                });
+                todo!();
             }
         }
 
@@ -99,10 +87,7 @@ macro_rules! create_weights_container
             #[allow(dead_code)]
             pub fn new_container() -> Self
             {
-                $weights_info.into_iter().map(|(previous, current, _prev_layer)|
-                {
-                    T::new(previous, current)
-                }).collect()
+                todo!();
             }
         }
 
@@ -110,55 +95,18 @@ macro_rules! create_weights_container
         {
             pub fn inner_weights_size(&self) -> impl Iterator<Item=WeightsSize<&T>> + '_
             {
-                self.0.iter().zip($weights_info.into_iter()).enumerate()
-                    .map(move |(index, (weights, (previous, current, _prev_layer)))|
-                    {
-                        let this_enum = $index_enum::from_repr(index).unwrap();
-
-                        WeightsSize{
-                            weights,
-                            previous_size: previous,
-                            current_size: current,
-                            is_hidden: this_enum.is_hidden()
-                        }
-                    })
+                std::iter::once(todo!())
             }
 
             pub fn inner_weights_info(&self) -> impl Iterator<Item=WeightsNamed<&T>> + '_
             {
-                self.inner_weights_size().enumerate()
-                    .map(move |(index, weights_size)|
-                    {
-                        let this_enum = $index_enum::from_repr(index).unwrap();
-                        let name = format!("{this_enum:?}");
-
-                        WeightsNamed{
-                            name,
-                            weights_size
-                        }
-                    })
+                std::iter::once(todo!())
             }
 
             #[allow(dead_code)]
             pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
             {
-                self.0.iter_mut()
-            }
-
-            pub fn weight(&self, index: WeightIndex) -> &T
-            {
-                self.raw_index(index as usize)
-            }
-
-            pub fn raw_index(&self, index: usize) -> &T
-            {
-                &self.0[index]
-            }
-
-            #[allow(dead_code)]
-            pub fn raw_index_mut(&mut self, index: usize) -> &mut T
-            {
-                &mut self.0[index]
+                std::iter::once(todo!())
             }
         }
     }

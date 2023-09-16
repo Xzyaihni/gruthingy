@@ -17,7 +17,7 @@ use crate::{
         LayerInnerType,
         HIDDEN_AMOUNT,
         INPUT_SIZE,
-        network::{NetworkOutput, NewableLayer},
+        network::NetworkOutput,
         network_unit::NetworkUnit
     }
 };
@@ -25,50 +25,18 @@ use crate::{
 
 pub type GRU = WeightsContainer<LayerType>;
 
-#[repr(usize)]
-#[derive(Debug, EnumCount, FromRepr)]
-pub enum WeightIndex
-{
-    InputUpdate = 0,
-    InputReset,
-    InputActivation,
-    HiddenUpdate,
-    HiddenReset,
-    HiddenActivation,
-    UpdateBias,
-    ResetBias,
-    ActivationBias,
-    Output
+create_weights_container!{
+    (input_update, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (input_reset, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (input_activation, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (hidden_update, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (hidden_reset, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (hidden_activation, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (update_bias, false, HIDDEN_AMOUNT, 1, None),
+    (reset_bias, false, HIDDEN_AMOUNT, 1, None),
+    (activation_bias, false, HIDDEN_AMOUNT, 1, None),
+    (output, false, INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT))
 }
-
-impl WeightIndex
-{
-    pub fn is_hidden(self) -> bool
-    {
-        match self
-        {
-            Self::HiddenUpdate => true,
-            Self::HiddenReset => true,
-            Self::HiddenActivation => true,
-            _ => false
-        }
-    }
-}
-
-const WEIGHTS_INFO: [(usize, usize, Option<usize>); 10] = [
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, 1, None),
-    (HIDDEN_AMOUNT, 1, None),
-    (HIDDEN_AMOUNT, 1, None),
-    (INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-];
-
-create_weights_container!{WeightIndex, WEIGHTS_INFO}
 
 impl NetworkUnit for GRU
 {
@@ -85,7 +53,7 @@ impl NetworkUnit for GRU
 
     fn new() -> Self
     {
-        let weights_init = |previous: f32|
+        /*let weights_init = |previous: f32|
         {
             let v = 1.0 / previous.sqrt();
 
@@ -103,7 +71,7 @@ impl NetworkUnit for GRU
                     LayerInnerType::new(previous, current)
                 }
             )
-        }).collect()
+        }).collect()*/todo!();
     }
 
     fn feedforward_unit(
@@ -112,7 +80,7 @@ impl NetworkUnit for GRU
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let mut update_gate = self.weight(WeightIndex::InputUpdate)
+        /*let mut update_gate = self.weight(WeightIndex::InputUpdate)
             .matmul_add(input, self.weight(WeightIndex::UpdateBias));
 
         let mut reset_gate = self.weight(WeightIndex::InputReset)
@@ -153,7 +121,7 @@ impl NetworkUnit for GRU
         NetworkOutput{
             state,
             output: output_untrans
-        }
+        }*/todo!();
     }
 
     fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>
@@ -177,12 +145,12 @@ impl NetworkUnit for GRU
 
     fn iter(&self) -> Self::Iter<'_, LayerType>
     {
-        self.0.iter()
+        todo!();
     }
 
     fn iter_mut(&mut self) -> Self::IterMut<'_, LayerType>
     {
-        self.0.iter_mut()
+        todo!();
     }
 }
 

@@ -461,8 +461,7 @@ impl Optimizer for PowerSign
         gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        let gradient_info = self.gradients_info[layer_index]
-            .raw_index_mut(weight_index);
+        let gradient_info = todo!();
 
         Self::gradient_to_change(gradient_info, gradient, &self.hyper)
     }
@@ -554,8 +553,7 @@ impl Optimizer for AdamX
         gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        let gradient_info = self.gradients_info[layer_index]
-            .raw_index_mut(weight_index);
+        let gradient_info = todo!();
 
         Self::gradient_to_change(gradient_info, gradient, &self.hyper)
     }
@@ -666,8 +664,7 @@ impl Optimizer for Adam
         gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        let gradient_info = self.gradients_info[layer_index]
-            .raw_index_mut(weight_index);
+        let gradient_info = todo!();
 
         Self::gradient_to_change(gradient_info, gradient, &self.hyper)
     }

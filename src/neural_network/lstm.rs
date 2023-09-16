@@ -16,7 +16,7 @@ use crate::{
         LayerInnerType,
         HIDDEN_AMOUNT,
         INPUT_SIZE,
-        network::{NetworkOutput, NewableLayer},
+        network::NetworkOutput,
         network_unit::NetworkUnit
     }
 };
@@ -24,57 +24,21 @@ use crate::{
 
 pub type LSTM = WeightsContainer<LayerType>;
 
-#[repr(usize)]
-#[derive(Debug, EnumCount, FromRepr)]
-pub enum WeightIndex
-{
-    InputUpdate = 0,
-    InputForget,
-    InputOutput,
-    InputMemory,
-    HiddenUpdate,
-    HiddenForget,
-    HiddenOutput,
-    HiddenMemory,
-    UpdateBias,
-    ForgetBias,
-    OutputBias,
-    MemoryBias,
-    Output
+create_weights_container!{
+    (input_update, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (input_forget, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (input_output, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (input_memory, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (hidden_update, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (hidden_forget, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (hidden_output, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (hidden_memory, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (update_bias, false, HIDDEN_AMOUNT, 1, None),
+    (forget_bias, false, HIDDEN_AMOUNT, 1, None),
+    (output_bias, false, HIDDEN_AMOUNT, 1, None),
+    (memory_bias, false, HIDDEN_AMOUNT, 1, None),
+    (output, false, INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT))
 }
-
-impl WeightIndex
-{
-    pub fn is_hidden(self) -> bool
-    {
-        match self
-        {
-            Self::HiddenUpdate => true,
-            Self::HiddenForget => true,
-            Self::HiddenOutput => true,
-            Self::HiddenMemory => true,
-            _ => false
-        }
-    }
-}
-
-const WEIGHTS_INFO: [(usize, usize, Option<usize>); 13] = [
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (HIDDEN_AMOUNT, 1, None),
-    (HIDDEN_AMOUNT, 1, None),
-    (HIDDEN_AMOUNT, 1, None),
-    (HIDDEN_AMOUNT, 1, None),
-    (INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-];
-
-create_weights_container!{WeightIndex, WEIGHTS_INFO}
 
 pub struct LSTMState
 {
@@ -97,7 +61,7 @@ impl NetworkUnit for LSTM
 
     fn new() -> Self
     {
-        let weights_init = |previous: f32|
+        /*let weights_init = |previous: f32|
         {
             let v = 1.0 / previous.sqrt();
 
@@ -115,7 +79,7 @@ impl NetworkUnit for LSTM
                     LayerInnerType::new(previous, current)
                 }
             )
-        }).collect()
+        }).collect()*/todo!();
     }
 
     fn feedforward_unit(
@@ -124,7 +88,7 @@ impl NetworkUnit for LSTM
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let mut forget_gate = self.weight(WeightIndex::InputForget)
+        /*let mut forget_gate = self.weight(WeightIndex::InputForget)
             .matmul_add(input, self.weight(WeightIndex::ForgetBias));
 
         let mut update_gate = self.weight(WeightIndex::InputUpdate)
@@ -176,7 +140,7 @@ impl NetworkUnit for LSTM
         NetworkOutput{
             state,
             output: output_untrans
-        }
+        }*/todo!();
     }
 
     fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>
@@ -199,12 +163,12 @@ impl NetworkUnit for LSTM
 
     fn iter(&self) -> Self::Iter<'_, LayerType>
     {
-        self.0.iter()
+        todo!();
     }
 
     fn iter_mut(&mut self) -> Self::IterMut<'_, LayerType>
     {
-        self.0.iter_mut()
+        todo!();
     }
 }
 
@@ -254,24 +218,25 @@ mod tests
         Output
         */
 
-        let mut lstm = WeightsContainer([
-            one_weight(1.65),
-            one_weight(1.63),
-            one_weight(-0.19),
-            one_weight(0.94),
+        let mut lstm = WeightsContainer
+        {
+            input_update: one_weight(1.65),
+            input_forget: one_weight(1.63),
+            input_output: one_weight(-0.19),
+            input_memory: one_weight(0.94),
 
-            one_weight(2.00),
-            one_weight(2.70),
-            one_weight(4.38),
-            one_weight(1.41),
+            hidden_update: one_weight(2.00),
+            hidden_forget: one_weight(2.70),
+            hidden_output: one_weight(4.38),
+            hidden_memory: one_weight(1.41),
 
-            one_weight(0.62),
-            one_weight(1.62),
-            one_weight(0.59),
-            one_weight(-0.32),
+            update_bias: one_weight(0.62),
+            forget_bias: one_weight(1.62),
+            output_bias: one_weight(0.59),
+            memory_bias: one_weight(-0.32),
 
-            one_weight(1.0)
-        ]);
+            output: one_weight(1.0)
+        };
 
         let state = LSTMState{
             memory: one_weight(2.0),
