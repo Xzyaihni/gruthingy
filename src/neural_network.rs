@@ -68,7 +68,7 @@ pub type CurrentNetworkUnit = GRU;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
-pub const DICTIONARY_TEXT: &'static [u8] = include_bytes!("../ascii_dictionary.txt");
+pub const DICTIONARY_TEXT: &'static str = include_str!("../ascii_dictionary.txt");
 
 // options: WordDictionary, ByteDictionary, CharDictionary
 pub type DictionaryType = CharDictionary;
@@ -230,7 +230,10 @@ impl<'a> Predictor<'a>
 
         let mut previous_state: Option<_> = None;
 
-        let dropout_masks = network.create_dropout_masks(self.dictionary.words_amount(), 0.0);
+        let dropout_masks = network.create_dropout_masks(
+            self.dictionary.words_amount_trait(),
+            0.0
+        );
 
         for i in 0..(input_amount + self.predict_amount)
         {
@@ -707,7 +710,7 @@ impl NeuralNetwork
 {
     pub fn new(dictionary: DictionaryType) -> Self
     {
-        let words_vector_size = dictionary.words_amount();
+        let words_vector_size = dictionary.words_amount_trait();
 
         let network = Network::new(words_vector_size);
         let optimizer = CurrentOptimizer::new(words_vector_size);
@@ -870,7 +873,7 @@ impl NeuralNetwork
             }
         };
 
-        println!("input vector size: {}", self.dictionary.words_amount());
+        println!("input vector size: {}", self.dictionary.words_amount_trait());
 
         println!("parameters amount: {}", self.network.parameters_amount());
 

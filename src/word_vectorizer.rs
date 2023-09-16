@@ -13,7 +13,11 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::{LayerInnerType, LayerType};
+use super::neural_network::{
+    LayerInnerType,
+    LayerType,
+    DICTIONARY_TEXT
+};
 
 
 #[allow(dead_code)]
@@ -117,17 +121,17 @@ where
 pub trait NetworkDictionary
 {
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
-    fn words_amount(&self) -> usize;
+    fn words_amount_trait(&self) -> usize;
     
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
     
     fn word_to_layer(&self, word: VectorWord) -> LayerType
     {
-        let mut layer = vec![0.0; self.words_amount()];
+        let mut layer = vec![0.0; self.words_amount_trait()];
 
         layer[word.index()] = 1.0;
 
-        LayerType::from_raw(layer, self.words_amount(), 1)
+        LayerType::from_raw(layer, self.words_amount_trait(), 1)
     }
 
     fn layer_to_word(&self, layer: LayerInnerType) -> VectorWord
@@ -154,6 +158,11 @@ impl ByteDictionary
     {
         Self{}
     }
+
+    pub const fn words_amount() -> usize
+    {
+        u8::MAX as usize + 1
+    }
 }
 
 impl NetworkDictionary for ByteDictionary
@@ -163,9 +172,9 @@ impl NetworkDictionary for ByteDictionary
         Box::new([word.index() as u8])
     }
 
-    fn words_amount(&self) -> usize
+    fn words_amount_trait(&self) -> usize
     {
-        u8::MAX as usize + 1
+        Self::words_amount()
     }
 
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>
@@ -186,11 +195,8 @@ pub struct CharDictionary
 impl CharDictionary
 {
     #[allow(dead_code)]
-    pub fn build(mut bytes: impl Read) -> Self
+    pub fn build(s: &'static str) -> Self
     {
-        let mut s = String::new();
-        bytes.read_to_string(&mut s).expect("invalid unicode in dictionary");
-
         let mut unique_chars = s.chars().collect::<Vec<char>>();
         unique_chars.sort_unstable();
         unique_chars.dedup();
@@ -200,6 +206,8 @@ impl CharDictionary
             (c, VectorWord::new(index))
         }).collect::<Bimap<_, _>>();
 
+        assert_eq!(Self::words_amount(), dictionary.len());
+
         Self{dictionary, chars_buffer: VecDeque::new(), leftover: Vec::new()}
     }
 
@@ -207,6 +215,12 @@ impl CharDictionary
     pub fn new() -> Self
     {
         unimplemented!();
+    }
+
+    pub const fn words_amount() -> usize
+    {
+        // +1 for replacement character
+        DICTIONARY_TEXT.len() + 1
     }
 
     fn character_match(&self, c: char) -> VectorWord
@@ -234,10 +248,9 @@ impl NetworkDictionary for CharDictionary
         s.as_bytes().into()
     }
 
-    fn words_amount(&self) -> usize
+    fn words_amount_trait(&self) -> usize
     {
-        // +1 for replacement character
-        self.dictionary.len() + 1
+        Self::words_amount()
     }
 
     fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>
@@ -446,7 +459,7 @@ impl NetworkDictionary for WordDictionary
         self.dictionary.by_value(&word).cloned().unwrap()
     }
 
-    fn words_amount(&self) -> usize
+    fn words_amount_trait(&self) -> usize
     {
         self.dictionary.len()
     }
@@ -534,7 +547,7 @@ mod tests
     #[test]
     fn encodes_decodes_char()
     {
-        let dictionary = CharDictionary::build("h elow / im tsngaCLcdr()lyfk".as_bytes());
+        let dictionary = CharDictionary::build("h elow / im tsngaCLcdr()lyfk");
 
         encode_decode_test_lossy(
             dictionary,
