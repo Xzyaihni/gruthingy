@@ -17,7 +17,7 @@ use crate::{
         LayerInnerType,
         HIDDEN_AMOUNT,
         INPUT_SIZE,
-        network::{NetworkOutput, NewableLayer, WeightInfo},
+        network::{NetworkOutput, NewableLayer},
         network_unit::NetworkUnit
     }
 };
@@ -55,17 +55,17 @@ impl WeightIndex
     }
 }
 
-const WEIGHTS_INFO: [(WeightInfo, WeightInfo, Option<WeightInfo>); 10] = [
-    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
-    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
-    (WeightInfo::Hidden, WeightInfo::Input, Some(WeightInfo::Input)),
-    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
-    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
-    (WeightInfo::Hidden, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
-    (WeightInfo::Hidden, WeightInfo::One, None),
-    (WeightInfo::Hidden, WeightInfo::One, None),
-    (WeightInfo::Hidden, WeightInfo::One, None),
-    (WeightInfo::Input, WeightInfo::Hidden, Some(WeightInfo::Hidden)),
+const WEIGHTS_INFO: [(usize, usize, Option<usize>); 10] = [
+    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
+    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
+    (HIDDEN_AMOUNT, 1, None),
+    (HIDDEN_AMOUNT, 1, None),
+    (HIDDEN_AMOUNT, 1, None),
+    (INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
 ];
 
 create_weights_container!{WeightIndex, WEIGHTS_INFO}
@@ -94,10 +94,6 @@ impl NetworkUnit for GRU
 
         WEIGHTS_INFO.into_iter().map(|(previous, current, prev_layer)|
         {
-            let previous = previous.into_value();
-            let current = current.into_value();
-            let prev_layer = prev_layer.map(|prev_layer| prev_layer.into_value());
-
             LayerType::new_diff(
                 if let Some(prev_layer) = prev_layer
                 {

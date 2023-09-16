@@ -11,33 +11,12 @@ use crate::neural_network::{
     ScalarType,
     LayerInnerType,
     LAYERS_AMOUNT,
-    HIDDEN_AMOUNT,
     INPUT_SIZE,
     DROPOUT_PROBABILITY,
     DROPCONNECT_PROBABILITY,
     network_unit::NetworkUnit
 };
 
-
-pub enum WeightInfo
-{
-    Hidden,
-    Input,
-    One
-}
-
-impl WeightInfo
-{
-    pub fn into_value(self) -> usize
-    {
-        match self
-        {
-            Self::Hidden => HIDDEN_AMOUNT,
-            Self::Input => INPUT_SIZE,
-            Self::One => 1
-        }
-    }
-}
 
 pub struct WeightsSize<T>
 {
@@ -122,9 +101,6 @@ macro_rules! create_weights_container
             {
                 $weights_info.into_iter().map(|(previous, current, _prev_layer)|
                 {
-                    let previous = previous.into_value();
-                    let current = current.into_value();
-
                     T::new(previous, current)
                 }).collect()
             }
@@ -137,9 +113,6 @@ macro_rules! create_weights_container
                 self.0.iter().zip($weights_info.into_iter()).enumerate()
                     .map(move |(index, (weights, (previous, current, _prev_layer)))|
                     {
-                        let previous = previous.into_value();
-                        let current = current.into_value();
-
                         let this_enum = $index_enum::from_repr(index).unwrap();
 
                         WeightsSize{
