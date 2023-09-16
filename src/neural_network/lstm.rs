@@ -15,6 +15,7 @@ use crate::{
         LayerType,
         LayerInnerType,
         HIDDEN_AMOUNT,
+        INPUT_SIZE,
         network::{NetworkOutput, NewableLayer, WeightInfo},
         network_unit::NetworkUnit
     }
@@ -84,9 +85,17 @@ pub struct LSTMState
 impl NetworkUnit for LSTM
 {
     type State = LSTMState;
-    type WeightsContainer<T> = WeightsContainer<T>;
+    type ThisWeightsContainer<T> = WeightsContainer<T>;
 
-    fn new(input_size: usize) -> Self
+    type Iter<'a, T> = std::slice::Iter<'a, T>
+    where
+        T: 'a;
+
+    type IterMut<'a, T> = std::slice::IterMut<'a, T>
+    where
+        T: 'a;
+
+    fn new() -> Self
     {
         let weights_init = |previous: f32|
         {
@@ -97,9 +106,9 @@ impl NetworkUnit for LSTM
 
         WEIGHTS_INFO.into_iter().map(|(previous, current, prev_layer)|
         {
-            let previous = previous.into_value(input_size);
-            let current = current.into_value(input_size);
-            let prev_layer = prev_layer.map(|prev_layer| prev_layer.into_value(input_size));
+            let previous = previous.into_value();
+            let current = current.into_value();
+            let prev_layer = prev_layer.map(|prev_layer| prev_layer.into_value());
 
             LayerType::new_diff(
                 if let Some(prev_layer) = prev_layer
@@ -174,31 +183,32 @@ impl NetworkUnit for LSTM
         }
     }
 
-    fn weights_size(&self, input_size: usize) -> Vec<WeightsSize<&LayerType>>
+    fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>
     {
-        self.inner_weights_size(input_size).collect()
+        self.inner_weights_size().collect()
     }
 
-    fn weights_info(&self, input_size: usize) -> Vec<WeightsNamed<&LayerType>>
+    fn weights_info(&self) -> Vec<WeightsNamed<&LayerType>>
     {
-        self.inner_weights_info(input_size).collect()
+        self.inner_weights_info().collect()
     }
 
-    fn parameters_amount(&self, i: u128) -> u128
+    fn parameters_amount(&self) -> u128
     {
+        let i = INPUT_SIZE as u128;
         let h = HIDDEN_AMOUNT as u128;
 
         (5 * i * h) + (4 * h * h) + (4 * h)
     }
 
-    fn weights(&self) -> &[LayerType]
+    fn iter(&self) -> Self::Iter<'_, LayerType>
     {
-        &self.0
+        self.0.iter()
     }
 
-    fn weights_mut(&mut self) -> &mut [LayerType]
+    fn iter_mut(&mut self) -> Self::IterMut<'_, LayerType>
     {
-        &mut self.0
+        self.0.iter_mut()
     }
 }
 
