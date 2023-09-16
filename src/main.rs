@@ -15,6 +15,7 @@ use neural_network::{
     DictionaryType,
     WeightsNamed,
     USES_DICTIONARY,
+    DICTIONARY_TEXT,
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT
 };
@@ -179,16 +180,7 @@ fn train_new(mut args: impl Iterator<Item=String>)
     
     let dictionary = if USES_DICTIONARY
     {
-        let dictionary_path = args.next()
-            .unwrap_or_else(|| complain("give path to a file with text for a dictionary"));
-
-        let dictionary_file = File::open(&dictionary_path)
-            .unwrap_or_else(|err|
-            {
-                complain(&format!("give a valid file plz, cant open {dictionary_path} ({err})"))
-            });
-
-        DictionaryType::build(dictionary_file)
+        DictionaryType::build(DICTIONARY_TEXT)
     } else
     {
         DictionaryType::new()

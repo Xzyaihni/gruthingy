@@ -68,6 +68,7 @@ pub type CurrentNetworkUnit = GRU;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
+pub const DICTIONARY_TEXT: &'static [u8] = include_bytes!("../ascii_dictionary.txt");
 
 // options: WordDictionary, ByteDictionary, CharDictionary
 pub type DictionaryType = CharDictionary;
