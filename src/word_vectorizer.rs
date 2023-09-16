@@ -206,7 +206,11 @@ impl CharDictionary
             (c, VectorWord::new(index))
         }).collect::<Bimap<_, _>>();
 
-        assert_eq!(Self::words_amount(), dictionary.len());
+        assert_eq!(
+            Self::words_amount(),
+            dictionary.len(),
+            "the dictionary has repeating characters, remove them!!"
+        );
 
         Self{dictionary, chars_buffer: VecDeque::new(), leftover: Vec::new()}
     }
@@ -350,6 +354,11 @@ impl WordDictionary
         unimplemented!();
     }
 
+    pub const fn words_amount() -> usize
+    {
+        panic!("i didnt rework WordsDictionary, ill do it later if i want")
+    }
+
     #[allow(dead_code)]
     pub fn no_defaults(words: impl Read) -> Self
     {
@@ -461,7 +470,7 @@ impl NetworkDictionary for WordDictionary
 
     fn words_amount_trait(&self) -> usize
     {
-        self.dictionary.len()
+        Self::words_amount()
     }
 
     fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>

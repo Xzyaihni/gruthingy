@@ -70,6 +70,8 @@ pub type CurrentNetworkUnit = GRU;
 pub const USES_DICTIONARY: bool = true;
 pub const DICTIONARY_TEXT: &'static str = include_str!("../ascii_dictionary.txt");
 
+pub const INPUT_SIZE: usize = DictionaryType::words_amount();
+
 // options: WordDictionary, ByteDictionary, CharDictionary
 pub type DictionaryType = CharDictionary;
 
