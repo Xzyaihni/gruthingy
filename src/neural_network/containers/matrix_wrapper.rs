@@ -7,14 +7,9 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::{SMatrix, DMatrix};
+use nalgebra::DMatrix;
 
 use super::{Softmaxer, LEAKY_SLOPE, leaky_relu_d};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatrixConstWrapper<const PREVIOUS: usize, const CURRENT: usize>(
-    SMatrix<f32, PREVIOUS, CURRENT>
-);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
