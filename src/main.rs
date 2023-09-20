@@ -510,13 +510,8 @@ fn weights_image(mut args: impl Iterator<Item=String>)
         let layer_folder = output_folder.join(layer_name);
         fs::create_dir_all(&layer_folder).unwrap();
 
-        for weights in layer
+        layer.for_each_weight(|WeightsNamed{name, weights_size}|
         {
-            let WeightsNamed{
-                name,
-                weights_size
-            } = weights;
-
             let mut image = PPMImage::new(weights_size.previous_size, weights_size.current_size);
 
             for (index, weight) in weights_size.weights.as_vec().into_iter().enumerate()
@@ -538,7 +533,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
             let full_path = layer_folder.join(filename);
 
             image.save(full_path).unwrap();
-        }
+        });
     }
 }
 

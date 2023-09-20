@@ -109,9 +109,14 @@ impl NetworkUnit for LSTM
         }*/todo!();
     }
 
+    fn weights_named_info(&self) -> Self::ThisWeightsContainer<WeightsNamed<&LayerType>>
+    {
+        self.weights_named_info_inner()
+    }
+
     fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F)
     {
-        self.for_each_weight_inner(f)
+        self.for_each_weight_mut(f)
     }
 
     fn clone_weights_with_info<F>(&self, f: F) -> Self

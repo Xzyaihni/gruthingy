@@ -85,6 +85,29 @@ macro_rules! create_weights_container
             }
         }
 
+        impl<T> WeightsContainer<T>
+        {
+            pub fn for_each_weight<F: FnMut(T)>(self, mut f: F)
+            {
+                let Self{
+                    $(
+                        $name,
+                    )+
+                } = self;
+
+                $(
+                    f($name);
+                )+
+            }
+
+            pub fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, mut f: F)
+            {
+                $(
+                    f(&mut self.$name);
+                )+
+            }
+        }
+
         impl WeightsContainer<LayerType>
         {
             pub fn new_randomized() -> Self
@@ -112,11 +135,21 @@ macro_rules! create_weights_container
                 }
             }
 
-            fn for_each_weight_inner<F: FnMut(&mut LayerType)>(&mut self, mut f: F)
+            fn weights_named_info_inner(&self) -> WeightsContainer<WeightsNamed<&LayerType>>
             {
-                $(
-                    f(&mut self.$name);
-                )+
+                WeightsContainer{
+                    $(
+                        $name: WeightsNamed{
+                            name: "$name".to_owned(),
+                            weights_size: WeightsSize{
+                                weights: &self.$name,
+                                current_size: $current_size,
+                                previous_size: $previous_size,
+                                is_hidden: $is_hidden
+                            }
+                        },
+                    )+
+                }
             }
 
             fn clone_weights_with_info_inner<F>(&self, mut f: F) -> Self
@@ -298,13 +331,14 @@ impl<Layer: NetworkUnit> Network<Layer>
         &mut self.layers
     }
 
-    pub fn weights_info(&self) -> Vec<Vec<WeightsNamed<&LayerType>>>
+    pub fn weights_info(
+        &self
+    ) -> Vec<<Layer as NetworkUnit>::ThisWeightsContainer<WeightsNamed<&LayerType>>>
     {
         self.layers.iter().map(|layer|
         {
-            todo!();
-            // layer.weights_info()
-        }).collect()
+            layer.weights_named_info()
+        }).collect::<Vec<_>>()
     }
 
     #[allow(dead_code)]

@@ -70,6 +70,8 @@ where
 
     fn parameters_amount(&self) -> u128;
 
+    fn weights_named_info(&self) -> Self::ThisWeightsContainer<WeightsNamed<&LayerType>>;
+
     fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F);
 
     fn clone_weights_with_info<F>(&self, f: F) -> Self
