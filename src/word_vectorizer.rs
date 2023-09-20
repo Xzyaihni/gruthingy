@@ -199,18 +199,43 @@ impl CharDictionary
     {
         let mut unique_chars = s.chars().collect::<Vec<char>>();
         unique_chars.sort_unstable();
-        unique_chars.dedup();
+
+        let mut repeated = Vec::new();
+        let mut chars_set = HashSet::new();
+
+        for c in DICTIONARY_TEXT.chars()
+        {
+            if !chars_set.insert(c)
+            {
+                repeated.push(c);
+            }
+        }
+
+        assert!(
+            repeated.is_empty(),
+            "remove these repeating characters from the dictionary: {}",
+            repeated.into_iter().fold(String::new(), |acc: String, c: char|
+            {
+                let fmt_c = |c|
+                {
+                    format!("'{c}' (hex {:#x})", c as u32)
+                };
+
+                if acc.is_empty()
+                {
+                    fmt_c(c)
+                } else
+                {
+                    format!("{acc}, {}", fmt_c(c))
+                }
+            })
+        );
+        assert_eq!(Self::words_amount(), unique_chars.len() + 1);
 
         let dictionary = unique_chars.into_iter().enumerate().map(|(index, c)|
         {
             (c, VectorWord::new(index))
         }).collect::<Bimap<_, _>>();
-
-        assert_eq!(
-            Self::words_amount(),
-            dictionary.len(),
-            "the dictionary has repeating characters, remove them!!"
-        );
 
         Self{dictionary, chars_buffer: VecDeque::new(), leftover: Vec::new()}
     }
