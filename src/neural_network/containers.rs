@@ -12,10 +12,13 @@ use std::{
 use serde::{Serialize, Deserialize};
 
 #[allow(unused_imports)]
-use matrix_wrapper::MatrixWrapper;
+use matrix_wrapper::{MatrixConstWrapper, MatrixWrapper};
 
 mod matrix_wrapper;
 
+
+pub type LayerConstInnerType<const PREVIOUS: usize, const CURRENT: usize> =
+    MatrixConstWrapper<PREVIOUS, CURRENT>;
 
 pub type LayerInnerType = MatrixWrapper;
 
@@ -1317,6 +1320,9 @@ impl AddAssign for ScalarType
         *self = &*self + rhs;
     }
 }
+
+pub type LayerConstType<const PREVIOUS: usize, const CURRENT: usize> =
+    DiffWrapper<LayerConstInnerType<PREVIOUS, CURRENT>>;
 
 pub type LayerType = DiffWrapper<LayerInnerType>;
 
