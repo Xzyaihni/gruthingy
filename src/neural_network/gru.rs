@@ -1,11 +1,4 @@
-use std::{
-    f32,
-    array,
-    ops::{DivAssign, AddAssign}
-};
-
-use strum::EnumCount;
-use strum_macros::{FromRepr, EnumCount};
+use std::f32;
 
 use serde::{Serialize, Deserialize};
 
@@ -13,8 +6,6 @@ use crate::{
     create_weights_container,
     neural_network::{
         LayerType,
-        ScalarType,
-        LayerInnerType,
         HIDDEN_AMOUNT,
         INPUT_SIZE,
         network::NetworkOutput,
@@ -43,35 +34,9 @@ impl NetworkUnit for GRU
     type State = LayerType;
     type ThisWeightsContainer<T> = WeightsContainer<T>;
 
-    type Iter<'a, T> = std::slice::Iter<'a, T>
-    where
-        T: 'a;
-
-    type IterMut<'a, T> = std::slice::IterMut<'a, T>
-    where
-        T: 'a;
-
     fn new() -> Self
     {
-        /*let weights_init = |previous: f32|
-        {
-            let v = 1.0 / previous.sqrt();
-
-            (fastrand::f32() * 2.0 - 1.0) * v
-        };
-
-        WEIGHTS_INFO.into_iter().map(|(previous, current, prev_layer)|
-        {
-            LayerType::new_diff(
-                if let Some(prev_layer) = prev_layer
-                {
-                    LayerInnerType::new_with(previous, current, || weights_init(prev_layer as f32))
-                } else
-                {
-                    LayerInnerType::new(previous, current)
-                }
-            )
-        }).collect()*/todo!();
+        WeightsContainer::new_randomized()
     }
 
     fn feedforward_unit(
@@ -124,14 +89,23 @@ impl NetworkUnit for GRU
         }*/todo!();
     }
 
-    fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>
+    fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F)
     {
-        self.inner_weights_size().collect()
+        self.for_each_weight_inner(f)
     }
 
-    fn weights_info(&self) -> Vec<WeightsNamed<&LayerType>>
+    fn clone_weights_with_info<F>(&self, f: F) -> Self
+    where
+        F: FnMut(WeightsSize<&LayerType>) -> LayerType
     {
-        self.inner_weights_info().collect()
+        self.clone_weights_with_info_inner(f)
+    }
+
+    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::ThisWeightsContainer<U>
+    where
+        F: FnMut(&mut LayerType) -> U
+    {
+        self.map_weights_mut_inner(f)
     }
 
     fn parameters_amount(&self) -> u128
@@ -141,16 +115,6 @@ impl NetworkUnit for GRU
 
         // i hope i calculated this right
         (4 * i * h) + (3 * h * h) + (3 * h)
-    }
-
-    fn iter(&self) -> Self::Iter<'_, LayerType>
-    {
-        todo!();
-    }
-
-    fn iter_mut(&mut self) -> Self::IterMut<'_, LayerType>
-    {
-        todo!();
     }
 }
 

@@ -269,6 +269,14 @@ impl<'a> Predictor<'a>
     }
 }
 
+impl NewableLayer for ()
+{
+    fn new(_previous_size: usize, _this_size: usize) -> Self
+    {
+        ()
+    }
+}
+
 pub struct TrainingInfo
 {
     pub epochs: usize,
@@ -334,10 +342,7 @@ impl NewableLayer for PowerSignGradientInfo
     }
 }
 
-type OutputGradients = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<LayerInnerType>;
-type AdamGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<AdamGradientInfo>;
-type AdamXGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<AdamXGradientInfo>;
-type PowerSignGradientsContainer = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<PowerSignGradientInfo>;
+type ThisWeightsContainer<T> = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<T>;
 
 pub trait Optimizer
 {
@@ -346,18 +351,20 @@ pub trait Optimizer
 
     fn new() -> Self;
 
-    fn gradient_to_change_indexed(
-        &mut self,
-        layer_index: usize,
-        weight_index: usize,
-        gradient: LayerInnerType
-    ) -> LayerInnerType;
-
     fn gradient_to_change(
         gradient_info: &mut Self::WeightParam,
         gradient: LayerInnerType,
         hyper: &Self::HyperParams
     ) -> LayerInnerType;
+
+    fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
+    {
+        gradient.cap_magnitude(GRADIENT_CLIP)
+    }
+
+    fn info_mut<'a>(
+        &'a mut self
+    ) -> (&'a mut [ThisWeightsContainer<Self::WeightParam>], &'a mut Self::HyperParams);
 
     fn advance_time(&mut self);
     fn set_learning_rate(&mut self, learning_rate: f32);
@@ -366,6 +373,7 @@ pub trait Optimizer
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SGD
 {
+    gradients_info: Vec<ThisWeightsContainer<()>>,
     learning_rate: f32
 }
 
@@ -376,17 +384,12 @@ impl Optimizer for SGD
 
     fn new() -> Self
     {
-        Self{learning_rate: 0.001}
-    }
+        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
+        {
+            ThisWeightsContainer::new_container()
+        }).collect::<Vec<_>>();
 
-    fn gradient_to_change_indexed(
-        &mut self,
-        _layer_index: usize,
-        _weight_index: usize,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
-    {
-        Self::gradient_to_change(&mut (), gradient, &self.learning_rate)
+        Self{gradients_info, learning_rate: 0.001}
     }
 
     fn gradient_to_change(
@@ -396,6 +399,13 @@ impl Optimizer for SGD
     ) -> LayerInnerType
     {
         gradient * *hyper
+    }
+
+    fn info_mut<'a>(
+        &'a mut self
+    ) -> (&'a mut [ThisWeightsContainer<Self::WeightParam>], &'a mut Self::HyperParams)
+    {
+        (&mut self.gradients_info, &mut self.learning_rate)
     }
 
     fn advance_time(&mut self) {}
@@ -433,7 +443,7 @@ impl PowerSignHyperparams
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PowerSign
 {
-    gradients_info: Vec<PowerSignGradientsContainer>,
+    gradients_info: Vec<ThisWeightsContainer<PowerSignGradientInfo>>,
     hyper: PowerSignHyperparams
 }
 
@@ -446,24 +456,12 @@ impl Optimizer for PowerSign
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            PowerSignGradientsContainer::new_container()
+            ThisWeightsContainer::new_container()
         }).collect::<Vec<_>>();
 
         let hyper = PowerSignHyperparams::new();
 
         Self{gradients_info, hyper}
-    }
-
-    fn gradient_to_change_indexed(
-        &mut self,
-        layer_index: usize,
-        weight_index: usize,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
-    {
-        let gradient_info = todo!();
-
-        Self::gradient_to_change(gradient_info, gradient, &self.hyper)
     }
 
     fn gradient_to_change(
@@ -480,6 +478,13 @@ impl Optimizer for PowerSign
         this.exp();
 
         this * gradient
+    }
+
+    fn info_mut(
+        &mut self
+    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
+    {
+        (&mut self.gradients_info, &mut self.hyper)
     }
 
     fn advance_time(&mut self)
@@ -525,7 +530,7 @@ impl AdamXHyperparams
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdamX
 {
-    gradients_info: Vec<AdamXGradientsContainer>,
+    gradients_info: Vec<ThisWeightsContainer<AdamXGradientInfo>>,
     hyper: AdamXHyperparams
 }
 
@@ -538,24 +543,12 @@ impl Optimizer for AdamX
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            AdamXGradientsContainer::new_container()
+            ThisWeightsContainer::new_container()
         }).collect::<Vec<_>>();
 
         let hyper = AdamXHyperparams::new();
 
         Self{gradients_info, hyper}
-    }
-
-    fn gradient_to_change_indexed(
-        &mut self,
-        layer_index: usize,
-        weight_index: usize,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
-    {
-        let gradient_info = todo!();
-
-        Self::gradient_to_change(gradient_info, gradient, &self.hyper)
     }
 
     fn gradient_to_change(
@@ -591,6 +584,13 @@ impl Optimizer for AdamX
         let rhs = gradient_info.v_hat.as_ref().unwrap().clone_sqrt() + hyper.epsilon;
 
         (&gradient_info.m * a_t) / rhs
+    }
+
+    fn info_mut(
+        &mut self
+    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
+    {
+        (&mut self.gradients_info, &mut self.hyper)
     }
 
     fn advance_time(&mut self)
@@ -636,7 +636,7 @@ impl AdamHyperparams
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Adam
 {
-    gradients_info: Vec<AdamGradientsContainer>,
+    gradients_info: Vec<ThisWeightsContainer<AdamGradientInfo>>,
     hyper: AdamHyperparams
 }
 
@@ -649,24 +649,12 @@ impl Optimizer for Adam
     {
         let gradients_info = (0..LAYERS_AMOUNT).map(|_|
         {
-            AdamGradientsContainer::new_container()
+            ThisWeightsContainer::new_container()
         }).collect::<Vec<_>>();
 
         let hyper = AdamHyperparams::new();
 
         Self{gradients_info, hyper}
-    }
-
-    fn gradient_to_change_indexed(
-        &mut self,
-        layer_index: usize,
-        weight_index: usize,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
-    {
-        let gradient_info = todo!();
-
-        Self::gradient_to_change(gradient_info, gradient, &self.hyper)
     }
 
     fn gradient_to_change(
@@ -684,6 +672,13 @@ impl Optimizer for Adam
         let a_t = hyper.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
 
         (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
+    }
+
+    fn info_mut(
+        &mut self
+    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
+    {
+        (&mut self.gradients_info, &mut self.hyper)
     }
 
     fn advance_time(&mut self)
@@ -738,32 +733,20 @@ impl NeuralNetwork
         &self.network
     }
 
-    pub fn apply_gradients(&mut self, gradients: Vec<OutputGradients>)
+    pub fn apply_gradients(&mut self, gradients: Vec<ThisWeightsContainer<LayerInnerType>>)
     {
+        let (gradient_info, hyper) = self.optimizer.info_mut();
+
         let combined_iter = gradients.into_iter()
-            .zip(self.network.layers_mut().iter_mut());
+            .zip(self.network.layers_mut().iter_mut()
+                 .zip(gradient_info.iter_mut()));
 
-        combined_iter.enumerate().for_each(|(layer_index, (gradients, network_weights))|
+        combined_iter.for_each(|(gradients, (network_weights, optimizer_info))|
         {
-            network_weights.iter_mut().zip(gradients).enumerate()
-                .for_each(|(weight_index, (weight, gradient))|
-                {
-                    let change = self.optimizer.gradient_to_change_indexed(
-                        layer_index,
-                        weight_index,
-                        Self::gradient_clipped(gradient)
-                    );
-
-                    *weight.value_mut() -= change;
-                });
+            *network_weights -= optimizer_info.gradients_to_change(gradients, hyper);
         });
 
         self.optimizer.advance_time();
-    }
-
-    fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
-    {
-        gradient.cap_magnitude(GRADIENT_CLIP)
     }
 
     pub fn input_expected_from_text(

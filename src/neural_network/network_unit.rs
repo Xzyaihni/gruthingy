@@ -10,21 +10,11 @@ use crate::neural_network::{
 
 pub trait NetworkUnit
 where
-    Self: Sized + FromIterator<LayerType>
+    Self: Sized
 {
     type State;
     // i could probably rewrite stuff to remove this but im lazy
-    type ThisWeightsContainer<T>: FromIterator<T>;
-
-    type Iter<'a, T>: Iterator<Item=&'a T>
-    where
-        Self: 'a,
-        T: 'a;
-
-    type IterMut<'a, T>: Iterator<Item=&'a mut T>
-    where
-        Self: 'a,
-        T: 'a;
+    type ThisWeightsContainer<T>;
 
     fn new() -> Self;
 
@@ -78,35 +68,17 @@ where
         output
     }
 
-    fn weights_size(&self) -> Vec<WeightsSize<&LayerType>>;
-    fn weights_info(&self) -> Vec<WeightsNamed<&LayerType>>;
-
     fn parameters_amount(&self) -> u128;
 
-    fn iter<'a>(&'a self) -> Self::Iter<'a, LayerType>;
-    fn iter_mut<'a>(&'a mut self) -> Self::IterMut<'a, LayerType>;
+    fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F);
 
-    fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F)
-    {
-        self.iter_mut().for_each(f);
-    }
-
-    fn clone_weights_with_info<F>(&self, mut f: F) -> Self
+    fn clone_weights_with_info<F>(&self, f: F) -> Self
     where
-        F: FnMut(&LayerType, WeightsSize<&LayerType>) -> LayerType
-    {
-        self.iter().zip(self.weights_size().into_iter()).map(|(layer, info)|
-        {
-            f(layer, info)
-        }).collect()
-    }
+        F: FnMut(WeightsSize<&LayerType>) -> LayerType;
 
     fn map_weights_mut<F, U>(&mut self, f: F) -> Self::ThisWeightsContainer<U>
     where
-        F: FnMut(&mut LayerType) -> U
-    {
-        self.iter_mut().map(f).collect()
-    }
+        F: FnMut(&mut LayerType) -> U;
 
     fn clear(&mut self)
     {

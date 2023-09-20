@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
     cell::{self, RefCell},
     borrow::Borrow,
-    ops::{Mul, Add, Sub, Div, AddAssign, MulAssign, DivAssign, Neg}
+    ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, MulAssign, DivAssign, Neg}
 };
 
 use serde::{Serialize, Deserialize};
@@ -922,6 +922,11 @@ impl<T> DiffWrapper<T>
         Self::new_inner(value, LayerOps::Diff, true)
     }
 
+    pub fn new_undiff(value: T) -> Self
+    {
+        Self::new_inner(value, LayerOps::None, false)
+    }
+
     fn new_inner(value: T, ops: LayerOps, calculate_gradient: bool) -> Self
     {
         let diff = DiffType{
@@ -1329,6 +1334,14 @@ impl AddAssign for LayerType
     fn add_assign(&mut self, rhs: Self)
     {
         *self = &*self + rhs;
+    }
+}
+
+impl SubAssign for LayerType
+{
+    fn sub_assign(&mut self, rhs: Self)
+    {
+        *self = &*self - rhs;
     }
 }
 
