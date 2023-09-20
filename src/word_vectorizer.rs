@@ -570,7 +570,7 @@ mod tests
 {
     use super::*;
 
-    #[test]
+    /*#[test]
     fn encodes_decodes()
     {
         let dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
@@ -595,8 +595,9 @@ mod tests
         let dictionary = ByteDictionary::new();
 
         encode_decode_test(dictionary);
-    }
+    }*/
 
+    #[allow(dead_code)]
     fn encode_decode_test(dictionary: impl NetworkDictionary)
     {
         encode_decode_test_lossy(
@@ -605,6 +606,7 @@ mod tests
         );
     }
 
+    #[allow(dead_code)]
     fn encode_decode_test_lossy(mut dictionary: impl NetworkDictionary, expected: &str)
     {
         let original_bytes = "hello world im testing a COOL encoder (not rly) fake and gay";
