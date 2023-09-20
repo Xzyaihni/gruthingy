@@ -87,6 +87,7 @@ macro_rules! create_weights_container
 
         impl<T> WeightsContainer<T>
         {
+            #[allow(dead_code)]
             pub fn for_each_weight<F: FnMut(T)>(self, mut f: F)
             {
                 let Self{
@@ -197,6 +198,7 @@ macro_rules! create_weights_container
 
         impl WeightsContainer<<CurrentOptimizer as Optimizer>::WeightParam>
         {
+            #[allow(dead_code)]
             pub fn gradients_to_change(
                 &mut self,
                 gradients: WeightsContainer<LayerInnerType>,

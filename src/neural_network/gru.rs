@@ -6,6 +6,7 @@ use crate::{
     create_weights_container,
     neural_network::{
         LayerType,
+        ScalarType,
         HIDDEN_AMOUNT,
         INPUT_SIZE,
         network::NetworkOutput,
@@ -45,19 +46,14 @@ impl NetworkUnit for GRU
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        /*let mut update_gate = self.weight(WeightIndex::InputUpdate)
-            .matmul_add(input, self.weight(WeightIndex::UpdateBias));
-
-        let mut reset_gate = self.weight(WeightIndex::InputReset)
-            .matmul_add(input, self.weight(WeightIndex::ResetBias));
-
-        let mut activation_gate = self.weight(WeightIndex::InputActivation)
-            .matmul_add(input, self.weight(WeightIndex::ActivationBias));
+        let mut update_gate = self.input_update.matmul_add(input, &self.update_bias);
+        let mut reset_gate = self.input_reset.matmul_add(input, &self.reset_bias);
+        let mut activation_gate = self.input_activation.matmul_add(input, &self.activation_bias);
 
         if let Some(previous_state) = previous_state
         {
-            update_gate += self.weight(WeightIndex::HiddenUpdate).matmul(previous_state);
-            reset_gate += self.weight(WeightIndex::HiddenReset).matmul(previous_state);
+            update_gate += self.hidden_update.matmul(previous_state);
+            reset_gate += self.hidden_reset.matmul(previous_state);
         }
 
         update_gate.sigmoid();
@@ -66,7 +62,7 @@ impl NetworkUnit for GRU
         if let Some(previous_state) = previous_state
         {
             let activation_v = &reset_gate * previous_state;
-            activation_gate += self.weight(WeightIndex::HiddenActivation).matmul(activation_v);
+            activation_gate += self.hidden_activation.matmul(activation_v);
         }
 
         activation_gate.tanh();
@@ -81,12 +77,12 @@ impl NetworkUnit for GRU
             this_activation + ScalarType::new(1.0)
         };
 
-        let output_untrans = self.weight(WeightIndex::Output).matmul(&state);
+        let output_untrans = self.output.matmul(&state);
 
         NetworkOutput{
             state,
             output: output_untrans
-        }*/todo!();
+        }
     }
 
     fn weights_named_info(&self) -> Self::ThisWeightsContainer<WeightsNamed<&LayerType>>
