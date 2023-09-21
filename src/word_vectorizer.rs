@@ -246,10 +246,32 @@ impl CharDictionary
         unimplemented!();
     }
 
+    const fn chars_amount(s: &'static str) -> usize
+    {
+        let s = s.as_bytes();
+
+        let mut amount = 0;
+
+        let mut b = 0;
+        while b < s.len()
+        {
+            let is_continuation = (s[b] & 0b1100_0000) == 0b1000_0000;
+
+            if !is_continuation
+            {
+                amount += 1;
+            }
+
+            b += 1;
+        }
+
+        amount
+    }
+
     pub const fn words_amount() -> usize
     {
         // +1 for replacement character
-        DICTIONARY_TEXT.len() + 1
+        Self::chars_amount(DICTIONARY_TEXT) + 1
     }
 
     fn character_match(&self, c: char) -> VectorWord
