@@ -268,6 +268,7 @@ impl Neg for &MatrixWrapper
     }
 }
 
+#[allow(dead_code)]
 impl MatrixWrapper
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
@@ -431,12 +432,16 @@ impl MatrixWrapper
 
     pub fn pick_weighed(&self) -> usize
     {
-        Softmaxer::pick_weighed_associated(self)
+        Softmaxer::pick_weighed_inner(self.iter())
     }
 
     pub fn highest_index(&self) -> usize
     {
         Softmaxer::highest_index(self.iter())
     }
-}
 
+    pub const fn is_arrayfire() -> bool
+    {
+        false
+    }
+}

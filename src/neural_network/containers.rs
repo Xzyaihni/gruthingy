@@ -14,7 +14,11 @@ use serde::{Serialize, Deserialize};
 #[allow(unused_imports)]
 use matrix_wrapper::MatrixWrapper;
 
+#[allow(unused_imports)]
+use arrayfire_wrapper::ArrayfireWrapper;
+
 mod matrix_wrapper;
+mod arrayfire_wrapper;
 
 
 pub type LayerInnerType = MatrixWrapper;
@@ -1054,14 +1058,10 @@ impl Softmaxer
         *layer /= s;
     }
 
-    pub fn pick_weighed_associated(values: &LayerInnerType) -> usize
-    {
-        Self::pick_weighed_inner(values.iter())
-    }
-
-    pub fn pick_weighed_inner<'b, I>(mut iter: I) -> usize
+    pub fn pick_weighed_inner<I, T>(mut iter: I) -> usize
     where
-        I: Iterator<Item=&'b f32> + ExactSizeIterator
+        T: Borrow<f32>,
+        I: Iterator<Item=T> + ExactSizeIterator
     {
         let mut c = fastrand::f32();
 
@@ -1069,7 +1069,7 @@ impl Softmaxer
 
         iter.position(|v|
         {
-            c -= v;
+            c -= v.borrow();
 
             c <= 0.0
         }).unwrap_or(max_index)

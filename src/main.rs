@@ -14,6 +14,7 @@ use neural_network::{
     NeuralNetwork,
     DictionaryType,
     WeightsNamed,
+    LayerInnerType,
     USES_DICTIONARY,
     DICTIONARY_TEXT,
     HIDDEN_AMOUNT,
@@ -544,6 +545,22 @@ fn main()
     let mode = args.next()
         .unwrap_or_else(|| complain("pls give a mode"))
         .trim().to_lowercase();
+
+    if LayerInnerType::is_arrayfire()
+    {
+        arrayfire::set_device(0);
+
+        #[cfg(not(test))]
+        {
+            arrayfire::info();
+
+            let device_info = arrayfire::device_info();
+            eprintln!(
+                "name: {}, platform: {}, toolkit: {}, compute: {}",
+                device_info.0, device_info.1, device_info.2, device_info.3
+            );
+        }
+    }
 
     match mode.as_str()
     {
