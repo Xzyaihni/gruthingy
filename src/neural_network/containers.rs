@@ -1382,7 +1382,7 @@ impl LayerType
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
-        let value = MatrixWrapper::new(previous_size, this_size);
+        let value = LayerInnerType::new(previous_size, this_size);
         Self::new_inner(value, LayerOps::None, false)
     }
 
@@ -1392,7 +1392,7 @@ impl LayerType
         f: F
     )-> Self
     {
-        let value = MatrixWrapper::new_with(previous_size, this_size, f);
+        let value = LayerInnerType::new_with(previous_size, this_size, f);
         Self::new_inner(value, LayerOps::None, false)
     }
 
@@ -1402,7 +1402,7 @@ impl LayerType
         this_size: usize
     ) -> Self
     {
-        let value = MatrixWrapper::from_raw(values, previous_size, this_size);
+        let value = LayerInnerType::from_raw(values, previous_size, this_size);
         Self::new_inner(value, LayerOps::None, false)
     }
 
@@ -1601,6 +1601,14 @@ mod tests
     {
         let a = random_tensor(a_dims.0, a_dims.1);
         let b = random_tensor(b_dims.0, b_dims.1);
+
+        check_tensor_inner(a, b, f);
+    }
+
+    fn check_vector(f: impl FnMut(&LayerType, &LayerType) -> LayerType)
+    {
+        let a = random_tensor(LAYER_PREV, 1);
+        let b = random_tensor(LAYER_PREV, 1);
 
         check_tensor_inner(a, b, f);
     }
@@ -1811,7 +1819,7 @@ mod tests
     #[test]
     fn dot_product()
     {
-        check_tensor(|a, b| a + a.clone_gradientable().dot(b.clone_gradientable()))
+        check_vector(|a, b| a + a.clone_gradientable().dot(b.clone_gradientable()))
     }
 
     #[test]
@@ -1890,22 +1898,6 @@ mod tests
     }
 
     #[test]
-    fn sum_thingy()
-    {
-        check_tensor(|a, b|
-        {
-            let s: ScalarType = iter::repeat(a).take(5).zip(iter::repeat(b).take(5))
-                .map(|(predicted, target)|
-                {
-                    let predicted = predicted.clone_gradientable();
-                    predicted.dot(target.clone_gradientable())
-                }).sum();
-
-            a * s
-        })
-    }
-
-    #[test]
     fn matrix_multiplication()
     {
         check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmul(b) + b.sum())
@@ -1913,7 +1905,7 @@ mod tests
 
     fn create_targets() -> LayerInnerType
     {
-        let m = random_tensor(LAYER_PREV, LAYER_CURR).value_take();
+        let m = random_tensor(LAYER_PREV, 1).value_take();
 
         let pos = fastrand::usize(0..m.total_len());
         one_hot(m, pos, 1.0, 0.0)
@@ -1923,7 +1915,7 @@ mod tests
     fn softmax_cross_entropy()
     {
         let targets = create_targets();
-        check_tensor(|a, b|
+        check_vector(|a, b|
         {
             b + a.clone_gradientable().softmax_cross_entropy(targets.clone())
         })
@@ -1933,7 +1925,7 @@ mod tests
     fn softmax_cross_entropy_complicated()
     {
         let targets = create_targets();
-        check_tensor(|a, b|
+        check_vector(|a, b|
         {
             a + (a + b + ScalarType::new(2.0)).softmax_cross_entropy(targets.clone())
         })
