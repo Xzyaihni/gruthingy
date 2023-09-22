@@ -14,83 +14,112 @@ use super::{Softmaxer, LEAKY_SLOPE, leaky_relu_d};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
 
-impl Add<f32> for MatrixWrapper
+macro_rules! op_impl_scalar
 {
-    type Output = Self;
-
-    fn add(self, rhs: f32) -> Self::Output
+    (
+        $op_trait:ident,
+        $op_fn_name:ident,
+        $op_real_fn:ident
+    ) =>
     {
-        Self(self.0.add_scalar(rhs))
+        impl $op_trait<f32> for MatrixWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: f32) -> Self::Output
+            {
+                Self(self.0.$op_real_fn(rhs))
+            }
+        }
+
+        impl $op_trait<f32> for &MatrixWrapper
+        {
+            type Output = MatrixWrapper;
+
+            fn $op_fn_name(self, rhs: f32) -> Self::Output
+            {
+                MatrixWrapper((&self.0).$op_real_fn(rhs))
+            }
+        }
+
+        impl $op_trait<&f32> for MatrixWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: &f32) -> Self::Output
+            {
+                Self(self.0.$op_real_fn(*rhs))
+            }
+        }
+
+        impl $op_trait<&f32> for &MatrixWrapper
+        {
+            type Output = MatrixWrapper;
+
+            fn $op_fn_name(self, rhs: &f32) -> Self::Output
+            {
+                MatrixWrapper((&self.0).$op_real_fn(*rhs))
+            }
+        }
     }
 }
 
-impl Add<f32> for &MatrixWrapper
+macro_rules! op_impl
 {
-    type Output = MatrixWrapper;
-
-    fn add(self, rhs: f32) -> Self::Output
+    (
+        $op_trait:ident,
+        $op_fn_name:ident,
+        $op_real_fn:ident
+    ) =>
     {
-        MatrixWrapper(self.0.add_scalar(rhs))
+        impl $op_trait for MatrixWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: Self) -> Self::Output
+            {
+                Self(self.0.$op_real_fn(rhs.0))
+            }
+        }
+
+        impl $op_trait<MatrixWrapper> for &MatrixWrapper
+        {
+            type Output = MatrixWrapper;
+
+            fn $op_fn_name(self, rhs: MatrixWrapper) -> Self::Output
+            {
+                MatrixWrapper((&self.0).$op_real_fn(rhs.0))
+            }
+        }
+
+        impl $op_trait<&MatrixWrapper> for MatrixWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: &Self) -> Self::Output
+            {
+                Self(self.0.$op_real_fn(&rhs.0))
+            }
+        }
+
+        impl $op_trait<&MatrixWrapper> for &MatrixWrapper
+        {
+            type Output = MatrixWrapper;
+
+            fn $op_fn_name(self, rhs: &MatrixWrapper) -> Self::Output
+            {
+                MatrixWrapper((&self.0).$op_real_fn(&rhs.0))
+            }
+        }
     }
 }
 
-impl Add<&f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
+op_impl_scalar!{Add, add, add_scalar}
+op_impl_scalar!{Mul, mul, mul}
+op_impl_scalar!{Div, div, div}
 
-    fn add(self, rhs: &f32) -> Self::Output
-    {
-        MatrixWrapper(self.0.add_scalar(*rhs))
-    }
-}
-
-impl<T> Add<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn add(self, rhs: T) -> Self::Output
-    {
-        Self(self.0 + &rhs.borrow().0)
-    }
-}
-
-impl<T> Add<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn add(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(&self.0 + &rhs.borrow().0)
-    }
-}
-
-impl<T> Sub<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn sub(self, rhs: T) -> Self::Output
-    {
-        Self(self.0 - &rhs.borrow().0)
-    }
-}
-
-impl<T> Sub<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn sub(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(&self.0 - &rhs.borrow().0)
-    }
-}
+op_impl!{Add, add, add}
+op_impl!{Sub, sub, sub}
 
 impl Sub<f32> for &MatrixWrapper
 {
@@ -124,36 +153,6 @@ where
     }
 }
 
-impl Mul<f32> for MatrixWrapper
-{
-    type Output = Self;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        Self(self.0 * rhs)
-    }
-}
-
-impl Mul<f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn mul(self, rhs: f32) -> Self::Output
-    {
-        MatrixWrapper(&self.0 * rhs)
-    }
-}
-
-impl Mul<&f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn mul(self, rhs: &f32) -> Self::Output
-    {
-        MatrixWrapper(&self.0 * *rhs)
-    }
-}
-
 impl<T> Mul<T> for MatrixWrapper
 where
     T: Borrow<Self>
@@ -163,36 +162,6 @@ where
     fn mul(self, rhs: T) -> Self::Output
     {
         Self(self.0.component_mul(&rhs.borrow().0))
-    }
-}
-
-impl Div<f32> for MatrixWrapper
-{
-    type Output = Self;
-
-    fn div(self, rhs: f32) -> Self::Output
-    {
-        Self(self.0 / rhs)
-    }
-}
-
-impl Div<f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn div(self, rhs: f32) -> Self::Output
-    {
-        MatrixWrapper(&self.0 / rhs)
-    }
-}
-
-impl Div<&f32> for &MatrixWrapper
-{
-    type Output = MatrixWrapper;
-
-    fn div(self, rhs: &f32) -> Self::Output
-    {
-        MatrixWrapper(&self.0 / *rhs)
     }
 }
 

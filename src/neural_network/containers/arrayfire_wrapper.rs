@@ -8,22 +8,175 @@ use serde::{Serialize, Deserialize};
 
 use arrayfire::{dim4, MatProp, NormType, Array};
 
-use super::{Softmaxer, LEAKY_SLOPE, leaky_relu_d};
+use super::{Softmaxer, LEAKY_SLOPE};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ArrayfireWrapper(Array<f32>);
 
-impl<T> Add<T> for ArrayfireWrapper
-where
-    T: Borrow<Self>
+macro_rules! op_impl_scalar
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident
+    ) =>
+    {
+        impl $op_trait<f32> for ArrayfireWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: f32) -> Self::Output
+            {
+                Self(self.0.$op_fn_name(rhs))
+            }
+        }
+
+        impl $op_trait<f32> for &ArrayfireWrapper
+        {
+            type Output = ArrayfireWrapper;
+
+            fn $op_fn_name(self, rhs: f32) -> Self::Output
+            {
+                ArrayfireWrapper((&self.0).$op_fn_name(rhs))
+            }
+        }
+
+        impl $op_trait<&f32> for ArrayfireWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: &f32) -> Self::Output
+            {
+                Self(self.0.$op_fn_name(*rhs))
+            }
+        }
+
+        impl $op_trait<&f32> for &ArrayfireWrapper
+        {
+            type Output = ArrayfireWrapper;
+
+            fn $op_fn_name(self, rhs: &f32) -> Self::Output
+            {
+                ArrayfireWrapper((&self.0).$op_fn_name(*rhs))
+            }
+        }
+    }
+}
+
+macro_rules! op_impl
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident
+    ) =>
+    {
+        impl $op_trait for ArrayfireWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: Self) -> Self::Output
+            {
+                Self(self.0.$op_fn_name(rhs.0))
+            }
+        }
+
+        impl $op_trait<ArrayfireWrapper> for &ArrayfireWrapper
+        {
+            type Output = ArrayfireWrapper;
+
+            fn $op_fn_name(self, rhs: ArrayfireWrapper) -> Self::Output
+            {
+                ArrayfireWrapper((&self.0).$op_fn_name(rhs.0))
+            }
+        }
+
+        impl $op_trait<&ArrayfireWrapper> for ArrayfireWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: &Self) -> Self::Output
+            {
+                Self(self.0.$op_fn_name(&rhs.0))
+            }
+        }
+
+        impl $op_trait<&ArrayfireWrapper> for &ArrayfireWrapper
+        {
+            type Output = ArrayfireWrapper;
+
+            fn $op_fn_name(self, rhs: &ArrayfireWrapper) -> Self::Output
+            {
+                ArrayfireWrapper((&self.0).$op_fn_name(&rhs.0))
+            }
+        }
+    }
+}
+
+macro_rules! op_assign_impl
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident
+    ) =>
+    {
+        impl $op_trait for ArrayfireWrapper
+        {
+            fn $op_fn_name(&mut self, rhs: Self)
+            {
+                self.0.$op_fn_name(rhs.0);
+            }
+        }
+
+        impl $op_trait<&ArrayfireWrapper> for ArrayfireWrapper
+        {
+            fn $op_fn_name(&mut self, rhs: &Self)
+            {
+                self.0.$op_fn_name(rhs.0.clone());
+            }
+        }
+    }
+}
+
+op_impl_scalar!{Add, add}
+op_impl_scalar!{Sub, sub}
+op_impl_scalar!{Mul, mul}
+op_impl_scalar!{Div, div}
+
+op_impl!{Add, add}
+op_impl!{Sub, sub}
+op_impl!{Mul, mul}
+op_impl!{Div, div}
+
+op_assign_impl!{SubAssign, sub_assign}
+op_assign_impl!{AddAssign, add_assign}
+
+impl DivAssign<f32> for ArrayfireWrapper
+{
+    fn div_assign(&mut self, rhs: f32)
+    {
+        self.0 = &self.0 / rhs;
+    }
+}
+
+impl Neg for ArrayfireWrapper
 {
     type Output = Self;
 
-    fn add(self, rhs: T) -> Self::Output
+    fn neg(self) -> Self::Output
     {
-        Self(self.0 + &rhs.borrow().0)
+        Self(-self.0)
     }
 }
+
+impl Neg for &ArrayfireWrapper
+{
+    type Output = ArrayfireWrapper;
+
+    fn neg(self) -> Self::Output
+    {
+        ArrayfireWrapper(-self.0.clone())
+    }
+}
+
 
 #[allow(dead_code)]
 impl ArrayfireWrapper
@@ -87,7 +240,7 @@ impl ArrayfireWrapper
     {
         // arrayfire doesnt let me give it the C matrix in gemm >_<
         
-        self.matmul(rhs) + added
+        self.matmul(rhs) + added.borrow()
     }
 
     pub fn max(&mut self, rhs: &Self)
@@ -147,7 +300,12 @@ impl ArrayfireWrapper
 
     pub fn leaky_relu_d(&mut self)
     {
-        todo!();
+        let gz = arrayfire::gt(&self.0, &0.0_f32, true);
+
+        let ones = arrayfire::constant(1.0, self.0.dims());
+        let slopes = arrayfire::constant(LEAKY_SLOPE, self.0.dims());
+
+        self.0 = arrayfire::select(&ones, &gz, &slopes);
     }
 
     pub fn sum(&self) -> f32
