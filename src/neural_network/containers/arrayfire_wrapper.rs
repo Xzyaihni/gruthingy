@@ -6,7 +6,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use arrayfire::{dim4, MatProp, Array};
+use arrayfire::{dim4, MatProp, NormType, Array};
 
 use super::{Softmaxer, LEAKY_SLOPE, leaky_relu_d};
 
@@ -139,7 +139,10 @@ impl ArrayfireWrapper
 
     pub fn leaky_relu(&mut self)
     {
-        todo!();
+        let sloped = &self.0 * LEAKY_SLOPE;
+        let sloped = Self(sloped);
+
+        self.max(&sloped);
     }
 
     pub fn leaky_relu_d(&mut self)
@@ -159,7 +162,11 @@ impl ArrayfireWrapper
 
     pub fn cap_magnitude(&self, cap: f32) -> Self
     {
-        todo!();
+        let magnitude = arrayfire::norm(&self.0, NormType::VECTOR_2, 0.0, 0.0) as f32;
+
+        let s = cap / magnitude;
+        
+        Self(&self.0 * s)
     }
 
     pub fn total_len(&self) -> usize
