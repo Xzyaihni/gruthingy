@@ -1038,6 +1038,14 @@ impl<T> DiffWrapper<T>
     }
 }
 
+pub trait Softmaxable
+where
+    Self: DivAssign<f32>
+{
+    fn exp(&mut self);
+    fn sum(&self) -> f32;
+}
+
 #[derive(Debug)]
 pub struct Softmaxer;
 
@@ -1050,7 +1058,7 @@ impl Softmaxer
         Self::softmax(layer)
     }
 
-    pub fn softmax(layer: &mut LayerInnerType) 
+    pub fn softmax(layer: &mut impl Softmaxable) 
     {
         layer.exp();
         let s = layer.sum();

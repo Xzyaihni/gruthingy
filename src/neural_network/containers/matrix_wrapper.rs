@@ -9,7 +9,7 @@ use serde::{Serialize, Deserialize};
 
 use nalgebra::DMatrix;
 
-use super::{Softmaxer, LEAKY_SLOPE, leaky_relu_d};
+use super::{Softmaxer, Softmaxable, LEAKY_SLOPE, leaky_relu_d};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
@@ -234,6 +234,19 @@ impl Neg for &MatrixWrapper
     fn neg(self) -> Self::Output
     {
         MatrixWrapper(-&self.0)
+    }
+}
+
+impl Softmaxable for MatrixWrapper
+{
+    fn exp(&mut self)
+    {
+        self.exp();
+    }
+
+    fn sum(&self) -> f32
+    {
+        self.sum()
     }
 }
 

@@ -8,7 +8,7 @@ use serde::{Serialize, Deserialize};
 
 use arrayfire::{dim4, MatProp, NormType, Array};
 
-use super::{Softmaxer, LEAKY_SLOPE};
+use super::{Softmaxer, Softmaxable, LEAKY_SLOPE};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ArrayfireWrapper(Array<f32>);
@@ -177,6 +177,18 @@ impl Neg for &ArrayfireWrapper
     }
 }
 
+impl Softmaxable for ArrayfireWrapper
+{
+    fn exp(&mut self)
+    {
+        self.exp();
+    }
+
+    fn sum(&self) -> f32
+    {
+        self.sum()
+    }
+}
 
 #[allow(dead_code)]
 impl ArrayfireWrapper
@@ -215,7 +227,15 @@ impl ArrayfireWrapper
 
     pub fn softmax_cross_entropy(mut self, targets: &Self) -> (Self, f32)
     {
-        todo!();
+        Softmaxer::softmax(&mut self);
+        let softmaxed = self.clone();
+
+        // assumes that targets r either 0 or 1
+        self.ln();
+
+        let s = self.dot(targets);
+
+        (softmaxed, -s)
     }
 
     pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
