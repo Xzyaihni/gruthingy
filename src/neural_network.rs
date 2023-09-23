@@ -30,8 +30,12 @@ pub use containers::{
     LayerType,
     ScalarType,
     LayerInnerType,
+    DiffWrapper,
     Softmaxer,
-    CloneableWrapper
+    CloneableWrapper,
+    Joinable,
+    JoinableType,
+    JoinableDeepType
 };
 
 #[allow(unused_imports)]
@@ -248,11 +252,13 @@ impl<'a> Predictor<'a>
 {
     pub fn new(
         dictionary: &'a mut DictionaryType,
-        words: Vec<LayerType>,
+        words: Vec<LayerInnerType>,
         temperature: f32,
         predict_amount: usize
     ) -> Self
     {
+        let words = words.into_iter().map(|word| LayerType::new_undiff(word)).collect();
+
         Self{
             dictionary,
             words,
@@ -293,7 +299,8 @@ impl<'a> Predictor<'a>
                 let word = output.pick_weighed();
                 let word = VectorWord::from_raw(word);
 
-                self.words.push(self.dictionary.word_to_layer(word));
+                let layer = self.dictionary.word_to_layer(word);
+                self.words.push(LayerType::new_undiff(layer));
 
                 self.predicted.extend(self.dictionary.word_to_bytes(word).into_iter());
             }
@@ -401,9 +408,9 @@ impl NeuralNetwork
         let input_outputs = InputOutputIter::new(
             inputs.iter().map(|word|
             {
-                CloneableWrapper(self.dictionary.word_to_layer(*word))
+                self.dictionary.word_to_layer(*word)
             })
-        ).map(|(a, b)| (a.0, b.0));
+        );
 
         self.network.disable_gradients();
 
@@ -416,6 +423,8 @@ impl NeuralNetwork
 
         if calculate_loss
         {
+            let input_outputs = Self::combine_inputs(input_outputs);
+
             let loss = self.network.feedforward(input_outputs);
 
             Self::print_loss(true, loss.value_clone() / inputs.len() as f32);
@@ -435,6 +444,67 @@ impl NeuralNetwork
         };
 
         println!("{loss_type} loss: {loss}");
+    }
+
+    fn combine_inputs(input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>) -> JoinableType
+    {
+        let mut joined: Option<JoinableType> = None;
+
+        for inputs in input
+        {
+            if let Some(joined) = joined.as_mut()
+            {
+                joined.join(inputs);
+            } else
+            {
+                joined = Some(JoinableType::new(inputs));
+            }
+        }
+
+        joined.unwrap()
+    }
+
+    fn create_batch(
+        &self,
+        inputs: &[VectorWord],
+        steps_num: usize,
+        batch_size: usize
+    ) -> JoinableDeepType
+    {
+        let max_batch_start = inputs.len().saturating_sub(steps_num);
+
+        let mut batch: Option<JoinableDeepType> = None;
+        for _ in 0..batch_size
+        {
+            let batch_start = if max_batch_start == 0
+            {
+                0
+            } else
+            {
+                fastrand::usize(0..max_batch_start)
+            };
+
+            let values = InputOutput::values_slice(
+                inputs,
+                |word| self.dictionary.word_to_layer(*word),
+                batch_start,
+                steps_num
+            );
+
+            let inputs: JoinableType = Self::combine_inputs(
+                values.iter().map(|(a, b)| (a.clone(), b.clone()))
+            );
+
+            if let Some(batch) = batch.as_mut()
+            {
+                batch.join(inputs);
+            } else
+            {
+                batch = Some(JoinableDeepType::new(inputs));
+            }
+        }
+
+        batch.unwrap()
     }
 
     pub fn train<R: Read>(
@@ -516,8 +586,6 @@ impl NeuralNetwork
                 (steps_num as i32 + this_dev) as usize
             };
 
-            let max_batch_start = inputs.len().saturating_sub(steps_num);
-
             let print_loss = (input_index % inputs_per_epoch) == inputs_per_epoch - 1;
             if print_loss
             {
@@ -526,26 +594,13 @@ impl NeuralNetwork
 
             let mut kahan_sum = KahanSum::new();
 
+            let mut joinable = self.create_batch(&inputs, steps_num, batch_size);
+
             let gradients = (0..batch_size).map(|_|
             {
-                let batch_start = if max_batch_start == 0
-                {
-                    0
-                } else
-                {
-                    fastrand::usize(0..max_batch_start)
-                };
+                let values = joinable.pop();
 
-                let values_ref = InputOutput::values_slice(
-                    &inputs,
-                    |word| CloneableWrapper(self.dictionary.word_to_layer(*word)),
-                    batch_start,
-                    steps_num
-                );
-
-                let values = values_ref.iter().map(|(a, b)| (a.clone().0, b.clone().0));
-
-                let (loss, mut gradients) = self.network.gradients(values);
+                let (loss, mut gradients): (f32, Vec<_>) = self.network.gradients(values);
 
                 kahan_sum.add(loss as f64 / batch_size as f64);
                 gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);

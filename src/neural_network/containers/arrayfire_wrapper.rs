@@ -8,7 +8,7 @@ use serde::{Serialize, Deserialize};
 
 use arrayfire::{dim4, MatProp, NormType, Array};
 
-use super::{Softmaxer, Softmaxable, LEAKY_SLOPE};
+use super::{Softmaxer, Softmaxable, Joinable, JoinableSelector, LEAKY_SLOPE};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ArrayfireWrapper(Array<f32>);
@@ -187,6 +187,67 @@ impl Softmaxable for ArrayfireWrapper
     fn sum(&self) -> f32
     {
         self.sum()
+    }
+}
+
+pub struct JoinableWrapper(ArrayfireWrapper);
+pub struct JoinableDeepWrapper(ArrayfireWrapper);
+
+impl JoinableSelector for ArrayfireWrapper
+{
+    type This = JoinableWrapper;
+    type Deep = JoinableDeepWrapper;
+}
+
+impl Joinable for JoinableWrapper
+{
+    type Item = ArrayfireWrapper;
+    type Output = (ArrayfireWrapper, ArrayfireWrapper);
+
+    fn new(value: Self::Item) -> Self
+    {
+        todo!();
+    }
+
+    fn join(&mut self, other: Self::Item)
+    {
+        todo!();
+    }
+
+    fn pop(&mut self) -> Self::Output
+    {
+        todo!();
+    }
+
+    fn len(&self) -> usize
+    {
+        todo!();
+    }
+}
+
+impl Joinable for JoinableDeepWrapper
+{
+    type Item = ArrayfireWrapper;
+    type Output = ArrayfireWrapper;
+
+    fn new(value: Self::Item) -> Self
+    {
+        todo!();
+    }
+
+    fn join(&mut self, other: Self::Item)
+    {
+        todo!();
+    }
+
+    fn pop(&mut self) -> Self::Output
+    {
+        todo!();
+    }
+
+    fn len(&self) -> usize
+    {
+        todo!();
     }
 }
 

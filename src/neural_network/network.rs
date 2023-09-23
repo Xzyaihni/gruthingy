@@ -10,6 +10,9 @@ use crate::neural_network::{
     LayerType,
     ScalarType,
     LayerInnerType,
+    DiffWrapper,
+    Joinable,
+    JoinableType,
     LAYERS_AMOUNT,
     INPUT_SIZE,
     DROPOUT_PROBABILITY,
@@ -251,7 +254,7 @@ impl<Layer: NetworkUnit> NetworkDropped<Layer>
 {
     pub fn gradients(
         &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
+        input: JoinableType
     ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
     {
         self.0.clear();
@@ -355,7 +358,7 @@ impl<Layer: NetworkUnit> Network<Layer>
     #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)>
+        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
     ) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -375,7 +378,7 @@ impl<Layer: NetworkUnit> Network<Layer>
     ) -> usize
     where
         P: Borrow<LayerInnerType>,
-        T: Borrow<LayerType>
+        T: Borrow<LayerInnerType>
     {
         predicted.zip(target).map(|(predicted, target)|
         {
@@ -480,7 +483,7 @@ impl<Layer: NetworkUnit> Network<Layer>
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
+        mut input: JoinableType
     ) -> ScalarType
     {
         let mut output: Option<ScalarType> = None;
@@ -488,8 +491,11 @@ impl<Layer: NetworkUnit> Network<Layer>
 
         let dropout_masks = self.create_dropout_masks(INPUT_SIZE, DROPOUT_PROBABILITY);
 
-        for (this_input, mut this_output) in input
+        for _ in 0..input.len()
         {
+            let (this_input, this_output) = input.pop();
+            let this_input = DiffWrapper::new_undiff(this_input);
+
             let NetworkOutput{
                 state,
                 output: this_output
@@ -497,7 +503,7 @@ impl<Layer: NetworkUnit> Network<Layer>
                 previous_states.take(),
                 &dropout_masks,
                 &this_input,
-                this_output.value_take()
+                this_output
             );
 
             if let Some(output) = output.as_mut()
@@ -516,7 +522,7 @@ impl<Layer: NetworkUnit> Network<Layer>
 
     pub fn gradients(
         &mut self,
-        input: impl Iterator<Item=(LayerType, LayerType)> + ExactSizeIterator
+        input: JoinableType
     ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
     {
         let mut dropped = self.dropconnected();
@@ -555,7 +561,7 @@ impl<Layer: NetworkUnit> Network<Layer>
 
     fn predict(
         &mut self,
-        input: impl Iterator<Item=LayerType> + ExactSizeIterator
+        input: impl Iterator<Item=LayerInnerType> + ExactSizeIterator
     ) -> Vec<LayerInnerType>
     {
         let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
@@ -565,6 +571,8 @@ impl<Layer: NetworkUnit> Network<Layer>
 
         for this_input in input
         {
+            let this_input = LayerType::new_undiff(this_input);
+
             let NetworkOutput{
                 state,
                 output

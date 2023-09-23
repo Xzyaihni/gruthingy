@@ -2,6 +2,7 @@ use std::{
     f32,
     fmt::Debug,
     borrow::Borrow,
+    collections::VecDeque,
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, DivAssign, Neg}
 };
 
@@ -9,7 +10,7 @@ use serde::{Serialize, Deserialize};
 
 use nalgebra::DMatrix;
 
-use super::{Softmaxer, Softmaxable, LEAKY_SLOPE, leaky_relu_d};
+use super::{Softmaxer, Softmaxable, Joinable, JoinableSelector, LEAKY_SLOPE, leaky_relu_d};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
@@ -247,6 +248,67 @@ impl Softmaxable for MatrixWrapper
     fn sum(&self) -> f32
     {
         self.sum()
+    }
+}
+
+pub struct JoinableWrapper(VecDeque<(MatrixWrapper, MatrixWrapper)>);
+pub struct JoinableDeepWrapper(VecDeque<JoinableWrapper>);
+
+impl JoinableSelector for MatrixWrapper
+{
+    type This = JoinableWrapper;
+    type Deep = JoinableDeepWrapper;
+}
+
+impl Joinable for JoinableWrapper
+{
+    type Item = (MatrixWrapper, MatrixWrapper);
+    type Output = (MatrixWrapper, MatrixWrapper);
+
+    fn new(value: Self::Item) -> Self
+    {
+        Self(VecDeque::from([value]))
+    }
+
+    fn join(&mut self, other: Self::Item)
+    {
+        self.0.push_back(other);
+    }
+
+    fn pop(&mut self) -> Self::Output
+    {
+        self.0.pop_front().unwrap()
+    }
+
+    fn len(&self) -> usize
+    {
+        self.0.len()
+    }
+}
+
+impl Joinable for JoinableDeepWrapper
+{
+    type Item = JoinableWrapper;
+    type Output = JoinableWrapper;
+
+    fn new(value: Self::Item) -> Self
+    {
+        Self(VecDeque::from([value]))
+    }
+
+    fn join(&mut self, other: Self::Item)
+    {
+        self.0.push_back(other);
+    }
+
+    fn pop(&mut self) -> Self::Output
+    {
+        self.0.pop_front().unwrap()
+    }
+
+    fn len(&self) -> usize
+    {
+        self.0.len()
     }
 }
 

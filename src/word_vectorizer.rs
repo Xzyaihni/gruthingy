@@ -15,7 +15,6 @@ use serde::{Serialize, Deserialize};
 
 use super::neural_network::{
     LayerInnerType,
-    LayerType,
     DICTIONARY_TEXT
 };
 
@@ -125,13 +124,13 @@ pub trait NetworkDictionary
     
     fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
     
-    fn word_to_layer(&self, word: VectorWord) -> LayerType
+    fn word_to_layer(&self, word: VectorWord) -> LayerInnerType
     {
         let mut layer = vec![0.0; self.words_amount_trait()];
 
         layer[word.index()] = 1.0;
 
-        LayerType::from_raw(layer, self.words_amount_trait(), 1)
+        LayerInnerType::from_raw(layer, self.words_amount_trait(), 1)
     }
 
     fn layer_to_word(&self, layer: LayerInnerType) -> VectorWord
