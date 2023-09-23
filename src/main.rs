@@ -52,7 +52,7 @@ impl TrainConfig
     pub fn parse(mut args: impl Iterator<Item=String>) -> Self
     {
         let mut epochs = 1;
-        let mut batch_size = 2_usize.pow(6);
+        let mut batch_size = 32;
         let mut steps_num = 64;
         let mut learning_rate = None;
         let mut calculate_loss = true;
