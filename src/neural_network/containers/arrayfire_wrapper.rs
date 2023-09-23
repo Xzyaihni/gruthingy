@@ -6,7 +6,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use arrayfire::{dim4, MatProp, NormType, Array};
+use arrayfire::{dim4, Seq, MatProp, NormType, Array};
 
 use super::{Softmaxer, Softmaxable, Joinable, JoinableSelector, LEAKY_SLOPE};
 
@@ -190,8 +190,17 @@ impl Softmaxable for ArrayfireWrapper
     }
 }
 
-pub struct JoinableWrapper(ArrayfireWrapper);
-pub struct JoinableDeepWrapper(ArrayfireWrapper);
+pub struct JoinableWrapper
+{
+    data: ArrayfireWrapper,
+    index: i64
+}
+
+pub struct JoinableDeepWrapper
+{
+    data: ArrayfireWrapper,
+    index: i64
+}
 
 impl JoinableSelector for ArrayfireWrapper
 {
@@ -201,53 +210,85 @@ impl JoinableSelector for ArrayfireWrapper
 
 impl Joinable for JoinableWrapper
 {
-    type Item = ArrayfireWrapper;
+    type Item = (ArrayfireWrapper, ArrayfireWrapper);
     type Output = (ArrayfireWrapper, ArrayfireWrapper);
 
     fn new(value: Self::Item) -> Self
     {
-        todo!();
+        let (input, output) = value;
+        let this = arrayfire::join(1, &input.0, &output.0);
+
+        Self{data: ArrayfireWrapper(this), index: 0}
     }
 
     fn join(&mut self, other: Self::Item)
     {
-        todo!();
+        let (input, output) = other;
+        let this = arrayfire::join(1, &input.0, &output.0);
+
+        self.data.0 = arrayfire::join(2, &self.data.0, &this);
     }
 
     fn pop(&mut self) -> Self::Output
     {
-        todo!();
+        let index_f64 = self.index as f64;
+        let seqs = [
+            Seq::default(),
+            Seq::default(),
+            Seq::new(index_f64, index_f64, 1.0)
+        ];
+
+        let a_output = arrayfire::index(&self.data.0, &seqs);
+
+        let inputs = arrayfire::col(&a_output, 0);
+        let outputs = arrayfire::col(&a_output, 1);
+
+        self.index += 1;
+
+        (ArrayfireWrapper(inputs), ArrayfireWrapper(outputs))
     }
 
     fn len(&self) -> usize
     {
-        todo!();
+        self.data.0.dims()[2] as usize
     }
 }
 
 impl Joinable for JoinableDeepWrapper
 {
-    type Item = ArrayfireWrapper;
-    type Output = ArrayfireWrapper;
+    type Item = JoinableWrapper;
+    type Output = JoinableWrapper;
 
     fn new(value: Self::Item) -> Self
     {
-        todo!();
+        Self{data: value.data, index: 0}
     }
 
     fn join(&mut self, other: Self::Item)
     {
-        todo!();
+        self.data.0 = arrayfire::join(3, &self.data.0, &other.data.0);
     }
 
     fn pop(&mut self) -> Self::Output
     {
-        todo!();
+        let index_f64 = self.index as f64;
+        let seqs = [
+            Seq::default(),
+            Seq::default(),
+            Seq::default(),
+            Seq::new(index_f64, index_f64, 1.0)
+        ];
+
+        let a_output = arrayfire::index(&self.data.0, &seqs);
+
+        self.index += 1;
+
+        JoinableWrapper{data: ArrayfireWrapper(a_output), index: 0}
     }
 
     fn len(&self) -> usize
     {
-        todo!();
+        self.data.0.dims()[3] as usize
     }
 }
 
@@ -454,5 +495,22 @@ impl Debug for ArrayfireWrapper
         f.debug_struct("ArrayfireWrapper")
             .field("array", &self.as_vec())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    #[test]
+    fn joinable_works()
+    {
+        let a = ArrayfireWrapper::new(5, 1);
+        let b = ArrayfireWrapper::new(5, 1);
+
+        let j = JoinableWrapper::new((a, b));
+
+        assert_eq!(j.data.0.dims(), dim4!{5, 2, 1, 1});
     }
 }

@@ -638,7 +638,7 @@ mod tests
         let decoded_bytes = decoded_bytes.into_iter().flat_map(|word|
         {
             let layer = dictionary.word_to_layer(word);
-            let word = dictionary.layer_to_word(layer.value_clone());
+            let word = dictionary.layer_to_word(layer);
 
             dictionary.word_to_bytes(word).into_vec().into_iter()
         }).collect::<Vec<u8>>();

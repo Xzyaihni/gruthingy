@@ -22,6 +22,7 @@ mod arrayfire_wrapper;
 
 
 pub type LayerInnerType = MatrixWrapper;
+
 pub type JoinableType = <LayerInnerType as JoinableSelector>::This;
 pub type JoinableDeepType = <LayerInnerType as JoinableSelector>::Deep;
 
