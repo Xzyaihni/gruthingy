@@ -101,6 +101,37 @@ pub enum AFType
     LeakyRelu
 }
 
+pub struct KahanSum
+{
+    value: f64,
+    compensation: f64
+}
+
+impl KahanSum
+{
+    pub fn new() -> Self
+    {
+        Self{
+            value: 0.0,
+            compensation: 0.0
+        }
+    }
+
+    pub fn add(&mut self, rhs: f64)
+    {
+        let temp_n = rhs - self.compensation;
+        let temp_sum = self.value + temp_n;
+
+        self.compensation = (temp_sum - self.value) - temp_n;
+        self.value = temp_sum;
+    }
+
+    pub fn value(&self) -> f64
+    {
+        self.value
+    }
+}
+
 pub struct InputOutput<T>
 {
     container: Vec<T>
@@ -900,7 +931,8 @@ impl NeuralNetwork
                 output_loss(self);
             }
 
-            let mut batch_loss = 0.0;
+            let mut kahan_sum = KahanSum::new();
+
             let gradients = (0..batch_size).map(|_|
             {
                 let batch_start = if max_batch_start == 0
@@ -911,20 +943,18 @@ impl NeuralNetwork
                     fastrand::usize(0..max_batch_start)
                 };
 
-                let values = InputOutput::values_slice(
+                let values_ref = InputOutput::values_slice(
                     &inputs,
                     |word| CloneableWrapper(self.dictionary.word_to_layer(*word)),
                     batch_start,
                     steps_num
                 );
 
-                let (loss, mut gradients) = {
-                    let values = values.iter().map(|(a, b)| (a.clone().0, b.clone().0));
+                let values = values_ref.iter().map(|(a, b)| (a.clone().0, b.clone().0));
 
-                    self.network.gradients(values)
-                };
+                let (loss, mut gradients) = self.network.gradients(values);
 
-                batch_loss += loss / batch_size as f32;
+                kahan_sum.add(loss as f64 / batch_size as f64);
                 gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);
 
                 gradients
@@ -938,7 +968,9 @@ impl NeuralNetwork
                 acc
             }).expect("batch size must not be 0");
 
-            Self::print_loss(false, batch_loss / steps_num as f32);
+            let batch_loss = kahan_sum.value() / steps_num as f64;
+
+            Self::print_loss(false, batch_loss as f32);
 
             self.apply_gradients(gradients);
         }
