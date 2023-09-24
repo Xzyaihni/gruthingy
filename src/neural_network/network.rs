@@ -144,7 +144,7 @@ macro_rules! create_weights_container
                 WeightsContainer{
                     $(
                         $name: WeightsNamed{
-                            name: "$name".to_owned(),
+                            name: stringify!($name).to_owned(),
                             weights_size: WeightsSize{
                                 weights: &self.$name,
                                 current_size: $current_size,
