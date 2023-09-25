@@ -54,7 +54,7 @@ pub mod containers;
 
 
 pub const HIDDEN_AMOUNT: usize = 256;
-pub const LAYERS_AMOUNT: usize = 4;
+pub const LAYERS_AMOUNT: usize = 3;
 
 pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
 pub const DROPOUT_PROBABILITY: f32 = 0.5;
