@@ -65,7 +65,7 @@ pub const GRADIENT_CLIP: f32 = 1.0;
 pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 
 // options: SDG, Adam, AdamX, PowerSign (garbage (maybe i did it wrong))
-pub type CurrentOptimizer = Adam;
+pub type CurrentOptimizer = AdamX;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
@@ -106,6 +106,28 @@ pub enum AFType
 {
     Tanh,
     LeakyRelu
+}
+
+macro_rules! time_debug
+{
+    ($($token:tt)*) =>
+    {
+        #[cfg(feature = "timedebug")]
+        use std::time::Instant;
+
+        #[cfg(feature = "timedebug")]
+        let now_time = Instant::now();
+
+        {
+            $($token)*
+        }
+
+        #[cfg(feature = "timedebug")]
+        {
+            let duration = Instant::now() - now_time;
+            eprintln!("took {} ms", duration.as_millis());
+        }
+    }
 }
 
 pub struct KahanSum
@@ -578,49 +600,49 @@ impl NeuralNetwork
         for input_index in 0..epochs
         {
             eprintln!("iteration: {input_index}");
+            
+            time_debug! {
+                let steps_num = {
+                    let this_dev = fastrand::i32(0..(steps_deviation as i32 + 1));
+                    let this_dev = this_dev - steps_half_deviation as i32;
 
-            let steps_num = {
-                let this_dev = fastrand::i32(0..(steps_deviation as i32 + 1));
-                let this_dev = this_dev - steps_half_deviation as i32;
+                    (steps_num as i32 + this_dev) as usize
+                };
 
-                (steps_num as i32 + this_dev) as usize
-            };
-
-            let print_loss = (input_index % inputs_per_epoch) == inputs_per_epoch - 1;
-            if print_loss
-            {
-                output_loss(self);
-            }
-
-            let mut kahan_sum = KahanSum::new();
-
-            let mut joinable = self.create_batch(&inputs, steps_num, batch_size);
-
-            let gradients = (0..batch_size).map(|_|
-            {
-                let values = joinable.pop();
-
-                let (loss, mut gradients): (f32, Vec<_>) = self.network.gradients(values);
-
-                kahan_sum.add(loss as f64 / batch_size as f64);
-                gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);
-
-                gradients
-            }).reduce(|mut acc, this|
-            {
-                acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
+                let print_loss = (input_index % inputs_per_epoch) == inputs_per_epoch - 1;
+                if print_loss
                 {
-                    *acc += this;
-                });
+                    output_loss(self);
+                }
 
-                acc
-            }).expect("batch size must not be 0");
+                let mut kahan_sum = KahanSum::new();
 
-            let batch_loss = kahan_sum.value() / steps_num as f64;
+                let joinable = self.create_batch(&inputs, steps_num, batch_size);
 
-            Self::print_loss(false, batch_loss as f32);
+                let gradients = joinable.into_iter().map(|values|
+                {
+                    let (loss, mut gradients): (f32, Vec<_>) = self.network.gradients(values);
 
-            self.apply_gradients(gradients);
+                    kahan_sum.add(loss as f64 / batch_size as f64);
+                    gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);
+
+                    gradients
+                }).reduce(|mut acc, this|
+                {
+                    acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
+                    {
+                        *acc += this;
+                    });
+
+                    acc
+                }).expect("batch size must not be 0");
+
+                let batch_loss = kahan_sum.value() / steps_num as f64;
+
+                Self::print_loss(false, batch_loss as f32);
+
+                self.apply_gradients(gradients);
+            }
         }
 
         output_loss(self);

@@ -2,7 +2,7 @@ use std::{
     f32,
     fmt::Debug,
     borrow::Borrow,
-    collections::VecDeque,
+    collections::{vec_deque, VecDeque},
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, DivAssign, Neg}
 };
 
@@ -265,6 +265,8 @@ impl Joinable for JoinableWrapper
     type Item = (MatrixWrapper, MatrixWrapper);
     type Output = (MatrixWrapper, MatrixWrapper);
 
+    type IntoIter = vec_deque::IntoIter<Self::Item>;
+
     fn new(value: Self::Item) -> Self
     {
         Self(VecDeque::from([value]))
@@ -275,9 +277,9 @@ impl Joinable for JoinableWrapper
         self.0.push_back(other);
     }
 
-    fn pop(&mut self) -> Self::Output
+    fn into_iter(self) -> Self::IntoIter
     {
-        self.0.pop_front().unwrap()
+        self.0.into_iter()
     }
 
     fn len(&self) -> usize
@@ -291,6 +293,8 @@ impl Joinable for JoinableDeepWrapper
     type Item = JoinableWrapper;
     type Output = JoinableWrapper;
 
+    type IntoIter = vec_deque::IntoIter<Self::Item>;
+
     fn new(value: Self::Item) -> Self
     {
         Self(VecDeque::from([value]))
@@ -301,9 +305,9 @@ impl Joinable for JoinableDeepWrapper
         self.0.push_back(other);
     }
 
-    fn pop(&mut self) -> Self::Output
+    fn into_iter(self) -> Self::IntoIter
     {
-        self.0.pop_front().unwrap()
+        self.0.into_iter()
     }
 
     fn len(&self) -> usize

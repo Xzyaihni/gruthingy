@@ -51,10 +51,12 @@ pub trait Joinable
     type Item;
     type Output;
 
+    type IntoIter: Iterator<Item=Self::Item>;
+
     fn new(value: Self::Item) -> Self;
 
     fn join(&mut self, other: Self::Item);
-    fn pop(&mut self) -> Self::Output;
+    fn into_iter(self) -> Self::IntoIter;
 
     fn len(&self) -> usize;
 }

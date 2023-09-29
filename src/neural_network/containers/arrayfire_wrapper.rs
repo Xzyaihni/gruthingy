@@ -193,12 +193,14 @@ impl Softmaxable for ArrayfireWrapper
 pub struct JoinableWrapper
 {
     data: ArrayfireWrapper,
+    len: i64,
     index: i64
 }
 
 pub struct JoinableDeepWrapper
 {
     data: ArrayfireWrapper,
+    len: i64,
     index: i64
 }
 
@@ -213,12 +215,14 @@ impl Joinable for JoinableWrapper
     type Item = (ArrayfireWrapper, ArrayfireWrapper);
     type Output = (ArrayfireWrapper, ArrayfireWrapper);
 
+    type IntoIter = Self;
+
     fn new(value: Self::Item) -> Self
     {
         let (input, output) = value;
         let this = arrayfire::join(1, &input.0, &output.0);
 
-        Self{data: ArrayfireWrapper(this), index: 0}
+        Self{data: ArrayfireWrapper(this), len: 0, index: 0}
     }
 
     fn join(&mut self, other: Self::Item)
@@ -227,25 +231,13 @@ impl Joinable for JoinableWrapper
         let this = arrayfire::join(1, &input.0, &output.0);
 
         self.data.0 = arrayfire::join(2, &self.data.0, &this);
+
+        self.len += 1;
     }
 
-    fn pop(&mut self) -> Self::Output
+    fn into_iter(self) -> Self::IntoIter
     {
-        let index_f64 = self.index as f64;
-        let seqs = [
-            Seq::default(),
-            Seq::default(),
-            Seq::new(index_f64, index_f64, 1.0)
-        ];
-
-        let a_output = arrayfire::index(&self.data.0, &seqs);
-
-        let inputs = arrayfire::col(&a_output, 0);
-        let outputs = arrayfire::col(&a_output, 1);
-
-        self.index += 1;
-
-        (ArrayfireWrapper(inputs), ArrayfireWrapper(outputs))
+        todo!();
     }
 
     fn len(&self) -> usize
@@ -254,41 +246,91 @@ impl Joinable for JoinableWrapper
     }
 }
 
+impl Iterator for JoinableWrapper
+{
+    type Item = (ArrayfireWrapper, ArrayfireWrapper);
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        if self.index == self.len
+        {
+            None
+        } else
+        {
+            let index_f64 = self.index as f64;
+            let seqs = [
+                Seq::default(),
+                Seq::default(),
+                Seq::new(index_f64, index_f64, 1.0)
+            ];
+
+            let a_output = arrayfire::index(&self.data.0, &seqs);
+
+            let inputs = arrayfire::col(&a_output, 0);
+            let outputs = arrayfire::col(&a_output, 1);
+
+            self.index += 1;
+
+            Some((ArrayfireWrapper(inputs), ArrayfireWrapper(outputs)))
+        }
+    }
+}
+
 impl Joinable for JoinableDeepWrapper
 {
     type Item = JoinableWrapper;
     type Output = JoinableWrapper;
 
+    type IntoIter = Self;
+
     fn new(value: Self::Item) -> Self
     {
-        Self{data: value.data, index: 0}
+        Self{data: value.data, len: 0, index: 0}
     }
 
     fn join(&mut self, other: Self::Item)
     {
         self.data.0 = arrayfire::join(3, &self.data.0, &other.data.0);
+
+        self.len += 1;
     }
 
-    fn pop(&mut self) -> Self::Output
+    fn into_iter(self) -> Self::IntoIter
     {
-        let index_f64 = self.index as f64;
-        let seqs = [
-            Seq::default(),
-            Seq::default(),
-            Seq::default(),
-            Seq::new(index_f64, index_f64, 1.0)
-        ];
-
-        let a_output = arrayfire::index(&self.data.0, &seqs);
-
-        self.index += 1;
-
-        JoinableWrapper{data: ArrayfireWrapper(a_output), index: 0}
+        self
     }
 
     fn len(&self) -> usize
     {
         self.data.0.dims()[3] as usize
+    }
+}
+
+impl Iterator for JoinableDeepWrapper
+{
+    type Item = JoinableWrapper;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        if self.index == self.len
+        {
+            None
+        } else
+        {
+            let index_f64 = self.index as f64;
+            let seqs = [
+                Seq::default(),
+                Seq::default(),
+                Seq::default(),
+                Seq::new(index_f64, index_f64, 1.0)
+            ];
+
+            let a_output = arrayfire::index(&self.data.0, &seqs);
+
+            self.index += 1;
+
+            Some(JoinableWrapper{data: ArrayfireWrapper(a_output), len: 0, index: 0})
+        }
     }
 }
 

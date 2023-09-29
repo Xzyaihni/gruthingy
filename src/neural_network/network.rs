@@ -483,7 +483,7 @@ impl<Layer: NetworkUnit> Network<Layer>
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
-        mut input: JoinableType
+        input: JoinableType
     ) -> ScalarType
     {
         let mut output: Option<ScalarType> = None;
@@ -491,9 +491,8 @@ impl<Layer: NetworkUnit> Network<Layer>
 
         let dropout_masks = self.create_dropout_masks(INPUT_SIZE, DROPOUT_PROBABILITY);
 
-        for _ in 0..input.len()
+        for (this_input, this_output) in input.into_iter()
         {
-            let (this_input, this_output) = input.pop();
             let this_input = DiffWrapper::new_undiff(this_input);
 
             let NetworkOutput{
