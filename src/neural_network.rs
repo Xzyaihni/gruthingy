@@ -445,9 +445,7 @@ impl NeuralNetwork
 
         if calculate_loss
         {
-            let input_outputs = Self::combine_inputs(input_outputs);
-
-            let loss = self.network.feedforward(input_outputs);
+            let loss = self.network.feedforward(JoinableType::from_iter(input_outputs));
 
             Self::print_loss(true, loss.value_clone() / inputs.len() as f32);
         }
@@ -468,24 +466,6 @@ impl NeuralNetwork
         println!("{loss_type} loss: {loss}");
     }
 
-    fn combine_inputs(input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>) -> JoinableType
-    {
-        let mut joined: Option<JoinableType> = None;
-
-        for inputs in input
-        {
-            if let Some(joined) = joined.as_mut()
-            {
-                joined.join(inputs);
-            } else
-            {
-                joined = Some(JoinableType::new(inputs));
-            }
-        }
-
-        joined.unwrap()
-    }
-
     fn create_batch(
         &self,
         inputs: &[VectorWord],
@@ -495,8 +475,7 @@ impl NeuralNetwork
     {
         let max_batch_start = inputs.len().saturating_sub(steps_num);
 
-        let mut batch: Option<JoinableDeepType> = None;
-        for _ in 0..batch_size
+        JoinableDeepType::from_iter((0..batch_size).map(|_|
         {
             let batch_start = if max_batch_start == 0
             {
@@ -513,20 +492,8 @@ impl NeuralNetwork
                 steps_num
             );
 
-            let inputs: JoinableType = Self::combine_inputs(
-                values.iter().map(|(a, b)| (a.clone(), b.clone()))
-            );
-
-            if let Some(batch) = batch.as_mut()
-            {
-                batch.join(inputs);
-            } else
-            {
-                batch = Some(JoinableDeepType::new(inputs));
-            }
-        }
-
-        batch.unwrap()
+            JoinableType::from_iter(values.iter().map(|(a, b)| (a.clone(), b.clone())))
+        }))
     }
 
     pub fn train<R: Read>(

@@ -197,6 +197,38 @@ pub struct JoinableWrapper
     index: i64
 }
 
+impl FromIterator<(ArrayfireWrapper, ArrayfireWrapper)> for JoinableWrapper
+{
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item=(ArrayfireWrapper, ArrayfireWrapper)>
+    {
+        let mut len = 0;
+        let mut data: Option<ArrayfireWrapper> = None;
+
+        for (input, output) in iter
+        {
+            let this = arrayfire::join(1, &input.0, &output.0);
+
+            if let Some(data) = data.as_mut()
+            {
+                data.0 = arrayfire::join(2, &data.0, &this);
+            } else
+            {
+                data = Some(ArrayfireWrapper(this));
+            }
+
+            len += 1;
+        }
+
+        Self{
+            data: data.expect("cant have an empty joinable"),
+            len,
+            index: 0
+        }
+    }
+}
+
 pub struct JoinableDeepWrapper
 {
     data: ArrayfireWrapper,
@@ -204,47 +236,43 @@ pub struct JoinableDeepWrapper
     index: i64
 }
 
-impl JoinableSelector for ArrayfireWrapper
+impl FromIterator<JoinableWrapper> for JoinableDeepWrapper
+{
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item=JoinableWrapper>
+    {
+        let mut len = 0;
+        let mut data: Option<ArrayfireWrapper> = None;
+
+        for input in iter
+        {
+            if let Some(data) = data.as_mut()
+            {
+                data.0 = arrayfire::join(3, &data.0, &input.data.0);
+            } else
+            {
+                data = Some(ArrayfireWrapper(input.data.0));
+            }
+
+            len += 1;
+        }
+
+        Self{
+            data: data.expect("cant have an empty joinable"),
+            len,
+            index: 0
+        }
+    }
+}
+
+impl JoinableSelector<(ArrayfireWrapper, ArrayfireWrapper)> for ArrayfireWrapper
 {
     type This = JoinableWrapper;
     type Deep = JoinableDeepWrapper;
 }
 
-impl Joinable for JoinableWrapper
-{
-    type Item = (ArrayfireWrapper, ArrayfireWrapper);
-    type Output = (ArrayfireWrapper, ArrayfireWrapper);
-
-    type IntoIter = Self;
-
-    fn new(value: Self::Item) -> Self
-    {
-        let (input, output) = value;
-        let this = arrayfire::join(1, &input.0, &output.0);
-
-        Self{data: ArrayfireWrapper(this), len: 0, index: 0}
-    }
-
-    fn join(&mut self, other: Self::Item)
-    {
-        let (input, output) = other;
-        let this = arrayfire::join(1, &input.0, &output.0);
-
-        self.data.0 = arrayfire::join(2, &self.data.0, &this);
-
-        self.len += 1;
-    }
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        todo!();
-    }
-
-    fn len(&self) -> usize
-    {
-        self.data.0.dims()[2] as usize
-    }
-}
+impl Joinable<(ArrayfireWrapper, ArrayfireWrapper)> for JoinableWrapper {}
 
 impl Iterator for JoinableWrapper
 {
@@ -276,35 +304,7 @@ impl Iterator for JoinableWrapper
     }
 }
 
-impl Joinable for JoinableDeepWrapper
-{
-    type Item = JoinableWrapper;
-    type Output = JoinableWrapper;
-
-    type IntoIter = Self;
-
-    fn new(value: Self::Item) -> Self
-    {
-        Self{data: value.data, len: 0, index: 0}
-    }
-
-    fn join(&mut self, other: Self::Item)
-    {
-        self.data.0 = arrayfire::join(3, &self.data.0, &other.data.0);
-
-        self.len += 1;
-    }
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self
-    }
-
-    fn len(&self) -> usize
-    {
-        self.data.0.dims()[3] as usize
-    }
-}
+impl Joinable<JoinableWrapper> for JoinableDeepWrapper {}
 
 impl Iterator for JoinableDeepWrapper
 {
@@ -545,13 +545,15 @@ mod tests
 {
     use super::*;
 
+    use std::iter;
+
     #[test]
     fn joinable_works()
     {
         let a = ArrayfireWrapper::new(5, 1);
         let b = ArrayfireWrapper::new(5, 1);
 
-        let j = JoinableWrapper::new((a, b));
+        let j = iter::once((a, b)).collect::<JoinableWrapper>();
 
         assert_eq!(j.data.0.dims(), dim4!{5, 2, 1, 1});
     }

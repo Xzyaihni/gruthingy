@@ -23,8 +23,8 @@ mod arrayfire_wrapper;
 
 pub type LayerInnerType = MatrixWrapper;
 
-pub type JoinableType = <LayerInnerType as JoinableSelector>::This;
-pub type JoinableDeepType = <LayerInnerType as JoinableSelector>::Deep;
+pub type JoinableType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::This;
+pub type JoinableDeepType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::Deep;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
@@ -40,26 +40,13 @@ pub fn leaky_relu_d(value: f32) -> f32
     }
 }
 
-pub trait JoinableSelector
+pub trait JoinableSelector<T>
 {
-    type This: Joinable;
-    type Deep: Joinable;
+    type This: Joinable<T>;
+    type Deep: Joinable<Self::This>;
 }
 
-pub trait Joinable
-{
-    type Item;
-    type Output;
-
-    type IntoIter: Iterator<Item=Self::Item>;
-
-    fn new(value: Self::Item) -> Self;
-
-    fn join(&mut self, other: Self::Item);
-    fn into_iter(self) -> Self::IntoIter;
-
-    fn len(&self) -> usize;
-}
+pub trait Joinable<T>: IntoIterator + FromIterator<T> + 'static {}
 
 #[derive(Debug, Serialize, Deserialize)]
 enum LayerChild

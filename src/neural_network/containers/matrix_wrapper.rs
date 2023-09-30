@@ -1,8 +1,8 @@
 use std::{
     f32,
+    vec,
     fmt::Debug,
     borrow::Borrow,
-    collections::{vec_deque, VecDeque},
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, DivAssign, Neg}
 };
 
@@ -251,70 +251,60 @@ impl Softmaxable for MatrixWrapper
     }
 }
 
-pub struct JoinableWrapper(VecDeque<(MatrixWrapper, MatrixWrapper)>);
-pub struct JoinableDeepWrapper(VecDeque<JoinableWrapper>);
+pub struct JoinableWrapper(Vec<(MatrixWrapper, MatrixWrapper)>);
 
-impl JoinableSelector for MatrixWrapper
+impl FromIterator<(MatrixWrapper, MatrixWrapper)> for JoinableWrapper
+{
+    fn from_iter<T>(iter: T) -> JoinableWrapper
+    where
+        T: IntoIterator<Item=(MatrixWrapper, MatrixWrapper)>
+    {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for JoinableWrapper
+{
+    type Item = (MatrixWrapper, MatrixWrapper);
+    type IntoIter = vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        self.0.into_iter()
+    }
+}
+
+pub struct JoinableDeepWrapper(Vec<JoinableWrapper>);
+
+impl FromIterator<JoinableWrapper> for JoinableDeepWrapper
+{
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item=JoinableWrapper>
+    {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for JoinableDeepWrapper
+{
+    type Item = JoinableWrapper;
+    type IntoIter = vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        self.0.into_iter()
+    }
+}
+
+impl JoinableSelector<(MatrixWrapper, MatrixWrapper)> for MatrixWrapper
 {
     type This = JoinableWrapper;
     type Deep = JoinableDeepWrapper;
 }
 
-impl Joinable for JoinableWrapper
-{
-    type Item = (MatrixWrapper, MatrixWrapper);
-    type Output = (MatrixWrapper, MatrixWrapper);
-
-    type IntoIter = vec_deque::IntoIter<Self::Item>;
-
-    fn new(value: Self::Item) -> Self
-    {
-        Self(VecDeque::from([value]))
-    }
-
-    fn join(&mut self, other: Self::Item)
-    {
-        self.0.push_back(other);
-    }
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self.0.into_iter()
-    }
-
-    fn len(&self) -> usize
-    {
-        self.0.len()
-    }
-}
-
-impl Joinable for JoinableDeepWrapper
-{
-    type Item = JoinableWrapper;
-    type Output = JoinableWrapper;
-
-    type IntoIter = vec_deque::IntoIter<Self::Item>;
-
-    fn new(value: Self::Item) -> Self
-    {
-        Self(VecDeque::from([value]))
-    }
-
-    fn join(&mut self, other: Self::Item)
-    {
-        self.0.push_back(other);
-    }
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self.0.into_iter()
-    }
-
-    fn len(&self) -> usize
-    {
-        self.0.len()
-    }
-}
+impl Joinable<(MatrixWrapper, MatrixWrapper)> for JoinableWrapper {}
+impl Joinable<JoinableWrapper> for JoinableDeepWrapper {}
 
 #[allow(dead_code)]
 impl MatrixWrapper

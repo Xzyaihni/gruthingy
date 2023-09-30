@@ -11,7 +11,6 @@ use crate::neural_network::{
     ScalarType,
     LayerInnerType,
     DiffWrapper,
-    Joinable,
     JoinableType,
     LAYERS_AMOUNT,
     INPUT_SIZE,
