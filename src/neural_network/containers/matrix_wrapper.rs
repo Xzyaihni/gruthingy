@@ -251,7 +251,7 @@ impl Softmaxable for MatrixWrapper
     }
 }
 
-pub struct JoinableWrapper(Vec<(MatrixWrapper, MatrixWrapper)>);
+pub struct JoinableWrapper(vec::IntoIter<(MatrixWrapper, MatrixWrapper)>);
 
 impl FromIterator<(MatrixWrapper, MatrixWrapper)> for JoinableWrapper
 {
@@ -259,22 +259,21 @@ impl FromIterator<(MatrixWrapper, MatrixWrapper)> for JoinableWrapper
     where
         T: IntoIterator<Item=(MatrixWrapper, MatrixWrapper)>
     {
-        Self(iter.into_iter().collect())
+        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
     }
 }
 
-impl IntoIterator for JoinableWrapper
+impl Iterator for JoinableWrapper
 {
     type Item = (MatrixWrapper, MatrixWrapper);
-    type IntoIter = vec::IntoIter<Self::Item>;
 
-    fn into_iter(self) -> Self::IntoIter
+    fn next(&mut self) -> Option<Self::Item>
     {
-        self.0.into_iter()
+        self.0.next()
     }
 }
 
-pub struct JoinableDeepWrapper(Vec<JoinableWrapper>);
+pub struct JoinableDeepWrapper(vec::IntoIter<JoinableWrapper>);
 
 impl FromIterator<JoinableWrapper> for JoinableDeepWrapper
 {
@@ -282,18 +281,17 @@ impl FromIterator<JoinableWrapper> for JoinableDeepWrapper
     where
         T: IntoIterator<Item=JoinableWrapper>
     {
-        Self(iter.into_iter().collect())
+        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
     }
 }
 
-impl IntoIterator for JoinableDeepWrapper
+impl Iterator for JoinableDeepWrapper
 {
     type Item = JoinableWrapper;
-    type IntoIter = vec::IntoIter<Self::Item>;
 
-    fn into_iter(self) -> Self::IntoIter
+    fn next(&mut self) -> Option<Self::Item>
     {
-        self.0.into_iter()
+        self.0.next()
     }
 }
 
