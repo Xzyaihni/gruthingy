@@ -46,7 +46,7 @@ pub trait JoinableSelector<T>
     type Deep: Joinable<Self::This>;
 }
 
-pub trait Joinable<T>: IntoIterator + FromIterator<T> + 'static {}
+pub trait Joinable<T>: IntoIterator + FromIterator<T> {}
 
 #[derive(Debug, Serialize, Deserialize)]
 enum LayerChild
