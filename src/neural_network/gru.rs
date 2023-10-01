@@ -46,14 +46,14 @@ impl NetworkUnit for GRU
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let mut update_gate = self.input_update.matmul_add(input, &self.update_bias);
-        let mut reset_gate = self.input_reset.matmul_add(input, &self.reset_bias);
-        let mut activation_gate = self.input_activation.matmul_add(input, &self.activation_bias);
+        let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
+        let mut reset_gate = self.input_reset.matmulv_add(input, &self.reset_bias);
+        let mut activation_gate = self.input_activation.matmulv_add(input, &self.activation_bias);
 
         if let Some(previous_state) = previous_state
         {
-            update_gate += self.hidden_update.matmul(previous_state);
-            reset_gate += self.hidden_reset.matmul(previous_state);
+            update_gate += self.hidden_update.matmulv(previous_state);
+            reset_gate += self.hidden_reset.matmulv(previous_state);
         }
 
         update_gate.sigmoid();
@@ -62,7 +62,7 @@ impl NetworkUnit for GRU
         if let Some(previous_state) = previous_state
         {
             let activation_v = &reset_gate * previous_state;
-            activation_gate += self.hidden_activation.matmul(activation_v);
+            activation_gate += self.hidden_activation.matmulv(activation_v);
         }
 
         activation_gate.tanh();
@@ -77,7 +77,7 @@ impl NetworkUnit for GRU
             this_activation + ScalarType::new(1.0)
         };
 
-        let output_untrans = self.output.matmul(&state);
+        let output_untrans = self.output.matmulv(&state);
 
         NetworkOutput{
             state,

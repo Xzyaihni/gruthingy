@@ -382,29 +382,29 @@ impl ArrayfireWrapper
         (softmaxed, -s)
     }
 
-    pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
     {
         let rhs = rhs.borrow();
         Self(arrayfire::matmul(&self.0, &rhs.0, MatProp::NONE, MatProp::NONE))
     }
 
-    pub fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmulv_transposed(&self, rhs: impl Borrow<Self>) -> Self
     {
         let rhs = rhs.borrow();
         Self(arrayfire::matmul(&self.0, &rhs.0, MatProp::TRANS, MatProp::NONE))
     }
 
-    pub fn matmul_by_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn outer_product(&self, rhs: impl Borrow<Self>) -> Self
     {
         let rhs = rhs.borrow();
         Self(arrayfire::matmul(&self.0, &rhs.0, MatProp::NONE, MatProp::TRANS))
     }
 
-    pub fn matmul_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
     {
         // arrayfire doesnt let me give it the C matrix in gemm >_<
         
-        self.matmul(rhs) + added.borrow()
+        self.matmulv(rhs) + added.borrow()
     }
 
     pub fn max(&mut self, rhs: &Self)

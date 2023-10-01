@@ -1,6 +1,7 @@
 use std::{
     f32,
     mem,
+    vec,
     iter,
     rc::Rc,
     fmt::Debug,
@@ -17,11 +18,15 @@ use matrix_wrapper::MatrixWrapper;
 #[allow(unused_imports)]
 use arrayfire_wrapper::ArrayfireWrapper;
 
+#[allow(unused_imports)]
+use blas_wrapper::BlasWrapper;
+
 mod matrix_wrapper;
 mod arrayfire_wrapper;
+mod blas_wrapper;
 
 
-pub type LayerInnerType = MatrixWrapper;
+pub type LayerInnerType = BlasWrapper;
 
 pub type JoinableType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::This;
 pub type JoinableDeepType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::Deep;
@@ -47,6 +52,54 @@ pub trait JoinableSelector<T>
 }
 
 pub trait Joinable<T>: Iterator<Item=T> + FromIterator<T> {}
+
+pub struct DefaultJoinableWrapper<T>(vec::IntoIter<(T, T)>);
+
+impl<T> Joinable<(T, T)> for DefaultJoinableWrapper<T> {}
+
+impl<T> FromIterator<(T, T)> for DefaultJoinableWrapper<T>
+{
+    fn from_iter<I>(iter: I) -> DefaultJoinableWrapper<T>
+    where
+        I: IntoIterator<Item=(T, T)>
+    {
+        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
+    }
+}
+
+impl<T> Iterator for DefaultJoinableWrapper<T>
+{
+    type Item = (T, T);
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.0.next()
+    }
+}
+
+pub struct DefaultJoinableDeepWrapper<T>(vec::IntoIter<DefaultJoinableWrapper<T>>);
+
+impl<T> Joinable<DefaultJoinableWrapper<T>> for DefaultJoinableDeepWrapper<T> {}
+
+impl<T> FromIterator<DefaultJoinableWrapper<T>> for DefaultJoinableDeepWrapper<T>
+{
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item=DefaultJoinableWrapper<T>>
+    {
+        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
+    }
+}
+
+impl<T> Iterator for DefaultJoinableDeepWrapper<T>
+{
+    type Item = DefaultJoinableWrapper<T>;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.0.next()
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 enum LayerChild
@@ -186,8 +239,8 @@ enum LayerOps
     Sub{lhs: LayerChild, rhs: LayerChild},
     Mul{lhs: LayerChild, rhs: LayerChild},
     Div{lhs: LayerChild, rhs: LayerChild},
-    Matmul{lhs: LayerType, rhs: LayerType},
-    MatmulAdd{lhs: LayerType, rhs: LayerType, added: LayerType},
+    Matmulv{lhs: LayerType, rhs: LayerType},
+    MatmulvAdd{lhs: LayerType, rhs: LayerType, added: LayerType},
     SoftmaxCrossEntropy{
         values: LayerType,
         softmaxed_values: LayerInnerType,
@@ -731,17 +784,17 @@ where
                     x.derivatives((-gradient).into());
                 }
             },
-            LayerOps::Matmul{mut lhs, mut rhs} =>
+            LayerOps::Matmulv{mut lhs, mut rhs} =>
             {
                 let gradient: LayerInnerType = gradient.try_into()
                     .expect("matmul must be a tensor");
                 
                 let rhs_cg = rhs.is_gradient();
-                let rhs_d = rhs_cg.then(|| lhs.value().matmul_transposed(&gradient));
+                let rhs_d = rhs_cg.then(|| lhs.value().matmulv_transposed(&gradient));
 
                 if lhs.is_gradient()
                 {
-                    let d = gradient.matmul_by_transposed(&*rhs.value());
+                    let d = gradient.outer_product(&*rhs.value());
                     lhs.derivatives(d.into());
                 }
 
@@ -753,17 +806,17 @@ where
                     rhs.derivatives(rhs_d.into());
                 }
             },
-            LayerOps::MatmulAdd{mut lhs, mut rhs, mut added} =>
+            LayerOps::MatmulvAdd{mut lhs, mut rhs, mut added} =>
             {
                 let gradient: LayerInnerType = gradient.try_into()
                     .expect("matmul must be a tensor");
                 
                 let rhs_cg = rhs.is_gradient();
-                let rhs_d = rhs_cg.then(|| lhs.value().matmul_transposed(&gradient));
+                let rhs_d = rhs_cg.then(|| lhs.value().matmulv_transposed(&gradient));
 
                 if lhs.is_gradient()
                 {
-                    let d = gradient.matmul_by_transposed(&*rhs.value());
+                    let d = gradient.outer_product(&*rhs.value());
                     lhs.derivatives(d.into());
                 }
 
@@ -1442,14 +1495,14 @@ impl LayerType
         )
     }
 
-    pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
     {
         let rhs = rhs.borrow();
 
-        op_impl_inner!(self, rhs, Self, Matmul, matmul)
+        op_impl_inner!(self, rhs, Self, Matmulv, matmulv)
     }
 
-    pub fn matmul_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
     {
         let rhs = rhs.borrow();
         let added = added.borrow();
@@ -1458,7 +1511,7 @@ impl LayerType
             let rhs = rhs.value();
             let added = added.value();
 
-            self.value().matmul_add(&*rhs, &*added)
+            self.value().matmulv_add(&*rhs, &*added)
         };
 
         let is_lhs_gradient = self.is_gradient();
@@ -1469,7 +1522,7 @@ impl LayerType
 
         let ops = if is_gradient
         {
-            LayerOps::MatmulAdd{
+            LayerOps::MatmulvAdd{
                 lhs: self.into_child(is_lhs_gradient),
                 rhs: rhs.into_child(is_rhs_gradient),
                 added: added.into_child(is_added_gradient)
@@ -1911,7 +1964,7 @@ mod tests
     #[test]
     fn matrix_multiplication()
     {
-        check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmul(b) + b.sum())
+        check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmulv(b) + b.sum())
     }
 
     fn create_targets() -> LayerInnerType
@@ -1952,7 +2005,11 @@ mod tests
 
             a.into_iter().zip(b.into_iter()).for_each(|(a, b)|
             {
-                assert_eq!(a, b);
+                close_enough_loose(
+                    a,
+                    b,
+                    0.0001
+                );
             });
         };
 

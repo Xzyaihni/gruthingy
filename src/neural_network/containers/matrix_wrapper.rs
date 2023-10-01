@@ -1,6 +1,5 @@
 use std::{
     f32,
-    vec,
     fmt::Debug,
     borrow::Borrow,
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, DivAssign, Neg}
@@ -10,7 +9,15 @@ use serde::{Serialize, Deserialize};
 
 use nalgebra::DMatrix;
 
-use super::{Softmaxer, Softmaxable, Joinable, JoinableSelector, LEAKY_SLOPE, leaky_relu_d};
+use super::{
+    Softmaxer,
+    Softmaxable,
+    JoinableSelector,
+    DefaultJoinableWrapper,
+    DefaultJoinableDeepWrapper,
+    LEAKY_SLOPE,
+    leaky_relu_d
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
@@ -251,58 +258,11 @@ impl Softmaxable for MatrixWrapper
     }
 }
 
-pub struct JoinableWrapper(vec::IntoIter<(MatrixWrapper, MatrixWrapper)>);
-
-impl FromIterator<(MatrixWrapper, MatrixWrapper)> for JoinableWrapper
-{
-    fn from_iter<T>(iter: T) -> JoinableWrapper
-    where
-        T: IntoIterator<Item=(MatrixWrapper, MatrixWrapper)>
-    {
-        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
-    }
-}
-
-impl Iterator for JoinableWrapper
-{
-    type Item = (MatrixWrapper, MatrixWrapper);
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        self.0.next()
-    }
-}
-
-pub struct JoinableDeepWrapper(vec::IntoIter<JoinableWrapper>);
-
-impl FromIterator<JoinableWrapper> for JoinableDeepWrapper
-{
-    fn from_iter<T>(iter: T) -> Self
-    where
-        T: IntoIterator<Item=JoinableWrapper>
-    {
-        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
-    }
-}
-
-impl Iterator for JoinableDeepWrapper
-{
-    type Item = JoinableWrapper;
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        self.0.next()
-    }
-}
-
 impl JoinableSelector<(MatrixWrapper, MatrixWrapper)> for MatrixWrapper
 {
-    type This = JoinableWrapper;
-    type Deep = JoinableDeepWrapper;
+    type This = DefaultJoinableWrapper<MatrixWrapper>;
+    type Deep = DefaultJoinableDeepWrapper<MatrixWrapper>;
 }
-
-impl Joinable<(MatrixWrapper, MatrixWrapper)> for JoinableWrapper {}
-impl Joinable<JoinableWrapper> for JoinableDeepWrapper {}
 
 #[allow(dead_code)]
 impl MatrixWrapper
@@ -349,22 +309,22 @@ impl MatrixWrapper
         (softmaxed, -s)
     }
 
-    pub fn matmul(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
     {
         Self(&self.0 * &rhs.borrow().0)
     }
 
-    pub fn matmul_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmulv_transposed(&self, rhs: impl Borrow<Self>) -> Self
     {
         Self(self.0.tr_mul(&rhs.borrow().0))
     }
 
-    pub fn matmul_by_transposed(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn outer_product(&self, rhs: impl Borrow<Self>) -> Self
     {
         Self(&self.0 * rhs.borrow().0.transpose())
     }
 
-    pub fn matmul_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
     {
         let mut this = added.borrow().0.clone();
         this.gemm(1.0, &self.0, &rhs.borrow().0, 1.0);

@@ -54,17 +54,17 @@ impl NetworkUnit for LSTM
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let mut forget_gate = self.input_forget.matmul_add(input, &self.forget_bias);
-        let mut update_gate = self.input_update.matmul_add(input, &self.update_bias);
-        let mut output_gate = self.input_output.matmul_add(input, &self.output_bias);
-        let mut memory_gate = self.input_memory.matmul_add(input, &self.memory_bias);
+        let mut forget_gate = self.input_forget.matmulv_add(input, &self.forget_bias);
+        let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
+        let mut output_gate = self.input_output.matmulv_add(input, &self.output_bias);
+        let mut memory_gate = self.input_memory.matmulv_add(input, &self.memory_bias);
 
         if let Some(previous_state) = previous_state
         {
-            forget_gate += self.hidden_forget.matmul(&previous_state.hidden);
-            update_gate += self.hidden_update.matmul(&previous_state.hidden);
-            output_gate += self.hidden_output.matmul(&previous_state.hidden);
-            memory_gate += self.hidden_memory.matmul(&previous_state.hidden);
+            forget_gate += self.hidden_forget.matmulv(&previous_state.hidden);
+            update_gate += self.hidden_update.matmulv(&previous_state.hidden);
+            output_gate += self.hidden_output.matmulv(&previous_state.hidden);
+            memory_gate += self.hidden_memory.matmulv(&previous_state.hidden);
         }
 
         forget_gate.sigmoid();
@@ -89,7 +89,7 @@ impl NetworkUnit for LSTM
             output_gate * memory
         };
 
-        let output_untrans = self.output.matmul(&hidden);
+        let output_untrans = self.output.matmulv(&hidden);
 
         let state = LSTMState{
             hidden,
