@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, Dyn};
 
 use super::{
     Softmaxer,
@@ -296,38 +296,31 @@ impl MatrixWrapper
         self.0.fill(value);
     }
 
-    pub fn softmax_cross_entropy(mut self, targets: &Self) -> (Self, f32)
-    {
-        Softmaxer::softmax(&mut self);
-        let softmaxed = self.clone();
-
-        // assumes that targets r either 0 or 1
-        self.ln();
-
-        let s = self.dot(targets);
-
-        (softmaxed, -s)
-    }
-
     pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
     {
-        Self(&self.0 * &rhs.borrow().0)
+        let this = (&self.0).mul(&rhs.borrow().0.column(0));
+
+        let rows = this.shape_generic().0;
+        Self(this.reshape_generic(rows, Dyn(1)))
     }
 
     pub fn matmulv_transposed(&self, rhs: impl Borrow<Self>) -> Self
     {
+        // nope no gemv_tr cuz FUCK me
         Self(self.0.tr_mul(&rhs.borrow().0))
     }
 
     pub fn outer_product(&self, rhs: impl Borrow<Self>) -> Self
     {
-        Self(&self.0 * rhs.borrow().0.transpose())
+        // cant use ger here cuz all linear algebra libraries hate me and r slow
+        // if only i could call ger on a matrix that has MaybeUninit<T> >_<
+        Self(&self.0 * &rhs.borrow().0.transpose())
     }
 
     pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
     {
         let mut this = added.borrow().0.clone();
-        this.gemm(1.0, &self.0, &rhs.borrow().0, 1.0);
+        this.column_mut(0).gemv(1.0, &self.0, &rhs.borrow().0.column(0), 1.0);
 
         Self(this)
     }
@@ -408,7 +401,7 @@ impl MatrixWrapper
 
     pub fn cap_magnitude(&self, cap: f32) -> Self
     {
-        Self(self.0.cap_magnitude(cap))
+        Self(self.0.simd_cap_magnitude(cap))
     }
 
     pub fn total_len(&self) -> usize

@@ -26,7 +26,7 @@ mod arrayfire_wrapper;
 mod blas_wrapper;
 
 
-pub type LayerInnerType = BlasWrapper;
+pub type LayerInnerType = MatrixWrapper;
 
 pub type JoinableType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::This;
 pub type JoinableDeepType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::Deep;
@@ -42,6 +42,22 @@ pub fn leaky_relu_d(value: f32) -> f32
     } else
     {
         LEAKY_SLOPE
+    }
+}
+
+impl LayerInnerType
+{
+    pub fn softmax_cross_entropy(mut self, targets: &Self) -> (Self, f32)
+    {
+        Softmaxer::softmax(&mut self);
+        let softmaxed = self.clone();
+
+        // assumes that targets r either 0 or 1
+        self.ln();
+
+        let s = self.dot(targets);
+
+        (softmaxed, -s)
     }
 }
 
