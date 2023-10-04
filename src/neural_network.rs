@@ -1,6 +1,7 @@
 use std::{
     f32,
     mem,
+    vec,
     slice,
     io::{self, Read},
     fs::File,
@@ -203,6 +204,17 @@ impl<T> InputOutput<T>
     pub fn len(&self) -> usize
     {
         self.container.len() - 1
+    }
+}
+
+impl<T: Clone> IntoIterator for InputOutput<T>
+{
+    type Item = (T, T);
+    type IntoIter = InputOutputIter<vec::IntoIter<T>, T>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        InputOutputIter::new(self.container.into_iter())
     }
 }
 
@@ -466,36 +478,6 @@ impl NeuralNetwork
         println!("{loss_type} loss: {loss}");
     }
 
-    fn create_batch(
-        &self,
-        inputs: &[VectorWord],
-        steps_num: usize,
-        batch_size: usize
-    ) -> JoinableDeepType
-    {
-        let max_batch_start = inputs.len().saturating_sub(steps_num);
-
-        JoinableDeepType::from_iter((0..batch_size).map(|_|
-        {
-            let batch_start = if max_batch_start == 0
-            {
-                0
-            } else
-            {
-                fastrand::usize(0..max_batch_start)
-            };
-
-            let values = InputOutput::values_slice(
-                inputs,
-                |word| self.dictionary.word_to_layer(*word),
-                batch_start,
-                steps_num
-            );
-
-            JoinableType::from_iter(values.iter().map(|(a, b)| (a.clone(), b.clone())))
-        }))
-    }
-
     pub fn train<R: Read>(
         &mut self,
         info: TrainingInfo,
@@ -584,11 +566,27 @@ impl NeuralNetwork
 
                 let mut kahan_sum = KahanSum::new();
 
-                let joinable = self.create_batch(&inputs, steps_num, batch_size);
+                let max_batch_start = inputs.len().saturating_sub(steps_num);
 
-                let gradients = joinable.into_iter().map(|values|
+                let gradients = (0..batch_size).map(|_|
                 {
-                    let (loss, mut gradients): (f32, Vec<_>) = self.network.gradients(values);
+                    let batch_start = if max_batch_start == 0
+                    {
+                        0
+                    } else
+                    {
+                        fastrand::usize(0..max_batch_start)
+                    };
+
+                    let values = InputOutput::values_slice(
+                        &inputs,
+                        |word| self.dictionary.word_to_layer(*word).clone(),
+                        batch_start,
+                        steps_num
+                    );
+
+                    let (loss, mut gradients): (f32, Vec<_>) =
+                        self.network.gradients(values.into_iter());
 
                     kahan_sum.add(loss as f64 / batch_size as f64);
                     gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);

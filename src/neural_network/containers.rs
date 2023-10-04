@@ -28,7 +28,10 @@ mod blas_wrapper;
 
 pub type LayerInnerType = MatrixWrapper;
 
+#[allow(dead_code)]
 pub type JoinableType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::This;
+
+#[allow(dead_code)]
 pub type JoinableDeepType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::Deep;
 
 pub const LEAKY_SLOPE: f32 = 0.01;

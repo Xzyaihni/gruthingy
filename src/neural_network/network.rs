@@ -11,7 +11,6 @@ use crate::neural_network::{
     ScalarType,
     LayerInnerType,
     DiffWrapper,
-    JoinableType,
     LAYERS_AMOUNT,
     INPUT_SIZE,
     DROPOUT_PROBABILITY,
@@ -253,7 +252,7 @@ impl<Layer: NetworkUnit> NetworkDropped<Layer>
 {
     pub fn gradients(
         &mut self,
-        input: JoinableType
+        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
     ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
     {
         self.0.clear();
@@ -482,7 +481,7 @@ impl<Layer: NetworkUnit> Network<Layer>
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
-        input: JoinableType
+        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
     ) -> ScalarType
     {
         let mut output: Option<ScalarType> = None;
@@ -490,7 +489,7 @@ impl<Layer: NetworkUnit> Network<Layer>
 
         let dropout_masks = self.create_dropout_masks(INPUT_SIZE, DROPOUT_PROBABILITY);
 
-        for (this_input, this_output) in input.into_iter()
+        for (this_input, this_output) in input
         {
             let this_input = DiffWrapper::new_undiff(this_input);
 
@@ -520,7 +519,7 @@ impl<Layer: NetworkUnit> Network<Layer>
 
     pub fn gradients(
         &mut self,
-        input: JoinableType
+        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
     ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
     {
         let mut dropped = self.dropconnected();
