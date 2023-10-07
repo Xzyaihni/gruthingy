@@ -49,12 +49,9 @@ macro_rules! op_impl_scalar
         $operation:ident
     ) =>
     {
-        unsafe fn $operation(lhs: &[f32], rhs: f32, output: *mut f32)
+        fn $operation(lhs: &[f32], rhs: f32) -> Vec<f32>
         {
-            for (i, lhs) in lhs.iter().enumerate()
-            {
-                unsafe{ output.add(i).write(lhs.$op_fn_name(rhs)); }
-            }
+            lhs.iter().map(|lhs| lhs.$op_fn_name(rhs)).collect()
         }
 
         impl $op_trait<f32> for BlasWrapper
@@ -63,14 +60,7 @@ macro_rules! op_impl_scalar
 
             fn $op_fn_name(self, rhs: f32) -> Self::Output
             {
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, rhs, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, rhs);
 
                 BlasWrapper{
                     data: output,
@@ -86,14 +76,7 @@ macro_rules! op_impl_scalar
 
             fn $op_fn_name(self, rhs: f32) -> Self::Output
             {
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, rhs, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, rhs);
 
                 BlasWrapper{
                     data: output,
@@ -109,14 +92,7 @@ macro_rules! op_impl_scalar
 
             fn $op_fn_name(self, rhs: &f32) -> Self::Output
             {
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, *rhs, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, *rhs);
 
                 BlasWrapper{
                     data: output,
@@ -132,14 +108,7 @@ macro_rules! op_impl_scalar
 
             fn $op_fn_name(self, rhs: &f32) -> Self::Output
             {
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, *rhs, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, *rhs);
 
                 BlasWrapper{
                     data: output,
@@ -159,16 +128,9 @@ macro_rules! op_impl
         $operation:ident
     ) =>
     {
-        unsafe fn $operation(lhs: &[f32], rhs: &[f32], output: *mut f32)
+        fn $operation(lhs: &[f32], rhs: &[f32]) -> Vec<f32>
         {
-            // i feel like all of this is useless but wutever who cares
-            for i in 0..lhs.len()
-            {
-                let lhs = unsafe{ lhs.get_unchecked(i) };
-                let rhs = unsafe{ rhs.get_unchecked(i) };
-
-                unsafe{ output.add(i).write(lhs.$op_fn_name(rhs)); }
-            }
+            lhs.iter().zip(rhs.iter()).map(|(lhs, rhs)| lhs.$op_fn_name(rhs)).collect()
         }
 
         impl $op_trait for BlasWrapper
@@ -179,14 +141,7 @@ macro_rules! op_impl
             {
                 sizes_match!(self, rhs);
 
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, &rhs.data, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, &rhs.data);
 
                 BlasWrapper{
                     data: output,
@@ -204,14 +159,7 @@ macro_rules! op_impl
             {
                 sizes_match!(self, rhs);
 
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, &rhs.data, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, &rhs.data);
 
                 BlasWrapper{
                     data: output,
@@ -229,14 +177,7 @@ macro_rules! op_impl
             {
                 sizes_match!(self, rhs);
 
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, &rhs.data, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, &rhs.data);
 
                 BlasWrapper{
                     data: output,
@@ -254,14 +195,7 @@ macro_rules! op_impl
             {
                 sizes_match!(self, rhs);
 
-                let output_len = self.data.len();
-                let mut output = Vec::with_capacity(output_len);
-
-                unsafe{
-                    $operation(&self.data, &rhs.data, output.as_mut_ptr());
-                }
-
-                unsafe{ output.set_len(output_len); }
+                let output = $operation(&self.data, &rhs.data);
 
                 BlasWrapper{
                     data: output,
