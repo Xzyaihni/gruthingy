@@ -235,7 +235,11 @@ impl Neg for &NyanWrapper
 
     fn neg(self) -> Self::Output
     {
-        -self.clone()
+        NyanWrapper{
+            data: self.data.iter().map(|v| -v).collect(),
+            previous_size: self.previous_size,
+            this_size: self.this_size
+        }
     }
 }
 

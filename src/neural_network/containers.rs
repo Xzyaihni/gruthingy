@@ -31,7 +31,7 @@ mod blas_wrapper;
 mod nyan_wrapper;
 
 
-pub type LayerInnerType = BlasWrapper;
+pub type LayerInnerType = MatrixWrapper;
 
 #[allow(dead_code)]
 pub type JoinableType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::This;
