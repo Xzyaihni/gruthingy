@@ -434,10 +434,24 @@ impl NyanWrapper
     {
         let rhs = rhs.borrow();
 
-        let data = (0..(self.previous_size * rhs.previous_size)).map(|i|
+        let total_len = self.previous_size * rhs.previous_size;
+        let mut data = Vec::with_capacity(total_len);
+        
+        let mut current_ptr: *mut f32 = data.as_mut_ptr();
+        for x in 0..rhs.previous_size
         {
-            self.data[i % self.previous_size] * rhs.data[i / self.previous_size]
-        }).collect();
+            for y in 0..self.previous_size
+            {
+                let value: f32 = self.data[y] * rhs.data[x];
+
+                unsafe{
+                    current_ptr.write(value);
+                    current_ptr = current_ptr.offset(1);
+                }
+            }
+        }
+
+        unsafe{ data.set_len(total_len) }
 
         Self{
             data,
