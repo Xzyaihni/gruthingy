@@ -20,8 +20,8 @@ use serde::{Serialize, Deserialize};
 pub struct NyanWrapper
 {
     data: Vec<f32>,
-    previous_size: usize,
-    this_size: usize
+    previous_size: isize,
+    this_size: isize
 }
 
 macro_rules! sizes_match
@@ -343,8 +343,8 @@ impl NyanWrapper
     {
         Self{
             data: vec![0.0; previous_size * this_size],
-            previous_size,
-            this_size
+            previous_size: previous_size as isize,
+            this_size: this_size as isize
         }
     }
 
@@ -356,8 +356,8 @@ impl NyanWrapper
     {
         Self{
             data: (0..(previous_size * this_size)).map(|_| f()).collect(),
-            previous_size,
-            this_size
+            previous_size: previous_size as isize,
+            this_size: this_size as isize
         }
     }
 
@@ -365,8 +365,8 @@ impl NyanWrapper
     {
         Self{
             data: values.into(),
-            previous_size,
-            this_size
+            previous_size: previous_size as isize,
+            this_size: this_size as isize
         }
     }
 
@@ -390,8 +390,11 @@ impl NyanWrapper
             self.this_size, rhs.previous_size
         );
 
-        let total_len = self.previous_size;
+        let total_len = self.previous_size as usize;
         let mut data = Vec::with_capacity(total_len);
+
+        let lhs_ptr: *const f32 = self.data.as_ptr();
+        let rhs_ptr: *const f32 = rhs.data.as_ptr();
 
         let data_ptr: *mut f32 = data.as_mut_ptr();
         for y in 0..self.previous_size
@@ -399,13 +402,14 @@ impl NyanWrapper
             let mut s = 0.0;
             for x in 0..self.this_size
             {
-                let value: f32 = self.data[x * self.previous_size + y] * rhs.data[x];
-
-                s += value;
+                unsafe{
+                    s += *(lhs_ptr.offset(x * self.previous_size + y))
+                        * *(rhs_ptr.offset(x));
+                }
             }
 
             unsafe{
-                data_ptr.add(y).write(s);
+                data_ptr.offset(y).write(s);
             }
         }
 
@@ -428,8 +432,11 @@ impl NyanWrapper
             self.previous_size, rhs.previous_size
         );
 
-        let total_len = self.this_size;
+        let total_len = self.this_size as usize;
         let mut data = Vec::with_capacity(total_len);
+
+        let lhs_ptr: *const f32 = self.data.as_ptr();
+        let rhs_ptr: *const f32 = rhs.data.as_ptr();
 
         let data_ptr: *mut f32 = data.as_mut_ptr();
         for y in 0..self.this_size
@@ -437,13 +444,14 @@ impl NyanWrapper
             let mut s = 0.0;
             for x in 0..self.previous_size
             {
-                let value: f32 = self.data[x + y * self.previous_size] * rhs.data[x];
-
-                s += value;
+                unsafe{
+                    s += *(lhs_ptr.offset(x + y * self.previous_size))
+                        * *(rhs_ptr.offset(x));
+                }
             }
 
             unsafe{
-                data_ptr.add(y).write(s);
+                data_ptr.offset(y).write(s);
             }
         }
 
@@ -460,18 +468,22 @@ impl NyanWrapper
     {
         let rhs = rhs.borrow();
 
-        let total_len = self.previous_size * rhs.previous_size;
+        let total_len = (self.previous_size * rhs.previous_size) as usize;
         let mut data = Vec::with_capacity(total_len);
         
         let mut i = 0;
+
+        let lhs_ptr: *const f32 = self.data.as_ptr();
+        let rhs_ptr: *const f32 = rhs.data.as_ptr();
+
         let data_ptr: *mut f32 = data.as_mut_ptr();
         for x in 0..rhs.previous_size
         {
             for y in 0..self.previous_size
             {
-                let value: f32 = self.data[y] * rhs.data[x];
-
                 unsafe{
+                    let value: f32 = *(lhs_ptr.offset(y)) * *(rhs_ptr.offset(x));
+
                     data_ptr.offset(i).write(value);
                 }
 
@@ -505,26 +517,30 @@ impl NyanWrapper
             added.previous_size, self.previous_size
         );
 
-        let total_len = self.previous_size;
+        let total_len = self.previous_size as usize;
         let mut data = Vec::with_capacity(total_len);
 
         let added_ptr: *const f32 = added.data.as_ptr();
         
+        let lhs_ptr: *const f32 = self.data.as_ptr();
+        let rhs_ptr: *const f32 = rhs.data.as_ptr();
+
         let data_ptr: *mut f32 = data.as_mut_ptr();
         for y in 0..self.previous_size
         {
             let mut s = 0.0;
             for x in 0..self.this_size
             {
-                let value: f32 = self.data[x * self.previous_size + y] * rhs.data[x];
-
-                s += value;
+                unsafe{
+                    s += *(lhs_ptr.offset(x * self.previous_size + y))
+                        * *(rhs_ptr.offset(x));
+                }
             }
 
             unsafe{
-                s += *(added_ptr.add(y));
+                s += *(added_ptr.offset(y));
 
-                data_ptr.add(y).write(s);
+                data_ptr.offset(y).write(s);
             }
         }
 
