@@ -482,8 +482,8 @@ impl BlasWrapper
 
         Self{
             data: output,
-            previous_size: self.this_size,
-            this_size: rhs.this_size
+            previous_size: self.previous_size,
+            this_size: rhs.previous_size
         }
     }
 
