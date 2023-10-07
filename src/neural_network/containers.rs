@@ -21,9 +21,14 @@ use arrayfire_wrapper::ArrayfireWrapper;
 #[allow(unused_imports)]
 use blas_wrapper::BlasWrapper;
 
+// i ran out of names
+#[allow(unused_imports)]
+use nyan_wrapper::NyanWrapper;
+
 mod matrix_wrapper;
 mod arrayfire_wrapper;
 mod blas_wrapper;
+mod nyan_wrapper;
 
 
 pub type LayerInnerType = MatrixWrapper;
