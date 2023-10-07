@@ -441,11 +441,13 @@ impl NyanWrapper
         let data_ptr: *mut f32 = data.as_mut_ptr();
         for y in 0..self.this_size
         {
+            let y_column = y * self.previous_size;
+
             let mut s = 0.0;
             for x in 0..self.previous_size
             {
                 unsafe{
-                    s += *(lhs_ptr.offset(x + y * self.previous_size))
+                    s += *(lhs_ptr.offset(x + y_column))
                         * *(rhs_ptr.offset(x));
                 }
             }
