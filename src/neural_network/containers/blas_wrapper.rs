@@ -573,7 +573,7 @@ impl BlasWrapper
 
     pub fn reciprocal(&mut self)
     {
-        self.data.iter_mut().for_each(|v| *v = 1.0 / *v);
+        self.data.iter_mut().for_each(|v| *v = v.recip());
     }
 
     pub fn sigmoid(&mut self)
