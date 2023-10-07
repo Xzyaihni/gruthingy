@@ -390,13 +390,26 @@ impl NyanWrapper
             self.this_size, rhs.previous_size
         );
 
-        let data = (0..self.previous_size).map(|i|
+        let total_len = self.previous_size;
+        let mut data = Vec::with_capacity(total_len);
+
+        let data_ptr: *mut f32 = data.as_mut_ptr();
+        for y in 0..self.previous_size
         {
-            (0..self.this_size).map(|x|
+            let mut s = 0.0;
+            for x in 0..self.this_size
             {
-                self.data[x * self.previous_size + i] * rhs.data[x]
-            }).sum()
-        }).collect();
+                let value: f32 = self.data[x * self.previous_size + y] * rhs.data[x];
+
+                s += value;
+            }
+
+            unsafe{
+                data_ptr.add(y).write(s);
+            }
+        }
+
+        unsafe{ data.set_len(total_len) }
 
         Self{
             data,
@@ -415,13 +428,26 @@ impl NyanWrapper
             self.previous_size, rhs.previous_size
         );
 
-        let data = (0..self.this_size).map(|i|
+        let total_len = self.this_size;
+        let mut data = Vec::with_capacity(total_len);
+
+        let data_ptr: *mut f32 = data.as_mut_ptr();
+        for y in 0..self.this_size
         {
-            (0..self.previous_size).map(|x|
+            let mut s = 0.0;
+            for x in 0..self.previous_size
             {
-                self.data[x + i * self.previous_size] * rhs.data[x]
-            }).sum()
-        }).collect();
+                let value: f32 = self.data[x + y * self.previous_size] * rhs.data[x];
+
+                s += value;
+            }
+
+            unsafe{
+                data_ptr.add(y).write(s);
+            }
+        }
+
+        unsafe{ data.set_len(total_len) }
 
         Self{
             data,
@@ -437,7 +463,8 @@ impl NyanWrapper
         let total_len = self.previous_size * rhs.previous_size;
         let mut data = Vec::with_capacity(total_len);
         
-        let mut current_ptr: *mut f32 = data.as_mut_ptr();
+        let mut i = 0;
+        let data_ptr: *mut f32 = data.as_mut_ptr();
         for x in 0..rhs.previous_size
         {
             for y in 0..self.previous_size
@@ -445,9 +472,10 @@ impl NyanWrapper
                 let value: f32 = self.data[y] * rhs.data[x];
 
                 unsafe{
-                    current_ptr.write(value);
-                    current_ptr = current_ptr.offset(1);
+                    data_ptr.offset(i).write(value);
                 }
+
+                i += 1;
             }
         }
 
@@ -477,15 +505,30 @@ impl NyanWrapper
             added.previous_size, self.previous_size
         );
 
-        let data = (0..self.previous_size).map(|i|
-        {
-            let m: f32 = (0..self.this_size).map(|x|
-            {
-                self.data[x * self.previous_size + i] * rhs.data[x]
-            }).sum();
+        let total_len = self.previous_size;
+        let mut data = Vec::with_capacity(total_len);
 
-            m + added.data[i]
-        }).collect();
+        let added_ptr: *const f32 = added.data.as_ptr();
+        
+        let data_ptr: *mut f32 = data.as_mut_ptr();
+        for y in 0..self.previous_size
+        {
+            let mut s = 0.0;
+            for x in 0..self.this_size
+            {
+                let value: f32 = self.data[x * self.previous_size + y] * rhs.data[x];
+
+                s += value;
+            }
+
+            unsafe{
+                s += *(added_ptr.add(y));
+
+                data_ptr.add(y).write(s);
+            }
+        }
+
+        unsafe{ data.set_len(total_len) }
 
         Self{
             data,
