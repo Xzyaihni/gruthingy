@@ -147,7 +147,7 @@ pub struct ByteDictionary;
 impl ByteDictionary
 {
     #[allow(dead_code)]
-    pub fn build(_: impl Read) -> Self
+    pub fn build(_: &'static str) -> Self
     {
         unimplemented!();
     }
