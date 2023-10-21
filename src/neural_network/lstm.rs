@@ -14,7 +14,7 @@ use crate::{
 };
 
 
-pub type LSTM = WeightsContainer<LayerType>;
+pub type Lstm = WeightsContainer<LayerType>;
 
 create_weights_container!{
     (input_update, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
@@ -38,7 +38,7 @@ pub struct LSTMState
     memory: LayerType
 }
 
-impl NetworkUnit for LSTM
+impl NetworkUnit for Lstm
 {
     type State = LSTMState;
     type ThisWeightsContainer<T> = WeightsContainer<T>;

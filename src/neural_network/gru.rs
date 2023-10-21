@@ -15,7 +15,7 @@ use crate::{
 };
 
 
-pub type GRU = WeightsContainer<LayerType>;
+pub type Gru = WeightsContainer<LayerType>;
 
 create_weights_container!{
     (input_update, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
@@ -30,7 +30,7 @@ create_weights_container!{
     (output, false, INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT))
 }
 
-impl NetworkUnit for GRU
+impl NetworkUnit for Gru
 {
     type State = LayerType;
     type ThisWeightsContainer<T> = WeightsContainer<T>;

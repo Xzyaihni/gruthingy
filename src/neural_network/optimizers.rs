@@ -13,10 +13,7 @@ use super::{
 
 impl NewableLayer for ()
 {
-    fn new(_previous_size: usize, _this_size: usize) -> Self
-    {
-        ()
-    }
+    fn new(_previous_size: usize, _this_size: usize) -> Self {}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,22 +88,22 @@ pub trait Optimizer
         gradient.cap_magnitude(GRADIENT_CLIP)
     }
 
-    fn info_mut<'a>(
-        &'a mut self
-    ) -> (&'a mut [ThisWeightsContainer<Self::WeightParam>], &'a mut Self::HyperParams);
+    fn info_mut(
+        &mut self
+    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams);
 
     fn advance_time(&mut self);
     fn set_learning_rate(&mut self, learning_rate: f32);
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SGD
+pub struct Sgd
 {
     gradients_info: Vec<ThisWeightsContainer<()>>,
     learning_rate: f32
 }
 
-impl Optimizer for SGD
+impl Optimizer for Sgd
 {
     type HyperParams = f32;
     type WeightParam = ();
@@ -130,9 +127,9 @@ impl Optimizer for SGD
         gradient * *hyper
     }
 
-    fn info_mut<'a>(
-        &'a mut self
-    ) -> (&'a mut [ThisWeightsContainer<Self::WeightParam>], &'a mut Self::HyperParams)
+    fn info_mut(
+        &mut self
+    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
     {
         (&mut self.gradients_info, &mut self.learning_rate)
     }

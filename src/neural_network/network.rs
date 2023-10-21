@@ -40,7 +40,7 @@ macro_rules! create_weights_container
     {
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
-        use crate::neural_network::{
+        use $crate::neural_network::{
             Optimizer,
             CurrentOptimizer,
             LayerInnerType,
@@ -406,6 +406,8 @@ impl<Layer: NetworkUnit> Network<Layer>
 
         let mut states = Vec::with_capacity(LAYERS_AMOUNT);
 
+        // stfu clippy this is more readable
+        #[allow(clippy::needless_range_loop)]
         for l_i in 0..LAYERS_AMOUNT
         {
             let input = last_output.as_ref().unwrap_or(input);

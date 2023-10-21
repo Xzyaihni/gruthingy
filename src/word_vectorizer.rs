@@ -313,7 +313,7 @@ impl NetworkDictionary for CharDictionary
         if self.chars_buffer.is_empty()
         {
             let buffer = bytes.fill_buf().expect("io error, skill issue");
-            if buffer.len() == 0
+            if buffer.is_empty()
             {
                 return None;
             }
@@ -331,7 +331,7 @@ impl NetworkDictionary for CharDictionary
 
             loop
             {
-                match str::from_utf8(&combined_buffer)
+                match str::from_utf8(combined_buffer)
                 {
                     Ok(x) =>
                     {
@@ -423,7 +423,7 @@ impl WordDictionary
                 longest_word = bytes.len();
             }
 
-            (bytes, VectorWord::new(i as usize))
+            (bytes, VectorWord::new(i))
         }).collect::<Bimap<_, _>>();
 
         Self{dictionary, longest_word, c_word: Vec::new()}
@@ -578,11 +578,7 @@ impl<'a, R: Read, D: NetworkDictionary> Iterator for WordVectorizer<'a, R, D>
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        let word = self.dictionary.next_word(&mut self.bytes);
-
-        // word.map(|word| eprintln!("word: {}", self.dictionary.print_vector_word(word)));
-
-        word
+        self.dictionary.next_word(&mut self.bytes)
     }
 }
 

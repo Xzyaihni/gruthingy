@@ -25,7 +25,7 @@ mod neural_network;
 mod word_vectorizer;
 
 
-const DEFAULT_NETWORK_NAME: &'static str = "network.nn";
+const DEFAULT_NETWORK_NAME: &str = "network.nn";
 
 fn complain(message: &str) -> !
 {
@@ -374,7 +374,7 @@ fn debug_network(mut args: impl Iterator<Item=String>)
         .unwrap_or_else(|| complain("give path to network"));
     
     let network: NeuralNetwork =
-        NeuralNetwork::load(&network_path).unwrap();
+        NeuralNetwork::load(network_path).unwrap();
 
     println!("{network:#?}");
 }

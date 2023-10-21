@@ -8,8 +8,11 @@ mod word_vectorizer;
 mod neural_network;
 
 
+/// # Safety
+/// 
+/// give valid pointers to c strings
 #[no_mangle]
-pub extern "C" fn predict(
+pub unsafe extern "C" fn predict(
     network_path: *const c_char,
     text: *const c_char,
     amount: u32,
@@ -28,7 +31,7 @@ pub extern "C" fn predict(
         let text = text.to_str().unwrap();
 
         let mut network: NeuralNetwork =
-            NeuralNetwork::load(&network_path).unwrap();
+            NeuralNetwork::load(network_path).unwrap();
 
         network.predict_text(text, amount as usize, temperature)
     };
@@ -36,8 +39,11 @@ pub extern "C" fn predict(
     CString::new(output).unwrap().into_raw()
 }
 
+/// # Safety
+/// 
+/// give the pointer u got from predict to this one when ur done
 #[no_mangle]
-pub extern "C" fn predict_free(text: *mut c_char)
+pub unsafe extern "C" fn predict_free(text: *mut c_char)
 {
     unsafe{ CString::from_raw(text) };
 }

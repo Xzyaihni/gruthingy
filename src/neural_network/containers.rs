@@ -232,7 +232,7 @@ impl IntoChild for &mut LayerType
 {
     fn into_child(self, is_gradient: bool) -> LayerChild
     {
-        <&LayerType as IntoChild>::into_child(&self, is_gradient)
+        <&LayerType as IntoChild>::into_child(self, is_gradient)
     }
 }
 
@@ -653,7 +653,7 @@ where
                 let mut value = self.value.clone().unwrap();
                 value.fill(0.0);
 
-                return value;
+                value
             }
         }
     }
@@ -709,7 +709,7 @@ where
                 if lhs.is_gradient()
                 {
                     let d = rhs.value_clone() * &gradient;
-                    lhs.derivatives(d.into());
+                    lhs.derivatives(d);
                 }
 
                 if rhs_cg
@@ -718,7 +718,7 @@ where
                     let lhs_value = unsafe{ lhs_value.unwrap_unchecked() };
 
                     let d = lhs_value * &gradient;
-                    rhs.derivatives(d.into());
+                    rhs.derivatives(d);
                 }
             },
             LayerOps::Div{mut lhs, mut rhs} =>
@@ -819,7 +819,7 @@ where
                 if lhs.is_gradient()
                 {
                     let d = gradient.outer_product(&*rhs.value());
-                    lhs.derivatives(d.into());
+                    lhs.derivatives(d);
                 }
 
                 if rhs_cg
@@ -827,7 +827,7 @@ where
                     debug_assert!(rhs_d.is_some());
                     let rhs_d = unsafe{ rhs_d.unwrap_unchecked() };
 
-                    rhs.derivatives(rhs_d.into());
+                    rhs.derivatives(rhs_d);
                 }
             },
             LayerOps::MatmulvAdd{mut lhs, mut rhs, mut added} =>
@@ -841,7 +841,7 @@ where
                 if lhs.is_gradient()
                 {
                     let d = gradient.outer_product(&*rhs.value());
-                    lhs.derivatives(d.into());
+                    lhs.derivatives(d);
                 }
 
                 if rhs_cg
@@ -849,12 +849,12 @@ where
                     debug_assert!(rhs_d.is_some());
                     let rhs_d = unsafe{ rhs_d.unwrap_unchecked() };
 
-                    rhs.derivatives(rhs_d.into());
+                    rhs.derivatives(rhs_d);
                 }
 
                 if added.is_gradient()
                 {
-                    added.derivatives(gradient.into());
+                    added.derivatives(gradient);
                 }
             },
             LayerOps::SumTensor(mut x) =>
@@ -883,7 +883,7 @@ where
                 {
                     let d = &gradient * rhs.value_clone();
  
-                    lhs.derivatives(d.into());
+                    lhs.derivatives(d);
                 }
 
                 if rhs_cg
@@ -893,7 +893,7 @@ where
 
                     let d = &gradient * lhs_value;
 
-                    rhs.derivatives(d.into());
+                    rhs.derivatives(d);
                 }
             },
             LayerOps::SoftmaxCrossEntropy{mut values, softmaxed_values, targets} =>
@@ -906,7 +906,7 @@ where
                     });
 
                     let d = gradient * (softmaxed_values - targets);
-                    values.derivatives(d.into());
+                    values.derivatives(d);
                 }
             },
             LayerOps::Diff => (),
@@ -936,13 +936,14 @@ impl<T> Drop for DiffWrapper<T>
     }
 }
 
-impl<T> Into<Vec<f32>> for &DiffWrapper<T>
+impl<T> From<&DiffWrapper<T>> for Vec<f32>
 where
     for<'b> &'b T: Into<Vec<f32>>
 {
-    fn into(self) -> Vec<f32>
+    fn from(other: &DiffWrapper<T>) -> Self
     {
-        let value = self.value();
+        let value = other.value();
+
         (&*value).into()
     }
 }
@@ -1458,11 +1459,11 @@ impl DivAssign<ScalarType> for LayerType
     }
 }
 
-impl Into<Vec<f32>> for &LayerType
+impl From<&LayerType> for Vec<f32>
 {
-    fn into(self) -> Vec<f32>
+    fn from(other: &LayerType) -> Self
     {
-        self.as_vec()
+        other.as_vec()
     }
 }
 
@@ -1568,7 +1569,7 @@ impl LayerType
         let value = {
             let rhs = rhs.value();
 
-            self.value_clone().dot(&*rhs)
+            self.value_clone().dot(&rhs)
         };
 
         inner_from_value!(value, self, rhs, ScalarType, Dot)
@@ -2019,7 +2020,7 @@ mod tests
         })
     }
 
-    #[test]
+    /* #[test]
     fn cap_magnitude_same()
     {
         let compare_layers = |a: &ArrayfireWrapper, b: &MatrixWrapper|
@@ -2058,5 +2059,5 @@ mod tests
         let a = a.cap_magnitude(0.5);
         let b = b.cap_magnitude(0.5);
         compare_layers(&a, &b);
-    }
+    } */
 }

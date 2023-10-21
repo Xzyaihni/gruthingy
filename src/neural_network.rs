@@ -40,10 +40,10 @@ pub use containers::{
 };
 
 #[allow(unused_imports)]
-use gru::GRU;
+use gru::Gru;
 
 #[allow(unused_imports)]
-use lstm::LSTM;
+use lstm::Lstm;
 
 mod optimizers;
 mod network_unit;
@@ -71,12 +71,12 @@ pub type CurrentOptimizer = AdamX;
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
-// options: GRU, LSTM
-pub type CurrentNetworkUnit = LSTM;
+// options: Gru, Lstm
+pub type CurrentNetworkUnit = Lstm;
 
 // these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
-pub const DICTIONARY_TEXT: &'static str = include_str!("../ascii_dictionary.txt");
+pub const DICTIONARY_TEXT: &str = include_str!("../ascii_dictionary.txt");
 
 pub const INPUT_SIZE: usize = DictionaryType::words_amount();
 
@@ -195,7 +195,7 @@ impl<T> InputOutput<T>
     }
 
     #[allow(dead_code)]
-    pub fn iter<'a>(&'a self) -> InputOutputIter<slice::Iter<'a, T>, &T>
+    pub fn iter(&self) -> InputOutputIter<slice::Iter<'_, T>, &T>
     {
         InputOutputIter::new(self.container.iter())
     }
@@ -291,7 +291,7 @@ impl<'a> Predictor<'a>
         predict_amount: usize
     ) -> Self
     {
-        let words = words.into_iter().map(|word| LayerType::new_undiff(word)).collect();
+        let words = words.into_iter().map(LayerType::new_undiff).collect();
 
         Self{
             dictionary,
@@ -336,7 +336,7 @@ impl<'a> Predictor<'a>
                 let layer = self.dictionary.word_to_layer(word);
                 self.words.push(LayerType::new_undiff(layer));
 
-                self.predicted.extend(self.dictionary.word_to_bytes(word).into_iter());
+                self.predicted.extend(self.dictionary.word_to_bytes(word).iter());
             }
 
             previous_state = Some(state);
@@ -580,7 +580,7 @@ impl NeuralNetwork
 
                     let values = InputOutput::values_slice(
                         &inputs,
-                        |word| self.dictionary.word_to_layer(*word).clone(),
+                        |word| self.dictionary.word_to_layer(*word),
                         batch_start,
                         steps_num
                     );
@@ -617,7 +617,7 @@ impl NeuralNetwork
     pub fn predict_text(&mut self, text: &str, amount: usize, temperature: f32) -> String
     {
         let output = self.predict_inner(text.as_bytes(), amount, temperature)
-            .into_iter().copied()
+            .iter().copied()
             .filter(|&c| c != b'\0').collect::<Vec<_>>();
         
         String::from_utf8_lossy(&output).to_string()
