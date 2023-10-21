@@ -3,7 +3,7 @@ use std::{
     mem,
     vec,
     slice,
-    io::{self, Read},
+    io::{self, Read, Write},
     fs::File,
     path::Path
 };
@@ -277,7 +277,6 @@ struct Predictor<'a>
 {
     dictionary: &'a mut DictionaryType,
     words: Vec<LayerType>,
-    predicted: Vec<u8>,
     temperature: f32,
     predict_amount: usize
 }
@@ -296,13 +295,12 @@ impl<'a> Predictor<'a>
         Self{
             dictionary,
             words,
-            predicted: Vec::with_capacity(predict_amount),
             temperature,
             predict_amount
         }
     }
 
-    pub fn predict_bytes(mut self, network: &mut Network<CurrentNetworkUnit>) -> Box<[u8]>
+    pub fn predict_into(mut self, network: &mut Network<CurrentNetworkUnit>, mut out: impl Write)
     {
         let input_amount = self.words.len();
 
@@ -336,13 +334,23 @@ impl<'a> Predictor<'a>
                 let layer = self.dictionary.word_to_layer(word);
                 self.words.push(LayerType::new_undiff(layer));
 
-                self.predicted.extend(self.dictionary.word_to_bytes(word).iter());
+                let bytes = self.dictionary.word_to_bytes(word);
+
+                out.write_all(&bytes).unwrap();
             }
 
             previous_state = Some(state);
         }
 
-        self.predicted.into_boxed_slice()
+        out.flush().unwrap();
+    }
+
+    pub fn predict_bytes(self, network: &mut Network<CurrentNetworkUnit>) -> Box<[u8]>
+    {
+        let mut predicted = Vec::with_capacity(self.predict_amount);
+        self.predict_into(network, &mut predicted);
+
+        predicted.into_boxed_slice()
     }
 }
 
