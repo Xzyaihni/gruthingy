@@ -548,7 +548,8 @@ fn main()
 
     if LayerInnerType::is_arrayfire()
     {
-        arrayfire::set_device(0);
+        panic!("what");
+        /* arrayfire::set_device(0);
 
         #[cfg(not(test))]
         {
@@ -559,7 +560,7 @@ fn main()
                 "name: {}, platform: {}, toolkit: {}, compute: {}",
                 device_info.0, device_info.1, device_info.2, device_info.3
             );
-        }
+        } */
     }
 
     match mode.as_str()

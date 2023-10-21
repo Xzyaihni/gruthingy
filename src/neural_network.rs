@@ -54,7 +54,7 @@ mod lstm;
 pub mod containers;
 
 
-pub const HIDDEN_AMOUNT: usize = 256;
+pub const HIDDEN_AMOUNT: usize = 512;
 pub const LAYERS_AMOUNT: usize = 3;
 
 pub const DROPCONNECT_PROBABILITY: f32 = 0.5;

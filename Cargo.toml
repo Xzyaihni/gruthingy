@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
-arrayfire = { version = "3.8.0", features = ["afserde"] }
+# arrayfire = { version = "3.8.0", features = ["afserde"] }
 ciborium = "0.2.1"
 fastrand = "1.9.0"
 nalgebra = { version = "0.32.3", features = ["serde-serialize"] }
@@ -18,8 +18,8 @@ serde = { version = "1.0.171", features = ["rc"] }
 strum_macros = "0.25.2"
 # the cancer design of having to have a mut slice for the output array is preventing me
 # from using normal blas ; -;
-blas-sys = "0.7"
-openblas-src = { version = "0.10", features = ["system"] }
+# blas-sys = "0.7"
+# openblas-src = { version = "0.10", features = ["system"] }
 
 [profile.release]
 panic = "abort"
