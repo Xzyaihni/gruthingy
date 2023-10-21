@@ -329,13 +329,8 @@ fn run(mut args: impl Iterator<Item=String>)
 
     let config = RunConfig::parse(args);
 
-    let predicted =
-    {
-        let mut network: NeuralNetwork =
-            NeuralNetwork::load(config.network_path).unwrap();
-        
-        network.predict_bytes(&text, config.tokens_amount, config.temperature)
-    };
+    let mut network: NeuralNetwork =
+        NeuralNetwork::load(config.network_path).unwrap();
 
     let f = config.save_path.map(|filepath|
     {
@@ -348,6 +343,9 @@ fn run(mut args: impl Iterator<Item=String>)
 
     if config.replace_invalid
     {
+        let predicted =
+            network.predict_bytes(&text, config.tokens_amount, config.temperature);
+
         let s = String::from_utf8_lossy(&predicted);
 
         if let Some(mut f) = f
@@ -364,7 +362,7 @@ fn run(mut args: impl Iterator<Item=String>)
             complain("u must provide a file to save to for a file that doesnt replace invalid unicode")
         });
 
-        f.write_all(&predicted).unwrap();
+        network.predict_into(&text, config.tokens_amount, config.temperature, &mut f);
     };
 }
 

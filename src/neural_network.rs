@@ -621,22 +621,36 @@ impl NeuralNetwork
         output_loss(self);
     }
 
+    pub fn predict_into(&mut self, text: &str, amount: usize, temperature: f32, out: impl Write)
+    {
+        self.predict_inner(text.as_bytes(), amount, temperature, |predictor, network|
+        {
+            predictor.predict_into(network, out)
+        })
+    }
+
     #[allow(dead_code)]
     pub fn predict_text(&mut self, text: &str, amount: usize, temperature: f32) -> String
     {
-        let output = self.predict_inner(text.as_bytes(), amount, temperature)
-            .iter().copied()
-            .filter(|&c| c != b'\0').collect::<Vec<_>>();
+        let output = self.predict_inner(text.as_bytes(), amount, temperature, |predictor, network|
+        {
+            predictor.predict_bytes(network)
+        }).iter().copied().filter(|&c| c != b'\0').collect::<Vec<_>>();
         
         String::from_utf8_lossy(&output).to_string()
     }
 
     pub fn predict_bytes(&mut self, text: &str, amount: usize, temperature: f32) -> Box<[u8]>
     {
-        self.predict_inner(text.as_bytes(), amount, temperature)
+        self.predict_inner(text.as_bytes(), amount, temperature, |predictor, network|
+        {
+            predictor.predict_bytes(network)
+        })
     }
 
-    fn predict_inner(&mut self, start: &[u8], amount: usize, temperature: f32) -> Box<[u8]>
+    fn predict_inner<T, F>(&mut self, start: &[u8], amount: usize, temperature: f32, f: F) -> T
+    where
+        F: FnOnce(Predictor, &mut Network<CurrentNetworkUnit>) -> T
     {
         let word_vectorizer = WordVectorizer::new(&mut self.dictionary, start);
 
@@ -653,7 +667,7 @@ impl NeuralNetwork
             Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
-        let predicted = predictor.predict_bytes(&mut self.network);
+        let predicted = f(predictor, &mut self.network);
 
         self.network.enable_gradients();
 
