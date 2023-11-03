@@ -1265,8 +1265,7 @@ impl ScalarType
 
     pub fn sqrt(&mut self)
     {
-        let mut value = self.value_clone();
-        value.sqrt();
+        let value = self.value_clone().sqrt();
 
         *self = inner_single_from_value!(value, self, Self, Sqrt);
     }
