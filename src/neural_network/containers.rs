@@ -255,9 +255,11 @@ enum LayerOps
     Neg(LayerChild),
     Exp(LayerChild),
     Ln(LayerChild),
+    Sqrt(LayerChild),
     LeakyRelu(LayerChild),
     Sigmoid(LayerChild),
     Tanh(LayerChild),
+    Pow{lhs: LayerChild, power: u32},
     Dot{lhs: LayerType, rhs: LayerType},
     Add{lhs: LayerChild, rhs: LayerChild},
     Sub{lhs: LayerChild, rhs: LayerChild},
@@ -293,6 +295,21 @@ impl GradientType
                 Self::Tensor(x)
             },
             Self::Scalar(x) => Self::Scalar(x.recip())
+        }
+    }
+
+    pub fn pow(&self, power: u32) -> Self
+    {
+        match self
+        {
+            Self::Tensor(x) =>
+            {
+                let mut x = x.clone();
+                x.pow(power);
+
+                Self::Tensor(x)
+            },
+            Self::Scalar(x) => Self::Scalar(x.powi(power as i32))
         }
     }
 
@@ -801,11 +818,33 @@ where
                     x.derivatives(d * &gradient);
                 }
             },
+            LayerOps::Sqrt(mut x) =>
+            {
+                if x.is_gradient()
+                {
+                    // why do i have to do this?
+                    let m = <GradientType as Mul<f32>>::mul(x.value_clone(), 2.0_f32);
+
+                    let d = m.reciprocal();
+
+                    x.derivatives(d * &gradient);
+                }
+            },
             LayerOps::Neg(mut x) =>
             {
                 if x.is_gradient()
                 {
                     x.derivatives((-gradient).into());
+                }
+            },
+            LayerOps::Pow{mut lhs, power} =>
+            {
+                if lhs.is_gradient()
+                {
+                    let p = lhs.value_clone().pow(power - 1);
+                    let d = <GradientType as Mul<f32>>::mul(p, power as f32);
+
+                    lhs.derivatives(d * &gradient);
                 }
             },
             LayerOps::Matmulv{mut lhs, mut rhs} =>
@@ -1575,6 +1614,28 @@ impl LayerType
         inner_from_value!(value, self, rhs, ScalarType, Dot)
     }
 
+    pub fn pow(&mut self, power: u32)
+    {
+        let mut value = self.value_clone();
+        value.pow(power);
+
+        let is_gradient = self.is_gradient();
+
+        let ops = if is_gradient
+        {
+            LayerOps::Pow{lhs: self.into_child(is_gradient), power}
+        } else
+        {
+            LayerOps::None
+        };
+
+        *self = Self::new_inner(
+            value,
+            ops,
+            is_gradient
+        );
+    }
+
     pub fn exp(&mut self)
     {
         let mut value = self.value_clone();
@@ -1589,6 +1650,14 @@ impl LayerType
         value.ln();
 
         *self = inner_single_from_value!(value, self, Self, Ln);
+    }
+
+    pub fn sqrt(&mut self)
+    {
+        let mut value = self.value_clone();
+        value.sqrt();
+
+        *self = inner_single_from_value!(value, self, Self, Sqrt);
     }
 
     pub fn sigmoid(&mut self)
@@ -1981,6 +2050,30 @@ mod tests
         {
             let mut a = a.clone_gradientable();
             a.tanh();
+
+            a + b
+        })
+    }
+
+    #[test]
+    fn sqrt()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone_gradientable();
+            a.sqrt();
+
+            a + b
+        })
+    }
+
+    #[test]
+    fn pow()
+    {
+        check_tensor(|a, b|
+        {
+            let mut a = a.clone_gradientable();
+            a.pow(3);
 
             a + b
         })

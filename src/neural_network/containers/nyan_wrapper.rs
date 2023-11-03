@@ -523,6 +523,16 @@ impl NyanWrapper
         this
     }
 
+    // this wont compile probably, ill fix it later if i wanna
+    /*pub fn pow(&self, power: u32) -> Self
+    {
+        let power = power as i32;
+        Self{
+            data: self.data.iter().map(|value| value.powi(power)).collect(),
+            ..self
+        }
+    }*/
+
     pub fn exp(&mut self)
     {
         self.data.iter_mut().for_each(|v| *v = v.exp());

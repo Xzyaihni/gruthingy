@@ -351,6 +351,12 @@ impl MatrixWrapper
         out
     }
 
+    pub fn pow(&mut self, power: u32)
+    {
+        let power = power as i32;
+        self.0.apply(|v| *v = v.powi(power));
+    }
+
     pub fn exp(&mut self)
     {
         self.0.apply(|v| *v = v.exp());
