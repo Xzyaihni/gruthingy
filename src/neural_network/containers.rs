@@ -246,6 +246,14 @@ impl IntoChild for &ScalarType
     }
 }
 
+impl IntoChild for &mut ScalarType
+{
+    fn into_child(self, is_gradient: bool) -> LayerChild
+    {
+        <&ScalarType as IntoChild>::into_child(self, is_gradient)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 enum LayerOps
 {
@@ -1222,6 +1230,30 @@ impl Softmaxer
     }
 }
 
+macro_rules! inner_single_from_value
+{
+    ($value:expr, $this:expr, $out:ident, $op:ident) =>
+    {
+        {
+            let is_gradient = $this.is_gradient();
+
+            let ops = if is_gradient
+            {
+                LayerOps::$op($this.into_child(is_gradient))
+            } else
+            {
+                LayerOps::None
+            };
+
+            $out::new_inner(
+                $value,
+                ops,
+                is_gradient
+            )
+        }
+    }
+}
+
 pub type ScalarType = DiffWrapper<f32>;
 
 impl ScalarType
@@ -1229,6 +1261,14 @@ impl ScalarType
     pub fn new(value: f32) -> Self
     {
         ScalarType::new_inner(value, LayerOps::None, false)
+    }
+
+    pub fn sqrt(&mut self)
+    {
+        let mut value = self.value_clone();
+        value.sqrt();
+
+        *self = inner_single_from_value!(value, self, Self, Sqrt);
     }
 }
 
@@ -1374,30 +1414,6 @@ macro_rules! inner_from_value
                     lhs: $lhs.into_child(is_lhs_gradient),
                     rhs: $rhs.into_child(is_rhs_gradient)
                 }
-            } else
-            {
-                LayerOps::None
-            };
-
-            $out::new_inner(
-                $value,
-                ops,
-                is_gradient
-            )
-        }
-    }
-}
-
-macro_rules! inner_single_from_value
-{
-    ($value:expr, $this:expr, $out:ident, $op:ident) =>
-    {
-        {
-            let is_gradient = $this.is_gradient();
-
-            let ops = if is_gradient
-            {
-                LayerOps::$op($this.into_child(is_gradient))
             } else
             {
                 LayerOps::None
