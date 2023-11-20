@@ -536,6 +536,11 @@ fn weights_image(mut args: impl Iterator<Item=String>)
     }
 }
 
+fn word_embeddings(mut args: impl Iterator<Item=String>)
+{
+    panic!("wip");
+}
+
 fn main()
 {
     let mut args = env::args().skip(1);
@@ -569,6 +574,7 @@ fn main()
         "test" => test_loss(args),
         "dbg" => debug_network(args),
         "weightsimage" => weights_image(args),
+        "wordembeddings" => word_embeddings(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }

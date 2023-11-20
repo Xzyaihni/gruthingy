@@ -183,12 +183,93 @@ impl NetworkDictionary for ByteDictionary
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct CharsParser
+{
+    chars_buffer: VecDeque<char>,
+    leftover: Vec<u8>
+}
+
+impl CharsParser
+{
+    pub fn new() -> Self
+    {
+        Self{chars_buffer: VecDeque::new(), leftover: Vec::new()}
+    }
+
+    pub fn next_char(&mut self, mut bytes: impl BufRead) -> Option<char>
+    {
+        // i hate unicode, we should remove all languages and characters
+        // but also we should remove rust
+        // >deletes useful functions
+        // >yea just use a crate
+        // WHAT CRATE IVE BEEN SEARCHING THERE R NONE
+        if self.chars_buffer.is_empty()
+        {
+            let buffer = bytes.fill_buf().expect("io error, skill issue");
+            if buffer.is_empty()
+            {
+                return None;
+            }
+
+            let consumed_amount = buffer.len();
+
+            // shamelessly stolen from rust docs
+            let combined_buffer = [&self.leftover, buffer].concat();
+            let mut combined_buffer: &[u8] = &combined_buffer;
+
+            let mut add_str = |s: &str|
+            {
+                self.chars_buffer.extend(s.chars());
+            };
+
+            loop
+            {
+                match str::from_utf8(combined_buffer)
+                {
+                    Ok(x) =>
+                    {
+                        add_str(x);
+                        break;
+                    },
+                    Err(err) =>
+                    {
+                        let (valid, after) = combined_buffer.split_at(err.valid_up_to());
+
+                        unsafe{
+                            let s = str::from_utf8_unchecked(valid);
+                            add_str(s);
+                        }
+
+                        add_str("�");
+                        match err.error_len()
+                        {
+                            Some(slen) =>
+                            {
+                                combined_buffer = &after[slen..];
+                            },
+                            None =>
+                            {
+                                self.leftover = after.to_vec();
+
+                                break;
+                            }
+                        }
+                    }
+                };
+            }
+
+            bytes.consume(consumed_amount);
+        }
+
+        self.chars_buffer.pop_front()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CharDictionary
 {
     dictionary: Bimap<char, VectorWord>,
-    // WHY DO I HAVE TO DO THIS??
-    chars_buffer: VecDeque<char>,
-    leftover: Vec<u8>
+    chars_parser: CharsParser
 }
 
 impl CharDictionary
@@ -236,7 +317,7 @@ impl CharDictionary
             (c, VectorWord::new(index))
         }).collect::<Bimap<_, _>>();
 
-        Self{dictionary, chars_buffer: VecDeque::new(), leftover: Vec::new()}
+        Self{dictionary, chars_parser: CharsParser::new()}
     }
 
     #[allow(dead_code)]
@@ -303,72 +384,10 @@ impl NetworkDictionary for CharDictionary
         Self::words_amount()
     }
 
-    fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>
+    fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>
     {
-        // i hate unicode, we should remove all languages and characters
-        // but also we should remove rust
-        // >deletes useful functions
-        // >yea just use a crate
-        // WHAT CRATE IVE BEEN SEARCHING THERE R NONE
-        if self.chars_buffer.is_empty()
-        {
-            let buffer = bytes.fill_buf().expect("io error, skill issue");
-            if buffer.is_empty()
-            {
-                return None;
-            }
+        let c = self.chars_parser.next_char(bytes)?;
 
-            let consumed_amount = buffer.len();
-
-            // shamelessly stolen from rust docs
-            let combined_buffer = [&self.leftover, buffer].concat();
-            let mut combined_buffer: &[u8] = &combined_buffer;
-
-            let mut add_str = |s: &str|
-            {
-                self.chars_buffer.extend(s.chars());
-            };
-
-            loop
-            {
-                match str::from_utf8(combined_buffer)
-                {
-                    Ok(x) =>
-                    {
-                        add_str(x);
-                        break;
-                    },
-                    Err(err) =>
-                    {
-                        let (valid, after) = combined_buffer.split_at(err.valid_up_to());
-
-                        unsafe{
-                            let s = str::from_utf8_unchecked(valid);
-                            add_str(s);
-                        }
-
-                        add_str("�");
-                        match err.error_len()
-                        {
-                            Some(slen) =>
-                            {
-                                combined_buffer = &after[slen..];
-                            },
-                            None =>
-                            {
-                                self.leftover = after.to_vec();
-
-                                break;
-                            }
-                        }
-                    }
-                };
-            }
-
-            bytes.consume(consumed_amount);
-        }
-
-        let c = self.chars_buffer.pop_front()?;
         Some(self.character_match(c))
     }
 }
