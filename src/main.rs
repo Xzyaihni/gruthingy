@@ -174,26 +174,6 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
 }
 
-fn train_new(mut args: impl Iterator<Item=String>)
-{
-    let text_path = args.next()
-        .unwrap_or_else(|| complain("give path to a file with text training data"));
-    
-    let dictionary = if USES_DICTIONARY
-    {
-        DictionaryType::build(DICTIONARY_TEXT)
-    } else
-    {
-        DictionaryType::new()
-    };
-
-    let config = TrainConfig::parse(args);
-
-    let network = NeuralNetwork::new(dictionary);
-
-    train_inner(network, text_path, config);
-}
-
 fn train_inner(
     mut network: NeuralNetwork,
     text_path: String,
@@ -238,9 +218,25 @@ fn train(mut args: impl Iterator<Item=String>)
         .unwrap_or_else(|| complain("give path to a file with text training data"));
     
     let config = TrainConfig::parse(args);
-    
-    let network: NeuralNetwork =
-        NeuralNetwork::load(&config.network_path).unwrap();
+ 
+    let network: NeuralNetwork = if PathBuf::from(&config.network_path).exists()
+    {
+        NeuralNetwork::load(&config.network_path).unwrap_or_else(|err|
+        {
+            panic!("couldnt load network at {} (error: {})", &config.network_path, err);
+        })
+    } else
+    {
+        let dictionary = if USES_DICTIONARY
+        {
+            DictionaryType::build(DICTIONARY_TEXT)
+        } else
+        {
+            DictionaryType::new()
+        };
+
+        NeuralNetwork::new(dictionary)
+    };
 
     train_inner(network, text_path, config);
 }
@@ -568,7 +564,6 @@ fn main()
 
     match mode.as_str()
     {
-        "train_new" => train_new(args),
         "train" => train(args),
         "run" => run(args),
         "test" => test_loss(args),
