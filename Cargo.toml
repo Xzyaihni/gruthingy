@@ -3,12 +3,6 @@ name = "gruthingy"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[lib]
-crate-type = ["cdylib"]
-path = "src/lib.rs"
-
 [dependencies]
 # arrayfire = { version = "3.8.0", features = ["afserde"] }
 ciborium = "0.2.1"
@@ -16,6 +10,7 @@ fastrand = "1.9.0"
 nalgebra = { version = "0.32.3", features = ["serde-serialize"] }
 serde = { version = "1.0.171", features = ["rc"] }
 strum_macros = "0.25.2"
+unicode_reader = "1.0.2"
 # the cancer design of having to have a mut slice for the output array is preventing me
 # from using normal blas ; -;
 # blas-sys = "0.7"

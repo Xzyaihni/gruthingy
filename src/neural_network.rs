@@ -74,7 +74,7 @@ pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 // options: Gru, Lstm
 pub type CurrentNetworkUnit = Lstm;
 
-// these 2 r related, WordDictionary uses a dictionary and ByteDictionary doesnt
+// WordDictionary, CharDictionary uses a dictionary and ByteDictionary doesnt
 pub const USES_DICTIONARY: bool = true;
 pub const DICTIONARY_TEXT: &str = include_str!("../ascii_dictionary.txt");
 

@@ -983,18 +983,6 @@ impl<T> Drop for DiffWrapper<T>
     }
 }
 
-impl<T> From<&DiffWrapper<T>> for Vec<f32>
-where
-    for<'b> &'b T: Into<Vec<f32>>
-{
-    fn from(other: &DiffWrapper<T>) -> Self
-    {
-        let value = other.value();
-
-        (&*value).into()
-    }
-}
-
 impl<T> DiffWrapper<T>
 // i dont even need these wut am i doing?
 where

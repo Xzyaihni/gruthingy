@@ -2,14 +2,14 @@ use std::{
     str,
     hash::Hash,
     borrow::Borrow,
-    iter::Peekable,
-    collections::{VecDeque, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     io::{
-        Read,
-        BufRead,
-        BufReader
+        Bytes,
+        Read
     }
 };
+
+use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
@@ -74,18 +74,18 @@ where
     K: Hash + Eq,
     V: Hash + Eq
 {
-    pub fn by_key<Q: ?Sized>(&self, key: &Q) -> Option<&V>
+    pub fn by_key<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq
+        Q: Hash + Eq + ?Sized
     {
         self.k_map.get(key)
     }
 
-    pub fn by_value<Q: ?Sized>(&self, value: &Q) -> Option<&K>
+    pub fn by_value<Q>(&self, value: &Q) -> Option<&K>
     where
         V: Borrow<Q>,
-        Q: Hash + Eq
+        Q: Hash + Eq + ?Sized
     {
         self.v_map.get(value)
     }
@@ -121,8 +121,6 @@ pub trait NetworkDictionary
 {
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
     fn words_amount_trait(&self) -> usize;
-    
-    fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>;
     
     fn word_to_layer(&self, word: VectorWord) -> LayerInnerType
     {
@@ -175,101 +173,12 @@ impl NetworkDictionary for ByteDictionary
     {
         Self::words_amount()
     }
-
-    fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>
-    {
-        bytes.bytes().next().map(|b| VectorWord::new(b.expect("io error? wow") as usize))
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CharsParser
-{
-    chars_buffer: VecDeque<char>,
-    leftover: Vec<u8>
-}
-
-impl CharsParser
-{
-    pub fn new() -> Self
-    {
-        Self{chars_buffer: VecDeque::new(), leftover: Vec::new()}
-    }
-
-    pub fn next_char(&mut self, mut bytes: impl BufRead) -> Option<char>
-    {
-        // i hate unicode, we should remove all languages and characters
-        // but also we should remove rust
-        // >deletes useful functions
-        // >yea just use a crate
-        // WHAT CRATE IVE BEEN SEARCHING THERE R NONE
-        if self.chars_buffer.is_empty()
-        {
-            let buffer = bytes.fill_buf().expect("io error, skill issue");
-            if buffer.is_empty()
-            {
-                return None;
-            }
-
-            let consumed_amount = buffer.len();
-
-            // shamelessly stolen from rust docs
-            let combined_buffer = [&self.leftover, buffer].concat();
-            let mut combined_buffer: &[u8] = &combined_buffer;
-
-            let mut add_str = |s: &str|
-            {
-                self.chars_buffer.extend(s.chars());
-            };
-
-            loop
-            {
-                match str::from_utf8(combined_buffer)
-                {
-                    Ok(x) =>
-                    {
-                        add_str(x);
-                        break;
-                    },
-                    Err(err) =>
-                    {
-                        let (valid, after) = combined_buffer.split_at(err.valid_up_to());
-
-                        unsafe{
-                            let s = str::from_utf8_unchecked(valid);
-                            add_str(s);
-                        }
-
-                        add_str("�");
-                        match err.error_len()
-                        {
-                            Some(slen) =>
-                            {
-                                combined_buffer = &after[slen..];
-                            },
-                            None =>
-                            {
-                                self.leftover = after.to_vec();
-
-                                break;
-                            }
-                        }
-                    }
-                };
-            }
-
-            bytes.consume(consumed_amount);
-        }
-
-        self.chars_buffer.pop_front()
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CharDictionary
 {
-    dictionary: Bimap<char, VectorWord>,
-    chars_parser: CharsParser
+    dictionary: Bimap<char, VectorWord>
 }
 
 impl CharDictionary
@@ -317,7 +226,7 @@ impl CharDictionary
             (c, VectorWord::new(index))
         }).collect::<Bimap<_, _>>();
 
-        Self{dictionary, chars_parser: CharsParser::new()}
+        Self{dictionary}
     }
 
     #[allow(dead_code)]
@@ -383,34 +292,65 @@ impl NetworkDictionary for CharDictionary
     {
         Self::words_amount()
     }
-
-    fn next_word(&mut self, bytes: impl BufRead) -> Option<VectorWord>
-    {
-        let c = self.chars_parser.next_char(bytes)?;
-
-        Some(self.character_match(c))
-    }
 }
+
+pub const WORD_SEPARATORS: [char; 33] = [
+    '>',
+    '<',
+    ' ',
+    ':',
+    '\n',
+    '.',
+    ',',
+    '-',
+    '(',
+    ')',
+    '{',
+    '}',
+    '[',
+    ']',
+    '=',
+    '!',
+    '?',
+    '/',
+    '*',
+    '\'',
+    '\\',
+    '"',
+    '_',
+    // all the numbers r separators cuz i dont want a billion different words for numbers
+    '0',
+    '1',
+    '2',
+    '3',
+    '4',
+    '5',
+    '6',
+    '7',
+    '8',
+    '9'
+];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordDictionary
 {
-    dictionary: Bimap<Box<[u8]>, VectorWord>,
-    longest_word: usize,
-    c_word: Vec<u8>
+    dictionary: Bimap<String, VectorWord>,
+    leftover_separator: Option<usize>
 }
 
 impl WordDictionary
 {
     #[allow(dead_code)]
-    pub fn build(words: impl Read) -> Self
+    pub fn build(s: &'static str) -> Self
     {
-        let default_words = (0..u8::MAX).map(|i|
+        let dictionary: Bimap<_, _> = s.split('\n').enumerate().map(|(index, word)|
         {
-            vec![i].into_boxed_slice()
-        }).collect::<HashSet<_>>();
+            (word.to_owned(), VectorWord::new(index))
+        }).collect();
 
-        Self::build_inner(default_words, words)
+        assert_eq!(dictionary.len(), Self::words_amount_raw());
+
+        Self{dictionary, leftover_separator: None}
     }
 
     #[allow(dead_code)]
@@ -419,110 +359,55 @@ impl WordDictionary
         unimplemented!();
     }
 
+    const fn words_amount_inner(s: &'static str) -> usize
+    {
+        let s = s.as_bytes();
+
+        let mut amount = 0;
+
+        let mut is_trailing = true;
+
+        let mut b = 0;
+        while b < s.len()
+        {
+            is_trailing = false;
+
+            if s[b] == b'\n'
+            {
+                is_trailing = true;
+
+                amount += 1;
+            }
+
+            b += 1;
+        }
+
+        if is_trailing
+        {
+            amount
+        } else
+        {
+            // add 1 word cuz one of them doesnt have a last newline
+            amount + 1
+        }
+    }
+
+    const fn words_amount_raw() -> usize
+    {
+        Self::words_amount_inner(DICTIONARY_TEXT)
+    }
+
     pub const fn words_amount() -> usize
     {
-        panic!("i didnt rework WordsDictionary, ill do it later if i want")
+        // +1 for unknown token
+        Self::words_amount_raw() + WORD_SEPARATORS.len() + 1
     }
 
-    #[allow(dead_code)]
-    pub fn no_defaults(words: impl Read) -> Self
+    fn separator_word(index: usize) -> VectorWord
     {
-        Self::build_inner(HashSet::new(), words)
-    }
+        let index = Self::words_amount_raw() + index;
 
-    fn build_inner(defaults: HashSet<Box<[u8]>>, words: impl Read) -> Self
-    {
-        let all_words = Self::unique_words(defaults, words);
-
-        let mut longest_word = 1;
-        let dictionary = all_words.into_iter().enumerate().map(|(i, bytes)|
-        {
-            if bytes.len() > longest_word
-            {
-                longest_word = bytes.len();
-            }
-
-            (bytes, VectorWord::new(i))
-        }).collect::<Bimap<_, _>>();
-
-        Self{dictionary, longest_word, c_word: Vec::new()}
-    }
-
-    fn unique_words(default_words: HashSet<Box<[u8]>>, words: impl Read) -> HashSet<Box<[u8]>>
-    {
-        let mut unique_words = default_words;
-
-        let mut words = words.bytes().map(|b| b.unwrap());
-
-        while let Some(word) = Self::read_word(words.by_ref().peekable())
-        {
-            unique_words.insert(word);
-        }
-
-        unique_words
-    }
-
-    pub fn read_word<I>(mut bytes: Peekable<I>) -> Option<Box<[u8]>>
-    where
-        I: Iterator<Item=u8>
-    {
-        let separators = [' ', ',', '\n', '.', ':', '!', '?', '\'', '"', '-'];
-
-        let mut word = Vec::new();
-
-        while let Some(&b) = bytes.peek()
-        {
-            let c = char::from_u32(b as u32).unwrap();
-            if separators.contains(&c)
-            {
-                if !word.is_empty()
-                {
-                    return Some(word.into_boxed_slice());
-                } else
-                {
-                    bytes.next();
-                    return Some(vec![b].into_boxed_slice());
-                }
-            }
-
-            bytes.next();
-            word.push(b);
-        }
-
-        (!word.is_empty()).then(|| word.into_boxed_slice())
-    }
-
-    fn part_bytes_to_word(&mut self, matched_word: &[u8]) -> VectorWord
-    {
-        for i in 1..matched_word.len()
-        {
-            let new_len = matched_word.len() - i;
-            
-            let word_part = &matched_word[..new_len];
-            let part_matched = self.bytes_to_word(word_part);
-
-            if let Some(part_matched) = part_matched
-            {
-                self.c_word = self.c_word[new_len..].to_vec();
-
-                return part_matched;
-            }
-        }
-
-        unreachable!()
-    }
-
-    pub fn bytes_to_word(&self, bytes: &[u8]) -> Option<VectorWord>
-    {
-        self.dictionary.by_key(bytes).copied()
-    }
-
-    #[allow(dead_code)]
-    pub fn print_vector_word(&self, word: VectorWord) -> String
-    {
-        let display_bytes = self.word_to_bytes(word);
-
-        String::from_utf8_lossy(&display_bytes).to_string()
+        VectorWord::new(index)
     }
 }
 
@@ -530,80 +415,170 @@ impl NetworkDictionary for WordDictionary
 {
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
+        let index = word.index();
+        let words_amount = Self::words_amount_raw();
+
+        if index >= words_amount
+        {
+            let c = if index == (Self::words_amount() - 1)
+            {
+                char::REPLACEMENT_CHARACTER
+            } else
+            {
+                WORD_SEPARATORS[index - words_amount]
+            };
+
+            // WHYYYYYYYY i wanna rework all of this garbage but i dont want to touch this
+            // stupid project anymore either (mostly cuz i dont wanna bugfix it)
+            return c.to_string().into_bytes().into_boxed_slice();
+        }
+
+        // why?
         self.dictionary.by_value(&word).cloned().unwrap()
+            .into_bytes()
+            .into_boxed_slice()
     }
 
     fn words_amount_trait(&self) -> usize
     {
         Self::words_amount()
     }
+}
 
-    fn next_word(&mut self, mut bytes: impl BufRead) -> Option<VectorWord>
+pub trait ReaderAdapter<R>
+{
+    fn adapter(reader: R) -> Self;
+}
+
+pub struct DefaultAdapter<R>
+{
+    reader: R
+}
+
+impl<R> ReaderAdapter<R> for DefaultAdapter<R>
+{
+    fn adapter(reader: R) -> Self
     {
-        let mut consume_amount = 0;
-        if self.c_word.len() < self.longest_word
-        {
-            let buffer = bytes.fill_buf().expect("io error, tough luck lmao");
-            self.c_word.extend_from_slice(buffer);
-            
-            consume_amount = buffer.len();
-        }
-
-        let matched_word = WordDictionary::read_word(self.c_word.iter().cloned().peekable())?;
-        
-        bytes.consume(consume_amount);
-
-        let vector_word = match self.bytes_to_word(&matched_word)
-        {
-            Some(vector_word) => vector_word,
-            None =>
-            {
-                let word = self.part_bytes_to_word(&matched_word);
-                return Some(word);
-            }
-        };
-
-        if matched_word.len() >= self.c_word.len()
-        {
-            self.c_word = Vec::new();
-        } else
-        {
-            self.c_word = self.c_word[matched_word.len()..].to_vec();
-        }
-
-        Some(vector_word)
+        Self{reader}
     }
 }
 
-pub struct WordVectorizer<'a, R: Read, D: NetworkDictionary>
+pub struct CharsAdapter<R: Read>
 {
-    bytes: BufReader<R>,
-    dictionary: &'a mut D
+    code_points: CodePoints<Bytes<R>>
 }
 
-impl<'a, R: Read, D: NetworkDictionary> WordVectorizer<'a, R, D>
+impl<R: Read> ReaderAdapter<R> for CharsAdapter<R>
 {
-    pub fn new(dictionary: &'a mut D, reader: R) -> Self
+    fn adapter(reader: R) -> Self
     {
-        let bytes = BufReader::new(reader);
-
-        Self{bytes, dictionary}
+        Self{code_points: CodePoints::from(reader)}
     }
 }
 
-impl<'a, R: Read, D: NetworkDictionary> Iterator for WordVectorizer<'a, R, D>
+impl<R: Read> Iterator for CharsAdapter<R>
+{
+    type Item = char;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.code_points.next().map(|c|
+        {
+            c.unwrap_or(char::REPLACEMENT_CHARACTER)
+        })
+    }
+}
+
+pub struct WordVectorizer<A, D>
+{
+    adapter: A,
+    dictionary: D
+}
+
+impl<A, D> WordVectorizer<A, D>
+{
+    pub fn new<R>(dictionary: D, reader: R) -> Self
+    where
+        R: Read,
+        A: ReaderAdapter<R>
+    {
+        let adapter = A::adapter(reader);
+
+        Self{adapter, dictionary}
+    }
+}
+
+impl<R: Read> Iterator for WordVectorizer<DefaultAdapter<R>, &mut ByteDictionary>
 {
     type Item = VectorWord;
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        self.dictionary.next_word(&mut self.bytes)
+        let reader = &mut self.adapter.reader;
+
+        reader.bytes()
+            .next()
+            .map(|b| VectorWord::new(b.expect("io error? wow") as usize))
+    }
+}
+
+impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut CharDictionary>
+{
+    type Item = VectorWord;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        let c = self.adapter.next()?;
+
+        Some(self.dictionary.character_match(c))
+    }
+}
+
+impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
+{
+    type Item = VectorWord;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        if let Some(separator_index) = self.dictionary.leftover_separator
+        {
+            self.dictionary.leftover_separator = None;
+
+            return Some(WordDictionary::separator_word(separator_index));
+        }
+
+        let mut word = String::new();
+
+        while let Some(c) = self.adapter.next()
+        {
+            if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
+            {
+                self.dictionary.leftover_separator = Some(pos);
+
+                break;
+            } else
+            {
+                word.push(c);
+            }
+        }
+
+        if word.is_empty()
+        {
+            return self.dictionary.leftover_separator.take().map(WordDictionary::separator_word);
+        }
+
+        Some(self.dictionary.dictionary.by_key(&word).cloned().unwrap_or_else(||
+        {
+            eprintln!("unknown word: {word}");
+            VectorWord::new(WordDictionary::words_amount() - 1)
+        }))
     }
 }
 
 #[cfg(test)]
 mod tests
 {
+    #[allow(unused_imports)]
     use super::*;
 
     /*#[test]
@@ -633,7 +608,7 @@ mod tests
         encode_decode_test(dictionary);
     }*/
 
-    #[allow(dead_code)]
+    /*#[allow(dead_code)]
     fn encode_decode_test(dictionary: impl NetworkDictionary)
     {
         encode_decode_test_lossy(
@@ -665,5 +640,5 @@ mod tests
             &String::from_utf8_lossy(&decoded_bytes),
             original_bytes
         );
-    }
+    }*/
 }

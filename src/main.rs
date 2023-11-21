@@ -1,10 +1,10 @@
 use std::{
     env,
-    fs,
     process,
     path::{PathBuf, Path},
-    io::{self, Write},
-    fs::File,
+    io::{self, Write, BufReader},
+    fs::{self, File},
+    collections::HashSet,
     ops::{Index, IndexMut}
 };
 
@@ -20,6 +20,8 @@ use neural_network::{
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT
 };
+
+use word_vectorizer::{CharsAdapter, ReaderAdapter, WORD_SEPARATORS};
 
 mod neural_network;
 mod word_vectorizer;
@@ -44,7 +46,7 @@ struct TrainConfig
     calculate_accuracy: bool,
     ignore_loss: bool,
     testing_data: Option<String>,
-    network_path: String
+    network_path: Option<String>
 }
 
 impl TrainConfig
@@ -59,7 +61,7 @@ impl TrainConfig
         let mut calculate_accuracy = false;
         let mut ignore_loss = false;
         let mut testing_data = None;
-        let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
+        let mut network_path = None;
 
         while let Some(arg) = args.next()
         {
@@ -118,10 +120,10 @@ impl TrainConfig
                 },
                 "-p" | "--path" =>
                 {
-                    network_path = args.next().unwrap_or_else(||
+                    network_path = Some(args.next().unwrap_or_else(||
                         {
                             complain(&format!("expected value after {arg}"))
-                        });
+                        }));
                 },
                 "-a" | "--accuracy" =>
                 {
@@ -168,8 +170,10 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
 
+    let network_path = config.network_path.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+
     let mut network: NeuralNetwork =
-        NeuralNetwork::load(&config.network_path).unwrap();
+        NeuralNetwork::load(&network_path).unwrap();
 
     network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
 }
@@ -209,7 +213,9 @@ fn train_inner(
 
     network.train(training_info, test_file, text_file);
 
-    network.save(config.network_path);
+    let network_path = config.network_path.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+
+    network.save(network_path);
 }
 
 fn train(mut args: impl Iterator<Item=String>)
@@ -219,11 +225,14 @@ fn train(mut args: impl Iterator<Item=String>)
     
     let config = TrainConfig::parse(args);
  
-    let network: NeuralNetwork = if PathBuf::from(&config.network_path).exists()
+    let network_path = config.network_path.clone()
+        .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+
+    let network: NeuralNetwork = if PathBuf::from(&network_path).exists()
     {
-        NeuralNetwork::load(&config.network_path).unwrap_or_else(|err|
+        NeuralNetwork::load(&network_path).unwrap_or_else(|err|
         {
-            panic!("couldnt load network at {} (error: {})", &config.network_path, err);
+            panic!("couldnt load network at {network_path} (error: {})", err);
         })
     } else
     {
@@ -532,9 +541,71 @@ fn weights_image(mut args: impl Iterator<Item=String>)
     }
 }
 
-fn word_embeddings(mut args: impl Iterator<Item=String>)
+fn create_word_dictionary(mut args: impl Iterator<Item=String>)
 {
-    panic!("wip");
+    let text_path = args.next().unwrap_or_else(||
+    {
+        complain("give path to text file")
+    });
+
+    let text_file = BufReader::new(File::open(text_path).unwrap());
+
+    let config = TrainConfig::parse(args);
+ 
+    let dictionary_path = config.network_path.clone()
+        .unwrap_or_else(|| "dictionary.txt".to_owned());
+
+    let mut words: HashSet<String> = HashSet::new();
+
+    let mut chars_reader = CharsAdapter::adapter(text_file);
+
+    loop
+    {
+        let mut current_word = String::new();
+
+        while let Some(c) = chars_reader.next()
+        {
+            if WORD_SEPARATORS.contains(&c)
+            {
+                if current_word.is_empty()
+                {
+                    continue;
+                }
+
+                break;
+            }
+
+            current_word.push(c);
+        }
+
+        if current_word.is_empty()
+        {
+            break;
+        }
+
+        words.insert(current_word);
+    }
+
+    let mut dictionary_file = File::create(dictionary_path).unwrap();
+    for (index, word) in words.into_iter().enumerate()
+    {
+        if index != 0
+        {
+            dictionary_file.write(&[b'\n']).unwrap();
+        }
+
+        dictionary_file.write(word.as_bytes()).unwrap();
+    }
+
+    dictionary_file.flush().unwrap();
+}
+
+fn word_embeddings(args: impl Iterator<Item=String>)
+{
+    let config = TrainConfig::parse(args);
+ 
+    drop(config);
+    todo!();
 }
 
 fn main()
@@ -568,6 +639,7 @@ fn main()
         "run" => run(args),
         "test" => test_loss(args),
         "dbg" => debug_network(args),
+        "createdictionary" => create_word_dictionary(args),
         "weightsimage" => weights_image(args),
         "wordembeddings" => word_embeddings(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
