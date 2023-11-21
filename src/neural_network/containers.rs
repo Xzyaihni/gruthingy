@@ -737,11 +737,8 @@ where
                     lhs.derivatives(d);
                 }
 
-                if rhs_cg
+                if let Some(lhs_value) = lhs_value
                 {
-                    debug_assert!(lhs_value.is_some());
-                    let lhs_value = unsafe{ lhs_value.unwrap_unchecked() };
-
                     let d = lhs_value * &gradient;
                     rhs.derivatives(d);
                 }
@@ -760,14 +757,11 @@ where
                     lhs.derivatives(d);
                 }
 
-                if rhs_cg
+                if let Some(lhs_value) = lhs_value
                 {
                     // my favorite syntax
                     let recip_squared =
                         <&GradientType as Mul<&GradientType>>::mul(&r_recip, &r_recip);
-                    
-                    debug_assert!(lhs_value.is_some());
-                    let lhs_value = unsafe{ lhs_value.unwrap_unchecked() };
 
                     let d = -lhs_value * &gradient;
                     let d = <GradientType as Mul<GradientType>>::mul(d, recip_squared);
@@ -869,11 +863,8 @@ where
                     lhs.derivatives(d);
                 }
 
-                if rhs_cg
+                if let Some(rhs_d) = rhs_d
                 {
-                    debug_assert!(rhs_d.is_some());
-                    let rhs_d = unsafe{ rhs_d.unwrap_unchecked() };
-
                     rhs.derivatives(rhs_d);
                 }
             },
@@ -891,11 +882,8 @@ where
                     lhs.derivatives(d);
                 }
 
-                if rhs_cg
+                if let Some(rhs_d) = rhs_d
                 {
-                    debug_assert!(rhs_d.is_some());
-                    let rhs_d = unsafe{ rhs_d.unwrap_unchecked() };
-
                     rhs.derivatives(rhs_d);
                 }
 
@@ -933,11 +921,8 @@ where
                     lhs.derivatives(d);
                 }
 
-                if rhs_cg
+                if let Some(lhs_value) = lhs_value
                 {
-                    debug_assert!(lhs_value.is_some());
-                    let lhs_value = unsafe{ lhs_value.unwrap_unchecked() };
-
                     let d = &gradient * lhs_value;
 
                     rhs.derivatives(d);
