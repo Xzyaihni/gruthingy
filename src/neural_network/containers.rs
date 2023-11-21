@@ -728,8 +728,7 @@ where
             },
             LayerOps::Mul{mut lhs, mut rhs} =>
             {
-                let rhs_cg = rhs.is_gradient();
-                let lhs_value = rhs_cg.then(|| lhs.value_clone());
+                let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
 
                 if lhs.is_gradient()
                 {
@@ -747,8 +746,7 @@ where
             {
                 let r_recip = rhs.value_clone().reciprocal();
                 
-                let rhs_cg = rhs.is_gradient();
-                let lhs_value = rhs_cg.then(|| lhs.value_clone());
+                let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
 
                 if lhs.is_gradient()
                 {
@@ -854,8 +852,7 @@ where
                 let gradient: LayerInnerType = gradient.try_into()
                     .expect("matmul must be a tensor");
                 
-                let rhs_cg = rhs.is_gradient();
-                let rhs_d = rhs_cg.then(|| lhs.value().matmulv_transposed(&gradient));
+                let rhs_d = rhs.is_gradient().then(|| lhs.value().matmulv_transposed(&gradient));
 
                 if lhs.is_gradient()
                 {
@@ -873,8 +870,7 @@ where
                 let gradient: LayerInnerType = gradient.try_into()
                     .expect("matmul must be a tensor");
                 
-                let rhs_cg = rhs.is_gradient();
-                let rhs_d = rhs_cg.then(|| lhs.value().matmulv_transposed(&gradient));
+                let rhs_d = rhs.is_gradient().then(|| lhs.value().matmulv_transposed(&gradient));
 
                 if lhs.is_gradient()
                 {
@@ -911,8 +907,7 @@ where
                     lhs.value_clone()
                 });
                 
-                let rhs_cg = rhs.is_gradient();
-                let lhs_value = rhs_cg.then(|| lhs.value_clone());
+                let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
 
                 if lhs.is_gradient()
                 {
