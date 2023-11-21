@@ -4,6 +4,8 @@ use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
     io::{
+        self,
+        BufReader,
         Bytes,
         Read
     }
@@ -484,7 +486,17 @@ impl<R: Read> Iterator for CharsAdapter<R>
     {
         self.code_points.next().map(|c|
         {
-            c.unwrap_or(char::REPLACEMENT_CHARACTER)
+            match c
+            {
+                Ok(c) => c,
+                Err(err)
+                    if err.kind() == io::ErrorKind::InvalidData
+                    || err.kind() == io::ErrorKind::UnexpectedEof =>
+                {
+                    char::REPLACEMENT_CHARACTER
+                }
+                Err(x) => panic!("{}", x)
+            }
         })
     }
 }
@@ -500,9 +512,9 @@ impl<A, D> WordVectorizer<A, D>
     pub fn new<R>(dictionary: D, reader: R) -> Self
     where
         R: Read,
-        A: ReaderAdapter<R>
+        A: ReaderAdapter<BufReader<R>>
     {
-        let adapter = A::adapter(reader);
+        let adapter = A::adapter(BufReader::new(reader));
 
         Self{adapter, dictionary}
     }
