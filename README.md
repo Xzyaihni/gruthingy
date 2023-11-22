@@ -8,7 +8,7 @@ cd gruthingy
 cargo b -r
 ```
 
-u can change network parameters and stuff in src/neural\_network.rs
+u can change network parameters and stuff in src/neural\_network/neural\_network\_config.rs
 
 then do
 ```

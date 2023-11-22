@@ -600,7 +600,7 @@ fn create_word_dictionary(mut args: impl Iterator<Item=String>)
     dictionary_file.flush().unwrap();
 }
 
-fn word_embeddings(args: impl Iterator<Item=String>)
+fn create_word_embeddings(args: impl Iterator<Item=String>)
 {
     let config = TrainConfig::parse(args);
  
@@ -641,7 +641,7 @@ fn main()
         "dbg" => debug_network(args),
         "createdictionary" => create_word_dictionary(args),
         "weightsimage" => weights_image(args),
-        "wordembeddings" => word_embeddings(args),
+        "createembeddings" => create_word_embeddings(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }
