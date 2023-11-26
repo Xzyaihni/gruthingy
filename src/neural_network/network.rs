@@ -1,6 +1,7 @@
 use std::{
     f32,
-    borrow::Borrow
+    borrow::Borrow,
+    ops::{SubAssign, AddAssign, DivAssign}
 };
 
 use serde::{Serialize, Deserialize};
@@ -11,11 +12,12 @@ use crate::neural_network::{
     ScalarType,
     LayerInnerType,
     DiffWrapper,
+    NetworkUnit,
+    UnitContainer,
     LAYERS_AMOUNT,
-    INPUT_SIZE,
     DROPOUT_PROBABILITY,
     DROPCONNECT_PROBABILITY,
-    network_unit::NetworkUnit
+    network_unit::NewableUnitContainer
 };
 
 
@@ -33,24 +35,55 @@ pub struct WeightsNamed<T>
     pub weights_size: WeightsSize<T>
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LayerSizes
+{
+    pub input: usize,
+    pub hidden: usize
+}
+
+pub enum LayerSize
+{
+    Input,
+    Hidden,
+    One
+}
+
+impl LayerSize
+{
+    pub fn to_number(self, sizes: LayerSizes) -> usize
+    {
+        match self
+        {
+            Self::Input => sizes.input,
+            Self::Hidden => sizes.hidden,
+            Self::One => 1
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! create_weights_container
 {
-    ($(($name:ident, $is_hidden:expr, $previous_size:expr, $current_size:expr, $previous_layer:expr)),+) =>
+    ($(($name:ident, $is_hidden:expr, $previous_size:expr, $current_size:expr)),+) =>
     {
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
         use $crate::neural_network::{
-            Optimizer,
-            CurrentOptimizer,
             LayerInnerType,
-            network::{NewableLayer, WeightsNamed, WeightsSize}
+            GRADIENT_CLIP,
+            NewableLayer,
+            UnitContainer,
+            Optimizer,
+            network_unit::{GradientableUnitContainer, NewableUnitContainer},
+            network::{WeightsNamed, WeightsSize}
         };
 
 
         #[derive(Debug, Serialize, Deserialize)]
         pub struct WeightsContainer<T>
         {
+            sizes: $crate::neural_network::LayerSizes,
             $(
                 $name: T,
             )+
@@ -88,10 +121,34 @@ macro_rules! create_weights_container
 
         impl<T> WeightsContainer<T>
         {
+            pub const fn len() -> usize
+            {
+                [$(
+                    stringify!($name),
+                )+].len()
+            }
+
+            pub fn get_mut(&mut self, index: usize) -> Option<&mut T>
+            {
+                let mut selected = 0;
+
+                $(
+                    if index == selected
+                    {
+                        return Some(&mut self.$name);
+                    }
+
+                    selected += 1;
+                )+
+
+                None
+            }
+
             #[allow(dead_code)]
             pub fn for_each_weight<F: FnMut(T)>(self, mut f: F)
             {
                 let Self{
+                    sizes: _,
                     $(
                         $name,
                     )+
@@ -112,41 +169,48 @@ macro_rules! create_weights_container
 
         impl WeightsContainer<LayerType>
         {
-            pub fn new_randomized() -> Self
+            pub fn new_randomized(sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                Self{
-                    $(
-                        $name: LayerType::new_diff(
-                            if let Some(previous_layer) = $previous_layer
-                            {
-                                // i dont know how to do this another way
-                                let previous_layer: usize = previous_layer;
+                use $crate::neural_network::network::LayerSize;
 
-                                LayerInnerType::new_with($previous_size, $current_size, ||
+                Self{sizes, $(
+                    $name: LayerType::new_diff({
+                        let previous_size = $previous_size.to_number(sizes);
+                        let current_size = $current_size.to_number(sizes);
+
+                        match $current_size
+                        {
+                            LayerSize::One =>
+                            {
+                                LayerInnerType::new(previous_size, current_size)
+                            },
+                            x =>
+                            {
+                                let previous_layer = x.to_number(sizes);
+
+                                LayerInnerType::new_with(previous_size, current_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
                                     (fastrand::f32() * 2.0 - 1.0) * v
                                 })
-                            } else
-                            {
-                                LayerInnerType::new($previous_size, $current_size)
                             }
-                        ),
-                    )+
-                }
+                        }
+                    }),
+                )+}
             }
 
             fn weights_named_info_inner(&self) -> WeightsContainer<WeightsNamed<&LayerType>>
             {
                 WeightsContainer{
+                    sizes: self.sizes,
                     $(
                         $name: WeightsNamed{
                             name: stringify!($name).to_owned(),
                             weights_size: WeightsSize{
                                 weights: &self.$name,
-                                current_size: $current_size,
-                                previous_size: $previous_size,
+                                current_size: $current_size.to_number(self.sizes),
+                                previous_size: $previous_size.to_number(self.sizes),
                                 is_hidden: $is_hidden
                             }
                         },
@@ -159,24 +223,158 @@ macro_rules! create_weights_container
                 F: FnMut(WeightsSize<&LayerType>) -> LayerType
             {
                 Self{
+                    sizes: self.sizes,
                     $(
                         $name: f(
                             WeightsSize{
                                 weights: &self.$name,
-                                current_size: $current_size,
-                                previous_size: $previous_size,
+                                current_size: $current_size.to_number(self.sizes),
+                                previous_size: $previous_size.to_number(self.sizes),
                                 is_hidden: $is_hidden
                             }
                         ),
                     )+
                 }
             }
+        }
 
-            fn map_weights_mut_inner<F, U>(&mut self, mut f: F) -> WeightsContainer<U>
+        impl<T> IntoIterator for WeightsContainer<T>
+        {
+            type Item = T;
+            type IntoIter = std::array::IntoIter<Self::Item, { WeightsContainer::<()>::len() }>;
+
+            fn into_iter(self) -> Self::IntoIter
+            {
+                [
+                    $(
+                        self.$name,
+                    )+
+                ].into_iter()
+            }
+        }
+
+        impl<T> UnitContainer for WeightsContainer<T>
+        {
+            type UnitContainer<U> = WeightsContainer<U>;
+
+            type IntoInfoIter = std::array::IntoIter<WeightsSize<Self::Item>, { WeightsContainer::<()>::len() }>;
+
+            fn into_iter_with_info(self) -> Self::IntoInfoIter
+            {
+                [
+                    $(
+                        WeightsSize{
+                            weights: self.$name,
+                            current_size: $current_size.to_number(self.sizes),
+                            previous_size: $previous_size.to_number(self.sizes),
+                            is_hidden: $is_hidden
+                        },
+                    )+
+                ].into_iter()
+            }
+
+            fn map<U, F>(self, mut f: F) -> Self::UnitContainer<U>
             where
-                F: FnMut(&mut LayerType) -> U
+                F: FnMut(Self::Item) -> U
             {
                 WeightsContainer{
+                    sizes: self.sizes,
+                    $(
+                        $name: f(self.$name),
+                    )+
+                }
+            }
+        }
+
+        impl<'a, T> IntoIterator for &'a WeightsContainer<T>
+        {
+            type Item = &'a T;
+            type IntoIter = std::array::IntoIter<Self::Item, { WeightsContainer::<()>::len() }>;
+
+            fn into_iter(self) -> Self::IntoIter
+            {
+                [
+                    $(
+                        &self.$name,
+                    )+
+                ].into_iter()
+            }
+        }
+
+        impl<'a, T> IntoIterator for &'a mut WeightsContainer<T>
+        {
+            type Item = &'a mut T;
+            type IntoIter = std::array::IntoIter<Self::Item, { WeightsContainer::<()>::len() }>;
+
+            fn into_iter(self) -> Self::IntoIter
+            {
+                [
+                    $(
+                        &mut self.$name,
+                    )+
+                ].into_iter()
+            }
+        }
+
+        impl<'a, T> UnitContainer for &'a WeightsContainer<T>
+        {
+            type UnitContainer<U> = WeightsContainer<U>;
+
+            type IntoInfoIter = std::array::IntoIter<WeightsSize<Self::Item>, { WeightsContainer::<()>::len() }>;
+
+            fn into_iter_with_info(self) -> Self::IntoInfoIter
+            {
+                [
+                    $(
+                        WeightsSize{
+                            weights: &self.$name,
+                            current_size: $current_size.to_number(self.sizes),
+                            previous_size: $previous_size.to_number(self.sizes),
+                            is_hidden: $is_hidden
+                        },
+                    )+
+                ].into_iter()
+            }
+
+            fn map<U, F>(self, mut f: F) -> Self::UnitContainer<U>
+            where
+                F: FnMut(Self::Item) -> U
+            {
+                WeightsContainer{
+                    sizes: self.sizes,
+                    $(
+                        $name: f(&self.$name),
+                    )+
+                }
+            }
+        }
+
+        impl<'a, T> UnitContainer for &'a mut WeightsContainer<T>
+        {
+            type UnitContainer<U> = WeightsContainer<U>;
+
+            type IntoInfoIter = std::array::IntoIter<WeightsSize<Self::Item>, { WeightsContainer::<()>::len() }>;
+
+            fn into_iter_with_info(self) -> Self::IntoInfoIter
+            {
+                [
+                    $(
+                        WeightsSize{
+                            weights: &mut self.$name,
+                            current_size: $current_size.to_number(self.sizes),
+                            previous_size: $previous_size.to_number(self.sizes),
+                            is_hidden: $is_hidden
+                        },
+                    )+
+                ].into_iter()
+            }
+
+            fn map<U, F>(self, mut f: F) -> Self::UnitContainer<U>
+            where
+                F: FnMut(Self::Item) -> U
+            {
+                WeightsContainer{
+                    sizes: self.sizes,
                     $(
                         $name: f(&mut self.$name),
                     )+
@@ -184,60 +382,47 @@ macro_rules! create_weights_container
             }
         }
 
-        impl<T: NewableLayer> WeightsContainer<T>
+        impl<T: NewableLayer> NewableUnitContainer for WeightsContainer<T>
         {
-            #[allow(dead_code)]
-            pub fn new_container() -> Self
+            fn new_zeroed(sizes: $crate::neural_network::LayerSizes) -> Self
             {
                 Self{
+                    sizes,
                     $(
-                        $name: T::new($previous_size, $current_size),
+                        $name: T::new(
+                            $previous_size.to_number(sizes),
+                            $current_size.to_number(sizes)
+                        ),
                     )+
                 }
             }
         }
 
-        impl WeightsContainer<<CurrentOptimizer as Optimizer>::WeightParam>
+        impl<T> GradientableUnitContainer for WeightsContainer<T>
         {
-            #[allow(dead_code)]
-            pub fn gradients_to_change(
+            fn apply_change<'a, Lhs, G, O>(
                 &mut self,
-                gradients: WeightsContainer<LayerInnerType>,
-                hyper: &mut <CurrentOptimizer as Optimizer>::HyperParams
-            ) -> WeightsContainer<LayerType>
+                lhs: &'a mut Lhs,
+                gradients: G,
+                optimizer: &O
+            )
+            where
+                &'a mut Lhs: UnitContainer<Item=&'a mut LayerType>,
+                G: UnitContainer<Item=LayerInnerType>,
+                O: Optimizer<WeightParam=Self::Item>
             {
-                let WeightsContainer{
-                    $(
-                        $name,
-                    )+
-                } = gradients;
+                gradients.into_iter().zip(self.into_iter()).zip(lhs.into_iter())
+                    .for_each(|((gradient, this), lhs)|
+                    {
+                        let gradient = gradient.cap_magnitude(GRADIENT_CLIP);
 
-                let change = WeightsContainer{
-                    $(
-                        $name: {
-                            let gradient_info = &mut self.$name;
-                            let gradient = CurrentOptimizer::gradient_clipped($name);
+                        let change = optimizer.gradient_to_change(this, gradient);
 
-                            let change = CurrentOptimizer::gradient_to_change(
-                                gradient_info,
-                                gradient,
-                                hyper
-                            );
-
-                            LayerType::new_undiff(change)
-                        },
-                    )+
-                };
-
-                change
+                        *lhs -= LayerType::new_undiff(change);
+                    });
             }
         }
     }
-}
-
-pub trait NewableLayer
-{
-    fn new(previous: usize, current: usize) -> Self;
 }
 
 pub struct NetworkOutput<State, Output>
@@ -246,24 +431,58 @@ pub struct NetworkOutput<State, Output>
     pub output: Output
 }
 
-pub struct NetworkDropped<Layer>(Network<Layer>);
-
-impl<Layer: NetworkUnit> NetworkDropped<Layer>
+pub struct NetworkDropped<C, Layer: NetworkUnit>
 {
+    inner: Network<C, Layer>,
+    is_dirty: bool
+}
+
+impl<C, Layer: NetworkUnit> NetworkDropped<C, Layer>
+{
+    pub fn reset(&mut self, parent: &Network<C, Layer>)
+    where
+        for<'a> &'a Layer: UnitContainer<Item=&'a LayerType>,
+        for<'a> &'a mut Layer: UnitContainer<Item=&'a mut LayerType>
+    {
+        self.inner.layers.iter_mut().zip(parent.layers.iter()).for_each(|(layer, parent)|
+        {
+            layer.into_iter_with_info().zip(parent.into_iter()).for_each(|(info, parent)|
+            {
+                if info.is_hidden
+                {
+                    let dropconnect_mask = Network::<C, Layer>::create_dropout_mask(
+                        info.previous_size,
+                        info.current_size,
+                        DROPCONNECT_PROBABILITY
+                    );
+
+                    *info.weights = parent * dropconnect_mask;
+                }
+            });
+        });
+
+        self.is_dirty = false;
+    }
+
     pub fn gradients(
         &mut self,
         input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
-    ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
+    ) -> (f32, Vec<Layer::UnitContainer<LayerInnerType>>)
     {
-        self.0.clear();
+        if self.is_dirty == true
+        {
+            panic!("reset the dropped weights before getting gradients again");
+        }
 
-        let loss = self.0.feedforward(input);
+        self.inner.clear();
+
+        let loss = self.inner.feedforward(input);
 
         let loss_value = loss.value_clone();
 
         loss.calculate_gradients();
 
-        let gradients = self.0.layers.iter_mut().map(|layer|
+        let gradients = self.inner.layers.iter_mut().map(|layer|
         {
             layer.map_weights_mut(|weight| weight.take_gradient())
         }).collect::<Vec<_>>();
@@ -273,38 +492,56 @@ impl<Layer: NetworkUnit> NetworkDropped<Layer>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Network<Layer>
+pub struct Network<C, Layer>
 {
+    sizes: LayerSizes,
+    optimizer_info: Option<Vec<C>>,
     layers: Vec<Layer>
 }
 
-impl<Layer: NetworkUnit> Network<Layer>
+impl<C, Layer: NetworkUnit> Network<C, Layer>
 {
-    pub fn dropconnected(&self) -> NetworkDropped<Layer>
+    pub fn new(sizes: LayerSizes) -> Self
+    where
+        C: NewableUnitContainer
     {
-        let layers = self.layers.iter().map(|layer|
-        {
-            let layer: Layer = layer.clone_weights_with_info(|info|
-            {
-                if info.is_hidden
-                {
-                    let dropconnect_mask = self.create_dropout_mask(
-                        info.previous_size,
-                        info.current_size,
-                        DROPCONNECT_PROBABILITY
-                    );
+        let optimizer_info: Option<Vec<_>> = 
+            Some((0..LAYERS_AMOUNT).map(|_| C::new_zeroed(sizes)).collect());
 
-                    info.weights * dropconnect_mask
-                } else
-                {
-                    info.weights.recreate()
+        let layers: Vec<_> =
+            (0..LAYERS_AMOUNT).map(|_| Layer::new(sizes)).collect();
+
+        Self{
+            sizes,
+            optimizer_info,
+            layers
+        }
+    }
+
+    pub fn dropconnected(&self) -> NetworkDropped<C, Layer>
+    where
+        for<'a> &'a Layer: UnitContainer<Item=&'a LayerType>,
+        for<'a> &'a mut Layer: UnitContainer<Item=&'a mut LayerType>
+    {
+        let mut dropconnected =
+            NetworkDropped{
+                is_dirty: true,
+                inner: Self{
+                    sizes: self.sizes,
+                    optimizer_info: None,
+                    layers: self.layers.iter().map(|layer|
+                    {
+                        layer.clone_weights_with_info(|info|
+                        {
+                            info.weights.recreate()
+                        })
+                    }).collect()
                 }
-            });
+            };
 
-            layer
-        }).collect::<Vec<Layer>>();
+        dropconnected.reset(&self);
 
-        NetworkDropped(Self{layers})
+        dropconnected
     }
 
     pub fn clear(&mut self)
@@ -329,14 +566,16 @@ impl<Layer: NetworkUnit> Network<Layer>
         });
     }
 
-    pub fn layers_mut(&mut self) -> &mut [Layer]
+    pub fn gradients_info<'a>(
+        &'a mut self
+    ) -> impl Iterator<Item=(&'a mut Layer, &'a mut C)>
     {
-        &mut self.layers
+        self.layers.iter_mut().zip(self.optimizer_info.as_mut().unwrap().iter_mut())
     }
 
     pub fn weights_info(
         &self
-    ) -> Vec<<Layer as NetworkUnit>::ThisWeightsContainer<WeightsNamed<&LayerType>>>
+    ) -> Vec<Layer::UnitContainer<WeightsNamed<&LayerType>>>
     {
         self.layers.iter().map(|layer|
         {
@@ -349,7 +588,7 @@ impl<Layer: NetworkUnit> Network<Layer>
     {
         self.layers.iter().map(|layer|
         {
-            layer.parameters_amount()
+            layer.parameters_amount(self.sizes)
         }).sum()
     }
 
@@ -489,7 +728,7 @@ impl<Layer: NetworkUnit> Network<Layer>
         let mut output: Option<ScalarType> = None;
         let mut previous_states: Option<Vec<Layer::State>> = None;
 
-        let dropout_masks = self.create_dropout_masks(INPUT_SIZE, DROPOUT_PROBABILITY);
+        let dropout_masks = self.create_dropout_masks(self.sizes.input, DROPOUT_PROBABILITY);
 
         for (this_input, this_output) in input
         {
@@ -517,16 +756,6 @@ impl<Layer: NetworkUnit> Network<Layer>
         }
 
         output.unwrap()
-    }
-
-    pub fn gradients(
-        &mut self,
-        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
-    ) -> (f32, Vec<Layer::ThisWeightsContainer<LayerInnerType>>)
-    {
-        let mut dropped = self.dropconnected();
-
-        dropped.gradients(input)
     }
 
     pub fn predict_single_input(
@@ -566,7 +795,7 @@ impl<Layer: NetworkUnit> Network<Layer>
         let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
         let mut previous_state: Option<Vec<_>> = None;
 
-        let dropout_masks = self.create_dropout_masks(INPUT_SIZE, 0.0);
+        let dropout_masks = self.create_dropout_masks(self.sizes.input, 0.0);
 
         for this_input in input
         {
@@ -595,13 +824,12 @@ impl<Layer: NetworkUnit> Network<Layer>
         // constant
         self.layers.iter().map(|_|
         {
-            self.create_dropout_mask(input_size, 1, probability)
+            Self::create_dropout_mask(input_size, 1, probability)
         }).collect()
     }
 
     // i love my inconsistent naming of current/this size thing
     fn create_dropout_mask(
-        &self,
         previous_size: usize,
         this_size: usize,
         probability: f32
@@ -623,17 +851,3 @@ impl<Layer: NetworkUnit> Network<Layer>
         })
     }
 }
-
-impl<Layer: NetworkUnit> Network<Layer>
-{
-    pub fn new() -> Self
-    {
-        let layers: Vec<_> =
-            (0..LAYERS_AMOUNT).map(|_| Layer::new()).collect();
-
-        Self{
-            layers
-        }
-    }
-}
-

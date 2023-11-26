@@ -1,27 +1,32 @@
 use std::{
     env,
     process,
+    marker::PhantomData,
     path::{PathBuf, Path},
     io::{self, Write, BufReader},
     fs::{self, File},
     collections::HashSet,
-    ops::{Index, IndexMut}
+    ops::{AddAssign, DivAssign, Index, IndexMut}
 };
+
+use serde::{Serialize, Deserialize};
 
 #[allow(unused_imports)]
 use neural_network::{
     TrainingInfo,
     NeuralNetwork,
-    DictionaryType,
     WeightsNamed,
     LayerInnerType,
-    USES_DICTIONARY,
-    DICTIONARY_TEXT,
+    NetworkUnit,
+    Optimizer,
+    LayerType,
+    UnitContainer,
+    GradientableUnitContainer,
     HIDDEN_AMOUNT,
     LAYERS_AMOUNT
 };
 
-use word_vectorizer::{CharsAdapter, ReaderAdapter, WORD_SEPARATORS};
+use word_vectorizer::{CharsAdapter, ReaderAdapter, NetworkDictionary, WORD_SEPARATORS};
 
 mod neural_network;
 mod word_vectorizer;
@@ -36,7 +41,7 @@ fn complain(message: &str) -> !
     process::exit(1)
 }
 
-struct TrainConfig
+struct Config
 {
     epochs: usize,
     batch_size: usize,
@@ -49,7 +54,7 @@ struct TrainConfig
     network_path: Option<String>
 }
 
-impl TrainConfig
+impl Config
 {
     pub fn parse(mut args: impl Iterator<Item=String>) -> Self
     {
@@ -156,9 +161,92 @@ impl TrainConfig
     }
 }
 
+struct NetworkTypeBuilder<C, N, O, D>
+{
+    c: PhantomData<C>,
+    n: PhantomData<N>,
+    o: PhantomData<O>,
+    d: PhantomData<D>
+}
+
+impl NetworkTypeBuilder<(), (), (), ()>
+{
+    pub fn new() -> Self
+    {
+        Self::recreate()
+    }
+}
+
+impl<C, N, O, D> NetworkTypeBuilder<C, N, O, D>
+{
+    fn recreate() -> Self
+    {
+        Self{c: PhantomData, n: PhantomData, o: PhantomData, d: PhantomData}
+    }
+
+    pub fn with_container<NewC>(self) -> NetworkTypeBuilder<NewC, N, O, D>
+    {
+        NetworkTypeBuilder::recreate()
+    }
+
+    pub fn with_network_unit<NewN>(self) -> NetworkTypeBuilder<C, NewN, O, D>
+    {
+        NetworkTypeBuilder::recreate()
+    }
+
+    pub fn with_optimizer<NewO>(self) -> NetworkTypeBuilder<C, N, NewO, D>
+    {
+        NetworkTypeBuilder::recreate()
+    }
+
+    pub fn with_dictionary<NewD>(self) -> NetworkTypeBuilder<C, N, O, NewD>
+    {
+        NetworkTypeBuilder::recreate()
+    }
+
+    /*pub fn build_load<P>(self, path: P) -> NeuralNetwork<C, N, O, D>
+    where
+        P: AsRef<Path>,
+        C: GradientableUnitContainer,
+        N: NetworkUnit,
+        for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>,
+        O: Optimizer<WeightParam=C::Item>,
+        D: NetworkDictionary,
+        N::UnitContainer<LayerInnerType>:
+            DivAssign<f32>
+            + AddAssign<N::UnitContainer<LayerInnerType>>,
+        for<'a> &'a N: UnitContainer<Item=&'a LayerType>,
+        for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>
+    {
+        NeuralNetwork::load(path).unwrap()
+    }*/
+}
+
+// holy trait bounds
+fn load_network<P, C, N, O, D>(path: P, config: Config) -> NeuralNetwork<C, N, O, D>
+where
+    P: AsRef<Path>,
+    C: GradientableUnitContainer,
+    N: NetworkUnit,
+    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>,
+    O: Optimizer<WeightParam=C::Item>,
+    D: NetworkDictionary,
+    N::UnitContainer<LayerInnerType>:
+        DivAssign<f32>
+        + AddAssign<N::UnitContainer<LayerInnerType>>,
+    for<'a> &'a N: UnitContainer<Item=&'a LayerType>,
+    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>
+{
+    let builder = NetworkTypeBuilder::new();
+
+    todo!();
+    // builder.build_load(path)
+}
+
 fn test_loss(mut args: impl Iterator<Item=String>)
 {
-    let text_path = args.next()
+    todo!();
+    /*let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text testing data"));
     
     let text_file = File::open(&text_path)
@@ -168,23 +256,24 @@ fn test_loss(mut args: impl Iterator<Item=String>)
             complain(&err_msg)
         });
     
-    let config = TrainConfig::parse(args);
+    let config = Config::parse(args);
 
     let network_path = config.network_path.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
 
     let mut network: NeuralNetwork =
         NeuralNetwork::load(&network_path).unwrap();
 
-    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
+    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);*/
 }
 
-fn train_inner(
-    mut network: NeuralNetwork,
+fn train_inner<C, N: NetworkUnit, O: Optimizer, D: NetworkDictionary>(
+    mut network: NeuralNetwork<C, N, O, D>,
     text_path: String,
-    config: TrainConfig
+    config: Config
 )
 {
-    let text_file = File::open(&text_path)
+    todo!();
+    /*let text_file = File::open(&text_path)
         .unwrap_or_else(|err|
         {
             let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
@@ -215,15 +304,16 @@ fn train_inner(
 
     let network_path = config.network_path.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
 
-    network.save(network_path);
+    network.save(network_path);*/
 }
 
 fn train(mut args: impl Iterator<Item=String>)
 {
-    let text_path = args.next()
+    todo!();
+    /*let text_path = args.next()
         .unwrap_or_else(|| complain("give path to a file with text training data"));
     
-    let config = TrainConfig::parse(args);
+    let config = Config::parse(args);
  
     let network_path = config.network_path.clone()
         .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
@@ -247,7 +337,7 @@ fn train(mut args: impl Iterator<Item=String>)
         NeuralNetwork::new(dictionary)
     };
 
-    train_inner(network, text_path, config);
+    train_inner(network, text_path, config);*/
 }
 
 struct RunConfig
@@ -329,7 +419,8 @@ impl RunConfig
 
 fn run(mut args: impl Iterator<Item=String>)
 {
-    let text = args.next()
+    todo!();
+    /*let text = args.next()
         .unwrap_or_else(|| complain("pls give the text to predict"));
 
     let config = RunConfig::parse(args);
@@ -368,18 +459,19 @@ fn run(mut args: impl Iterator<Item=String>)
         });
 
         network.predict_into(&text, config.tokens_amount, config.temperature, &mut f);
-    };
+    };*/
 }
 
 fn debug_network(mut args: impl Iterator<Item=String>)
 {
-    let network_path = args.next()
+    todo!();
+    /*let network_path = args.next()
         .unwrap_or_else(|| complain("give path to network"));
     
     let network: NeuralNetwork =
         NeuralNetwork::load(network_path).unwrap();
 
-    println!("{network:#?}");
+    println!("{network:#?}");*/
 }
 
 #[derive(Clone, Copy)]
@@ -495,14 +587,14 @@ fn weight_color(value: f32) -> Color
 
 fn weights_image(mut args: impl Iterator<Item=String>)
 {
-    let network_path = args.next()
+    todo!();
+    /*let network_path = args.next()
         .unwrap_or_else(|| complain("give path to network"));
 
     let output_folder = args.next()
         .unwrap_or_else(|| "output".to_owned());
     
-    let network: NeuralNetwork =
-        NeuralNetwork::load(&network_path).unwrap();
+    let network = load_network(&network_path, Config::parse(args));
 
     let weights = network.inner_network().weights_info();
 
@@ -538,7 +630,7 @@ fn weights_image(mut args: impl Iterator<Item=String>)
 
             image.save(full_path).unwrap();
         });
-    }
+    }*/
 }
 
 fn create_word_dictionary(mut args: impl Iterator<Item=String>)
@@ -550,7 +642,7 @@ fn create_word_dictionary(mut args: impl Iterator<Item=String>)
 
     let text_file = BufReader::new(File::open(text_path).unwrap());
 
-    let config = TrainConfig::parse(args);
+    let config = Config::parse(args);
  
     let dictionary_path = config.network_path.clone()
         .unwrap_or_else(|| "dictionary.txt".to_owned());
@@ -600,14 +692,6 @@ fn create_word_dictionary(mut args: impl Iterator<Item=String>)
     dictionary_file.flush().unwrap();
 }
 
-fn create_word_embeddings(args: impl Iterator<Item=String>)
-{
-    let config = TrainConfig::parse(args);
- 
-    drop(config);
-    todo!();
-}
-
 fn main()
 {
     let mut args = env::args().skip(1);
@@ -641,7 +725,6 @@ fn main()
         "dbg" => debug_network(args),
         "createdictionary" => create_word_dictionary(args),
         "weightsimage" => weights_image(args),
-        "createembeddings" => create_word_embeddings(args),
         x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }

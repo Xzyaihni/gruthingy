@@ -6,9 +6,8 @@ use crate::{
     create_weights_container,
     neural_network::{
         LayerType,
-        HIDDEN_AMOUNT,
-        INPUT_SIZE,
-        network::NetworkOutput,
+        LayerSizes,
+        network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
     }
 };
@@ -17,19 +16,19 @@ use crate::{
 pub type Lstm = WeightsContainer<LayerType>;
 
 create_weights_container!{
-    (input_update, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (input_forget, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (input_output, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (input_memory, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (hidden_update, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (hidden_forget, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (hidden_output, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (hidden_memory, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (update_bias, false, HIDDEN_AMOUNT, 1, None),
-    (forget_bias, false, HIDDEN_AMOUNT, 1, None),
-    (output_bias, false, HIDDEN_AMOUNT, 1, None),
-    (memory_bias, false, HIDDEN_AMOUNT, 1, None),
-    (output, false, INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT))
+    (input_update, false, LayerSize::Hidden, LayerSize::Input),
+    (input_forget, false, LayerSize::Hidden, LayerSize::Input),
+    (input_output, false, LayerSize::Hidden, LayerSize::Input),
+    (input_memory, false, LayerSize::Hidden, LayerSize::Input),
+    (hidden_update, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_forget, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_output, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_memory, true, LayerSize::Hidden, LayerSize::Hidden),
+    (update_bias, false, LayerSize::Hidden, LayerSize::One),
+    (forget_bias, false, LayerSize::Hidden, LayerSize::One),
+    (output_bias, false, LayerSize::Hidden, LayerSize::One),
+    (memory_bias, false, LayerSize::Hidden, LayerSize::One),
+    (output, false, LayerSize::Input, LayerSize::Hidden)
 }
 
 pub struct LSTMState
@@ -41,11 +40,10 @@ pub struct LSTMState
 impl NetworkUnit for Lstm
 {
     type State = LSTMState;
-    type ThisWeightsContainer<T> = WeightsContainer<T>;
 
-    fn new() -> Self
+    fn new(sizes: LayerSizes) -> Self
     {
-        WeightsContainer::new_randomized()
+        WeightsContainer::new_randomized(sizes)
     }
 
     fn feedforward_unit(
@@ -102,7 +100,7 @@ impl NetworkUnit for Lstm
         }
     }
 
-    fn weights_named_info(&self) -> Self::ThisWeightsContainer<WeightsNamed<&LayerType>>
+    fn weights_named_info(&self) -> Self::UnitContainer<WeightsNamed<&LayerType>>
     {
         self.weights_named_info_inner()
     }
@@ -119,17 +117,17 @@ impl NetworkUnit for Lstm
         self.clone_weights_with_info_inner(f)
     }
 
-    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::ThisWeightsContainer<U>
+    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::UnitContainer<U>
     where
         F: FnMut(&mut LayerType) -> U
     {
-        self.map_weights_mut_inner(f)
+        self.map(f)
     }
 
-    fn parameters_amount(&self) -> u128
+    fn parameters_amount(&self, sizes: LayerSizes) -> u128
     {
-        let i = INPUT_SIZE as u128;
-        let h = HIDDEN_AMOUNT as u128;
+        let i = sizes.input as u128;
+        let h = sizes.hidden as u128;
 
         (5 * i * h) + (4 * h * h) + (4 * h)
     }
@@ -140,7 +138,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::LayerInnerType;
+    use crate::neural_network::{LayerInnerType, LayerSizes};
     
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -185,6 +183,8 @@ mod tests
 
         let mut lstm = WeightsContainer
         {
+            sizes: LayerSizes{hidden: 1, input: 1},
+
             input_update: one_weight(1.65),
             input_forget: one_weight(1.63),
             input_output: one_weight(-0.19),

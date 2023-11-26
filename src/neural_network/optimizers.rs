@@ -1,11 +1,9 @@
 use serde::{Serialize, Deserialize};
 
-use super::network::NewableLayer;
-
 use super::{
     LayerInnerType,
-    ThisWeightsContainer,
-    GRADIENT_CLIP,
+    NetworkUnit,
+    NewableLayer,
     LAYERS_AMOUNT,
     DECAY_FUNCTION
 };
@@ -72,25 +70,15 @@ impl NewableLayer for PowerSignGradientInfo
 
 pub trait Optimizer
 {
-    type HyperParams;
     type WeightParam;
 
     fn new() -> Self;
 
     fn gradient_to_change(
+        &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType,
-        hyper: &Self::HyperParams
+        gradient: LayerInnerType
     ) -> LayerInnerType;
-
-    fn gradient_clipped(gradient: LayerInnerType) -> LayerInnerType
-    {
-        gradient.cap_magnitude(GRADIENT_CLIP)
-    }
-
-    fn info_mut(
-        &mut self
-    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams);
 
     fn advance_time(&mut self);
     fn set_learning_rate(&mut self, learning_rate: f32);
@@ -99,39 +87,25 @@ pub trait Optimizer
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sgd
 {
-    gradients_info: Vec<ThisWeightsContainer<()>>,
     learning_rate: f32
 }
 
 impl Optimizer for Sgd
 {
-    type HyperParams = f32;
     type WeightParam = ();
 
     fn new() -> Self
     {
-        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
-        {
-            ThisWeightsContainer::new_container()
-        }).collect::<Vec<_>>();
-
-        Self{gradients_info, learning_rate: 0.001}
+        Self{learning_rate: 0.001}
     }
 
     fn gradient_to_change(
+        &self,
         _gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType,
-        hyper: &Self::HyperParams
+        gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        gradient * *hyper
-    }
-
-    fn info_mut(
-        &mut self
-    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
-    {
-        (&mut self.gradients_info, &mut self.learning_rate)
+        gradient * self.learning_rate
     }
 
     fn advance_time(&mut self) {}
@@ -142,16 +116,18 @@ impl Optimizer for Sgd
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PowerSignHyperparams
+pub struct PowerSign
 {
     pub b1: f32,
     pub learning_rate: f32,
     pub t: i32
 }
 
-impl PowerSignHyperparams
+impl Optimizer for PowerSign
 {
-    pub fn new() -> Self
+    type WeightParam = PowerSignGradientInfo;
+
+    fn new() -> Self
     {
         Self{
             b1: 0.9,
@@ -160,45 +136,15 @@ impl PowerSignHyperparams
         }
     }
 
-    pub fn advance_time(&mut self)
-    {
-        self.t += 1;
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PowerSign
-{
-    gradients_info: Vec<ThisWeightsContainer<PowerSignGradientInfo>>,
-    hyper: PowerSignHyperparams
-}
-
-impl Optimizer for PowerSign
-{
-    type HyperParams = PowerSignHyperparams;
-    type WeightParam = PowerSignGradientInfo;
-
-    fn new() -> Self
-    {
-        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
-        {
-            ThisWeightsContainer::new_container()
-        }).collect::<Vec<_>>();
-
-        let hyper = PowerSignHyperparams::new();
-
-        Self{gradients_info, hyper}
-    }
-
     fn gradient_to_change(
+        &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType,
-        hyper: &Self::HyperParams
+        gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
+        gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
 
-        let decay = DECAY_FUNCTION.decay(hyper.learning_rate, hyper.t);
+        let decay = DECAY_FUNCTION.decay(self.learning_rate, self.t);
 
         let mut this = gradient.signum() * gradient_info.m.signum() * decay;
         this.exp();
@@ -206,26 +152,19 @@ impl Optimizer for PowerSign
         this * gradient
     }
 
-    fn info_mut(
-        &mut self
-    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
-    {
-        (&mut self.gradients_info, &mut self.hyper)
-    }
-
     fn advance_time(&mut self)
     {
-        self.hyper.advance_time();
+        self.t += 1;
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
-        self.hyper.learning_rate = learning_rate;
+        self.learning_rate = learning_rate;
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct AdamXHyperparams
+pub struct AdamX
 {
     pub a: f32,
     pub b1: f32,
@@ -234,9 +173,11 @@ pub struct AdamXHyperparams
     pub t: i32
 }
 
-impl AdamXHyperparams
+impl Optimizer for AdamX
 {
-    pub fn new() -> Self
+    type WeightParam = AdamXGradientInfo;
+
+    fn new() -> Self
     {
         Self{
             a: 0.001,
@@ -247,51 +188,21 @@ impl AdamXHyperparams
         }
     }
 
-    pub fn advance_time(&mut self)
-    {
-        self.t += 1;
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AdamX
-{
-    gradients_info: Vec<ThisWeightsContainer<AdamXGradientInfo>>,
-    hyper: AdamXHyperparams
-}
-
-impl Optimizer for AdamX
-{
-    type HyperParams = AdamXHyperparams;
-    type WeightParam = AdamXGradientInfo;
-
-    fn new() -> Self
-    {
-        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
-        {
-            ThisWeightsContainer::new_container()
-        }).collect::<Vec<_>>();
-
-        let hyper = AdamXHyperparams::new();
-
-        Self{gradients_info, hyper}
-    }
-
     fn gradient_to_change(
+        &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType,
-        hyper: &Self::HyperParams
+        gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        let b1_t = DECAY_FUNCTION.decay(hyper.b1, hyper.t);
+        let b1_t = DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b1_t = 1.0 - b1_t;
 
         gradient_info.m = &gradient_info.m * b1_t + &gradient * one_minus_b1_t;
-        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+        gradient_info.v = &gradient_info.v * self.b2 + (&gradient * &gradient) * (1.0 - self.b2);
 
         if let Some(v_hat) = gradient_info.v_hat.as_mut()
         {
-            let one_minus_b1_tlast = 1.0 - DECAY_FUNCTION.decay(hyper.b1, hyper.t - 1);
+            let one_minus_b1_tlast = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t - 1);
 
             let lhs = (one_minus_b1_t).powi(2) / (one_minus_b1_tlast).powi(2);
 
@@ -305,33 +216,26 @@ impl Optimizer for AdamX
         }
 
         // it can be a / t.sqrt() but this is fine
-        let a_t = hyper.a;
+        let a_t = self.a;
 
-        let rhs = gradient_info.v_hat.as_ref().unwrap().clone_sqrt() + hyper.epsilon;
+        let rhs = gradient_info.v_hat.as_ref().unwrap().clone_sqrt() + self.epsilon;
 
         (&gradient_info.m * a_t) / rhs
     }
 
-    fn info_mut(
-        &mut self
-    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
-    {
-        (&mut self.gradients_info, &mut self.hyper)
-    }
-
     fn advance_time(&mut self)
     {
-        self.hyper.advance_time();
+        self.t += 1;
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
-        self.hyper.a = learning_rate;
+        self.a = learning_rate;
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct AdamHyperparams
+pub struct Adam
 {
     pub a: f32,
     pub b1: f32,
@@ -340,9 +244,11 @@ pub struct AdamHyperparams
     pub t: i32
 }
 
-impl AdamHyperparams
+impl Optimizer for Adam
 {
-    pub fn new() -> Self
+    type WeightParam = AdamGradientInfo;
+
+    fn new() -> Self
     {
         Self{
             a: 0.001,
@@ -353,68 +259,31 @@ impl AdamHyperparams
         }
     }
 
-    pub fn advance_time(&mut self)
-    {
-        self.t += 1;
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Adam
-{
-    gradients_info: Vec<ThisWeightsContainer<AdamGradientInfo>>,
-    hyper: AdamHyperparams
-}
-
-impl Optimizer for Adam
-{
-    type HyperParams = AdamHyperparams;
-    type WeightParam = AdamGradientInfo;
-
-    fn new() -> Self
-    {
-        let gradients_info = (0..LAYERS_AMOUNT).map(|_|
-        {
-            ThisWeightsContainer::new_container()
-        }).collect::<Vec<_>>();
-
-        let hyper = AdamHyperparams::new();
-
-        Self{gradients_info, hyper}
-    }
-
     fn gradient_to_change(
+        &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType,
-        hyper: &Self::HyperParams
+        gradient: LayerInnerType
     ) -> LayerInnerType
     {
-        let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(hyper.b1, hyper.t);
-        let one_minus_b2_t = 1.0 - DECAY_FUNCTION.decay(hyper.b2, hyper.t);
+        let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t);
+        let one_minus_b2_t = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
 
-        gradient_info.m = &gradient_info.m * hyper.b1 + &gradient * (1.0 - hyper.b1);
-        gradient_info.v = &gradient_info.v * hyper.b2 + (&gradient * &gradient) * (1.0 - hyper.b2);
+        gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
+        gradient_info.v = &gradient_info.v * self.b2 + (&gradient * &gradient) * (1.0 - self.b2);
 
-        let a_t = hyper.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
+        let a_t = self.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
 
-        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + hyper.epsilon)
-    }
-
-    fn info_mut(
-        &mut self
-    ) -> (&mut [ThisWeightsContainer<Self::WeightParam>], &mut Self::HyperParams)
-    {
-        (&mut self.gradients_info, &mut self.hyper)
+        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + self.epsilon)
     }
 
     fn advance_time(&mut self)
     {
-        self.hyper.advance_time();
+        self.t += 1;
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
-        self.hyper.a = learning_rate;
+        self.a = learning_rate;
     }
 }
 
@@ -451,7 +320,7 @@ mod tests
 
                 let gradient = LayerInnerType::from_raw(g.clone().into_boxed_slice(), 2, 1);
 
-                let hyper = AdamHyperparams{
+                let adam = Adam{
                     a,
                     b1,
                     b2,
@@ -459,10 +328,9 @@ mod tests
                     t
                 };
 
-                let change = Adam::gradient_to_change(
+                let change = adam.gradient_to_change(
                     &mut gradient_info,
-                    gradient.clone(),
-                    &hyper
+                    gradient.clone()
                 );
 
                 LayerInnerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change

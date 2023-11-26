@@ -2,6 +2,7 @@ use std::{
     str,
     hash::Hash,
     borrow::Borrow,
+    ops::Deref,
     collections::{HashMap, HashSet},
     io::{
         self,
@@ -15,10 +16,7 @@ use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::{
-    LayerInnerType,
-    DICTIONARY_TEXT
-};
+use super::neural_network::LayerInnerType;
 
 
 #[allow(dead_code)]
@@ -61,7 +59,7 @@ impl VectorWord
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Bimap<K, V>
 where
     K: Hash + Eq,
@@ -122,15 +120,15 @@ where
 pub trait NetworkDictionary
 {
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
-    fn words_amount_trait(&self) -> usize;
+    fn words_amount(&self) -> usize;
     
     fn word_to_layer(&self, word: VectorWord) -> LayerInnerType
     {
-        let mut layer = vec![0.0; self.words_amount_trait()];
+        let mut layer = vec![0.0; self.words_amount()];
 
         layer[word.index()] = 1.0;
 
-        LayerInnerType::from_raw(layer, self.words_amount_trait(), 1)
+        LayerInnerType::from_raw(layer, self.words_amount(), 1)
     }
 
     fn layer_to_word(&self, layer: LayerInnerType) -> VectorWord
@@ -141,26 +139,15 @@ pub trait NetworkDictionary
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ByteDictionary;
 
 impl ByteDictionary
 {
     #[allow(dead_code)]
-    pub fn build(_: &'static str) -> Self
-    {
-        unimplemented!();
-    }
-
-    #[allow(dead_code)]
     pub fn new() -> Self
     {
         Self{}
-    }
-
-    pub const fn words_amount() -> usize
-    {
-        u8::MAX as usize + 1
     }
 }
 
@@ -171,13 +158,13 @@ impl NetworkDictionary for ByteDictionary
         Box::new([word.index() as u8])
     }
 
-    fn words_amount_trait(&self) -> usize
+    fn words_amount(&self) -> usize
     {
-        Self::words_amount()
+        u8::MAX as usize + 1
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharDictionary
 {
     dictionary: Bimap<char, VectorWord>
@@ -188,40 +175,7 @@ impl CharDictionary
     #[allow(dead_code)]
     pub fn build(s: &'static str) -> Self
     {
-        let mut unique_chars = s.chars().collect::<Vec<char>>();
-        unique_chars.sort_unstable();
-
-        let mut repeated = Vec::new();
-        let mut chars_set = HashSet::new();
-
-        for c in DICTIONARY_TEXT.chars()
-        {
-            if !chars_set.insert(c)
-            {
-                repeated.push(c);
-            }
-        }
-
-        assert!(
-            repeated.is_empty(),
-            "remove these repeating characters from the dictionary: {}",
-            repeated.into_iter().fold(String::new(), |acc: String, c: char|
-            {
-                let fmt_c = |c|
-                {
-                    format!("'{c}' (hex {:#x})", c as u32)
-                };
-
-                if acc.is_empty()
-                {
-                    fmt_c(c)
-                } else
-                {
-                    format!("{acc}, {}", fmt_c(c))
-                }
-            })
-        );
-        assert_eq!(Self::words_amount(), unique_chars.len() + 1);
+        let unique_chars: HashSet<_> = s.chars().collect();
 
         let dictionary = unique_chars.into_iter().enumerate().map(|(index, c)|
         {
@@ -229,40 +183,6 @@ impl CharDictionary
         }).collect::<Bimap<_, _>>();
 
         Self{dictionary}
-    }
-
-    #[allow(dead_code)]
-    pub fn new() -> Self
-    {
-        unimplemented!();
-    }
-
-    const fn chars_amount(s: &'static str) -> usize
-    {
-        let s = s.as_bytes();
-
-        let mut amount = 0;
-
-        let mut b = 0;
-        while b < s.len()
-        {
-            let is_continuation = (s[b] & 0b1100_0000) == 0b1000_0000;
-
-            if !is_continuation
-            {
-                amount += 1;
-            }
-
-            b += 1;
-        }
-
-        amount
-    }
-
-    pub const fn words_amount() -> usize
-    {
-        // +1 for replacement character
-        Self::chars_amount(DICTIONARY_TEXT) + 1
     }
 
     fn character_match(&self, c: char) -> VectorWord
@@ -290,9 +210,10 @@ impl NetworkDictionary for CharDictionary
         s.as_bytes().into()
     }
 
-    fn words_amount_trait(&self) -> usize
+    fn words_amount(&self) -> usize
     {
-        Self::words_amount()
+        // +1 for replacement character
+        self.dictionary.len() + 1
     }
 }
 
@@ -333,7 +254,7 @@ pub const WORD_SEPARATORS: [char; 33] = [
     '9'
 ];
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WordDictionary
 {
     dictionary: Bimap<String, VectorWord>,
@@ -350,64 +271,12 @@ impl WordDictionary
             (word.to_owned(), VectorWord::new(index))
         }).collect();
 
-        assert_eq!(dictionary.len(), Self::words_amount_raw());
-
         Self{dictionary, leftover_separator: None}
     }
 
-    #[allow(dead_code)]
-    pub fn new() -> Self
+    fn separator_word(&self, index: usize) -> VectorWord
     {
-        unimplemented!();
-    }
-
-    const fn words_amount_inner(s: &'static str) -> usize
-    {
-        let s = s.as_bytes();
-
-        let mut amount = 0;
-
-        let mut is_trailing = true;
-
-        let mut b = 0;
-        while b < s.len()
-        {
-            is_trailing = false;
-
-            if s[b] == b'\n'
-            {
-                is_trailing = true;
-
-                amount += 1;
-            }
-
-            b += 1;
-        }
-
-        if is_trailing
-        {
-            amount
-        } else
-        {
-            // add 1 word cuz one of them doesnt have a last newline
-            amount + 1
-        }
-    }
-
-    const fn words_amount_raw() -> usize
-    {
-        Self::words_amount_inner(DICTIONARY_TEXT)
-    }
-
-    pub const fn words_amount() -> usize
-    {
-        // +1 for unknown token
-        Self::words_amount_raw() + WORD_SEPARATORS.len() + 1
-    }
-
-    fn separator_word(index: usize) -> VectorWord
-    {
-        let index = Self::words_amount_raw() + index;
+        let index = self.dictionary.len() + index;
 
         VectorWord::new(index)
     }
@@ -418,11 +287,11 @@ impl NetworkDictionary for WordDictionary
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
         let index = word.index();
-        let words_amount = Self::words_amount_raw();
+        let words_amount = self.dictionary.len();
 
         if index >= words_amount
         {
-            let c = if index == (Self::words_amount() - 1)
+            let c = if index == (self.words_amount() - 1)
             {
                 char::REPLACEMENT_CHARACTER
             } else
@@ -441,9 +310,10 @@ impl NetworkDictionary for WordDictionary
             .into_boxed_slice()
     }
 
-    fn words_amount_trait(&self) -> usize
+    fn words_amount(&self) -> usize
     {
-        Self::words_amount()
+        // +1 for unknown token
+        self.dictionary.len() + WORD_SEPARATORS.len() + 1
     }
 }
 
@@ -520,6 +390,16 @@ impl<A, D> WordVectorizer<A, D>
     }
 }
 
+impl<A, D> Deref for WordVectorizer<A, D>
+{
+    type Target = D;
+
+    fn deref(&self) -> &Self::Target
+    {
+        &self.dictionary
+    }
+}
+
 impl<R: Read> Iterator for WordVectorizer<DefaultAdapter<R>, &mut ByteDictionary>
 {
     type Item = VectorWord;
@@ -556,7 +436,7 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
         {
             self.dictionary.leftover_separator = None;
 
-            return Some(WordDictionary::separator_word(separator_index));
+            return Some(self.dictionary.separator_word(separator_index));
         }
 
         let mut word = String::new();
@@ -576,13 +456,16 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
 
         if word.is_empty()
         {
-            return self.dictionary.leftover_separator.take().map(WordDictionary::separator_word);
+            return self.dictionary.leftover_separator.take().map(|i|
+            {
+                self.dictionary.separator_word(i)
+            });
         }
 
         Some(self.dictionary.dictionary.by_key(&word).cloned().unwrap_or_else(||
         {
             eprintln!("unknown word: {word}");
-            VectorWord::new(WordDictionary::words_amount() - 1)
+            VectorWord::new(self.dictionary.words_amount() - 1)
         }))
     }
 }
@@ -593,21 +476,38 @@ mod tests
     #[allow(unused_imports)]
     use super::*;
 
-    /*#[test]
+    use std::io::Cursor;
+
+    fn original_text() -> &'static str
+    {
+        "hello world im testing a COOL encoder (not rly) fake and gay"
+    }
+
+    fn reader() -> impl Read
+    {
+        Cursor::new(original_text())
+    }
+
+    #[test]
     fn encodes_decodes()
     {
-        let dictionary = WordDictionary::build("cool vocab bro hello rly".as_bytes());
+        let mut dictionary = WordDictionary::build("COOL\ngay\nbro\nhello\nrly\nworld\na\nnot");
 
-        encode_decode_test(dictionary);
+        encode_decode_test_lossy(
+            dictionary.clone(),
+            WordVectorizer::new(&mut dictionary, reader()),
+            "hello world � � a COOL � (not rly) � � gay"
+        );
     }
 
     #[test]
     fn encodes_decodes_char()
     {
-        let dictionary = CharDictionary::build("h elow / im tsngaCLcdr()lyfk");
+        let mut dictionary = CharDictionary::build("h elow / im tsngaCLcdr()lyfk");
 
         encode_decode_test_lossy(
-            dictionary,
+            dictionary.clone(),
+            WordVectorizer::new(&mut dictionary, reader()),
             "hello world im testing a C��L encoder (not rly) fake and gay"
         );
     }
@@ -615,29 +515,22 @@ mod tests
     #[test]
     fn encodes_decodes_bytes()
     {
-        let dictionary = ByteDictionary::new();
+        let mut dictionary = ByteDictionary::new();
 
-        encode_decode_test(dictionary);
-    }*/
-
-    /*#[allow(dead_code)]
-    fn encode_decode_test(dictionary: impl NetworkDictionary)
-    {
         encode_decode_test_lossy(
-            dictionary,
-            "hello world im testing a COOL encoder (not rly) fake and gay"
+            dictionary.clone(),
+            WordVectorizer::new(&mut dictionary, reader()),
+            original_text()
         );
     }
 
     #[allow(dead_code)]
-    fn encode_decode_test_lossy(mut dictionary: impl NetworkDictionary, expected: &str)
+    fn encode_decode_test_lossy<D, V>(dictionary: D, vectorizer: V, expected: &str)
+    where
+        D: NetworkDictionary,
+        V: Iterator<Item=VectorWord>
     {
-        let original_bytes = "hello world im testing a COOL encoder (not rly) fake and gay";
-
-        let vectorizer = WordVectorizer::new(&mut dictionary, original_bytes.as_bytes());
-
-        let decoded_bytes = vectorizer.collect::<Vec<_>>();
-        let decoded_bytes = decoded_bytes.into_iter().flat_map(|word|
+        let decoded_bytes = vectorizer.flat_map(|word|
         {
             let layer = dictionary.word_to_layer(word);
             let word = dictionary.layer_to_word(layer);
@@ -650,7 +543,7 @@ mod tests
             expected.bytes().collect::<Vec<u8>>(),
             "decoded: {}, original: {}",
             &String::from_utf8_lossy(&decoded_bytes),
-            original_bytes
+            original_text()
         );
-    }*/
+    }
 }

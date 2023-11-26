@@ -1868,9 +1868,6 @@ mod tests
 
     fn random_value() -> f32
     {
-        /*let m = if fastrand::bool() {1.0} else {-1.0};
-        (fastrand::f32() + 0.05) * m*/
-
         fastrand::u32(1..3) as f32
     }
 
@@ -2095,45 +2092,4 @@ mod tests
             a + (a + b + ScalarType::new(2.0)).softmax_cross_entropy(targets.clone())
         })
     }
-
-    /* #[test]
-    fn cap_magnitude_same()
-    {
-        let compare_layers = |a: &ArrayfireWrapper, b: &MatrixWrapper|
-        {
-            let a = a.as_vec();
-            let b = b.as_vec();
-
-            a.into_iter().zip(b.into_iter()).for_each(|(a, b)|
-            {
-                close_enough_loose(
-                    a,
-                    b,
-                    0.0001
-                );
-            });
-        };
-
-        let prev = 5;
-        let curr = 3;
-        let values = (0..(prev * curr)).map(|_| fastrand::f32()).collect::<Vec<_>>();
-
-        let a = ArrayfireWrapper::from_raw(
-            values.clone(),
-            prev,
-            curr
-        );
-
-        let b = MatrixWrapper::from_raw(
-            values,
-            prev,
-            curr
-        );
-
-        compare_layers(&a, &b);
-
-        let a = a.cap_magnitude(0.5);
-        let b = b.cap_magnitude(0.5);
-        compare_layers(&a, &b);
-    } */
 }

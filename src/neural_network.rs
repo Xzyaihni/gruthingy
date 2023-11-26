@@ -5,13 +5,13 @@ use std::{
     slice,
     io::{self, Read, Write},
     fs::File,
-    path::Path
+    path::Path,
+    ops::{SubAssign, DivAssign, AddAssign}
 };
 
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 use network::{NetworkOutput, Network};
-use network_unit::NetworkUnit;
 
 #[allow(unused_imports)]
 use crate::word_vectorizer::{
@@ -20,13 +20,18 @@ use crate::word_vectorizer::{
     WordDictionary,
     NetworkDictionary,
     WordVectorizer,
-    VectorWord
+    VectorWord,
+    ReaderAdapter
 };
+
+use network_unit::NewableUnitContainer;
 
 use optimizers::*;
 
+pub use network::LayerSizes;
+pub use optimizers::Optimizer;
+pub use network_unit::{NetworkUnit, UnitContainer, NewableLayer, GradientableUnitContainer};
 pub use network::WeightsNamed;
-
 pub use containers::{
     LayerType,
     ScalarType,
@@ -135,8 +140,6 @@ impl KahanSum
         self.value
     }
 }
-
-pub type ThisWeightsContainer<T> = <CurrentNetworkUnit as NetworkUnit>::ThisWeightsContainer<T>;
 
 pub struct InputOutput<T>
 {
@@ -247,18 +250,18 @@ where
     }
 }
 
-struct Predictor<'a>
+struct Predictor<'a, D>
 {
-    dictionary: &'a mut DictionaryType,
+    dictionary: &'a mut D,
     words: Vec<LayerType>,
     temperature: f32,
     predict_amount: usize
 }
 
-impl<'a> Predictor<'a>
+impl<'a, D: NetworkDictionary> Predictor<'a, D>
 {
     pub fn new(
-        dictionary: &'a mut DictionaryType,
+        dictionary: &'a mut D,
         words: Vec<LayerInnerType>,
         temperature: f32,
         predict_amount: usize
@@ -274,14 +277,18 @@ impl<'a> Predictor<'a>
         }
     }
 
-    pub fn predict_into(mut self, network: &mut Network<CurrentNetworkUnit>, mut out: impl Write)
+    pub fn predict_into<C, N: NetworkUnit>(
+        mut self,
+        network: &mut Network<C, N>,
+        mut out: impl Write
+    )
     {
         let input_amount = self.words.len();
 
         let mut previous_state: Option<_> = None;
 
         let dropout_masks = network.create_dropout_masks(
-            self.dictionary.words_amount_trait(),
+            self.dictionary.words_amount(),
             0.0
         );
 
@@ -319,7 +326,7 @@ impl<'a> Predictor<'a>
         out.flush().unwrap();
     }
 
-    pub fn predict_bytes(self, network: &mut Network<CurrentNetworkUnit>) -> Box<[u8]>
+    pub fn predict_bytes<C, N: NetworkUnit>(self, network: &mut Network<C, N>) -> Box<[u8]>
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
         self.predict_into(network, &mut predicted);
@@ -339,80 +346,98 @@ pub struct TrainingInfo
     pub ignore_loss: bool
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NeuralNetwork<N=CurrentNetworkUnit>
+#[derive(Serialize, Deserialize)]
+pub struct NeuralNetwork<C, N: NetworkUnit, O: Optimizer, D>
 {
-    dictionary: DictionaryType,
-    network: Network<N>,
-    optimizer: CurrentOptimizer
+    dictionary: D,
+    network: Network<C, N>,
+    optimizer: O
 }
 
-impl NeuralNetwork
+impl<C, N, O, D> NeuralNetwork<C, N, O, D>
+where
+    C: GradientableUnitContainer,
+    N: NetworkUnit,
+    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>,
+    O: Optimizer<WeightParam=C::Item>,
+    D: NetworkDictionary,
+    N::UnitContainer<LayerInnerType>:
+        DivAssign<f32>
+        + AddAssign<N::UnitContainer<LayerInnerType>>,
+    for<'a> &'a N: UnitContainer<Item=&'a LayerType>,
+    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>
 {
-    pub fn new(dictionary: DictionaryType) -> Self
+    pub fn new(dictionary: D, sizes: LayerSizes) -> Self
+    where
+        C: NewableUnitContainer
     {
-        let network = Network::new();
-        let optimizer = CurrentOptimizer::new();
+        let network = Network::new(sizes);
+
+        let optimizer = O::new();
 
         Self{dictionary, network, optimizer}
     }
 
+    // these trait bounds feel wrong somehow
     pub fn save<P: AsRef<Path>>(&mut self, path: P)
+    where
+        C: Serialize,
+        N: Serialize,
+        O: Serialize,
+        D: Serialize
     {
         // clear all derivatives info
         self.network.clear();
 
         let writer = File::create(path).unwrap();
 
-        ciborium::into_writer(self, writer).unwrap();
+        bincode::serialize_into(writer, self).unwrap();
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ciborium::de::Error<io::Error>>
+    pub fn load<P: AsRef<Path>>(path: P) -> bincode::Result<Self>
+    where
+        C: DeserializeOwned,
+        N: DeserializeOwned,
+        O: DeserializeOwned,
+        D: DeserializeOwned
     {
         let reader = File::open(path)?;
 
-        ciborium::from_reader(reader)
+        bincode::deserialize_from(reader)
     }
 
     #[allow(dead_code)]
-    pub fn inner_network(&self) -> &Network<CurrentNetworkUnit>
+    pub fn inner_network(&self) -> &Network<C, N>
     {
         &self.network
     }
 
-    pub fn apply_gradients(&mut self, gradients: Vec<ThisWeightsContainer<LayerInnerType>>)
+    pub fn apply_gradients(&mut self, gradients: Vec<<N as UnitContainer>::UnitContainer<LayerInnerType>>)
     {
-        let (gradient_info, hyper) = self.optimizer.info_mut();
-
         let combined_iter = gradients.into_iter()
-            .zip(self.network.layers_mut().iter_mut()
-                 .zip(gradient_info.iter_mut()));
+            .zip(self.network.gradients_info());
 
         combined_iter.for_each(|(gradients, (network_weights, optimizer_info))|
         {
-            *network_weights -= optimizer_info.gradients_to_change(gradients, hyper);
+            optimizer_info.apply_change(network_weights, gradients, &self.optimizer);
         });
 
         self.optimizer.advance_time();
     }
 
-    pub fn input_expected_from_text(
+    pub fn test_loss<V>(
         &mut self,
-        text: impl Read
-    ) -> Vec<VectorWord>
+        vectorizer: V,
+        calculate_loss: bool,
+        calculate_accuracy: bool
+    )
+    where
+        V: Iterator<Item=VectorWord>
     {
-        let word_vectorizer = WordVectorizer::new(&mut self.dictionary, text);
-
-        word_vectorizer.collect()
-    }
-
-    pub fn test_loss(&mut self, file: impl Read, calculate_loss: bool, calculate_accuracy: bool)
-    {
-        let inputs = self.input_expected_from_text(file);
+        let inputs: Vec<_> = vectorizer.collect();
 
         self.test_loss_inner(&inputs, calculate_loss, calculate_accuracy);
     }
-
 
     fn test_loss_inner(
         &mut self,
@@ -460,12 +485,15 @@ impl NeuralNetwork
         println!("{loss_type} loss: {loss}");
     }
 
-    pub fn train<R: Read>(
+    pub fn train<V, VT>(
         &mut self,
         info: TrainingInfo,
-        testing_data: Option<R>,
-        text: impl Read
+        testing_vectorizer: Option<VT>,
+        vectorizer: V
     )
+    where
+        V: Iterator<Item=VectorWord>,
+        VT: Iterator<Item=VectorWord>
     {
         let TrainingInfo{
             batch_size,
@@ -484,23 +512,23 @@ impl NeuralNetwork
 
         let batch_step = batch_size * steps_num;
 
-        let inputs = self.input_expected_from_text(text);
-        let testing_inputs = if ignore_loss
+        let inputs: Vec<_> = vectorizer.collect();
+        let testing_inputs: Vec<_> = if ignore_loss
         {
             Vec::new()
         } else
         {
-            match testing_data
+            match testing_vectorizer
             {
                 None => Vec::new(),
-                Some(testing_data) =>
+                Some(testing_vectorizer) =>
                 {
-                    self.input_expected_from_text(testing_data)
+                    testing_vectorizer.collect()
                 }
             }
         };
 
-        println!("input vector size: {}", self.dictionary.words_amount_trait());
+        println!("input vector size: {}", self.dictionary.words_amount());
 
         println!("parameters amount: {}", self.network.parameters_amount());
 
@@ -518,7 +546,7 @@ impl NeuralNetwork
         let inputs_per_epoch = (inputs.len() / batch_step).max(1);
         println!("calculate loss every ~{inputs_per_epoch} inputs");
 
-        let output_loss = |network: &mut NeuralNetwork|
+        let output_loss = |network: &mut NeuralNetwork<_, _, _, _>|
         {
             if testing_inputs.is_empty()
             {
@@ -527,6 +555,8 @@ impl NeuralNetwork
 
             network.test_loss_inner(&testing_inputs, calculate_loss, calculate_accuracy);
         };
+
+        let mut network = self.network.dropconnected();
 
         for input_index in 0..epochs
         {
@@ -568,9 +598,10 @@ impl NeuralNetwork
                     );
 
                     let (loss, mut gradients): (f32, Vec<_>) =
-                        self.network.gradients(values.into_iter());
+                        network.gradients(values.into_iter());
 
                     kahan_sum.add(loss as f64 / batch_size as f64);
+
                     gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);
 
                     gradients
@@ -595,18 +626,33 @@ impl NeuralNetwork
         output_loss(self);
     }
 
-    pub fn predict_into(&mut self, text: &str, amount: usize, temperature: f32, out: impl Write)
+    pub fn predict_into<V>(
+        &mut self,
+        vectorizer: V,
+        amount: usize,
+        temperature: f32,
+        out: impl Write
+    )
+    where
+        V: Iterator<Item=VectorWord>
     {
-        self.predict_inner(text.as_bytes(), amount, temperature, |predictor, network|
+        self.predict_inner(vectorizer, amount, temperature, |predictor, network|
         {
             predictor.predict_into(network, out)
         })
     }
 
     #[allow(dead_code)]
-    pub fn predict_text(&mut self, text: &str, amount: usize, temperature: f32) -> String
+    pub fn predict_text<V>(
+        &mut self,
+        vectorizer: V,
+        amount: usize,
+        temperature: f32
+    ) -> String
+    where
+        V: Iterator<Item=VectorWord>
     {
-        let output = self.predict_inner(text.as_bytes(), amount, temperature, |predictor, network|
+        let output = self.predict_inner(vectorizer, amount, temperature, |predictor, network|
         {
             predictor.predict_bytes(network)
         }).iter().copied().filter(|&c| c != b'\0').collect::<Vec<_>>();
@@ -614,26 +660,36 @@ impl NeuralNetwork
         String::from_utf8_lossy(&output).to_string()
     }
 
-    pub fn predict_bytes(&mut self, text: &str, amount: usize, temperature: f32) -> Box<[u8]>
+    pub fn predict_bytes<V>(
+        &mut self,
+        vectorizer: V,
+        amount: usize,
+        temperature: f32
+    ) -> Box<[u8]>
+    where
+        V: Iterator<Item=VectorWord>
     {
-        self.predict_inner(text.as_bytes(), amount, temperature, |predictor, network|
+        self.predict_inner(vectorizer, amount, temperature, |predictor, network|
         {
             predictor.predict_bytes(network)
         })
     }
 
-    fn predict_inner<T, F>(&mut self, start: &[u8], amount: usize, temperature: f32, f: F) -> T
+    fn predict_inner<V, T, F>(
+        &mut self,
+        vectorizer: V,
+        amount: usize,
+        temperature: f32,
+        f: F
+    ) -> T
     where
-        F: FnOnce(Predictor, &mut Network<CurrentNetworkUnit>) -> T
+        V: Iterator<Item=VectorWord>,
+        F: FnOnce(Predictor<D>, &mut Network<C, N>) -> T
     {
-        let word_vectorizer = WordVectorizer::new(&mut self.dictionary, start);
-
         self.network.disable_gradients();
 
         let predictor = {
-            let words = word_vectorizer.collect::<Vec<_>>();
-
-            let words = words.into_iter().map(|v|
+            let words = vectorizer.map(|v|
             {
                 self.dictionary.word_to_layer(v)
             }).collect::<Vec<_>>();

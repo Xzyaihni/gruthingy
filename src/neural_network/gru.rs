@@ -7,9 +7,8 @@ use crate::{
     neural_network::{
         LayerType,
         ScalarType,
-        HIDDEN_AMOUNT,
-        INPUT_SIZE,
-        network::NetworkOutput,
+        LayerSizes,
+        network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
     }
 };
@@ -18,26 +17,25 @@ use crate::{
 pub type Gru = WeightsContainer<LayerType>;
 
 create_weights_container!{
-    (input_update, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (input_reset, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (input_activation, false, HIDDEN_AMOUNT, INPUT_SIZE, Some(INPUT_SIZE)),
-    (hidden_update, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (hidden_reset, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (hidden_activation, true, HIDDEN_AMOUNT, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT)),
-    (update_bias, false, HIDDEN_AMOUNT, 1, None),
-    (reset_bias, false, HIDDEN_AMOUNT, 1, None),
-    (activation_bias, false, HIDDEN_AMOUNT, 1, None),
-    (output, false, INPUT_SIZE, HIDDEN_AMOUNT, Some(HIDDEN_AMOUNT))
+    (input_update, false, LayerSize::Hidden, LayerSize::Input),
+    (input_reset, false, LayerSize::Hidden, LayerSize::Input),
+    (input_activation, false, LayerSize::Hidden, LayerSize::Input),
+    (hidden_update, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_reset, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_activation, true, LayerSize::Hidden, LayerSize::Hidden),
+    (update_bias, false, LayerSize::Hidden, LayerSize::One),
+    (reset_bias, false, LayerSize::Hidden, LayerSize::One),
+    (activation_bias, false, LayerSize::Hidden, LayerSize::One),
+    (output, false, LayerSize::Input, LayerSize::Hidden)
 }
 
 impl NetworkUnit for Gru
 {
     type State = LayerType;
-    type ThisWeightsContainer<T> = WeightsContainer<T>;
 
-    fn new() -> Self
+    fn new(sizes: LayerSizes) -> Self
     {
-        WeightsContainer::new_randomized()
+        WeightsContainer::new_randomized(sizes)
     }
 
     fn feedforward_unit(
@@ -85,7 +83,7 @@ impl NetworkUnit for Gru
         }
     }
 
-    fn weights_named_info(&self) -> Self::ThisWeightsContainer<WeightsNamed<&LayerType>>
+    fn weights_named_info(&self) -> Self::UnitContainer<WeightsNamed<&LayerType>>
     {
         self.weights_named_info_inner()
     }
@@ -102,17 +100,17 @@ impl NetworkUnit for Gru
         self.clone_weights_with_info_inner(f)
     }
 
-    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::ThisWeightsContainer<U>
+    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::UnitContainer<U>
     where
         F: FnMut(&mut LayerType) -> U
     {
-        self.map_weights_mut_inner(f)
+        self.map(f)
     }
 
-    fn parameters_amount(&self) -> u128
+    fn parameters_amount(&self, sizes: LayerSizes) -> u128
     {
-        let i = INPUT_SIZE as u128;
-        let h = HIDDEN_AMOUNT as u128;
+        let i = sizes.input as u128;
+        let h = sizes.hidden as u128;
 
         // i hope i calculated this right
         (4 * i * h) + (3 * h * h) + (3 * h)
