@@ -119,8 +119,15 @@ where
 
 pub trait NetworkDictionary
 {
+    fn new(data: Option<&str>) -> Self;
+
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
     fn words_amount(&self) -> usize;
+
+    fn needs_data() -> bool
+    {
+        true
+    }
     
     fn word_to_layer(&self, word: VectorWord) -> LayerInnerType
     {
@@ -142,17 +149,18 @@ pub trait NetworkDictionary
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ByteDictionary;
 
-impl ByteDictionary
+impl NetworkDictionary for ByteDictionary
 {
-    #[allow(dead_code)]
-    pub fn new() -> Self
+    fn new(_data: Option<&str>) -> Self
     {
         Self{}
     }
-}
 
-impl NetworkDictionary for ByteDictionary
-{
+    fn needs_data() -> bool
+    {
+        false
+    }
+
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
         Box::new([word.index() as u8])
@@ -172,19 +180,6 @@ pub struct CharDictionary
 
 impl CharDictionary
 {
-    #[allow(dead_code)]
-    pub fn build(s: &'static str) -> Self
-    {
-        let unique_chars: HashSet<_> = s.chars().collect();
-
-        let dictionary = unique_chars.into_iter().enumerate().map(|(index, c)|
-        {
-            (c, VectorWord::new(index))
-        }).collect::<Bimap<_, _>>();
-
-        Self{dictionary}
-    }
-
     fn character_match(&self, c: char) -> VectorWord
     {
         let index = self.dictionary.by_key(&c).copied();
@@ -199,6 +194,18 @@ impl CharDictionary
 
 impl NetworkDictionary for CharDictionary
 {
+    fn new(data: Option<&str>) -> Self
+    {
+        let unique_chars: HashSet<_> = data.unwrap().chars().collect();
+
+        let dictionary = unique_chars.into_iter().enumerate().map(|(index, c)|
+        {
+            (c, VectorWord::new(index))
+        }).collect::<Bimap<_, _>>();
+
+        Self{dictionary}
+    }
+
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
         let c = self.dictionary.by_value(&word).cloned()
@@ -263,17 +270,6 @@ pub struct WordDictionary
 
 impl WordDictionary
 {
-    #[allow(dead_code)]
-    pub fn build(s: &'static str) -> Self
-    {
-        let dictionary: Bimap<_, _> = s.split('\n').enumerate().map(|(index, word)|
-        {
-            (word.to_owned(), VectorWord::new(index))
-        }).collect();
-
-        Self{dictionary, leftover_separator: None}
-    }
-
     fn separator_word(&self, index: usize) -> VectorWord
     {
         let index = self.dictionary.len() + index;
@@ -284,6 +280,16 @@ impl WordDictionary
 
 impl NetworkDictionary for WordDictionary
 {
+    fn new(data: Option<&str>) -> Self
+    {
+        let dictionary: Bimap<_, _> = data.unwrap().split('\n').enumerate().map(|(index, word)|
+        {
+            (word.to_owned(), VectorWord::new(index))
+        }).collect();
+
+        Self{dictionary, leftover_separator: None}
+    }
+
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
         let index = word.index();
@@ -491,7 +497,7 @@ mod tests
     #[test]
     fn encodes_decodes()
     {
-        let mut dictionary = WordDictionary::build("COOL\ngay\nbro\nhello\nrly\nworld\na\nnot");
+        let mut dictionary = WordDictionary::new(Some("COOL\ngay\nbro\nhello\nrly\nworld\na\nnot"));
 
         encode_decode_test_lossy(
             dictionary.clone(),
@@ -503,7 +509,7 @@ mod tests
     #[test]
     fn encodes_decodes_char()
     {
-        let mut dictionary = CharDictionary::build("h elow / im tsngaCLcdr()lyfk");
+        let mut dictionary = CharDictionary::new(Some("h elow / im tsngaCLcdr()lyfk)"));
 
         encode_decode_test_lossy(
             dictionary.clone(),
@@ -515,7 +521,7 @@ mod tests
     #[test]
     fn encodes_decodes_bytes()
     {
-        let mut dictionary = ByteDictionary::new();
+        let mut dictionary = ByteDictionary::new(None);
 
         encode_decode_test_lossy(
             dictionary.clone(),

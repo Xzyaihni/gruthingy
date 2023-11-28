@@ -14,7 +14,6 @@ use super::{
 };
 
 
-pub const HIDDEN_AMOUNT: usize = 512;
 pub const LAYERS_AMOUNT: usize = 3;
 
 pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
@@ -27,3 +26,12 @@ pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
+
+// options: Lstm, Gru
+pub type NUnit<T> = Lstm<T>;
+
+// options: WordDictionary, CharDictionary, ByteDictionary
+pub type NDictionary = CharDictionary;
+
+// options: Sgd, Adam, AdamX, PowerSign
+pub type NOptimizer = AdamX;

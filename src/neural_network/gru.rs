@@ -14,7 +14,7 @@ use crate::{
 };
 
 
-pub type Gru = WeightsContainer<LayerType>;
+pub type Gru<T> = WeightsContainer<T>;
 
 create_weights_container!{
     (input_update, false, LayerSize::Hidden, LayerSize::Input),
@@ -29,7 +29,7 @@ create_weights_container!{
     (output, false, LayerSize::Input, LayerSize::Hidden)
 }
 
-impl NetworkUnit for Gru
+impl NetworkUnit for Gru<LayerType>
 {
     type State = LayerType;
 
@@ -83,11 +83,6 @@ impl NetworkUnit for Gru
         }
     }
 
-    fn weights_named_info(&self) -> Self::UnitContainer<WeightsNamed<&LayerType>>
-    {
-        self.weights_named_info_inner()
-    }
-
     fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F)
     {
         self.for_each_weight_mut(f)
@@ -98,13 +93,6 @@ impl NetworkUnit for Gru
         F: FnMut(WeightsSize<&LayerType>) -> LayerType
     {
         self.clone_weights_with_info_inner(f)
-    }
-
-    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::UnitContainer<U>
-    where
-        F: FnMut(&mut LayerType) -> U
-    {
-        self.map(f)
     }
 
     fn parameters_amount(&self, sizes: LayerSizes) -> u128

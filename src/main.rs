@@ -20,227 +20,55 @@ use neural_network::{
     NetworkUnit,
     Optimizer,
     LayerType,
-    UnitContainer,
-    GradientableUnitContainer,
-    HIDDEN_AMOUNT,
+    NOptimizer,
+    NDictionary,
+    LayerSizes,
     LAYERS_AMOUNT
 };
 
+use config::Config;
+
 use word_vectorizer::{CharsAdapter, ReaderAdapter, NetworkDictionary, WORD_SEPARATORS};
+
+mod config;
 
 mod neural_network;
 mod word_vectorizer;
 
 
-const DEFAULT_NETWORK_NAME: &str = "network.nn";
-
-fn complain(message: &str) -> !
+pub fn complain<S>(message: S) -> !
+where
+    S: Into<String>
 {
-    eprintln!("{message}");
+    eprintln!("{}", message.into());
 
     process::exit(1)
 }
 
-struct Config
+fn load_network<P>(path: P, config: Config) -> NeuralNetwork<NOptimizer, NDictionary>
+where
+    P: AsRef<Path>
 {
-    epochs: usize,
-    batch_size: usize,
-    steps_num: usize,
-    learning_rate: Option<f32>,
-    calculate_loss: bool,
-    calculate_accuracy: bool,
-    ignore_loss: bool,
-    testing_data: Option<String>,
-    network_path: Option<String>
-}
+    let path = path.as_ref();
 
-impl Config
-{
-    pub fn parse(mut args: impl Iterator<Item=String>) -> Self
-    {
-        let mut epochs = 1;
-        let mut batch_size = 32;
-        let mut steps_num = 64;
-        let mut learning_rate = None;
-        let mut calculate_loss = true;
-        let mut calculate_accuracy = false;
-        let mut ignore_loss = false;
-        let mut testing_data = None;
-        let mut network_path = None;
-
-        while let Some(arg) = args.next()
-        {
-            match arg.as_str()
-            {
-                "-e" | "--epochs" =>
-                {
-                    epochs = args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(&format!("cant parse the epochs: {err:?}"))
-                        });
-                },
-                "-b" | "--batch" =>
-                {
-                    batch_size = args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(&format!("cant parse the batch size: {err:?}"))
-                        });
-                },
-                "-s" | "--steps" =>
-                {
-                    steps_num = args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(&format!("cant parse the steps amount: {err:?}"))
-                        });
-                },
-                "-l" | "--learning-rate" =>
-                {
-                    learning_rate = Some(args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(&format!("cant parse the learning rate: {err:?}"))
-                        }));
-                },
-                "-t" | "--testing" =>
-                {
-                    testing_data = Some(args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }));
-                },
-                "-p" | "--path" =>
-                {
-                    network_path = Some(args.next().unwrap_or_else(||
-                        {
-                            complain(&format!("expected value after {arg}"))
-                        }));
-                },
-                "-a" | "--accuracy" =>
-                {
-                    calculate_loss = false;
-                    calculate_accuracy = true;
-                },
-                "--and-accuracy" =>
-                {
-                    calculate_accuracy = true;
-                },
-                "-i" | "--ignore-loss" =>
-                {
-                    ignore_loss = true;
-                },
-                x => complain(&format!("cant parse arg: {x}"))
-            }
-        }
-
-        Self{
-            epochs,
-            batch_size,
-            steps_num,
-            learning_rate,
-            calculate_loss,
-            calculate_accuracy,
-            ignore_loss,
-            testing_data,
-            network_path
-        }
-    }
-}
-
-struct NetworkTypeBuilder<C, N, O, D>
-{
-    c: PhantomData<C>,
-    n: PhantomData<N>,
-    o: PhantomData<O>,
-    d: PhantomData<D>
-}
-
-impl NetworkTypeBuilder<(), (), (), ()>
-{
-    pub fn new() -> Self
-    {
-        Self::recreate()
-    }
-}
-
-impl<C, N, O, D> NetworkTypeBuilder<C, N, O, D>
-{
-    fn recreate() -> Self
-    {
-        Self{c: PhantomData, n: PhantomData, o: PhantomData, d: PhantomData}
-    }
-
-    pub fn with_container<NewC>(self) -> NetworkTypeBuilder<NewC, N, O, D>
-    {
-        NetworkTypeBuilder::recreate()
-    }
-
-    pub fn with_network_unit<NewN>(self) -> NetworkTypeBuilder<C, NewN, O, D>
-    {
-        NetworkTypeBuilder::recreate()
-    }
-
-    pub fn with_optimizer<NewO>(self) -> NetworkTypeBuilder<C, N, NewO, D>
-    {
-        NetworkTypeBuilder::recreate()
-    }
-
-    pub fn with_dictionary<NewD>(self) -> NetworkTypeBuilder<C, N, O, NewD>
-    {
-        NetworkTypeBuilder::recreate()
-    }
-
-    /*pub fn build_load<P>(self, path: P) -> NeuralNetwork<C, N, O, D>
-    where
-        P: AsRef<Path>,
-        C: GradientableUnitContainer,
-        N: NetworkUnit,
-        for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>,
-        O: Optimizer<WeightParam=C::Item>,
-        D: NetworkDictionary,
-        N::UnitContainer<LayerInnerType>:
-            DivAssign<f32>
-            + AddAssign<N::UnitContainer<LayerInnerType>>,
-        for<'a> &'a N: UnitContainer<Item=&'a LayerType>,
-        for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>
+    if path.exists()
     {
         NeuralNetwork::load(path).unwrap()
-    }*/
-}
+    } else
+    {
+        let data = if NDictionary::needs_data()
+        {
+            Some(fs::read_to_string(config.dictionary_path).unwrap())
+        } else
+        {
+            None
+        };
 
-// holy trait bounds
-fn load_network<P, C, N, O, D>(path: P, config: Config) -> NeuralNetwork<C, N, O, D>
-where
-    P: AsRef<Path>,
-    C: GradientableUnitContainer,
-    N: NetworkUnit,
-    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>,
-    O: Optimizer<WeightParam=C::Item>,
-    D: NetworkDictionary,
-    N::UnitContainer<LayerInnerType>:
-        DivAssign<f32>
-        + AddAssign<N::UnitContainer<LayerInnerType>>,
-    for<'a> &'a N: UnitContainer<Item=&'a LayerType>,
-    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>
-{
-    let builder = NetworkTypeBuilder::new();
+        let dictionary = NDictionary::new(data.as_ref().map(|x| x.as_str()));
 
-    todo!();
-    // builder.build_load(path)
+        let sizes = LayerSizes{input: dictionary.words_amount(), hidden: config.hidden_size};
+        NeuralNetwork::new(dictionary, sizes)
+    }
 }
 
 fn test_loss(mut args: impl Iterator<Item=String>)
@@ -252,8 +80,7 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     let text_file = File::open(&text_path)
         .unwrap_or_else(|err|
         {
-            let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
-            complain(&err_msg)
+            complain(format!("give a valid file plz, cant open {text_path} ({err})"))
         });
     
     let config = Config::parse(args);
@@ -266,18 +93,19 @@ fn test_loss(mut args: impl Iterator<Item=String>)
     network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);*/
 }
 
-fn train_inner<C, N: NetworkUnit, O: Optimizer, D: NetworkDictionary>(
-    mut network: NeuralNetwork<C, N, O, D>,
+fn train_inner<O: Optimizer, D: NetworkDictionary>(
+    mut network: NeuralNetwork<O, D>,
     text_path: String,
     config: Config
 )
+where
+    for<'a> O::WeightParam: Serialize + Deserialize<'a>
 {
     todo!();
     /*let text_file = File::open(&text_path)
         .unwrap_or_else(|err|
         {
-            let err_msg = format!("give a valid file plz, cant open {text_path} ({err})");
-            complain(&err_msg)
+            complain(format!("give a valid file plz, cant open {text_path} ({err})"))
         });
 
     let training_info = TrainingInfo{
@@ -295,8 +123,7 @@ fn train_inner<C, N: NetworkUnit, O: Optimizer, D: NetworkDictionary>(
         File::open(&test_path)
             .unwrap_or_else(|err|
             {
-                let err_msg = format!("give a valid file plz, cant open {test_path} ({err})");
-                complain(&err_msg)
+                complain(format!("give a valid file plz, cant open {test_path} ({err})"))
             })
     });
 
@@ -340,7 +167,7 @@ fn train(mut args: impl Iterator<Item=String>)
     train_inner(network, text_path, config);*/
 }
 
-struct RunConfig
+/*struct RunConfig
 {
     tokens_amount: usize,
     temperature: f32,
@@ -367,22 +194,22 @@ impl RunConfig
                 {
                     tokens_amount = args.next().unwrap_or_else(||
                         {
-                            complain(&format!("expected value after {arg}"))
+                            complain(format!("expected value after {arg}"))
                         }).parse()
                         .unwrap_or_else(|err|
                         {
-                            complain(&format!("cant parse the amount: {err:?}"))
+                            complain(format!("cant parse the amount: {err:?}"))
                         });
                 },
                 "-t" | "--temperature" =>
                 {
                     temperature = args.next().unwrap_or_else(||
                         {
-                            complain(&format!("expected value after {arg}"))
+                            complain(format!("expected value after {arg}"))
                         }).parse()
                         .unwrap_or_else(|err|
                         {
-                            complain(&format!("cant parse the temperature: {err:?}"))
+                            complain(format!("cant parse the temperature: {err:?}"))
                         });
                 },
                 "-r" | "--raw" =>
@@ -393,17 +220,17 @@ impl RunConfig
                 {
                     save_path = Some(args.next().unwrap_or_else(||
                         {
-                            complain(&format!("expected value after {arg}"))
+                            complain(format!("expected value after {arg}"))
                         }));
                 },
                 "-p" | "--path" =>
                 {
                     network_path = args.next().unwrap_or_else(||
                         {
-                            complain(&format!("expected value after {arg}"))
+                            complain(format!("expected value after {arg}"))
                         });
                 },
-                x => complain(&format!("cant parse arg: {x}"))
+                x => complain(format!("cant parse arg: {x}"))
             }
         }
 
@@ -415,7 +242,7 @@ impl RunConfig
             network_path
         }
     }
-}
+}*/
 
 fn run(mut args: impl Iterator<Item=String>)
 {
@@ -433,7 +260,7 @@ fn run(mut args: impl Iterator<Item=String>)
         File::create(&filepath)
             .unwrap_or_else(|err|
             {
-                complain(&format!("couldnt create a file at {filepath}: {err}"))
+                complain(format!("couldnt create a file at {filepath}: {err}"))
             })
     });
 
@@ -587,7 +414,6 @@ fn weight_color(value: f32) -> Color
 
 fn weights_image(mut args: impl Iterator<Item=String>)
 {
-    todo!();
     /*let network_path = args.next()
         .unwrap_or_else(|| complain("give path to network"));
 
@@ -644,8 +470,7 @@ fn create_word_dictionary(mut args: impl Iterator<Item=String>)
 
     let config = Config::parse(args);
  
-    let dictionary_path = config.network_path.clone()
-        .unwrap_or_else(|| "dictionary.txt".to_owned());
+    let dictionary_path = config.dictionary_path.clone();
 
     let mut words: HashSet<String> = HashSet::new();
 
@@ -725,6 +550,6 @@ fn main()
         "dbg" => debug_network(args),
         "createdictionary" => create_word_dictionary(args),
         "weightsimage" => weights_image(args),
-        x => complain(&format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
+        x => complain(format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
     }
 }

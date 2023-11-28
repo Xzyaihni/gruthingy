@@ -24,13 +24,11 @@ use crate::word_vectorizer::{
     ReaderAdapter
 };
 
-use network_unit::NewableUnitContainer;
-
 use optimizers::*;
 
 pub use network::LayerSizes;
 pub use optimizers::Optimizer;
-pub use network_unit::{NetworkUnit, UnitContainer, NewableLayer, GradientableUnitContainer};
+pub use network_unit::{NetworkUnit, NewableLayer};
 pub use network::WeightsNamed;
 pub use containers::{
     LayerType,
@@ -277,9 +275,9 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         }
     }
 
-    pub fn predict_into<C, N: NetworkUnit>(
+    pub fn predict_into<O>(
         mut self,
-        network: &mut Network<C, N>,
+        network: &mut Network<O>,
         mut out: impl Write
     )
     {
@@ -326,7 +324,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         out.flush().unwrap();
     }
 
-    pub fn predict_bytes<C, N: NetworkUnit>(self, network: &mut Network<C, N>) -> Box<[u8]>
+    pub fn predict_bytes<O>(self, network: &mut Network<O>) -> Box<[u8]>
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
         self.predict_into(network, &mut predicted);
@@ -337,39 +335,33 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
 
 pub struct TrainingInfo
 {
-    pub epochs: usize,
+    pub iterations: usize,
     pub batch_size: usize,
     pub steps_num: usize,
     pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
-    pub calculate_accuracy: bool,
-    pub ignore_loss: bool
+    pub calculate_accuracy: bool
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NeuralNetwork<C, N: NetworkUnit, O: Optimizer, D>
+pub struct NeuralNetwork<O: Optimizer, D>
+where
+    for<'a> O::WeightParam: Serialize + Deserialize<'a>
 {
     dictionary: D,
-    network: Network<C, N>,
+    network: Network<O::WeightParam>,
     optimizer: O
 }
 
-impl<C, N, O, D> NeuralNetwork<C, N, O, D>
+impl<O, D> NeuralNetwork<O, D>
 where
-    C: GradientableUnitContainer,
-    N: NetworkUnit,
-    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>,
-    O: Optimizer<WeightParam=C::Item>,
-    D: NetworkDictionary,
-    N::UnitContainer<LayerInnerType>:
-        DivAssign<f32>
-        + AddAssign<N::UnitContainer<LayerInnerType>>,
-    for<'a> &'a N: UnitContainer<Item=&'a LayerType>,
-    for<'a> &'a mut N: UnitContainer<Item=&'a mut LayerType>
+    O: Optimizer,
+    for<'a> O::WeightParam: Serialize + Deserialize<'a>,
+    D: NetworkDictionary
 {
     pub fn new(dictionary: D, sizes: LayerSizes) -> Self
     where
-        C: NewableUnitContainer
+        O::WeightParam: NewableLayer
     {
         let network = Network::new(sizes);
 
@@ -381,8 +373,6 @@ where
     // these trait bounds feel wrong somehow
     pub fn save<P: AsRef<Path>>(&mut self, path: P)
     where
-        C: Serialize,
-        N: Serialize,
         O: Serialize,
         D: Serialize
     {
@@ -396,8 +386,6 @@ where
 
     pub fn load<P: AsRef<Path>>(path: P) -> bincode::Result<Self>
     where
-        C: DeserializeOwned,
-        N: DeserializeOwned,
         O: DeserializeOwned,
         D: DeserializeOwned
     {
@@ -407,19 +395,19 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn inner_network(&self) -> &Network<C, N>
+    pub fn inner_network(&self) -> &Network<O::WeightParam>
     {
         &self.network
     }
 
-    pub fn apply_gradients(&mut self, gradients: Vec<<N as UnitContainer>::UnitContainer<LayerInnerType>>)
+    pub fn apply_gradients(&mut self, gradients: Vec<NUnit<LayerInnerType>>)
     {
         let combined_iter = gradients.into_iter()
             .zip(self.network.gradients_info());
 
         combined_iter.for_each(|(gradients, (network_weights, optimizer_info))|
         {
-            optimizer_info.apply_change(network_weights, gradients, &self.optimizer);
+            *network_weights -= optimizer_info.gradients_to_change(gradients, &self.optimizer);
         });
 
         self.optimizer.advance_time();
@@ -496,13 +484,12 @@ where
         VT: Iterator<Item=VectorWord>
     {
         let TrainingInfo{
+            iterations,
             batch_size,
             steps_num,
-            epochs,
             learning_rate,
             calculate_loss,
-            calculate_accuracy,
-            ignore_loss
+            calculate_accuracy
         } = info;
 
         if let Some(learning_rate) = learning_rate
@@ -513,7 +500,7 @@ where
         let batch_step = batch_size * steps_num;
 
         let inputs: Vec<_> = vectorizer.collect();
-        let testing_inputs: Vec<_> = if ignore_loss
+        let testing_inputs: Vec<_> = if !calculate_loss && !calculate_accuracy
         {
             Vec::new()
         } else
@@ -546,7 +533,7 @@ where
         let inputs_per_epoch = (inputs.len() / batch_step).max(1);
         println!("calculate loss every ~{inputs_per_epoch} inputs");
 
-        let output_loss = |network: &mut NeuralNetwork<_, _, _, _>|
+        let output_loss = |network: &mut NeuralNetwork<_, _>|
         {
             if testing_inputs.is_empty()
             {
@@ -558,7 +545,7 @@ where
 
         let mut network = self.network.dropconnected();
 
-        for input_index in 0..epochs
+        for input_index in 0..iterations
         {
             eprintln!("iteration: {input_index}");
             
@@ -684,7 +671,7 @@ where
     ) -> T
     where
         V: Iterator<Item=VectorWord>,
-        F: FnOnce(Predictor<D>, &mut Network<C, N>) -> T
+        F: FnOnce(Predictor<D>, &mut Network<O::WeightParam>) -> T
     {
         self.network.disable_gradients();
 

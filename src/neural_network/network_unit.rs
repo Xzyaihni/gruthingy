@@ -5,8 +5,7 @@ use crate::neural_network::{
     LayerType,
     LayerInnerType,
     LayerSizes,
-    Optimizer,
-    network::{WeightsSize, WeightsNamed, NetworkOutput}
+    network::{WeightsSize, NetworkOutput}
 };
 
 
@@ -15,45 +14,7 @@ pub trait NewableLayer
     fn new(previous: usize, current: usize) -> Self;
 }
 
-pub trait UnitContainer: IntoIterator
-{
-    type UnitContainer<U>: UnitContainer<Item=U>;
-
-    type IntoInfoIter: Iterator<Item=WeightsSize<Self::Item>>;
-
-    // nice in theory, hell to implement with this generics salad in practice
-    /*fn zip<V>(self, other: V) -> Self::UnitContainer<(Self::Item, V::Item)>
-    where
-        V: UnitContainer;*/
-
-    fn into_iter_with_info(self) -> Self::IntoInfoIter;
-
-    fn map<U, F>(self, f: F) -> Self::UnitContainer<U>
-    where
-        F: FnMut(Self::Item) -> U;
-}
-
-pub trait NewableUnitContainer: UnitContainer
-{
-    fn new_zeroed(sizes: LayerSizes) -> Self;
-}
-
-pub trait GradientableUnitContainer: UnitContainer
-{
-    // im not returning anything from this cuz its generics hell and i cant find an exit
-    fn apply_change<'a, Lhs, G, O>(
-        &mut self,
-        lhs: &'a mut Lhs,
-        gradients: G,
-        optimizer: &O
-    )
-    where
-        &'a mut Lhs: UnitContainer<Item=&'a mut LayerType>,
-        G: UnitContainer<Item=LayerInnerType>,
-        O: Optimizer<WeightParam=Self::Item>;
-}
-
-pub trait NetworkUnit: UnitContainer<Item=LayerType>
+pub trait NetworkUnit
 where
     Self: Sized
 {
@@ -113,17 +74,11 @@ where
 
     fn parameters_amount(&self, sizes: LayerSizes) -> u128;
 
-    fn weights_named_info(&self) -> Self::UnitContainer<WeightsNamed<&LayerType>>;
-
     fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F);
 
     fn clone_weights_with_info<F>(&self, f: F) -> Self
     where
         F: FnMut(WeightsSize<&LayerType>) -> LayerType;
-
-    fn map_weights_mut<F, U>(&mut self, f: F) -> Self::UnitContainer<U>
-    where
-        F: FnMut(&mut LayerType) -> U;
 
     fn clear(&mut self)
     {
