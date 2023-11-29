@@ -41,15 +41,27 @@ where
     process::exit(1)
 }
 
-fn load_network<P>(
-    path: P,
+struct SizesInfo
+{
+    pub hidden: usize,
+    pub layers: usize
+}
+
+impl From<&Config> for SizesInfo
+{
+    fn from(value: &Config) -> Self
+    {
+        Self{hidden: value.hidden_size, layers: value.layers_amount}
+    }
+}
+
+fn load_network(
     config: &Config,
+    sizes: Option<SizesInfo>,
     auto_create: bool
 ) -> NeuralNetwork<NOptimizer, NDictionary>
-where
-    P: AsRef<Path>
 {
-    let path = path.as_ref();
+    let path: &Path = config.network_path.as_ref();
 
     if path.exists()
     {
@@ -74,10 +86,12 @@ where
 
         let dictionary = NDictionary::new(data.as_ref().map(|x| x.as_str()));
 
+        let sizes = sizes.unwrap_or_else(|| SizesInfo::from(config));
+
         let sizes = LayerSizes{
             input: dictionary.words_amount(),
-            hidden: config.hidden_size,
-            layers: config.layers_amount
+            hidden: sizes.hidden,
+            layers: sizes.layers
         };
 
         NeuralNetwork::new(dictionary, sizes)
@@ -96,14 +110,14 @@ fn test_loss(config: Config)
             complain(format!("give a valid file plz, cant open {input} ({err})"))
         });
 
-    let mut network = load_network(&config.network_path, &config, false);
+    let mut network = load_network(&config, None, false);
 
     network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
 }
 
 fn train(config: Config)
 {
-    let mut network = load_network(&config.network_path, &config, true);
+    let mut network = load_network(&config, None, true);
 
     let input = config.get_input();
     let text_file = File::open(input)
@@ -138,7 +152,7 @@ fn train(config: Config)
 
 fn run(config: Config)
 {
-    let mut network = load_network(&config.network_path, &config, false);
+    let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
     {
@@ -289,7 +303,7 @@ fn weight_color(value: f32) -> Color
 
 fn weights_image(config: Config)
 {
-    let network = load_network(&config.network_path, &config, false);
+    let network = load_network(&config, None, false);
 
     let weights = network.inner_network().weights_info();
 
@@ -379,6 +393,17 @@ fn create_word_dictionary(config: Config)
     dictionary_file.flush().unwrap();
 }
 
+fn train_embeddings(config: Config)
+{
+    let network = load_network(
+        &config,
+        Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
+        false
+    );
+
+    todo!();
+}
+
 fn main()
 {
     if LayerInnerType::is_arrayfire()
@@ -406,6 +431,7 @@ fn main()
         ProgramMode::Run => run(config),
         ProgramMode::Test => test_loss(config),
         ProgramMode::CreateDictionary => create_word_dictionary(config),
+        ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config)
     }
 }

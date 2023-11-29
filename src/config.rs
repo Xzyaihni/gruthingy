@@ -287,42 +287,6 @@ impl<'a> ArgParser<'a>
     }
 }
 
-pub enum ProgramMode
-{
-    Train,
-    Run,
-    Test,
-    CreateDictionary,
-    WeightsImage
-}
-
-// could use the strum thingy but im too lazy to import it
-impl ProgramMode
-{
-    pub fn iter() -> impl Iterator<Item=Self>
-    {
-        [
-            Self::Train,
-            Self::Run,
-            Self::Test,
-            Self::CreateDictionary,
-            Self::WeightsImage
-        ].into_iter()
-    }
-
-    pub fn as_str(&self) -> &'static str
-    {
-        match self
-        {
-            Self::Train => "train",
-            Self::Run => "run",
-            Self::Test => "test",
-            Self::CreateDictionary => "create_dictionary",
-            Self::WeightsImage => "weights_image"
-        }
-    }
-}
-
 trait ParsableInner
 where
     Self: Sized
@@ -330,10 +294,74 @@ where
     fn parse_inner(value: &str) -> Result<Self, ArgError>;
 }
 
-impl ParsableInner for ProgramMode
+trait ParsableEnum
+{
+    type Iter: Iterator<Item=Self>;
+
+
+    fn iter() -> Self::Iter;
+    fn as_str(&self) -> &'static str;
+}
+
+macro_rules! iterable_enum
+{
+    ($enum_name:ident, $($key:ident, $name:ident),+) =>
+    {
+        pub enum $enum_name
+        {
+            $($key,)+
+        }
+
+        impl $enum_name
+        {
+            const fn len() -> usize
+            {
+                [
+                    $(stringify!($key),)+
+                ].len()
+            }
+        }
+
+        impl ParsableEnum for $enum_name
+        {
+            type Iter = std::array::IntoIter<Self, { Self::len() }>;
+
+
+            fn iter() -> Self::Iter
+            {
+                [
+                    $(Self::$key,)+
+                ].into_iter()
+            }
+
+            fn as_str(&self) -> &'static str
+            {
+                match self
+                {
+                    $(Self::$key => stringify!($name),)+
+                }
+            }
+        }
+    }
+}
+
+iterable_enum!
+{
+    ProgramMode,
+    Train, train,
+    Run, run,
+    Test, test,
+    CreateDictionary, create_dictionary,
+    TrainEmbeddings, train_embeddings,
+    WeightsImage, weights_image
+}
+
+impl<T: ParsableEnum> ParsableInner for T
 {
     fn parse_inner(value: &str) -> Result<Self, ArgError>
     {
+        let value = value.to_lowercase();
+
         Self::iter().find(|x| x.as_str() == value)
             .ok_or_else(|| ArgError::Parse(value.to_owned()))
     }
@@ -405,6 +433,7 @@ pub struct Config
     pub hidden_size: usize,
     pub layers_amount: usize,
     pub steps_num: usize,
+    pub embeddings_size: usize,
     pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
@@ -429,6 +458,7 @@ impl Config
         let mut hidden_size = 512;
         let mut layers_amount = 3;
         let mut steps_num = 64;
+        let mut embeddings_size = 64;
         let mut learning_rate = None;
         let mut calculate_loss = true;
         let mut calculate_accuracy = false;
@@ -450,6 +480,7 @@ impl Config
         parser.push(&mut hidden_size, None, "hidden", "hidden layers size");
         parser.push(&mut layers_amount, None, "layers", "amount of hidden layers");
         parser.push(&mut steps_num, 's', "steps", "amount of timesteps the network remembers");
+        parser.push(&mut embeddings_size, 'e', "embeddings", "size of the embeddings vector");
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
         parser.push_flag(&mut calculate_loss, None, "no-loss", "dont calculate loss", false);
@@ -488,6 +519,7 @@ impl Config
             hidden_size,
             layers_amount,
             steps_num,
+            embeddings_size,
             learning_rate,
             calculate_loss,
             calculate_accuracy,
