@@ -14,8 +14,6 @@ use super::{
 };
 
 
-pub const LAYERS_AMOUNT: usize = 3;
-
 pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
 pub const DROPOUT_PROBABILITY: f32 = 0.5;
 

@@ -14,7 +14,6 @@ use crate::neural_network::{
     NetworkUnit,
     NewableLayer,
     NUnit,
-    LAYERS_AMOUNT,
     DROPOUT_PROBABILITY,
     DROPCONNECT_PROBABILITY
 };
@@ -38,7 +37,8 @@ pub struct WeightsNamed<T>
 pub struct LayerSizes
 {
     pub input: usize,
-    pub hidden: usize
+    pub hidden: usize,
+    pub layers: usize
 }
 
 pub enum LayerSize
@@ -216,22 +216,6 @@ macro_rules! create_weights_container
                 })
             }
 
-            pub fn get_mut(&mut self, index: usize) -> Option<&mut T>
-            {
-                let mut selected = 0;
-
-                $(
-                    if index == selected
-                    {
-                        return Some(&mut self.$name);
-                    }
-
-                    selected += 1;
-                )+
-
-                None
-            }
-
             #[allow(dead_code)]
             pub fn for_each_weight<F: FnMut(T)>(self, mut f: F)
             {
@@ -379,55 +363,24 @@ pub struct NetworkOutput<State, Output>
     pub output: Output
 }
 
-pub struct NetworkDropped<O>
-{
-    inner: Network<O>,
-    is_dirty: bool
-}
+pub struct NetworkDropped<O>(Network<O>);
 
 impl<O> NetworkDropped<O>
 {
-    pub fn reset(&mut self, parent: &Network<O>)
-    {
-        self.inner.layers.iter_mut().zip(parent.layers.iter()).for_each(|(layer, parent)|
-        {
-            layer.into_iter_with_info_mut().zip(parent.into_iter()).for_each(|(info, parent)|
-            {
-                if info.is_hidden
-                {
-                    let dropconnect_mask = Network::<O>::create_dropout_mask(
-                        info.previous_size,
-                        info.current_size,
-                        DROPCONNECT_PROBABILITY
-                    );
-
-                    *info.weights = parent * dropconnect_mask;
-                }
-            });
-        });
-
-        self.is_dirty = false;
-    }
-
     pub fn gradients(
         &mut self,
         input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
     ) -> (f32, Vec<NUnit<LayerInnerType>>)
     {
-        if self.is_dirty == true
-        {
-            panic!("reset the dropped weights before getting gradients again");
-        }
+        self.0.clear();
 
-        self.inner.clear();
-
-        let loss = self.inner.feedforward(input);
+        let loss = self.0.feedforward(input);
 
         let loss_value = loss.value_clone();
 
         loss.calculate_gradients();
 
-        let gradients = self.inner.layers.iter_mut().map(|layer|
+        let gradients = self.0.layers.iter_mut().map(|layer|
         {
             layer.map_mut(|weight| weight.take_gradient())
         }).collect::<Vec<_>>();
@@ -453,10 +406,10 @@ impl<O> Network<O>
         O: NewableLayer
     {
         let optimizer_info: Option<Vec<_>> = 
-            Some((0..LAYERS_AMOUNT).map(|_| NUnit::new_zeroed(sizes)).collect());
+            Some((0..sizes.layers).map(|_| NUnit::new_zeroed(sizes)).collect());
 
         let layers: Vec<_> =
-            (0..LAYERS_AMOUNT).map(|_| NUnit::new(sizes)).collect();
+            (0..sizes.layers).map(|_| NUnit::new(sizes)).collect();
 
         Self{
             sizes,
@@ -467,25 +420,29 @@ impl<O> Network<O>
 
     pub fn dropconnected(&self) -> NetworkDropped<O>
     {
-        let mut dropconnected =
-            NetworkDropped{
-                is_dirty: true,
-                inner: Self{
-                    sizes: self.sizes,
-                    optimizer_info: None,
-                    layers: self.layers.iter().map(|layer|
+        NetworkDropped(Self{
+            sizes: self.sizes,
+            optimizer_info: None,
+            layers: self.layers.iter().map(|layer|
+            {
+                layer.clone_weights_with_info(|info|
+                {
+                    if info.is_hidden
                     {
-                        layer.clone_weights_with_info(|info|
-                        {
-                            info.weights.recreate()
-                        })
-                    }).collect()
-                }
-            };
+                        let dropconnect_mask = Self::create_dropout_mask(
+                            info.previous_size,
+                            info.current_size,
+                            DROPCONNECT_PROBABILITY
+                        );
 
-        dropconnected.reset(&self);
-
-        dropconnected
+                        info.weights * dropconnect_mask
+                    } else
+                    {
+                        info.weights.recreate()
+                    }
+                })
+            }).collect()
+        })
     }
 
     pub fn clear(&mut self)
@@ -587,11 +544,11 @@ impl<O> Network<O>
         let mut output: Option<T> = None;
         let mut last_output: Option<LayerType> = None;
 
-        let mut states = Vec::with_capacity(LAYERS_AMOUNT);
+        let mut states = Vec::with_capacity(self.sizes.layers);
 
         // stfu clippy this is more readable
         #[allow(clippy::needless_range_loop)]
-        for l_i in 0..LAYERS_AMOUNT
+        for l_i in 0..self.sizes.layers
         {
             let input = last_output.as_ref().unwrap_or(input);
 
@@ -605,7 +562,7 @@ impl<O> Network<O>
                 })
             };
 
-            if l_i == (LAYERS_AMOUNT - 1)
+            if l_i == (self.sizes.layers - 1)
             {
                 // last layer
                 let NetworkOutput{

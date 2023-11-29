@@ -2,9 +2,7 @@ use serde::{Serialize, Deserialize};
 
 use super::{
     LayerInnerType,
-    NetworkUnit,
     NewableLayer,
-    LAYERS_AMOUNT,
     DECAY_FUNCTION
 };
 

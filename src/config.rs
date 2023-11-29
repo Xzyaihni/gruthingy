@@ -95,7 +95,9 @@ impl<'a> ArgInfo<'a>
     {
         let head = self.help_head();
 
-        let padded = longest_arg + "-a,".len();
+        // this technically would overpad if the longest arg isnt a variable but wutever
+        // i dont rly care
+        let padded = longest_arg + "-a, --=VALUE".len();
 
         format!(" {head:<padded$}  {}", self.description)
     }
@@ -184,18 +186,11 @@ impl<'a> ArgParser<'a>
 
         while let Some(raw_arg) = args.next()
         {
-            if raw_arg.starts_with('-')
+            if raw_arg.starts_with("--")
             {
-                let arg = &raw_arg[1..];
+                let arg = &raw_arg[2..];
 
-                if arg.len() != 1
-                {
-                    return Err(ArgError::UnexpectedArg(raw_arg));
-                }
-
-                let c = arg.chars().next().unwrap();
-
-                if let Some(found) = self.args.iter_mut().find(|arg| arg.short == Some(c))
+                if let Some(found) = self.args.iter_mut().find(|this_arg| this_arg.long == arg)
                 {
                     match found.kind
                     {
@@ -208,11 +203,18 @@ impl<'a> ArgParser<'a>
                 {
                     return Err(ArgError::UnexpectedArg(raw_arg));
                 }
-            } else if raw_arg.starts_with("--")
+            } else if raw_arg.starts_with('-')
             {
-                let arg = &raw_arg[2..];
+                let arg = &raw_arg[1..];
 
-                if let Some(found) = self.args.iter_mut().find(|this_arg| this_arg.long == arg)
+                if arg.len() != 1
+                {
+                    return Err(ArgError::UnexpectedArg(raw_arg));
+                }
+
+                let c = arg.chars().next().unwrap();
+
+                if let Some(found) = self.args.iter_mut().find(|arg| arg.short == Some(c))
                 {
                     match found.kind
                     {
@@ -285,11 +287,56 @@ impl<'a> ArgParser<'a>
     }
 }
 
+pub enum ProgramMode
+{
+    Train,
+    Run,
+    Test,
+    CreateDictionary,
+    WeightsImage
+}
+
+// could use the strum thingy but im too lazy to import it
+impl ProgramMode
+{
+    pub fn iter() -> impl Iterator<Item=Self>
+    {
+        [
+            Self::Train,
+            Self::Run,
+            Self::Test,
+            Self::CreateDictionary,
+            Self::WeightsImage
+        ].into_iter()
+    }
+
+    pub fn as_str(&self) -> &'static str
+    {
+        match self
+        {
+            Self::Train => "train",
+            Self::Run => "run",
+            Self::Test => "test",
+            Self::CreateDictionary => "create_dictionary",
+            Self::WeightsImage => "weights_image"
+        }
+    }
+}
+
 trait ParsableInner
 where
     Self: Sized
 {
     fn parse_inner(value: &str) -> Result<Self, ArgError>;
+}
+
+impl ParsableInner for ProgramMode
+{
+    fn parse_inner(value: &str) -> Result<Self, ArgError>
+    {
+        Self::iter().find(|x| x.as_str() == value)
+            .ok_or_else(|| ArgError::Parse(value.to_owned()))
+    }
 }
 
 impl ParsableInner for String
@@ -356,12 +403,20 @@ pub struct Config
     pub iterations: usize,
     pub batch_size: usize,
     pub hidden_size: usize,
+    pub layers_amount: usize,
     pub steps_num: usize,
     pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
     pub testing_data: Option<String>,
     pub network_path: String,
+    pub input: Option<String>,
+    pub output: Option<String>,
+    pub tokens_amount: usize,
+    pub temperature: f32,
+    pub replace_invalid: bool,
+    pub less_info: bool,
+    pub mode: ProgramMode,
     pub dictionary_path: String
 }
 
@@ -372,25 +427,41 @@ impl Config
         let mut iterations = 1;
         let mut batch_size = 32;
         let mut hidden_size = 512;
+        let mut layers_amount = 3;
         let mut steps_num = 64;
         let mut learning_rate = None;
         let mut calculate_loss = true;
         let mut calculate_accuracy = false;
         let mut testing_data = None;
         let mut network_path = "network.nn".to_owned();
+        let mut input = None;
+        let mut output = None;
+        let mut tokens_amount = 100;
+        let mut temperature = 1.0;
+        let mut replace_invalid = true;
         let mut dictionary_path = "dictionary.txt".to_owned();
+        let mut less_info = false;
+        let mut mode = None;
 
         let mut parser = ArgParser::new();
 
-        parser.push(&mut iterations, 'i', "iterations", "the amount of iterations to train for");
+        parser.push(&mut iterations, 'I', "iterations", "the amount of iterations to train for");
         parser.push(&mut batch_size, 'b', "batch", "minibatch size");
         parser.push(&mut hidden_size, None, "hidden", "hidden layers size");
+        parser.push(&mut layers_amount, None, "layers", "amount of hidden layers");
         parser.push(&mut steps_num, 's', "steps", "amount of timesteps the network remembers");
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
         parser.push_flag(&mut calculate_loss, None, "no-loss", "dont calculate loss", false);
         parser.push(&mut testing_data, 't', "testing", "data for calculating the loss/accuracy");
         parser.push(&mut network_path, 'p', "path", "path to the network");
+        parser.push(&mut input, 'i', "input", "input");
+        parser.push(&mut output, 'o', "output", "output path");
+        parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
+        parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
+        parser.push_flag(&mut replace_invalid, 'r', "raw", "dont replace invalid utf8", false);
+        parser.push_flag(&mut less_info, None, "less-info", "display less info when training", true);
+        parser.push(&mut mode, 'm', "mode", "program mode");
         parser.push(&mut dictionary_path, 'd', "dictionary", "path to the dictionary");
 
         parser.parse(args).unwrap_or_else(|err|
@@ -398,17 +469,46 @@ impl Config
             complain(err.to_string())
         });
 
+        let mode = mode.unwrap_or_else(||
+        {
+            let modes = ProgramMode::iter()
+                .map(|x| x.as_str().to_owned())
+                .reduce(|acc, x|
+                {
+                    acc + ", " + &x
+                })
+                .unwrap_or_else(String::new);
+
+            complain(format!("provide a valid mode: {modes}"))
+        });
+
         Self{
             iterations,
             batch_size,
             hidden_size,
+            layers_amount,
             steps_num,
             learning_rate,
             calculate_loss,
             calculate_accuracy,
             testing_data,
             network_path,
-            dictionary_path
+            input,
+            output,
+            tokens_amount,
+            temperature,
+            replace_invalid,
+            dictionary_path,
+            less_info,
+            mode
         }
+    }
+
+    pub fn get_input(&self) -> &str
+    {
+        self.input.as_ref().unwrap_or_else(||
+        {
+            complain("plz provide the input (-i or --input)")
+        })
     }
 }

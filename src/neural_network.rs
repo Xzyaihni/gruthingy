@@ -3,10 +3,9 @@ use std::{
     mem,
     vec,
     slice,
-    io::{self, Read, Write},
+    io::{Read, Write, BufReader},
     fs::File,
-    path::Path,
-    ops::{SubAssign, DivAssign, AddAssign}
+    path::Path
 };
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -333,6 +332,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     }
 }
 
+type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
+
 pub struct TrainingInfo
 {
     pub iterations: usize,
@@ -340,7 +341,8 @@ pub struct TrainingInfo
     pub steps_num: usize,
     pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
-    pub calculate_accuracy: bool
+    pub calculate_accuracy: bool,
+    pub less_info: bool
 }
 
 #[derive(Serialize, Deserialize)]
@@ -413,16 +415,17 @@ where
         self.optimizer.advance_time();
     }
 
-    pub fn test_loss<V>(
+    pub fn test_loss<R>(
         &mut self,
-        vectorizer: V,
+        reader: R,
         calculate_loss: bool,
         calculate_accuracy: bool
     )
     where
-        V: Iterator<Item=VectorWord>
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        let inputs: Vec<_> = vectorizer.collect();
+        let inputs = self.vectorized(reader);
 
         self.test_loss_inner(&inputs, calculate_loss, calculate_accuracy);
     }
@@ -473,15 +476,35 @@ where
         println!("{loss_type} loss: {loss}");
     }
 
-    pub fn train<V, VT>(
+    fn vectorizer<'a, R: Read>(
+        &'a mut self,
+        reader: R
+    ) -> impl Iterator<Item=VectorWord> + 'a
+    where
+        D::Adapter<BufReader<R>>: 'a,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+    {
+        WordVectorizer::new(&mut self.dictionary, reader)
+    }
+
+    fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
+    where
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+    {
+        self.vectorizer(reader).collect()
+    }
+
+    pub fn train<R, RT>(
         &mut self,
         info: TrainingInfo,
-        testing_vectorizer: Option<VT>,
-        vectorizer: V
+        testing_reader: Option<RT>,
+        reader: R
     )
     where
-        V: Iterator<Item=VectorWord>,
-        VT: Iterator<Item=VectorWord>
+        R: Read,
+        RT: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
+        for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>
     {
         let TrainingInfo{
             iterations,
@@ -489,7 +512,8 @@ where
             steps_num,
             learning_rate,
             calculate_loss,
-            calculate_accuracy
+            calculate_accuracy,
+            less_info
         } = info;
 
         if let Some(learning_rate) = learning_rate
@@ -499,39 +523,43 @@ where
 
         let batch_step = batch_size * steps_num;
 
-        let inputs: Vec<_> = vectorizer.collect();
+        let inputs: Vec<_> = self.vectorized(reader);
         let testing_inputs: Vec<_> = if !calculate_loss && !calculate_accuracy
         {
             Vec::new()
         } else
         {
-            match testing_vectorizer
+            match testing_reader.map(|reader| self.vectorized(reader))
             {
                 None => Vec::new(),
-                Some(testing_vectorizer) =>
-                {
-                    testing_vectorizer.collect()
-                }
+                Some(words) => words
             }
         };
 
-        println!("input vector size: {}", self.dictionary.words_amount());
-
-        println!("parameters amount: {}", self.network.parameters_amount());
-
-        println!("batch size: {batch_size}");
+        let steps_num = steps_num.min(inputs.len());
 
         let steps_deviation = steps_num / 10;
         let steps_half_deviation = steps_deviation / 2;
 
-        println!(
-            "steps amount: {} to {}",
-            steps_num - steps_half_deviation,
-            steps_num + steps_half_deviation
-        );
-        
         let inputs_per_epoch = (inputs.len() / batch_step).max(1);
-        println!("calculate loss every ~{inputs_per_epoch} inputs");
+
+        let display_header = !less_info;
+        let display_inner = !less_info;
+
+        if display_header
+        {
+            println!("input vector size: {}", self.dictionary.words_amount());
+            println!("parameters amount: {}", self.network.parameters_amount());
+            println!("batch size: {batch_size}");
+
+            println!(
+                "steps amount: {} to {}",
+                steps_num - steps_half_deviation,
+                steps_num + steps_half_deviation
+            );
+        
+            println!("calculate loss every ~{inputs_per_epoch} inputs");
+        }
 
         let output_loss = |network: &mut NeuralNetwork<_, _>|
         {
@@ -543,11 +571,12 @@ where
             network.test_loss_inner(&testing_inputs, calculate_loss, calculate_accuracy);
         };
 
-        let mut network = self.network.dropconnected();
-
         for input_index in 0..iterations
         {
-            eprintln!("iteration: {input_index}");
+            if display_inner
+            {
+                eprintln!("iteration: {input_index}");
+            }
             
             time_debug! {
                 let steps_num = {
@@ -566,6 +595,8 @@ where
                 let mut kahan_sum = KahanSum::new();
 
                 let max_batch_start = inputs.len().saturating_sub(steps_num);
+
+                let mut network = self.network.dropconnected();
 
                 let gradients = (0..batch_size).map(|_|
                 {
@@ -604,7 +635,10 @@ where
 
                 let batch_loss = kahan_sum.value() / steps_num as f64;
 
-                Self::print_loss(false, batch_loss as f32);
+                if display_inner
+                {
+                    Self::print_loss(false, batch_loss as f32);
+                }
 
                 self.apply_gradients(gradients);
             }
@@ -613,33 +647,35 @@ where
         output_loss(self);
     }
 
-    pub fn predict_into<V>(
+    pub fn predict_into<R>(
         &mut self,
-        vectorizer: V,
+        reader: R,
         amount: usize,
         temperature: f32,
         out: impl Write
     )
     where
-        V: Iterator<Item=VectorWord>
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        self.predict_inner(vectorizer, amount, temperature, |predictor, network|
+        self.predict_inner(reader, amount, temperature, |predictor, network|
         {
             predictor.predict_into(network, out)
         })
     }
 
     #[allow(dead_code)]
-    pub fn predict_text<V>(
+    pub fn predict_text<R>(
         &mut self,
-        vectorizer: V,
+        reader: R,
         amount: usize,
         temperature: f32
     ) -> String
     where
-        V: Iterator<Item=VectorWord>
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        let output = self.predict_inner(vectorizer, amount, temperature, |predictor, network|
+        let output = self.predict_inner(reader, amount, temperature, |predictor, network|
         {
             predictor.predict_bytes(network)
         }).iter().copied().filter(|&c| c != b'\0').collect::<Vec<_>>();
@@ -647,36 +683,39 @@ where
         String::from_utf8_lossy(&output).to_string()
     }
 
-    pub fn predict_bytes<V>(
+    pub fn predict_bytes<R>(
         &mut self,
-        vectorizer: V,
+        reader: R,
         amount: usize,
         temperature: f32
     ) -> Box<[u8]>
     where
-        V: Iterator<Item=VectorWord>
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        self.predict_inner(vectorizer, amount, temperature, |predictor, network|
+        self.predict_inner(reader, amount, temperature, |predictor, network|
         {
             predictor.predict_bytes(network)
         })
     }
 
-    fn predict_inner<V, T, F>(
+    fn predict_inner<R, T, F>(
         &mut self,
-        vectorizer: V,
+        reader: R,
         amount: usize,
         temperature: f32,
         f: F
     ) -> T
     where
-        V: Iterator<Item=VectorWord>,
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         F: FnOnce(Predictor<D>, &mut Network<O::WeightParam>) -> T
     {
         self.network.disable_gradients();
 
         let predictor = {
-            let words = vectorizer.map(|v|
+            // could do this without a collect but wheres the fun in that
+            let words = self.vectorized(reader).into_iter().map(|v|
             {
                 self.dictionary.word_to_layer(v)
             }).collect::<Vec<_>>();

@@ -1,15 +1,12 @@
 use std::{
     env,
     process,
-    marker::PhantomData,
     path::{PathBuf, Path},
-    io::{self, Write, BufReader},
+    io::{self, Write, BufReader, Cursor},
     fs::{self, File},
     collections::HashSet,
-    ops::{AddAssign, DivAssign, Index, IndexMut}
+    ops::{Index, IndexMut}
 };
-
-use serde::{Serialize, Deserialize};
 
 #[allow(unused_imports)]
 use neural_network::{
@@ -22,11 +19,10 @@ use neural_network::{
     LayerType,
     NOptimizer,
     NDictionary,
-    LayerSizes,
-    LAYERS_AMOUNT
+    LayerSizes
 };
 
-use config::Config;
+use config::{Config, ProgramMode};
 
 use word_vectorizer::{CharsAdapter, ReaderAdapter, NetworkDictionary, WORD_SEPARATORS};
 
@@ -45,7 +41,11 @@ where
     process::exit(1)
 }
 
-fn load_network<P>(path: P, config: Config) -> NeuralNetwork<NOptimizer, NDictionary>
+fn load_network<P>(
+    path: P,
+    config: &Config,
+    auto_create: bool
+) -> NeuralNetwork<NOptimizer, NDictionary>
 where
     P: AsRef<Path>
 {
@@ -53,12 +53,20 @@ where
 
     if path.exists()
     {
-        NeuralNetwork::load(path).unwrap()
-    } else
+        NeuralNetwork::load(path).unwrap_or_else(|err|
+        {
+            complain(format!("could not load network at {} ({err})", path.display()))
+        })
+    } else if auto_create
     {
         let data = if NDictionary::needs_data()
         {
-            Some(fs::read_to_string(config.dictionary_path).unwrap())
+            let dictionary_path = &config.dictionary_path;
+
+            Some(fs::read_to_string(dictionary_path).unwrap_or_else(|err|
+            {
+                complain(format!("could not load dictionary at {dictionary_path} ({err})"))
+            }))
         } else
         {
             None
@@ -66,56 +74,52 @@ where
 
         let dictionary = NDictionary::new(data.as_ref().map(|x| x.as_str()));
 
-        let sizes = LayerSizes{input: dictionary.words_amount(), hidden: config.hidden_size};
+        let sizes = LayerSizes{
+            input: dictionary.words_amount(),
+            hidden: config.hidden_size,
+            layers: config.layers_amount
+        };
+
         NeuralNetwork::new(dictionary, sizes)
+    } else
+    {
+        complain(format!("cant load the network at: {}", path.display()))
     }
 }
 
-fn test_loss(mut args: impl Iterator<Item=String>)
+fn test_loss(config: Config)
 {
-    todo!();
-    /*let text_path = args.next()
-        .unwrap_or_else(|| complain("give path to a file with text testing data"));
-    
-    let text_file = File::open(&text_path)
+    let input = config.get_input();
+    let text_file = File::open(&input)
         .unwrap_or_else(|err|
         {
-            complain(format!("give a valid file plz, cant open {text_path} ({err})"))
+            complain(format!("give a valid file plz, cant open {input} ({err})"))
         });
-    
-    let config = Config::parse(args);
 
-    let network_path = config.network_path.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+    let mut network = load_network(&config.network_path, &config, false);
 
-    let mut network: NeuralNetwork =
-        NeuralNetwork::load(&network_path).unwrap();
-
-    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);*/
+    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
 }
 
-fn train_inner<O: Optimizer, D: NetworkDictionary>(
-    mut network: NeuralNetwork<O, D>,
-    text_path: String,
-    config: Config
-)
-where
-    for<'a> O::WeightParam: Serialize + Deserialize<'a>
+fn train(config: Config)
 {
-    todo!();
-    /*let text_file = File::open(&text_path)
+    let mut network = load_network(&config.network_path, &config, true);
+
+    let input = config.get_input();
+    let text_file = File::open(input)
         .unwrap_or_else(|err|
         {
-            complain(format!("give a valid file plz, cant open {text_path} ({err})"))
+            complain(format!("give a valid file plz, cant open {input} ({err})"))
         });
 
     let training_info = TrainingInfo{
-        epochs: config.epochs,
+        iterations: config.iterations,
         batch_size: config.batch_size,
         steps_num: config.steps_num,
         learning_rate: config.learning_rate,
         calculate_loss: config.calculate_loss,
         calculate_accuracy: config.calculate_accuracy,
-        ignore_loss: config.ignore_loss
+        less_info: config.less_info
     };
 
     let test_file = config.testing_data.map(|test_path|
@@ -129,133 +133,14 @@ where
 
     network.train(training_info, test_file, text_file);
 
-    let network_path = config.network_path.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
-
-    network.save(network_path);*/
+    network.save(&config.network_path);
 }
 
-fn train(mut args: impl Iterator<Item=String>)
+fn run(config: Config)
 {
-    todo!();
-    /*let text_path = args.next()
-        .unwrap_or_else(|| complain("give path to a file with text training data"));
-    
-    let config = Config::parse(args);
- 
-    let network_path = config.network_path.clone()
-        .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_owned());
+    let mut network = load_network(&config.network_path, &config, false);
 
-    let network: NeuralNetwork = if PathBuf::from(&network_path).exists()
-    {
-        NeuralNetwork::load(&network_path).unwrap_or_else(|err|
-        {
-            panic!("couldnt load network at {network_path} (error: {})", err);
-        })
-    } else
-    {
-        let dictionary = if USES_DICTIONARY
-        {
-            DictionaryType::build(DICTIONARY_TEXT)
-        } else
-        {
-            DictionaryType::new()
-        };
-
-        NeuralNetwork::new(dictionary)
-    };
-
-    train_inner(network, text_path, config);*/
-}
-
-/*struct RunConfig
-{
-    tokens_amount: usize,
-    temperature: f32,
-    replace_invalid: bool,
-    save_path: Option<String>,
-    network_path: String
-}
-
-impl RunConfig
-{
-    pub fn parse(mut args: impl Iterator<Item=String>) -> Self
-    {
-        let mut tokens_amount = 100;
-        let mut temperature = 1.0;
-        let mut replace_invalid = true;
-        let mut save_path = None;
-        let mut network_path = DEFAULT_NETWORK_NAME.to_owned();
-
-        while let Some(arg) = args.next()
-        {
-            match arg.as_str()
-            {
-                "-n" =>
-                {
-                    tokens_amount = args.next().unwrap_or_else(||
-                        {
-                            complain(format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(format!("cant parse the amount: {err:?}"))
-                        });
-                },
-                "-t" | "--temperature" =>
-                {
-                    temperature = args.next().unwrap_or_else(||
-                        {
-                            complain(format!("expected value after {arg}"))
-                        }).parse()
-                        .unwrap_or_else(|err|
-                        {
-                            complain(format!("cant parse the temperature: {err:?}"))
-                        });
-                },
-                "-r" | "--raw" =>
-                {
-                    replace_invalid = false;
-                },
-                "-o" | "--output" =>
-                {
-                    save_path = Some(args.next().unwrap_or_else(||
-                        {
-                            complain(format!("expected value after {arg}"))
-                        }));
-                },
-                "-p" | "--path" =>
-                {
-                    network_path = args.next().unwrap_or_else(||
-                        {
-                            complain(format!("expected value after {arg}"))
-                        });
-                },
-                x => complain(format!("cant parse arg: {x}"))
-            }
-        }
-
-        Self{
-            tokens_amount,
-            temperature,
-            replace_invalid,
-            save_path,
-            network_path
-        }
-    }
-}*/
-
-fn run(mut args: impl Iterator<Item=String>)
-{
-    todo!();
-    /*let text = args.next()
-        .unwrap_or_else(|| complain("pls give the text to predict"));
-
-    let config = RunConfig::parse(args);
-
-    let mut network: NeuralNetwork =
-        NeuralNetwork::load(config.network_path).unwrap();
-
-    let f = config.save_path.map(|filepath|
+    let f = config.output.as_ref().map(|filepath|
     {
         File::create(&filepath)
             .unwrap_or_else(|err|
@@ -264,10 +149,12 @@ fn run(mut args: impl Iterator<Item=String>)
             })
     });
 
+    let text = Cursor::new(config.get_input());
+
     if config.replace_invalid
     {
         let predicted =
-            network.predict_bytes(&text, config.tokens_amount, config.temperature);
+            network.predict_bytes(text, config.tokens_amount, config.temperature);
 
         let s = String::from_utf8_lossy(&predicted);
 
@@ -285,20 +172,8 @@ fn run(mut args: impl Iterator<Item=String>)
             complain("u must provide a file to save to for a file that doesnt replace invalid unicode")
         });
 
-        network.predict_into(&text, config.tokens_amount, config.temperature, &mut f);
-    };*/
-}
-
-fn debug_network(mut args: impl Iterator<Item=String>)
-{
-    todo!();
-    /*let network_path = args.next()
-        .unwrap_or_else(|| complain("give path to network"));
-    
-    let network: NeuralNetwork =
-        NeuralNetwork::load(network_path).unwrap();
-
-    println!("{network:#?}");*/
+        network.predict_into(text, config.tokens_amount, config.temperature, &mut f);
+    };
 }
 
 #[derive(Clone, Copy)]
@@ -412,19 +287,13 @@ fn weight_color(value: f32) -> Color
     )
 }
 
-fn weights_image(mut args: impl Iterator<Item=String>)
+fn weights_image(config: Config)
 {
-    /*let network_path = args.next()
-        .unwrap_or_else(|| complain("give path to network"));
-
-    let output_folder = args.next()
-        .unwrap_or_else(|| "output".to_owned());
-    
-    let network = load_network(&network_path, Config::parse(args));
+    let network = load_network(&config.network_path, &config, false);
 
     let weights = network.inner_network().weights_info();
 
-    let output_folder = PathBuf::from(output_folder);
+    let output_folder = PathBuf::from(config.output.unwrap_or_else(|| "output".to_owned()));
 
     for (layer_index, layer) in weights.into_iter().enumerate()
     {
@@ -456,19 +325,12 @@ fn weights_image(mut args: impl Iterator<Item=String>)
 
             image.save(full_path).unwrap();
         });
-    }*/
+    }
 }
 
-fn create_word_dictionary(mut args: impl Iterator<Item=String>)
+fn create_word_dictionary(config: Config)
 {
-    let text_path = args.next().unwrap_or_else(||
-    {
-        complain("give path to text file")
-    });
-
-    let text_file = BufReader::new(File::open(text_path).unwrap());
-
-    let config = Config::parse(args);
+    let text_file = BufReader::new(File::open(config.get_input()).unwrap());
  
     let dictionary_path = config.dictionary_path.clone();
 
@@ -519,12 +381,6 @@ fn create_word_dictionary(mut args: impl Iterator<Item=String>)
 
 fn main()
 {
-    let mut args = env::args().skip(1);
-
-    let mode = args.next()
-        .unwrap_or_else(|| complain("pls give a mode"))
-        .trim().to_lowercase();
-
     if LayerInnerType::is_arrayfire()
     {
         panic!("what");
@@ -541,15 +397,15 @@ fn main()
             );
         } */
     }
+    
+    let config = Config::parse(env::args().skip(1));
 
-    match mode.as_str()
+    match config.mode
     {
-        "train" => train(args),
-        "run" => run(args),
-        "test" => test_loss(args),
-        "dbg" => debug_network(args),
-        "createdictionary" => create_word_dictionary(args),
-        "weightsimage" => weights_image(args),
-        x => complain(format!("plz give a valid mode!! {x} isnt a valid mode!!!!"))
+        ProgramMode::Train => train(config),
+        ProgramMode::Run => run(config),
+        ProgramMode::Test => test_loss(config),
+        ProgramMode::CreateDictionary => create_word_dictionary(config),
+        ProgramMode::WeightsImage => weights_image(config)
     }
 }

@@ -119,6 +119,9 @@ where
 
 pub trait NetworkDictionary
 {
+    type Adapter<R: Read>: ReaderAdapter<R>;
+
+
     fn new(data: Option<&str>) -> Self;
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
@@ -151,6 +154,9 @@ pub struct ByteDictionary;
 
 impl NetworkDictionary for ByteDictionary
 {
+    type Adapter<R: Read> = DefaultAdapter<R>;
+
+
     fn new(_data: Option<&str>) -> Self
     {
         Self{}
@@ -194,6 +200,9 @@ impl CharDictionary
 
 impl NetworkDictionary for CharDictionary
 {
+    type Adapter<R: Read> = CharsAdapter<R>;
+
+
     fn new(data: Option<&str>) -> Self
     {
         let unique_chars: HashSet<_> = data.unwrap().chars().collect();
@@ -280,6 +289,9 @@ impl WordDictionary
 
 impl NetworkDictionary for WordDictionary
 {
+    type Adapter<R: Read> = CharsAdapter<R>;
+
+
     fn new(data: Option<&str>) -> Self
     {
         let dictionary: Bimap<_, _> = data.unwrap().split('\n').enumerate().map(|(index, word)|

@@ -171,7 +171,7 @@ mod tests
 
         let mut lstm = WeightsContainer
         {
-            sizes: LayerSizes{hidden: 1, input: 1},
+            sizes: LayerSizes{hidden: 1, input: 1, layers: 1},
 
             input_update: one_weight(1.65),
             input_forget: one_weight(1.63),
