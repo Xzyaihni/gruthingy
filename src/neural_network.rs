@@ -5,7 +5,8 @@ use std::{
     slice,
     io::{Read, Write, BufReader},
     fs::File,
-    path::Path
+    path::Path,
+    ops::{DivAssign, AddAssign, SubAssign}
 };
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -27,7 +28,7 @@ use optimizers::*;
 
 pub use network::LayerSizes;
 pub use optimizers::Optimizer;
-pub use network_unit::{NetworkUnit, NewableLayer};
+pub use network_unit::{NetworkUnit, NewableLayer, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::WeightsNamed;
 pub use containers::{
     LayerType,
@@ -274,11 +275,15 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         }
     }
 
-    pub fn predict_into<O>(
+    pub fn predict_into<N, O>(
         mut self,
-        network: &mut Network<O>,
+        network: &mut Network<N, O>,
         mut out: impl Write
     )
+    where
+        N::Unit<O>: OptimizerUnit<O>,
+        N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+        N: UnitFactory
     {
         let input_amount = self.words.len();
 
@@ -323,7 +328,11 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         out.flush().unwrap();
     }
 
-    pub fn predict_bytes<O>(self, network: &mut Network<O>) -> Box<[u8]>
+    pub fn predict_bytes<N, O>(self, network: &mut Network<N, O>) -> Box<[u8]>
+    where
+        N::Unit<O>: OptimizerUnit<O>,
+        N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+        N: UnitFactory
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
         self.predict_into(network, &mut predicted);
@@ -346,18 +355,25 @@ pub struct TrainingInfo
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct NeuralNetwork<O: Optimizer, D>
+pub struct NeuralNetwork<N, O, D>
 where
+    N: UnitFactory,
+    O: Optimizer,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<LayerType>: NetworkUnit,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>
 {
     dictionary: D,
-    network: Network<O::WeightParam>,
+    network: Network<N, O::WeightParam>,
     optimizer: O
 }
 
-impl<O, D> NeuralNetwork<O, D>
+impl<N, O, D> NeuralNetwork<N, O, D>
 where
+    N: UnitFactory,
     O: Optimizer,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>,
     D: NetworkDictionary
 {
@@ -375,6 +391,7 @@ where
     // these trait bounds feel wrong somehow
     pub fn save<P: AsRef<Path>>(&mut self, path: P)
     where
+        N: Serialize,
         O: Serialize,
         D: Serialize
     {
@@ -388,6 +405,7 @@ where
 
     pub fn load<P: AsRef<Path>>(path: P) -> bincode::Result<Self>
     where
+        N: DeserializeOwned,
         O: DeserializeOwned,
         D: DeserializeOwned
     {
@@ -397,12 +415,16 @@ where
     }
 
     #[allow(dead_code)]
-    pub fn inner_network(&self) -> &Network<O::WeightParam>
+    pub fn inner_network(&self) -> &Network<N, O::WeightParam>
     {
         &self.network
     }
 
-    pub fn apply_gradients(&mut self, gradients: Vec<NUnit<LayerInnerType>>)
+    pub fn apply_gradients(&mut self, gradients: Vec<N::Unit<LayerInnerType>>)
+    where
+        N::Unit<LayerType>: SubAssign,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>
     {
         let combined_iter = gradients.into_iter()
             .zip(self.network.gradients_info());
@@ -494,6 +516,7 @@ where
         self.vectorizer(reader).collect()
     }
 
+    // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
     pub fn train<R, RT>(
         &mut self,
         info: TrainingInfo,
@@ -504,7 +527,11 @@ where
         R: Read,
         RT: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>
+        for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>,
+        N::Unit<LayerType>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign,
+        N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign
     {
         let TrainingInfo{
             iterations,
@@ -561,7 +588,7 @@ where
             println!("calculate loss every ~{inputs_per_epoch} inputs");
         }
 
-        let output_loss = |network: &mut NeuralNetwork<_, _>|
+        let output_loss = |network: &mut NeuralNetwork<_, _, _>|
         {
             if testing_inputs.is_empty()
             {
@@ -656,6 +683,7 @@ where
     )
     where
         R: Read,
+        N::Unit<LayerType>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -673,6 +701,7 @@ where
     ) -> String
     where
         R: Read,
+        N::Unit<LayerType>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         let output = self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -691,6 +720,7 @@ where
     ) -> Box<[u8]>
     where
         R: Read,
+        N::Unit<LayerType>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -709,7 +739,7 @@ where
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        F: FnOnce(Predictor<D>, &mut Network<O::WeightParam>) -> T
+        F: FnOnce(Predictor<D>, &mut Network<N, O::WeightParam>) -> T
     {
         self.network.disable_gradients();
 

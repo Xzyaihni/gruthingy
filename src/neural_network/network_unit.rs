@@ -5,16 +5,57 @@ use crate::neural_network::{
     LayerType,
     LayerInnerType,
     LayerSizes,
+    WeightsNamed,
+    Optimizer,
     network::{WeightsSize, NetworkOutput}
 };
 
+use serde::{Serialize, de::DeserializeOwned};
+
+
+pub trait UnitFactory
+{
+    type Unit<T>;
+}
+
+pub trait GenericUnit<T>
+{
+    type Unit<U>;
+
+    fn map<U, F>(self, f: F) -> Self::Unit<U>
+    where
+        F: FnMut(T) -> U;
+
+    fn map_mut<U, F>(&mut self, f: F) -> Self::Unit<U>
+    where
+        F: FnMut(&mut T) -> U;
+
+    fn clone_weights_with_info<F>(&self, f: F) -> Self
+    where
+        F: FnMut(WeightsSize<&T>) -> T;
+
+    fn weights_named_info(&self) -> Self::Unit<WeightsNamed<&T>>;
+}
 
 pub trait NewableLayer
 {
     fn new(previous: usize, current: usize) -> Self;
 }
 
-pub trait NetworkUnit
+pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned
+{
+    fn new_zeroed(sizes: LayerSizes) -> Self;
+
+    fn gradients_to_change<O>(
+        &mut self,
+        gradients: Self::Unit<LayerInnerType>,
+        optimizer: &O
+    ) -> Self::Unit<LayerType>
+    where
+        O: Optimizer<WeightParam=T>;
+}
+
+pub trait NetworkUnit: GenericUnit<LayerType> + Serialize + DeserializeOwned
 where
     Self: Sized
 {
@@ -75,10 +116,6 @@ where
     fn parameters_amount(&self, sizes: LayerSizes) -> u128;
 
     fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F);
-
-    fn clone_weights_with_info<F>(&self, f: F) -> Self
-    where
-        F: FnMut(WeightsSize<&LayerType>) -> LayerType;
 
     fn clear(&mut self)
     {

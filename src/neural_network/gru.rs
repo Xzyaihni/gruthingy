@@ -88,13 +88,6 @@ impl NetworkUnit for Gru<LayerType>
         self.for_each_weight_mut(f)
     }
 
-    fn clone_weights_with_info<F>(&self, f: F) -> Self
-    where
-        F: FnMut(WeightsSize<&LayerType>) -> LayerType
-    {
-        self.clone_weights_with_info_inner(f)
-    }
-
     fn parameters_amount(&self, sizes: LayerSizes) -> u128
     {
         let i = sizes.input as u128;

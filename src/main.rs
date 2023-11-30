@@ -8,6 +8,8 @@ use std::{
     ops::{Index, IndexMut}
 };
 
+use serde::{Serialize, Deserialize};
+
 #[allow(unused_imports)]
 use neural_network::{
     TrainingInfo,
@@ -17,6 +19,8 @@ use neural_network::{
     NetworkUnit,
     Optimizer,
     LayerType,
+    UnitFactory,
+    NUnit,
     NOptimizer,
     NDictionary,
     LayerSizes
@@ -55,11 +59,20 @@ impl From<&Config> for SizesInfo
     }
 }
 
+// this is definitely unneeded in theory, but in practice serde macros r stupid
+#[derive(Serialize, Deserialize)]
+struct NUnitFactory;
+
+impl UnitFactory for NUnitFactory
+{
+    type Unit<T> = NUnit<T>;
+}
+
 fn load_network(
     config: &Config,
     sizes: Option<SizesInfo>,
     auto_create: bool
-) -> NeuralNetwork<NOptimizer, NDictionary>
+) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
     let path: &Path = config.network_path.as_ref();
 
