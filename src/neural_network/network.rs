@@ -162,28 +162,6 @@ macro_rules! create_weights_container
                     )+
                 }
             }
-
-            #[allow(dead_code)]
-            pub fn for_each_weight<F: FnMut(T)>(self, mut f: F)
-            {
-                let Self{
-                    sizes: _,
-                    $(
-                        $name,
-                    )+
-                } = self;
-
-                $(
-                    f($name);
-                )+
-            }
-
-            pub fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, mut f: F)
-            {
-                $(
-                    f(&mut self.$name);
-                )+
-            }
         }
 
         impl WeightsContainer<LayerType>
@@ -319,6 +297,27 @@ macro_rules! create_weights_container
                         },
                     )+
                 }
+            }
+
+            fn for_each_weight<F: FnMut(T)>(self, mut f: F)
+            {
+                let Self{
+                    sizes: _,
+                    $(
+                        $name,
+                    )+
+                } = self;
+
+                $(
+                    f($name);
+                )+
+            }
+
+            fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, mut f: F)
+            {
+                $(
+                    f(&mut self.$name);
+                )+
             }
         }
 

@@ -35,6 +35,9 @@ pub trait GenericUnit<T>
         F: FnMut(WeightsSize<&T>) -> T;
 
     fn weights_named_info(&self) -> Self::Unit<WeightsNamed<&T>>;
+
+    fn for_each_weight<F: FnMut(T)>(self, f: F);
+    fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
 pub trait NewableLayer
@@ -115,20 +118,18 @@ where
 
     fn parameters_amount(&self, sizes: LayerSizes) -> u128;
 
-    fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F);
-
     fn clear(&mut self)
     {
-        self.for_each_weight(|v| v.clear());
+        self.for_each_weight_mut(|v| v.clear());
     }
 
     fn enable_gradients(&mut self)
     {
-        self.for_each_weight(|v| v.enable_gradients());
+        self.for_each_weight_mut(|v| v.enable_gradients());
     }
 
     fn disable_gradients(&mut self)
     {
-        self.for_each_weight(|v| v.disable_gradients());
+        self.for_each_weight_mut(|v| v.disable_gradients());
     }
 }

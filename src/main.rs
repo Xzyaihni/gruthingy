@@ -17,10 +17,12 @@ use neural_network::{
     WeightsNamed,
     LayerInnerType,
     NetworkUnit,
+    GenericUnit,
     Optimizer,
     LayerType,
     UnitFactory,
     NUnit,
+    EmbeddingUnit,
     NOptimizer,
     NDictionary,
     LayerSizes
@@ -404,6 +406,14 @@ fn create_word_dictionary(config: Config)
     }
 
     dictionary_file.flush().unwrap();
+}
+
+#[derive(Serialize, Deserialize)]
+struct EmbeddingsUnitFactory;
+
+impl UnitFactory for EmbeddingsUnitFactory
+{
+    type Unit<T> = EmbeddingUnit<T>;
 }
 
 fn train_embeddings(config: Config)

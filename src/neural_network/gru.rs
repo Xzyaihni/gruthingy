@@ -83,11 +83,6 @@ impl NetworkUnit for Gru<LayerType>
         }
     }
 
-    fn for_each_weight<F: FnMut(&mut LayerType)>(&mut self, f: F)
-    {
-        self.for_each_weight_mut(f)
-    }
-
     fn parameters_amount(&self, sizes: LayerSizes) -> u128
     {
         let i = sizes.input as u128;
