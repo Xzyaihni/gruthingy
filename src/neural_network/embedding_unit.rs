@@ -17,7 +17,8 @@ pub type EmbeddingUnit<T> = WeightsContainer<T>;
 
 create_weights_container!{
     (weights, false, LayerSize::Hidden, LayerSize::Input),
-    (bias, false, LayerSize::Hidden, LayerSize::One)
+    (bias, false, LayerSize::Hidden, LayerSize::One),
+    (output, false, LayerSize::Input, LayerSize::Hidden)
 }
 
 impl NetworkUnit for EmbeddingUnit<LayerType>
@@ -35,7 +36,9 @@ impl NetworkUnit for EmbeddingUnit<LayerType>
         input: &LayerType
     ) -> NetworkOutput<Self::State, LayerType>
     {
-        let output = self.weights.matmulv_add(input, &self.bias);
+        let hidden = self.weights.matmulv_add(input, &self.bias);
+
+        let output = self.output.matmulv(hidden);
 
         NetworkOutput{
             state: (),

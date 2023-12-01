@@ -8,7 +8,7 @@ use std::{
     ops::{Index, IndexMut}
 };
 
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 #[allow(unused_imports)]
 use neural_network::{
@@ -17,6 +17,7 @@ use neural_network::{
     WeightsNamed,
     LayerInnerType,
     NetworkUnit,
+    OptimizerUnit,
     GenericUnit,
     Optimizer,
     LayerType,
@@ -76,6 +77,19 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
+    load_network_with::<NUnitFactory>(config, sizes, auto_create)
+}
+
+fn load_network_with<N>(
+    config: &Config,
+    sizes: Option<SizesInfo>,
+    auto_create: bool
+) -> NeuralNetwork<N, NOptimizer, NDictionary>
+where
+    N: UnitFactory + DeserializeOwned,
+    N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+    N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>
+{
     let path: &Path = config.network_path.as_ref();
 
     if path.exists()
@@ -118,12 +132,7 @@ fn load_network(
 
 fn test_loss(config: Config)
 {
-    let input = config.get_input();
-    let text_file = File::open(&input)
-        .unwrap_or_else(|err|
-        {
-            complain(format!("give a valid file plz, cant open {input} ({err})"))
-        });
+    let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
 
@@ -134,22 +143,9 @@ fn train(config: Config)
 {
     let mut network = load_network(&config, None, true);
 
-    let input = config.get_input();
-    let text_file = File::open(input)
-        .unwrap_or_else(|err|
-        {
-            complain(format!("give a valid file plz, cant open {input} ({err})"))
-        });
+    let text_file = config.get_input_file();
 
-    let training_info = TrainingInfo{
-        iterations: config.iterations,
-        batch_size: config.batch_size,
-        steps_num: config.steps_num,
-        learning_rate: config.learning_rate,
-        calculate_loss: config.calculate_loss,
-        calculate_accuracy: config.calculate_accuracy,
-        less_info: config.less_info
-    };
+    let training_info = TrainingInfo::from(&config);
 
     let test_file = config.testing_data.map(|test_path|
     {
@@ -418,13 +414,24 @@ impl UnitFactory for EmbeddingsUnitFactory
 
 fn train_embeddings(config: Config)
 {
-    let network = load_network(
+    dbg!("WIP");
+
+    let mut network = load_network_with::<EmbeddingsUnitFactory>(
         &config,
         Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
-        false
+        true
     );
 
-    todo!();
+    let text_file = config.get_input_file();
+
+    let training_info = TrainingInfo{
+        steps_num: 1,
+        ..TrainingInfo::from(&config)
+    };
+
+    network.train::<File, _>(training_info, None, text_file);
+
+    network.save(&config.network_path);
 }
 
 fn main()

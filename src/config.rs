@@ -1,6 +1,7 @@
 use std::{
     env,
     process,
+    fs::File,
     fmt::{self, Display},
     collections::HashSet,
     num::{ParseIntError, ParseFloatError}
@@ -12,7 +13,9 @@ use crate::complain;
 enum ArgError
 {
     Parse(String),
+    EnumParse{value: String, all: String},
     UnexpectedArg(String),
+    DuplicateArg(String),
     MissingValue(String)
 }
 
@@ -23,7 +26,9 @@ impl Display for ArgError
         write!(f, "{}", match self
         {
             Self::Parse(x) => format!("error parsing {x}"),
+            Self::EnumParse{value: x, all} => format!("error parsing {x}, available options: {all}"),
             Self::UnexpectedArg(x) => format!("unexpected argument {x}"),
+            Self::DuplicateArg(x) => format!("duplicate argument {x}"),
             Self::MissingValue(x) => format!("missing value after {x} argument")
         })
     }
@@ -86,7 +91,8 @@ struct ArgInfo<'a>
     short: Option<char>,
     long: String,
     description: String,
-    kind: ArgType
+    kind: ArgType,
+    encountered: bool
 }
 
 impl<'a> ArgInfo<'a>
@@ -150,7 +156,8 @@ impl<'a> ArgParser<'a>
             short: short.into(),
             long: long.into(),
             description: description.into(),
-            kind: ArgType::Variable
+            kind: ArgType::Variable,
+            encountered: false
         });
     }
 
@@ -168,7 +175,8 @@ impl<'a> ArgParser<'a>
             short: short.into(),
             long: long.into(),
             description: description.into(),
-            kind: ArgType::Flag(state)
+            kind: ArgType::Flag(state),
+            encountered: false
         });
     }
 
@@ -179,7 +187,8 @@ impl<'a> ArgParser<'a>
             short: Some('h'),
             long: "help".to_owned(),
             description: "shows this message".to_owned(),
-            kind: ArgType::Help
+            kind: ArgType::Help,
+            encountered: false
         });
 
         self.validate();
@@ -257,6 +266,13 @@ impl<'a> ArgParser<'a>
         arg_value: &str
     ) -> Result<(), ArgError>
     {
+        if arg.encountered
+        {
+            return Err(ArgError::DuplicateArg(arg_value.to_owned()));
+        }
+
+        arg.encountered = true;
+
         let info = match arg.kind
         {
             ArgType::Variable =>
@@ -363,7 +379,15 @@ impl<T: ParsableEnum> ParsableInner for T
         let value = value.to_lowercase();
 
         Self::iter().find(|x| x.as_str() == value)
-            .ok_or_else(|| ArgError::Parse(value.to_owned()))
+            .ok_or_else(||
+            {
+                let all = Self::iter().map(|x| x.as_str().to_owned()).reduce(|acc, x|
+                {
+                    acc + ", " + &x
+                }).unwrap_or_else(String::new);
+
+                ArgError::EnumParse{value: value.to_owned(), all}
+            })
     }
 }
 
@@ -542,5 +566,15 @@ impl Config
         {
             complain("plz provide the input (-i or --input)")
         })
+    }
+
+    pub fn get_input_file(&self) -> File
+    {
+        let input = self.get_input();
+        File::open(input)
+            .unwrap_or_else(|err|
+            {
+                complain(format!("give a valid file plz, cant open {input} ({err})"))
+            })
     }
 }

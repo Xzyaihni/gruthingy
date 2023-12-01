@@ -14,14 +14,17 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use network::{NetworkOutput, Network};
 
 #[allow(unused_imports)]
-use crate::word_vectorizer::{
-    ByteDictionary,
-    CharDictionary,
-    WordDictionary,
-    NetworkDictionary,
-    WordVectorizer,
-    VectorWord,
-    ReaderAdapter
+use crate::{
+    Config,
+    word_vectorizer::{
+        ByteDictionary,
+        CharDictionary,
+        WordDictionary,
+        NetworkDictionary,
+        WordVectorizer,
+        VectorWord,
+        ReaderAdapter
+    }
 };
 
 use optimizers::*;
@@ -357,6 +360,22 @@ pub struct TrainingInfo
     pub less_info: bool
 }
 
+impl From<&Config> for TrainingInfo
+{
+    fn from(config: &Config) -> Self
+    {
+        TrainingInfo{
+            iterations: config.iterations,
+            batch_size: config.batch_size,
+            steps_num: config.steps_num,
+            learning_rate: config.learning_rate,
+            calculate_loss: config.calculate_loss,
+            calculate_accuracy: config.calculate_accuracy,
+            less_info: config.less_info
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct NeuralNetwork<N, O, D>
 where
@@ -520,17 +539,17 @@ where
     }
 
     // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
-    pub fn train<R, RT>(
+    pub fn train<RT, R>(
         &mut self,
         info: TrainingInfo,
         testing_reader: Option<RT>,
         reader: R
     )
     where
-        R: Read,
         RT: Read,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
+        R: Read,
         for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>,
         N::Unit<LayerType>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign,
