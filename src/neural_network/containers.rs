@@ -1,7 +1,6 @@
 use std::{
     f32,
     mem,
-    vec,
     iter,
     rc::Rc,
     fmt::Debug,
@@ -12,32 +11,12 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-#[allow(unused_imports)]
 use matrix_wrapper::MatrixWrapper;
 
-#[allow(unused_imports)]
-// use arrayfire_wrapper::ArrayfireWrapper;
-
-#[allow(unused_imports)]
-// use blas_wrapper::BlasWrapper;
-
-// i ran out of names
-#[allow(unused_imports)]
-// use nyan_wrapper::NyanWrapper;
-
 mod matrix_wrapper;
-// mod arrayfire_wrapper;
-// mod blas_wrapper;
-// mod nyan_wrapper;
 
 
 pub type LayerInnerType = MatrixWrapper;
-
-#[allow(dead_code)]
-pub type JoinableType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::This;
-
-#[allow(dead_code)]
-pub type JoinableDeepType = <LayerInnerType as JoinableSelector<(LayerInnerType, LayerInnerType)>>::Deep;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
@@ -66,62 +45,6 @@ impl LayerInnerType
         let s = self.dot(targets);
 
         (softmaxed, -s)
-    }
-}
-
-pub trait JoinableSelector<T>
-{
-    type This: Joinable<T>;
-    type Deep: Joinable<Self::This>;
-}
-
-pub trait Joinable<T>: Iterator<Item=T> + FromIterator<T> {}
-
-pub struct DefaultJoinableWrapper<T>(vec::IntoIter<(T, T)>);
-
-impl<T> Joinable<(T, T)> for DefaultJoinableWrapper<T> {}
-
-impl<T> FromIterator<(T, T)> for DefaultJoinableWrapper<T>
-{
-    fn from_iter<I>(iter: I) -> DefaultJoinableWrapper<T>
-    where
-        I: IntoIterator<Item=(T, T)>
-    {
-        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
-    }
-}
-
-impl<T> Iterator for DefaultJoinableWrapper<T>
-{
-    type Item = (T, T);
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        self.0.next()
-    }
-}
-
-pub struct DefaultJoinableDeepWrapper<T>(vec::IntoIter<DefaultJoinableWrapper<T>>);
-
-impl<T> Joinable<DefaultJoinableWrapper<T>> for DefaultJoinableDeepWrapper<T> {}
-
-impl<T> FromIterator<DefaultJoinableWrapper<T>> for DefaultJoinableDeepWrapper<T>
-{
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item=DefaultJoinableWrapper<T>>
-    {
-        Self(iter.into_iter().collect::<Vec<_>>().into_iter())
-    }
-}
-
-impl<T> Iterator for DefaultJoinableDeepWrapper<T>
-{
-    type Item = DefaultJoinableWrapper<T>;
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        self.0.next()
     }
 }
 
@@ -605,8 +528,6 @@ pub trait DiffBounds
 where
     Self: Fillable + FromGradient + Clone + Into<GradientType>,
     Self: TryInto<LayerInnerType> + TryInto<f32>,
-    <Self as TryInto<LayerInnerType>>::Error: Debug,
-    <Self as TryInto<f32>>::Error: Debug,
     Self: AddAssign<Self> + Add<f32, Output=Self> + Neg<Output=Self>,
     for<'a> Self: Mul<&'a Self, Output=Self>,
     for<'a> &'a Self: Mul<&'a Self, Output=Self> + Neg<Output=Self>,
@@ -652,8 +573,6 @@ pub struct DiffType<T>
 impl<T> DiffType<T>
 where
     T: DiffBounds,
-    <T as TryInto<LayerInnerType>>::Error: Debug,
-    <T as TryInto<f32>>::Error: Debug,
     for<'a> T: Mul<&'a T, Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Neg<Output=T>,
     for<'a> GradientType: Mul<&'a T, Output=GradientType>,
@@ -700,7 +619,13 @@ where
 
         let gradient = self.gradient.clone().unwrap();
 
-        match mem::replace(&mut self.inner, LayerOps::None)
+        let empty = match self.inner
+        {
+            LayerOps::Diff => LayerOps::Diff,
+            _ => LayerOps::None
+        };
+
+        match mem::replace(&mut self.inner, empty)
         {
             LayerOps::Add{mut lhs, mut rhs} =>
             {
@@ -850,7 +775,7 @@ where
             LayerOps::Matmulv{mut lhs, mut rhs} =>
             {
                 let gradient: LayerInnerType = gradient.try_into()
-                    .expect("matmul must be a tensor");
+                    .ok().expect("matmul must be a tensor");
                 
                 let rhs_d = rhs.is_gradient().then(|| lhs.value().matmulv_transposed(&gradient));
 
@@ -868,7 +793,7 @@ where
             LayerOps::MatmulvAdd{mut lhs, mut rhs, mut added} =>
             {
                 let gradient: LayerInnerType = gradient.try_into()
-                    .expect("matmul must be a tensor");
+                    .ok().expect("matmul must be a tensor");
                 
                 let rhs_d = rhs.is_gradient().then(|| lhs.value().matmulv_transposed(&gradient));
 
@@ -974,11 +899,6 @@ where
     for<'a> GradientType: Mul<&'a T, Output=GradientType>,
     for<'a> &'a GradientType: Mul<&'a T, Output=GradientType>
 {
-    pub fn clear(&mut self)
-    {
-        *self = Self::new_diff(self.value_take());
-    }
-
     pub fn take_gradient(&mut self) -> T
     {
         self.this_mut().take_gradient()
@@ -1777,9 +1697,6 @@ mod tests
 
         let mut vals = |a: &mut LayerType, b: &mut LayerType|
         {
-            a.clear();
-            b.clear();
-
             f(&a, &b).value_take()
         };
 
