@@ -181,7 +181,6 @@ impl IntoChild for &mut ScalarType
 enum LayerOps
 {
     None,
-    Diff,
     SumTensor(LayerType),
     Neg(LayerChild),
     Exp(LayerChild),
@@ -619,13 +618,7 @@ where
 
         let gradient = self.gradient.clone().unwrap();
 
-        let empty = match self.inner
-        {
-            LayerOps::Diff => LayerOps::Diff,
-            _ => LayerOps::None
-        };
-
-        match mem::replace(&mut self.inner, empty)
+        match mem::replace(&mut self.inner, LayerOps::None)
         {
             LayerOps::Add{mut lhs, mut rhs} =>
             {
@@ -861,7 +854,6 @@ where
                     values.derivatives(d);
                 }
             },
-            LayerOps::Diff => (),
             LayerOps::None => ()
         }
     }
@@ -947,7 +939,7 @@ impl<T> DiffWrapper<T>
 {
     pub fn new_diff(value: T) -> Self
     {
-        Self::new_inner(value, LayerOps::Diff, true)
+        Self::new_inner(value, LayerOps::None, true)
     }
 
     pub fn new_undiff(value: T) -> Self
