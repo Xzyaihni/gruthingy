@@ -414,8 +414,6 @@ impl UnitFactory for EmbeddingsUnitFactory
 
 fn train_embeddings(config: Config)
 {
-    dbg!("WIP");
-
     let mut network = load_network_with::<EmbeddingsUnitFactory>(
         &config,
         Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
@@ -432,6 +430,17 @@ fn train_embeddings(config: Config)
     network.train::<File, _>(training_info, None, text_file);
 
     network.save(&config.network_path);
+}
+
+fn closest_embeddings(config: Config)
+{
+    let network = load_network_with::<EmbeddingsUnitFactory>(
+        &config,
+        Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
+        false
+    );
+
+    
 }
 
 fn main()
@@ -461,6 +470,7 @@ fn main()
         ProgramMode::Run => run(config),
         ProgramMode::Test => test_loss(config),
         ProgramMode::CreateDictionary => create_word_dictionary(config),
+        ProgramMode::ClosestEmbeddings => closest_embeddings(config),
         ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config)
     }

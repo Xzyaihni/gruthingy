@@ -1,5 +1,6 @@
 use std::{
     env,
+    iter,
     process,
     fs::File,
     fmt::{self, Display},
@@ -316,12 +317,15 @@ trait ParsableEnum
 
 
     fn iter() -> Self::Iter;
-    fn as_str(&self) -> &'static str;
+    fn as_str(&self) -> String;
 }
 
 macro_rules! iterable_enum
 {
-    ($enum_name:ident, $($key:ident, $name:ident),+) =>
+    (enum $enum_name:ident
+    {
+        $($key:ident),+
+    }) =>
     {
         pub enum $enum_name
         {
@@ -350,11 +354,28 @@ macro_rules! iterable_enum
                 ].into_iter()
             }
 
-            fn as_str(&self) -> &'static str
+            fn as_str(&self) -> String
             {
                 match self
                 {
-                    $(Self::$key => stringify!($name),)+
+                    $(Self::$key =>
+                    {
+                        let raw = stringify!($key);
+
+                        let tail = raw.chars().skip(1).flat_map(|c|
+                        {
+                            if c.is_lowercase()
+                            {
+                                vec![c]
+                            } else
+                            {
+                                iter::once('_').chain(c.to_lowercase()).collect::<Vec<_>>()
+                            }
+                        });
+
+                        raw.chars().take(1).flat_map(char::to_lowercase).chain(tail)
+                            .collect::<String>()
+                    },)+
                 }
             }
         }
@@ -363,13 +384,16 @@ macro_rules! iterable_enum
 
 iterable_enum!
 {
-    ProgramMode,
-    Train, train,
-    Run, run,
-    Test, test,
-    CreateDictionary, create_dictionary,
-    TrainEmbeddings, train_embeddings,
-    WeightsImage, weights_image
+    enum ProgramMode
+    {
+        Train,
+        Run,
+        Test,
+        CreateDictionary,
+        TrainEmbeddings,
+        ClosestEmbeddings,
+        WeightsImage
+    }
 }
 
 impl<T: ParsableEnum> ParsableInner for T
@@ -565,6 +589,15 @@ impl Config
         self.input.as_ref().unwrap_or_else(||
         {
             complain("plz provide the input (-i or --input)")
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn get_output(&self) -> &str
+    {
+        self.output.as_ref().unwrap_or_else(||
+        {
+            complain("plz provide the output (-o or --output)")
         })
     }
 
