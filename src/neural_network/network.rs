@@ -80,7 +80,7 @@ macro_rules! create_weights_container
         };
 
 
-        #[derive(Debug, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Serialize, Deserialize)]
         pub struct WeightsContainer<T>
         {
             sizes: $crate::neural_network::LayerSizes,
@@ -236,6 +236,11 @@ macro_rules! create_weights_container
         impl<T> GenericUnit<T> for WeightsContainer<T>
         {
             type Unit<U> = WeightsContainer<U>;
+
+            fn dropconnectable() -> bool
+            {
+                false $(|| $is_hidden)+
+            }
 
             fn map<U, F>(self, mut f: F) -> WeightsContainer<U>
             where
@@ -459,10 +464,9 @@ where
 
     pub fn dropconnected(&self) -> NetworkDropped<N, O>
     {
-        NetworkDropped(Self{
-            sizes: self.sizes,
-            optimizer_info: None,
-            layers: self.layers.iter().map(|layer|
+        let layers = if N::Unit::<DiffWrapper>::dropconnectable()
+        {
+            self.layers.iter().map(|layer|
             {
                 layer.clone_weights_with_info(|info|
                 {
@@ -477,10 +481,19 @@ where
                         info.weights * dropconnect_mask
                     } else
                     {
-                        info.weights.recreate()
+                        info.weights.clone()
                     }
                 })
             }).collect()
+        } else
+        {
+            self.layers.clone()
+        };
+
+        NetworkDropped(Self{
+            sizes: self.sizes,
+            optimizer_info: None,
+            layers
         })
     }
 

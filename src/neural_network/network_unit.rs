@@ -21,6 +21,8 @@ pub trait GenericUnit<T>
 {
     type Unit<U>;
 
+    fn dropconnectable() -> bool;
+
     fn map<U, F>(self, f: F) -> Self::Unit<U>
     where
         F: FnMut(T) -> U;
@@ -58,7 +60,7 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned
         O: Optimizer<WeightParam=T>;
 }
 
-pub trait NetworkUnit: GenericUnit<DiffWrapper> + Serialize + DeserializeOwned
+pub trait NetworkUnit: GenericUnit<DiffWrapper> + Serialize + DeserializeOwned + Clone
 where
     Self: Sized
 {
