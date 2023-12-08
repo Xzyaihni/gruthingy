@@ -2,6 +2,7 @@ use std::{
     f32,
     mem,
     vec,
+    fmt,
     slice,
     io::{Read, Write, BufReader},
     fs::File,
@@ -34,15 +35,9 @@ pub use optimizers::Optimizer;
 pub use network_unit::{NetworkUnit, NewableLayer, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::WeightsNamed;
 pub use containers::{
-    LayerType,
-    ScalarType,
     LayerInnerType,
     DiffWrapper,
-    Softmaxer,
-    CloneableWrapper,
-    Joinable,
-    JoinableType,
-    JoinableDeepType
+    Softmaxer
 };
 
 #[allow(unused_imports)]
@@ -257,7 +252,7 @@ where
 struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
-    words: Vec<LayerType>,
+    words: Vec<DiffWrapper>,
     temperature: f32,
     predict_amount: usize
 }
@@ -271,7 +266,10 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         predict_amount: usize
     ) -> Self
     {
-        let words = words.into_iter().map(LayerType::new_undiff).collect();
+        let words = words.into_iter().map(|value|
+        {
+            DiffWrapper::new_undiff(value.into())
+        }).collect();
 
         Self{
             dictionary,
@@ -288,7 +286,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     )
     where
         N::Unit<O>: OptimizerUnit<O>,
-        N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
         N: UnitFactory
     {
         let input_amount = self.words.len();
@@ -321,7 +319,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
                 let word = VectorWord::from_raw(word);
 
                 let layer = self.dictionary.word_to_layer(word);
-                self.words.push(LayerType::new_undiff(layer));
+                self.words.push(DiffWrapper::new_undiff(layer.into()));
 
                 let bytes = self.dictionary.word_to_bytes(word);
 
@@ -337,7 +335,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     pub fn predict_bytes<N, O>(self, network: &mut Network<N, O>) -> Box<[u8]>
     where
         N::Unit<O>: OptimizerUnit<O>,
-        N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
         N: UnitFactory
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
@@ -382,7 +380,7 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<LayerType>: NetworkUnit,
+    N::Unit<DiffWrapper>: NetworkUnit,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>
 {
     dictionary: D,
@@ -395,7 +393,7 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>,
     D: NetworkDictionary
 {
@@ -417,8 +415,7 @@ where
         O: Serialize,
         D: Serialize
     {
-        // clear all derivatives info
-        self.network.clear();
+        self.network.assert_empty();
 
         let writer = File::create(path).unwrap();
 
@@ -444,10 +441,12 @@ where
 
     pub fn apply_gradients(&mut self, gradients: Vec<N::Unit<LayerInnerType>>)
     where
-        N::Unit<LayerType>: SubAssign,
-        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<DiffWrapper>: SubAssign,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>
     {
+        self.network.disable_gradients();
+
         let combined_iter = gradients.into_iter()
             .zip(self.network.gradients_info());
 
@@ -457,6 +456,8 @@ where
         });
 
         self.optimizer.advance_time();
+
+        self.network.enable_gradients();
     }
 
     pub fn test_loss<R>(
@@ -499,9 +500,9 @@ where
 
         if calculate_loss
         {
-            let loss = self.network.feedforward(JoinableType::from_iter(input_outputs));
+            let loss = self.network.feedforward(input_outputs);
 
-            Self::print_loss(true, loss.value_clone() / inputs.len() as f32);
+            Self::print_loss(true, loss.scalar().clone() / inputs.len() as f32);
         }
 
         self.network.enable_gradients();
@@ -550,9 +551,9 @@ where
         R: Read,
         for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>,
-        N::Unit<LayerType>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign,
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign + fmt::Debug,
         N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign
     {
         let TrainingInfo{
@@ -705,7 +706,7 @@ where
     )
     where
         R: Read,
-        N::Unit<LayerType>: NetworkUnit,
+        N::Unit<DiffWrapper>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -723,7 +724,7 @@ where
     ) -> String
     where
         R: Read,
-        N::Unit<LayerType>: NetworkUnit,
+        N::Unit<DiffWrapper>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         let output = self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -742,7 +743,7 @@ where
     ) -> Box<[u8]>
     where
         R: Read,
-        N::Unit<LayerType>: NetworkUnit,
+        N::Unit<DiffWrapper>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -801,7 +802,8 @@ mod tests
     #[test]
     fn softmax()
     {
-        let mut test_layer = LayerType::from_raw([1.0, 2.0, 8.0], 3, 1).value_clone();
+        let mut test_layer = LayerInnerType::from_raw([1.0, 2.0, 8.0], 3, 1);
+
         Softmaxer::softmax(&mut test_layer);
 
         let softmaxed = test_layer;

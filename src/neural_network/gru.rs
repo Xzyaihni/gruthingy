@@ -5,8 +5,7 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        LayerType,
-        ScalarType,
+        DiffWrapper,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
@@ -29,9 +28,9 @@ create_weights_container!{
     (output, false, LayerSize::Input, LayerSize::Hidden)
 }
 
-impl NetworkUnit for Gru<LayerType>
+impl NetworkUnit for Gru<DiffWrapper>
 {
-    type State = LayerType;
+    type State = DiffWrapper;
 
     fn new(sizes: LayerSizes) -> Self
     {
@@ -41,8 +40,8 @@ impl NetworkUnit for Gru<LayerType>
     fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &LayerType
-    ) -> NetworkOutput<Self::State, LayerType>
+        input: &DiffWrapper
+    ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
         let mut reset_gate = self.input_reset.matmulv_add(input, &self.reset_bias);
@@ -69,10 +68,10 @@ impl NetworkUnit for Gru<LayerType>
 
         let state = if let Some(previous_state) = previous_state
         {
-            ScalarType::new(1.0) - &update_gate * previous_state + this_activation
+            DiffWrapper::new_undiff(1.0.into()) - &update_gate * previous_state + this_activation
         } else
         {
-            this_activation + ScalarType::new(1.0)
+            this_activation + DiffWrapper::new_undiff(1.0.into())
         };
 
         let output_untrans = self.output.matmulv(&state);

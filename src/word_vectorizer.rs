@@ -335,6 +335,38 @@ impl NetworkDictionary for WordDictionary
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingsDictionary
+{
+    word_dictionary: WordDictionary,
+    network: ()
+}
+
+impl NetworkDictionary for EmbeddingsDictionary
+{
+    type Adapter<R: Read> = CharsAdapter<R>;
+
+
+    fn new(data: Option<&str>) -> Self
+    {
+        let word_dictionary = WordDictionary::new(data);
+
+        let network = ();
+
+        Self{word_dictionary, network}
+    }
+
+    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    {
+        self.word_dictionary.word_to_bytes(word)
+    }
+
+    fn words_amount(&self) -> usize
+    {
+        todo!();
+    }
+}
+
 pub trait ReaderAdapter<R>
 {
     fn adapter(reader: R) -> Self;

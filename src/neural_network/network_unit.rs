@@ -1,8 +1,7 @@
 use crate::neural_network::{
     LAYER_ACTIVATION,
     AFType,
-    ScalarType,
-    LayerType,
+    DiffWrapper,
     LayerInnerType,
     LayerSizes,
     WeightsNamed,
@@ -37,6 +36,7 @@ pub trait GenericUnit<T>
     fn weights_named_info(&self) -> Self::Unit<WeightsNamed<&T>>;
 
     fn for_each_weight<F: FnMut(T)>(self, f: F);
+    fn for_each_weight_ref<F: FnMut(&T)>(&self, f: F);
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
@@ -53,12 +53,12 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned
         &mut self,
         gradients: Self::Unit<LayerInnerType>,
         optimizer: &O
-    ) -> Self::Unit<LayerType>
+    ) -> Self::Unit<DiffWrapper>
     where
         O: Optimizer<WeightParam=T>;
 }
 
-pub trait NetworkUnit: GenericUnit<LayerType> + Serialize + DeserializeOwned
+pub trait NetworkUnit: GenericUnit<DiffWrapper> + Serialize + DeserializeOwned
 where
     Self: Sized
 {
@@ -69,15 +69,15 @@ where
     fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &LayerType
-    ) -> NetworkOutput<Self::State, LayerType>;
+        input: &DiffWrapper
+    ) -> NetworkOutput<Self::State, DiffWrapper>;
 
     fn feedforward_unit_last(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &LayerType,
+        input: &DiffWrapper,
         targets: LayerInnerType
-    ) -> NetworkOutput<Self::State, ScalarType>
+    ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let NetworkOutput{
             state,
@@ -93,9 +93,9 @@ where
     fn feedforward_unit_nonlast(
         &mut self,
         previous_state: Option<&Self::State>,
-        dropout_mask: &LayerType,
-        input: &LayerType
-    ) -> NetworkOutput<Self::State, LayerType>
+        dropout_mask: &DiffWrapper,
+        input: &DiffWrapper
+    ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut output = self.feedforward_unit(previous_state, input);
 
@@ -117,11 +117,6 @@ where
     }
 
     fn parameters_amount(&self, sizes: LayerSizes) -> u128;
-
-    fn clear(&mut self)
-    {
-        self.for_each_weight_mut(|v| v.clear());
-    }
 
     fn enable_gradients(&mut self)
     {

@@ -12,9 +12,6 @@ use nalgebra::{DMatrix, Dyn};
 use super::{
     Softmaxer,
     Softmaxable,
-    JoinableSelector,
-    DefaultJoinableWrapper,
-    DefaultJoinableDeepWrapper,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -80,6 +77,63 @@ macro_rules! op_impl
         $op_real_fn:ident
     ) =>
     {
+        op_impl_owned!{$op_trait, $op_fn_name, $op_real_fn}
+        op_impl_borrowed!{$op_trait, $op_fn_name, $op_real_fn}
+    }
+}
+
+macro_rules! op_impl_rhs_ref
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident,
+        $op_real_fn:ident
+    ) =>
+    {
+        op_impl_owned_ref!{$op_trait, $op_fn_name, $op_real_fn}
+        op_impl_borrowed!{$op_trait, $op_fn_name, $op_real_fn}
+    }
+}
+
+macro_rules! op_impl_owned_ref
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident,
+        $op_real_fn:ident
+    ) =>
+    {
+        impl $op_trait for MatrixWrapper
+        {
+            type Output = Self;
+
+            fn $op_fn_name(self, rhs: Self) -> Self::Output
+            {
+                Self(self.0.$op_real_fn(&rhs.0))
+            }
+        }
+
+        impl $op_trait<MatrixWrapper> for &MatrixWrapper
+        {
+            type Output = MatrixWrapper;
+
+            fn $op_fn_name(self, rhs: MatrixWrapper) -> Self::Output
+            {
+                MatrixWrapper((&self.0).$op_real_fn(&rhs.0))
+            }
+        }
+
+    }
+}
+
+macro_rules! op_impl_owned
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident,
+        $op_real_fn:ident
+    ) =>
+    {
         impl $op_trait for MatrixWrapper
         {
             type Output = Self;
@@ -100,6 +154,17 @@ macro_rules! op_impl
             }
         }
 
+    }
+}
+
+macro_rules! op_impl_borrowed
+{
+    (
+        $op_trait:ident,
+        $op_fn_name:ident,
+        $op_real_fn:ident
+    ) =>
+    {
         impl $op_trait<&MatrixWrapper> for MatrixWrapper
         {
             type Output = Self;
@@ -128,6 +193,28 @@ op_impl_scalar!{Div, div, div}
 
 op_impl!{Add, add, add}
 op_impl!{Sub, sub, sub}
+op_impl_rhs_ref!{Mul, mul, component_mul}
+op_impl_rhs_ref!{Div, div, component_div}
+
+impl Sub<f32> for MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn sub(self, rhs: f32) -> Self::Output
+    {
+        MatrixWrapper((-self.0).add_scalar(rhs))
+    }
+}
+
+impl Sub<&f32> for MatrixWrapper
+{
+    type Output = MatrixWrapper;
+
+    fn sub(self, rhs: &f32) -> Self::Output
+    {
+        MatrixWrapper((-self.0).add_scalar(*rhs))
+    }
+}
 
 impl Sub<f32> for &MatrixWrapper
 {
@@ -135,7 +222,7 @@ impl Sub<f32> for &MatrixWrapper
 
     fn sub(self, rhs: f32) -> Self::Output
     {
-        MatrixWrapper(self.0.add_scalar(-rhs))
+        self.clone().sub(rhs)
     }
 }
 
@@ -145,55 +232,7 @@ impl Sub<&f32> for &MatrixWrapper
 
     fn sub(self, rhs: &f32) -> Self::Output
     {
-        MatrixWrapper(self.0.add_scalar(-rhs))
-    }
-}
-
-impl<T> Mul<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(self.0.component_mul(&rhs.borrow().0))
-    }
-}
-
-impl<T> Mul<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn mul(self, rhs: T) -> Self::Output
-    {
-        Self(self.0.component_mul(&rhs.borrow().0))
-    }
-}
-
-impl<T> Div<T> for MatrixWrapper
-where
-    T: Borrow<Self>
-{
-    type Output = Self;
-
-    fn div(self, rhs: T) -> Self::Output
-    {
-        Self(self.0.component_div(&rhs.borrow().0))
-    }
-}
-
-impl<T> Div<T> for &MatrixWrapper
-where
-    T: Borrow<MatrixWrapper>
-{
-    type Output = MatrixWrapper;
-
-    fn div(self, rhs: T) -> Self::Output
-    {
-        MatrixWrapper(self.0.component_div(&rhs.borrow().0))
+        self.clone().sub(rhs)
     }
 }
 
@@ -256,12 +295,6 @@ impl Softmaxable for MatrixWrapper
     {
         self.sum()
     }
-}
-
-impl JoinableSelector<(MatrixWrapper, MatrixWrapper)> for MatrixWrapper
-{
-    type This = DefaultJoinableWrapper<MatrixWrapper>;
-    type Deep = DefaultJoinableDeepWrapper<MatrixWrapper>;
 }
 
 #[allow(dead_code)]

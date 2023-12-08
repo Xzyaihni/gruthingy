@@ -20,7 +20,7 @@ use neural_network::{
     OptimizerUnit,
     GenericUnit,
     Optimizer,
-    LayerType,
+    DiffWrapper,
     UnitFactory,
     NUnit,
     EmbeddingUnit,
@@ -87,7 +87,7 @@ fn load_network_with<N>(
 ) -> NeuralNetwork<N, NOptimizer, NDictionary>
 where
     N: UnitFactory + DeserializeOwned,
-    N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>
 {
     let path: &Path = config.network_path.as_ref();
@@ -440,7 +440,8 @@ fn closest_embeddings(config: Config)
         false
     );
 
-    
+    drop(network);
+    todo!();
 }
 
 fn main()

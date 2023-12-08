@@ -1,5 +1,6 @@
 use std::{
     f32,
+    fmt,
     borrow::Borrow
 };
 
@@ -7,10 +8,8 @@ use serde::{Serialize, Deserialize};
 
 use crate::neural_network::{
     Softmaxer,
-    LayerType,
-    ScalarType,
-    LayerInnerType,
     DiffWrapper,
+    LayerInnerType,
     NetworkUnit,
     NewableLayer,
     GenericUnit,
@@ -164,14 +163,14 @@ macro_rules! create_weights_container
             }
         }
 
-        impl WeightsContainer<LayerType>
+        impl WeightsContainer<DiffWrapper>
         {
             pub fn new_randomized(sizes: $crate::neural_network::LayerSizes) -> Self
             {
                 use $crate::neural_network::network::LayerSize;
 
                 Self{sizes, $(
-                    $name: LayerType::new_diff({
+                    $name: DiffWrapper::new_diff({
                         let previous_size = $previous_size.to_number(sizes);
                         let current_size = $current_size.to_number(sizes);
 
@@ -192,7 +191,7 @@ macro_rules! create_weights_container
                                     (fastrand::f32() * 2.0 - 1.0) * v
                                 })
                             }
-                        }
+                        }.into()
                     }),
                 )+}
             }
@@ -219,7 +218,7 @@ macro_rules! create_weights_container
                 &mut self,
                 gradients: Self::Unit<LayerInnerType>,
                 optimizer: &O
-            ) -> Self::Unit<LayerType>
+            ) -> Self::Unit<DiffWrapper>
             where
                 O: Optimizer<WeightParam=T>
             {
@@ -229,7 +228,7 @@ macro_rules! create_weights_container
 
                     let change = optimizer.gradient_to_change(this, gradient);
 
-                    LayerType::new_undiff(change)
+                    DiffWrapper::new_undiff(change.into())
                 })
             }
         }
@@ -313,6 +312,13 @@ macro_rules! create_weights_container
                 )+
             }
 
+            fn for_each_weight_ref<F: FnMut(&T)>(&self, mut f: F)
+            {
+                $(
+                    f(&self.$name);
+                )+
+            }
+
             fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, mut f: F)
             {
                 $(
@@ -378,13 +384,13 @@ pub struct NetworkDropped<N, O>(Network<N, O>)
 where
     N: UnitFactory,
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<LayerType>: NetworkUnit;
+    N::Unit<DiffWrapper>: NetworkUnit;
 
 impl<N, O> NetworkDropped<N, O>
 where
     N: UnitFactory,
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>
 {
     pub fn gradients(
         &mut self,
@@ -393,42 +399,45 @@ where
     where
         // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
         // like this??????????/
-        N::Unit<LayerType>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>>
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + fmt::Debug
     {
-        self.0.clear();
-
         let loss = self.0.feedforward(input);
 
-        let loss_value = loss.value_clone();
+        let loss_value = loss.scalar().clone();
 
         loss.calculate_gradients();
 
         let gradients = self.0.layers.iter_mut().map(|layer|
         {
-            layer.map_mut(|weight| weight.take_gradient())
+            layer.map_mut(|weight|
+            {
+                debug_assert!(weight.parent().is_none());
+
+                weight.take_gradient_tensor()
+            })
         }).collect::<Vec<_>>();
 
         (loss_value, gradients)
     }
 }
 
-type UnitState<N> = <<N as UnitFactory>::Unit<LayerType> as NetworkUnit>::State;
+type UnitState<N> = <<N as UnitFactory>::Unit<DiffWrapper> as NetworkUnit>::State;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Network<N: UnitFactory, O>
 where
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<LayerType>: NetworkUnit
+    N::Unit<DiffWrapper>: NetworkUnit
 {
     sizes: LayerSizes,
     optimizer_info: Option<Vec<N::Unit<O>>>,
-    layers: Vec<N::Unit<LayerType>>
+    layers: Vec<N::Unit<DiffWrapper>>
 }
 
 impl<N, O> Network<N, O>
 where
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<LayerType>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>>,
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     N: UnitFactory
 {
     pub fn new(sizes: LayerSizes) -> Self
@@ -475,11 +484,6 @@ where
         })
     }
 
-    pub fn clear(&mut self)
-    {
-        self.layers.iter_mut().for_each(|layer| layer.clear());
-    }
-
     // oh my god wut am i even doing at this point its so over
     pub fn enable_gradients(&mut self)
     {
@@ -499,22 +503,30 @@ where
 
     pub fn gradients_info<'a>(
         &'a mut self
-    ) -> impl Iterator<Item=(&'a mut N::Unit<LayerType>, &'a mut N::Unit<O>)>
+    ) -> impl Iterator<Item=(&'a mut N::Unit<DiffWrapper>, &'a mut N::Unit<O>)>
     {
         self.layers.iter_mut().zip(self.optimizer_info.as_mut().unwrap().iter_mut())
     }
 
     pub fn weights_info(
         &self
-    ) -> Vec<N::Unit<WeightsNamed<&LayerType>>>
+    ) -> Vec<N::Unit<WeightsNamed<&DiffWrapper>>>
     where
         // WORKING LANGUAGE BY THE WAY ITS WORKING JUST FINE HAHAHAHHAHAHAHAHAHHA
-        for<'a> N::Unit<LayerType>: NetworkUnit<Unit<WeightsNamed<&'a LayerType>>=N::Unit<WeightsNamed<&'a LayerType>>>
+        for<'a> N::Unit<DiffWrapper>: NetworkUnit<Unit<WeightsNamed<&'a DiffWrapper>>=N::Unit<WeightsNamed<&'a DiffWrapper>>>
     {
         self.layers.iter().map(|layer|
         {
             layer.weights_named_info()
         }).collect::<Vec<_>>()
+    }
+
+    pub fn assert_empty(&self)
+    {
+        self.layers.iter().for_each(|layer|
+        {
+            layer.for_each_weight_ref(|weight| assert!(weight.parent().is_none()));
+        });
     }
 
     #[allow(dead_code)]
@@ -568,14 +580,14 @@ where
         &mut self,
         last_f: F,
         previous_states: Option<Vec<UnitState<N>>>,
-        dropout_masks: &[LayerType],
-        input: &LayerType
+        dropout_masks: &[DiffWrapper],
+        input: &DiffWrapper
     ) -> NetworkOutput<Vec<UnitState<N>>, T>
     where
-        F: FnOnce(&mut N::Unit<LayerType>, Option<&UnitState<N>>, &LayerType) -> NetworkOutput<UnitState<N>, T>
+        F: FnOnce(&mut N::Unit<DiffWrapper>, Option<&UnitState<N>>, &DiffWrapper) -> NetworkOutput<UnitState<N>, T>
     {
         let mut output: Option<T> = None;
-        let mut last_output: Option<LayerType> = None;
+        let mut last_output: Option<DiffWrapper> = None;
 
         let mut states = Vec::with_capacity(self.sizes.layers);
 
@@ -638,10 +650,10 @@ where
     fn feedforward_single_input(
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
-        dropout_masks: &[LayerType],
-        input: &LayerType,
+        dropout_masks: &[DiffWrapper],
+        input: &DiffWrapper,
         targets: LayerInnerType
-    ) -> NetworkOutput<Vec<UnitState<N>>, ScalarType>
+    ) -> NetworkOutput<Vec<UnitState<N>>, DiffWrapper>
     {
         self.feedforward_single_input_with_activation(|layer, previous_state, input|
         {
@@ -657,16 +669,16 @@ where
     pub fn feedforward(
         &mut self,
         input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
-    ) -> ScalarType
+    ) -> DiffWrapper
     {
-        let mut output: Option<ScalarType> = None;
+        let mut output: Option<DiffWrapper> = None;
         let mut previous_states: Option<Vec<UnitState<N>>> = None;
 
         let dropout_masks = self.create_dropout_masks(self.sizes.input, DROPOUT_PROBABILITY);
 
         for (this_input, this_output) in input
         {
-            let this_input = DiffWrapper::new_undiff(this_input);
+            let this_input = DiffWrapper::new_undiff(this_input.into());
 
             let NetworkOutput{
                 state,
@@ -695,8 +707,8 @@ where
     pub fn predict_single_input(
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
-        dropout_masks: &[LayerType],
-        input: &LayerType,
+        dropout_masks: &[DiffWrapper],
+        input: &DiffWrapper,
         temperature: f32
     ) -> NetworkOutput<Vec<UnitState<N>>, LayerInnerType>
     {
@@ -704,13 +716,13 @@ where
         {
             let NetworkOutput{
                 state,
-                mut output
+                output
             } = layer.feedforward_unit(
                 previous_state,
                 input
             );
 
-            let mut output = output.value_take();
+            let mut output = output.tensor().clone();
 
             Softmaxer::softmax_temperature(&mut output, temperature);
 
@@ -733,7 +745,7 @@ where
 
         for this_input in input
         {
-            let this_input = LayerType::new_undiff(this_input);
+            let this_input = DiffWrapper::new_undiff(this_input.into());
 
             let NetworkOutput{
                 state,
@@ -752,7 +764,7 @@ where
         outputs
     }
 
-    pub fn create_dropout_masks(&self, input_size: usize, probability: f32) -> Vec<LayerType>
+    pub fn create_dropout_masks(&self, input_size: usize, probability: f32) -> Vec<DiffWrapper>
     {
         // lmao iterating over the layers just to get the layer amount thats stored in a literal
         // constant
@@ -767,11 +779,11 @@ where
         previous_size: usize,
         this_size: usize,
         probability: f32
-    ) -> LayerType
+    ) -> DiffWrapper
     {
         let scaled_value = (1.0 - probability).recip();
 
-        LayerType::new_with(previous_size, this_size, ||
+        DiffWrapper::new_undiff(LayerInnerType::new_with(previous_size, this_size, ||
         {
             let roll = fastrand::f32();
             
@@ -782,6 +794,6 @@ where
             {
                 0.0
             }
-        })
+        }).into())
     }
 }

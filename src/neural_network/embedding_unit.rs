@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        LayerType,
+        DiffWrapper,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
@@ -21,7 +21,7 @@ create_weights_container!{
     (output, false, LayerSize::Input, LayerSize::Hidden)
 }
 
-impl NetworkUnit for EmbeddingUnit<LayerType>
+impl NetworkUnit for EmbeddingUnit<DiffWrapper>
 {
     type State = ();
 
@@ -33,8 +33,8 @@ impl NetworkUnit for EmbeddingUnit<LayerType>
     fn feedforward_unit(
         &mut self,
         _previous_state: Option<&Self::State>,
-        input: &LayerType
-    ) -> NetworkOutput<Self::State, LayerType>
+        input: &DiffWrapper
+    ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let hidden = self.weights.matmulv_add(input, &self.bias);
 

@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        LayerType,
+        DiffWrapper,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
@@ -33,11 +33,11 @@ create_weights_container!{
 
 pub struct LSTMState
 {
-    hidden: LayerType,
-    memory: LayerType
+    hidden: DiffWrapper,
+    memory: DiffWrapper
 }
 
-impl NetworkUnit for Lstm<LayerType>
+impl NetworkUnit for Lstm<DiffWrapper>
 {
     type State = LSTMState;
 
@@ -49,8 +49,8 @@ impl NetworkUnit for Lstm<LayerType>
     fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &LayerType
-    ) -> NetworkOutput<Self::State, LayerType>
+        input: &DiffWrapper
+    ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut forget_gate = self.input_forget.matmulv_add(input, &self.forget_bias);
         let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
@@ -81,7 +81,7 @@ impl NetworkUnit for Lstm<LayerType>
         };
 
         let hidden = {
-            let mut memory = this_memory.clone_gradientable();
+            let mut memory = this_memory.clone();
             memory.tanh();
 
             output_gate * memory
@@ -138,7 +138,7 @@ mod tests
     {
         let one_weight = |value: f32|
         {
-            LayerType::new_diff(LayerInnerType::from_raw([value], 1, 1))
+            DiffWrapper::new_diff(LayerInnerType::from_raw([value], 1, 1).into())
         };
 
         /*
@@ -190,7 +190,7 @@ mod tests
 
         let epsilon = 0.0001;
 
-        let single_value = |l: &LayerType|
+        let single_value = |l: &DiffWrapper|
         {
             l.as_vec()[0]
         };
