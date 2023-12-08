@@ -7,7 +7,7 @@ use std::{
     io::{Read, Write, BufReader},
     fs::File,
     path::Path,
-    ops::{DivAssign, AddAssign, SubAssign}
+    ops::{Range, DivAssign, AddAssign, SubAssign}
 };
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -347,11 +347,78 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
 
 type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
 
+pub enum StepsNum
+{
+    Steps(usize),
+    StepsRange(Range<usize>)
+}
+
+impl From<usize> for StepsNum
+{
+    fn from(value: usize) -> Self
+    {
+        Self::Steps(value)
+    }
+}
+
+impl fmt::Display for StepsNum
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        let s = match self
+        {
+            Self::Steps(x) => x.to_string(),
+            Self::StepsRange(Range{start, end}) =>
+            {
+                format!("{start} to {end}")
+            }
+        };
+
+        write!(f, "{s}")
+    }
+}
+
+impl StepsNum
+{
+    pub fn new(value: usize, deviation: f32) -> Self
+    {
+        let half_deviation = (value as f32 * deviation) / 2.0;
+
+        let start = (value as f32 - half_deviation).round() as usize;
+        let end = (value as f32 + half_deviation).round() as usize;
+
+        Self::StepsRange(Range{start, end})
+    }
+
+    pub fn get(&self) -> usize
+    {
+        match self
+        {
+            Self::Steps(x) => *x,
+            Self::StepsRange(Range{start, end}) => fastrand::usize(start..end)
+        }
+    }
+
+    pub fn mid(&self) -> usize
+    {
+        match self
+        {
+            Self::Steps(x) => *x,
+            Self::StepsRange(Range{start, end}) =>
+            {
+                let mid = (end - start) / 2;
+
+                start + mid
+            }
+        }
+    }
+}
+
 pub struct TrainingInfo
 {
     pub iterations: usize,
     pub batch_size: usize,
-    pub steps_num: usize,
+    pub steps_num: StepsNum,
     pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
@@ -365,7 +432,7 @@ impl From<&Config> for TrainingInfo
         TrainingInfo{
             iterations: config.iterations,
             batch_size: config.batch_size,
-            steps_num: config.steps_num,
+            steps_num: StepsNum::new(config.steps_num, config.steps_deviation),
             learning_rate: config.learning_rate,
             calculate_loss: config.calculate_loss,
             calculate_accuracy: config.calculate_accuracy,
@@ -556,57 +623,37 @@ where
         N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign + fmt::Debug,
         N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign
     {
-        let TrainingInfo{
-            iterations,
-            batch_size,
-            steps_num,
-            learning_rate,
-            calculate_loss,
-            calculate_accuracy,
-            less_info
-        } = info;
-
-        if let Some(learning_rate) = learning_rate
+        if let Some(learning_rate) = info.learning_rate
         {
             self.optimizer.set_learning_rate(learning_rate);
         }
 
-        let batch_step = batch_size * steps_num;
+        // i dunno wuts the correct way to handle this stuff
+        let batch_step = info.batch_size * info.steps_num.mid();
 
         let inputs: Vec<_> = self.vectorized(reader);
-        let testing_inputs: Vec<_> = if !calculate_loss && !calculate_accuracy
+        let testing_inputs: Vec<_> = if !info.calculate_loss && !info.calculate_accuracy
         {
             Vec::new()
         } else
         {
-            match testing_reader.map(|reader| self.vectorized(reader))
-            {
-                None => Vec::new(),
-                Some(words) => words
-            }
+            testing_reader
+                .map(|reader| self.vectorized(reader))
+                .unwrap_or_else(Vec::new)
         };
-
-        let steps_num = steps_num.min(inputs.len());
-
-        let steps_deviation = steps_num / 10;
-        let steps_half_deviation = steps_deviation / 2;
 
         let inputs_per_epoch = (inputs.len() / batch_step).max(1);
 
-        let display_header = !less_info;
-        let display_inner = !less_info;
+        let display_header = !info.less_info;
+        let display_inner = !info.less_info;
 
         if display_header
         {
             println!("input vector size: {}", self.dictionary.words_amount());
             println!("parameters amount: {}", self.network.parameters_amount());
-            println!("batch size: {batch_size}");
+            println!("batch size: {}", info.batch_size);
 
-            println!(
-                "steps amount: {} to {}",
-                steps_num - steps_half_deviation,
-                steps_num + steps_half_deviation
-            );
+            println!("steps amount: {}", info.steps_num);
         
             println!("calculate loss every ~{inputs_per_epoch} inputs");
         }
@@ -618,10 +665,10 @@ where
                 return;
             }
 
-            network.test_loss_inner(&testing_inputs, calculate_loss, calculate_accuracy);
+            network.test_loss_inner(&testing_inputs, info.calculate_loss, info.calculate_accuracy);
         };
 
-        for input_index in 0..iterations
+        for input_index in 0..info.iterations
         {
             if display_inner
             {
@@ -629,12 +676,7 @@ where
             }
             
             time_debug! {
-                let steps_num = {
-                    let this_dev = fastrand::i32(0..(steps_deviation as i32 + 1));
-                    let this_dev = this_dev - steps_half_deviation as i32;
-
-                    (steps_num as i32 + this_dev) as usize
-                };
+                let steps_num = info.steps_num.get();
 
                 let print_loss = (input_index % inputs_per_epoch) == inputs_per_epoch - 1;
                 if print_loss
@@ -648,7 +690,7 @@ where
 
                 let mut network = self.network.dropconnected();
 
-                let gradients = (0..batch_size).map(|_|
+                let gradients = (0..info.batch_size).map(|_|
                 {
                     let batch_start = if max_batch_start == 0
                     {
@@ -668,9 +710,9 @@ where
                     let (loss, mut gradients): (f32, Vec<_>) =
                         network.gradients(values.into_iter());
 
-                    kahan_sum.add(loss as f64 / batch_size as f64);
+                    kahan_sum.add(loss as f64 / info.batch_size as f64);
 
-                    gradients.iter_mut().for_each(|gradient| *gradient /= batch_size as f32);
+                    gradients.iter_mut().for_each(|gradient| *gradient /= info.batch_size as f32);
 
                     gradients
                 }).reduce(|mut acc, this|

@@ -3,6 +3,7 @@ use std::{
     iter,
     process,
     fs::File,
+    path::Path,
     fmt::{self, Display},
     collections::HashSet,
     num::{ParseIntError, ParseFloatError}
@@ -153,10 +154,10 @@ impl<'a> ArgParser<'a>
     )
     {
         self.args.push(ArgInfo{
+            description: description.into() + &Self::maybe_default(value),
             value: Some(value),
             short: short.into(),
             long: long.into(),
-            description: description.into(),
             kind: ArgType::Variable,
             encountered: false
         });
@@ -172,13 +173,22 @@ impl<'a> ArgParser<'a>
     )
     {
         self.args.push(ArgInfo{
+            description: description.into(),
             value: Some(value),
             short: short.into(),
             long: long.into(),
-            description: description.into(),
             kind: ArgType::Flag(state),
             encountered: false
         });
+    }
+
+    fn maybe_default(value: &mut dyn ArgParsable) -> String
+    {
+        match value.display_default()
+        {
+            Some(x) => format!(" (default {x})"),
+            None => String::new()
+        }
     }
 
     pub fn parse(mut self, mut args: impl Iterator<Item=String>) -> Result<(), ArgError>
@@ -304,6 +314,50 @@ impl<'a> ArgParser<'a>
     }
 }
 
+trait DisplayableDefault
+{
+    fn display_default(&self) -> Option<String>;
+}
+
+macro_rules! impl_displayable_default
+{
+    ($this_t:ident) =>
+    {
+        impl DisplayableDefault for $this_t
+        {
+            fn display_default(&self) -> Option<String>
+            {
+                Some(self.to_string())
+            }
+        }
+    }
+}
+
+impl_displayable_default!{String}
+impl_displayable_default!{bool}
+impl_displayable_default!{f32}
+impl_displayable_default!{f64}
+impl_displayable_default!{usize}
+impl_displayable_default!{u8}
+impl_displayable_default!{u16}
+impl_displayable_default!{u32}
+impl_displayable_default!{u64}
+impl_displayable_default!{u128}
+impl_displayable_default!{isize}
+impl_displayable_default!{i8}
+impl_displayable_default!{i16}
+impl_displayable_default!{i32}
+impl_displayable_default!{i64}
+impl_displayable_default!{i128}
+
+impl<T: DisplayableDefault> DisplayableDefault for Option<T>
+{
+    fn display_default(&self) -> Option<String>
+    {
+        self.as_ref().map(|v| v.display_default()).flatten()
+    }
+}
+
 trait ParsableInner
 where
     Self: Sized
@@ -339,6 +393,22 @@ macro_rules! iterable_enum
                 [
                     $(stringify!($key),)+
                 ].len()
+            }
+        }
+
+        impl fmt::Display for $enum_name
+        {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+            {
+                write!(f, "{}", self.as_str())
+            }
+        }
+
+        impl DisplayableDefault for $enum_name
+        {
+            fn display_default(&self) -> Option<String>
+            {
+                Some(self.as_str())
             }
         }
 
@@ -439,7 +509,7 @@ impl ParsableInner for f32
     }
 }
 
-trait ArgParsable
+trait ArgParsable: DisplayableDefault
 {
     fn parse(&mut self, value: ArgParseInfo) -> Result<(), ArgError>;
 }
@@ -454,7 +524,7 @@ impl ArgParsable for bool
     }
 }
 
-impl<T: ParsableInner> ArgParsable for T
+impl<T: ParsableInner + DisplayableDefault> ArgParsable for T
 {
     fn parse(&mut self, value: ArgParseInfo) -> Result<(), ArgError>
     {
@@ -464,7 +534,7 @@ impl<T: ParsableInner> ArgParsable for T
     }
 }
 
-impl<T: ParsableInner> ArgParsable for Option<T>
+impl<T: ParsableInner + DisplayableDefault> ArgParsable for Option<T>
 {
     fn parse(&mut self, value: ArgParseInfo) -> Result<(), ArgError>
     {
@@ -481,6 +551,7 @@ pub struct Config
     pub hidden_size: usize,
     pub layers_amount: usize,
     pub steps_num: usize,
+    pub steps_deviation: f32,
     pub embeddings_size: usize,
     pub learning_rate: Option<f32>,
     pub calculate_loss: bool,
@@ -506,6 +577,7 @@ impl Config
         let mut hidden_size = 512;
         let mut layers_amount = 3;
         let mut steps_num = 64;
+        let mut steps_deviation = 0.1;
         let mut embeddings_size = 64;
         let mut learning_rate = None;
         let mut calculate_loss = true;
@@ -528,6 +600,7 @@ impl Config
         parser.push(&mut hidden_size, None, "hidden", "hidden layers size");
         parser.push(&mut layers_amount, None, "layers", "amount of hidden layers");
         parser.push(&mut steps_num, 's', "steps", "amount of timesteps the network remembers");
+        parser.push(&mut steps_deviation, 'D', "deviation", "deviation of the steps number as a fraction");
         parser.push(&mut embeddings_size, 'e', "embeddings", "size of the embeddings vector");
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
@@ -567,6 +640,7 @@ impl Config
             hidden_size,
             layers_amount,
             steps_num,
+            steps_deviation,
             embeddings_size,
             learning_rate,
             calculate_loss,
@@ -603,11 +677,25 @@ impl Config
 
     pub fn get_input_file(&self) -> File
     {
-        let input = self.get_input();
-        File::open(input)
+        Self::get_file_inner(self.get_input())
+    }
+
+    pub fn test_file(&self) -> Option<File>
+    {
+        self.testing_data.as_ref().map(|test_path|
+        {
+            Self::get_file_inner(test_path)
+        })
+    }
+
+    fn get_file_inner(path: impl AsRef<Path>) -> File
+    {
+        let path = path.as_ref();
+
+        File::open(path)
             .unwrap_or_else(|err|
             {
-                complain(format!("give a valid file plz, cant open {input} ({err})"))
+                complain(format!("give a valid file plz, cant open {} ({err})", path.display()))
             })
     }
 }

@@ -147,14 +147,7 @@ fn train(config: Config)
 
     let training_info = TrainingInfo::from(&config);
 
-    let test_file = config.testing_data.map(|test_path|
-    {
-        File::open(&test_path)
-            .unwrap_or_else(|err|
-            {
-                complain(format!("give a valid file plz, cant open {test_path} ({err})"))
-            })
-    });
+    let test_file = config.test_file();
 
     network.train(training_info, test_file, text_file);
 
@@ -422,12 +415,14 @@ fn train_embeddings(config: Config)
 
     let text_file = config.get_input_file();
 
+    let test_file = config.test_file();
+
     let training_info = TrainingInfo{
-        steps_num: 1,
+        steps_num: 1.into(),
         ..TrainingInfo::from(&config)
     };
 
-    network.train::<File, _>(training_info, None, text_file);
+    network.train::<File, _>(training_info, test_file, text_file);
 
     network.save(&config.network_path);
 }
