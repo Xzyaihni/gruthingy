@@ -548,6 +548,7 @@ pub struct Config
     pub steps_deviation: f32,
     pub embeddings_size: usize,
     pub learning_rate: Option<f32>,
+    pub loss_every: Option<usize>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
     pub testing_data: Option<String>,
@@ -574,6 +575,7 @@ impl Config
         let mut steps_deviation = 0.1;
         let mut embeddings_size = 64;
         let mut learning_rate = None;
+        let mut loss_every = None;
         let mut calculate_loss = true;
         let mut calculate_accuracy = false;
         let mut testing_data = None;
@@ -597,6 +599,7 @@ impl Config
         parser.push(&mut steps_deviation, 'D', "deviation", "deviation of the steps number as a fraction");
         parser.push(&mut embeddings_size, 'e', "embeddings", "size of the embeddings vector");
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
+        parser.push(&mut loss_every, None, "loss-every", "amount of iterations per test loss calculation");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
         parser.push_flag(&mut calculate_loss, None, "no-loss", "dont calculate loss", false);
         parser.push(&mut testing_data, 't', "testing", "data for calculating the loss/accuracy");
@@ -631,6 +634,7 @@ impl Config
             steps_deviation,
             embeddings_size,
             learning_rate,
+            loss_every,
             calculate_loss,
             calculate_accuracy,
             testing_data,

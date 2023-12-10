@@ -552,6 +552,7 @@ pub struct TrainingInfo
     pub batch_size: usize,
     pub steps_num: StepsNum,
     pub learning_rate: Option<f32>,
+    pub loss_every: Option<usize>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
     pub less_info: bool
@@ -566,6 +567,7 @@ impl From<&Config> for TrainingInfo
             batch_size: config.batch_size,
             steps_num: StepsNum::new(config.steps_num, config.steps_deviation),
             learning_rate: config.learning_rate,
+            loss_every: config.loss_every,
             calculate_loss: config.calculate_loss,
             calculate_accuracy: config.calculate_accuracy,
             less_info: config.less_info
@@ -784,7 +786,10 @@ where
                 .unwrap_or_else(Vec::new)
         };
 
-        let inputs_per_epoch = (inputs.len() / batch_step).max(1);
+        let inputs_per_loss = info.loss_every.unwrap_or_else(||
+        {
+            (inputs.len() / batch_step).max(1)
+        });
 
         let display_header = !info.less_info;
         let display_inner = !info.less_info;
@@ -797,7 +802,7 @@ where
 
             println!("steps amount: {}", info.steps_num);
         
-            println!("calculate loss every ~{inputs_per_epoch} inputs");
+            println!("calculate loss every ~{inputs_per_loss} inputs");
         }
 
         let output_loss = |network: &mut NeuralNetwork<_, _, _>|
@@ -824,7 +829,7 @@ where
             time_debug! {
                 let steps_num = info.steps_num.get();
 
-                let print_loss = (input_index % inputs_per_epoch) == inputs_per_epoch - 1;
+                let print_loss = (input_index % inputs_per_loss) == inputs_per_loss - 1;
                 if print_loss
                 {
                     output_loss(self);
