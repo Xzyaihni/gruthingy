@@ -192,7 +192,7 @@ pub trait InputOutputable
     where
         Self: 'a;
 
-    fn iter<'a>(&'a self) -> Self::Iter<'a>;
+    fn iter(&self) -> Self::Iter<'_>;
 }
 
 impl<'a, D> InputOutputable for InputOutput<'a, false, D>
@@ -699,7 +699,7 @@ where
         {
             let loss = self.network.feedforward(input_outputs);
 
-            Self::print_loss(true, loss.scalar().clone() / inputs.len() as f32);
+            Self::print_loss(true, *loss.scalar() / inputs.len() as f32);
         }
 
         self.network.enable_gradients();

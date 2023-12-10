@@ -230,7 +230,7 @@ impl AnyDiffType
         match self
         {
             Self::Tensor(x) => GradientType::Tensor(x.value.clone()),
-            Self::Scalar(x) => GradientType::Scalar(x.value.clone())
+            Self::Scalar(x) => GradientType::Scalar(x.value)
         }
     }
 }
@@ -266,6 +266,8 @@ impl Ops
 {
     pub fn is_none(&self) -> bool
     {
+        // i am NOT using the matches macro its TRASH that gives u true if u flip args on accident
+        #[allow(clippy::match_like_matches_macro)]
         match self
         {
             Self::None => true,
@@ -1009,14 +1011,14 @@ where
                 {
                     let d = rhs.value_clone() * &gradient;
  
-                    lhs.derivatives(d.into());
+                    lhs.derivatives(d);
                 }
 
                 if let Some(lhs_value) = lhs_value
                 {
                     let d = lhs_value * &gradient;
 
-                    rhs.derivatives(d.into());
+                    rhs.derivatives(d);
                 }
             },
             Ops::SoftmaxCrossEntropy{values, softmaxed_values, targets} =>
@@ -1445,7 +1447,7 @@ impl DiffWrapper
         let (softmaxed, value) = self.tensor().clone().softmax_cross_entropy(&targets);
 
         inner_from_value_special_op!(value, Ops::SoftmaxCrossEntropy{
-            values: self.into(),
+            values: self,
             softmaxed_values: softmaxed,
             targets
         }, self)

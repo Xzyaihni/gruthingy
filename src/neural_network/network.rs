@@ -51,7 +51,7 @@ pub enum LayerSize
 
 impl LayerSize
 {
-    pub fn to_number(self, sizes: LayerSizes) -> usize
+    pub fn into_number(self, sizes: LayerSizes) -> usize
     {
         match self
         {
@@ -128,14 +128,14 @@ macro_rules! create_weights_container
                 )+].len()
             }
 
-            pub fn into_iter_with_info_mut(&mut self) -> impl Iterator<Item=WeightsSize<&mut T>>
+            pub fn iter_mut_with_info(&mut self) -> impl Iterator<Item=WeightsSize<&mut T>>
             {
                 [
                     $(
                         WeightsSize{
                             weights: &mut self.$name,
-                            current_size: $current_size.to_number(self.sizes),
-                            previous_size: $previous_size.to_number(self.sizes),
+                            current_size: $current_size.into_number(self.sizes),
+                            previous_size: $previous_size.into_number(self.sizes),
                             is_hidden: $is_hidden
                         },
                     )+
@@ -171,8 +171,8 @@ macro_rules! create_weights_container
 
                 Self{sizes, $(
                     $name: DiffWrapper::new_diff({
-                        let previous_size = $previous_size.to_number(sizes);
-                        let current_size = $current_size.to_number(sizes);
+                        let previous_size = $previous_size.into_number(sizes);
+                        let current_size = $current_size.into_number(sizes);
 
                         match $current_size
                         {
@@ -182,7 +182,7 @@ macro_rules! create_weights_container
                             },
                             x =>
                             {
-                                let previous_layer = x.to_number(sizes);
+                                let previous_layer = x.into_number(sizes);
 
                                 LayerInnerType::new_with(previous_size, current_size, ||
                                 {
@@ -207,8 +207,8 @@ macro_rules! create_weights_container
                     sizes,
                     $(
                         $name: T::new(
-                            $previous_size.to_number(sizes),
-                            $current_size.to_number(sizes)
+                            $previous_size.into_number(sizes),
+                            $current_size.into_number(sizes)
                         ),
                     )+
                 }
@@ -276,8 +276,8 @@ macro_rules! create_weights_container
                         $name: f(
                             WeightsSize{
                                 weights: &self.$name,
-                                current_size: $current_size.to_number(self.sizes),
-                                previous_size: $previous_size.to_number(self.sizes),
+                                current_size: $current_size.into_number(self.sizes),
+                                previous_size: $previous_size.into_number(self.sizes),
                                 is_hidden: $is_hidden
                             }
                         ),
@@ -294,8 +294,8 @@ macro_rules! create_weights_container
                             name: stringify!($name).to_owned(),
                             weights_size: WeightsSize{
                                 weights: &self.$name,
-                                current_size: $current_size.to_number(self.sizes),
-                                previous_size: $previous_size.to_number(self.sizes),
+                                current_size: $current_size.into_number(self.sizes),
+                                previous_size: $previous_size.into_number(self.sizes),
                                 is_hidden: $is_hidden
                             }
                         },
@@ -408,7 +408,7 @@ where
     {
         let loss = self.0.feedforward(input);
 
-        let loss_value = loss.scalar().clone();
+        let loss_value = *loss.scalar();
 
         loss.calculate_gradients();
 
@@ -514,9 +514,9 @@ where
         });
     }
 
-    pub fn gradients_info<'a>(
-        &'a mut self
-    ) -> impl Iterator<Item=(&'a mut N::Unit<DiffWrapper>, &'a mut N::Unit<O>)>
+    pub fn gradients_info(
+        &mut self
+    ) -> impl Iterator<Item=(&'_ mut N::Unit<DiffWrapper>, &'_ mut N::Unit<O>)>
     {
         self.layers.iter_mut().zip(self.optimizer_info.as_mut().unwrap().iter_mut())
     }

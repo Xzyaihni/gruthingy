@@ -1,3 +1,7 @@
+// >putting else on a different line is suspicious
+// why?
+#![allow(clippy::suspicious_else_formatting)]
+
 use std::{
     env,
     process,
@@ -120,7 +124,7 @@ where
             None
         };
 
-        let dictionary = D::new(data.as_ref().map(|x| x.as_str()));
+        let dictionary = D::new(data.as_deref());
 
         let sizes = sizes.unwrap_or_else(|| SizesInfo::from(config));
 
@@ -167,7 +171,7 @@ fn run(config: Config)
 
     let f = config.output.as_ref().map(|filepath|
     {
-        File::create(&filepath)
+        File::create(filepath)
             .unwrap_or_else(|err|
             {
                 complain(format!("couldnt create a file at {filepath}: {err}"))
@@ -357,8 +361,6 @@ fn create_word_dictionary(config: Config)
 {
     let text_file = BufReader::new(File::open(config.get_input()).unwrap());
  
-    let dictionary_path = config.dictionary_path.clone();
-
     let mut words: HashSet<String> = HashSet::new();
 
     let mut chars_reader = CharsAdapter::adapter(text_file);
@@ -367,7 +369,7 @@ fn create_word_dictionary(config: Config)
     {
         let mut current_word = String::new();
 
-        while let Some(c) = chars_reader.next()
+        for c in chars_reader.by_ref()
         {
             if WORD_SEPARATORS.contains(&c)
             {
@@ -390,15 +392,15 @@ fn create_word_dictionary(config: Config)
         words.insert(current_word);
     }
 
-    let mut dictionary_file = File::create(dictionary_path).unwrap();
+    let mut dictionary_file = File::create(config.dictionary_path).unwrap();
     for (index, word) in words.into_iter().enumerate()
     {
         if index != 0
         {
-            dictionary_file.write(&[b'\n']).unwrap();
+            dictionary_file.write_all(&[b'\n']).unwrap();
         }
 
-        dictionary_file.write(word.as_bytes()).unwrap();
+        dictionary_file.write_all(word.as_bytes()).unwrap();
     }
 
     dictionary_file.flush().unwrap();

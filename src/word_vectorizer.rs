@@ -361,9 +361,7 @@ impl NetworkDictionary for EmbeddingsDictionary
     {
         let word_dictionary = WordDictionary::new(data);
 
-        let network = ();
-
-        Self{word_dictionary, network}
+        Self{word_dictionary, network: ()}
     }
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
@@ -501,7 +499,7 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
 
         let mut word = String::new();
 
-        while let Some(c) = self.adapter.next()
+        for c in self.adapter.by_ref()
         {
             if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
             {

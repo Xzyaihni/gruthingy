@@ -120,13 +120,9 @@ impl<'a> ArgInfo<'a>
 
         line += &format!(" --{}", self.long);
 
-        match self.kind
+        if let ArgType::Variable = self.kind
         {
-            ArgType::Variable =>
-            {
-                line += "=VALUE";
-            },
-            _ => ()
+            line += "=VALUE";
         }
 
         line
@@ -206,16 +202,13 @@ impl<'a> ArgParser<'a>
 
         while let Some(raw_arg) = args.next()
         {
-            if raw_arg.starts_with("--")
+            if let Some(arg) = raw_arg.strip_prefix("--")
             {
-                let arg = &raw_arg[2..];
-
                 if let Some(found) = self.args.iter_mut().find(|this_arg| this_arg.long == arg)
                 {
-                    match found.kind
+                    if let ArgType::Help = found.kind
                     {
-                        ArgType::Help => self.print_help(),
-                        _ => ()
+                        self.print_help();
                     }
 
                     Self::on_arg(&mut args, found, &raw_arg)?;
@@ -223,10 +216,8 @@ impl<'a> ArgParser<'a>
                 {
                     return Err(ArgError::UnexpectedArg(raw_arg));
                 }
-            } else if raw_arg.starts_with('-')
+            } else if let Some(arg) = raw_arg.strip_prefix('-')
             {
-                let arg = &raw_arg[1..];
-
                 if arg.len() != 1
                 {
                     return Err(ArgError::UnexpectedArg(raw_arg));
@@ -236,10 +227,9 @@ impl<'a> ArgParser<'a>
 
                 if let Some(found) = self.args.iter_mut().find(|arg| arg.short == Some(c))
                 {
-                    match found.kind
+                    if let ArgType::Help = found.kind
                     {
-                        ArgType::Help => self.print_help(),
-                        _ => ()
+                        self.print_help();
                     }
 
                     Self::on_arg(&mut args, found, &raw_arg)?;
@@ -354,7 +344,7 @@ impl<T: DisplayableDefault> DisplayableDefault for Option<T>
 {
     fn display_default(&self) -> Option<String>
     {
-        self.as_ref().map(|v| v.display_default()).flatten()
+        self.as_ref().and_then(|v| v.display_default())
     }
 }
 
@@ -371,7 +361,8 @@ trait ParsableEnum
 
 
     fn iter() -> Self::Iter;
-    fn as_str(&self) -> String;
+    fn as_string(&self) -> String;
+    fn list_all() -> String;
 }
 
 macro_rules! iterable_enum
@@ -400,7 +391,7 @@ macro_rules! iterable_enum
         {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
             {
-                write!(f, "{}", self.as_str())
+                write!(f, "{}", self.as_string())
             }
         }
 
@@ -408,7 +399,7 @@ macro_rules! iterable_enum
         {
             fn display_default(&self) -> Option<String>
             {
-                Some(self.as_str())
+                Some(self.as_string())
             }
         }
 
@@ -424,7 +415,7 @@ macro_rules! iterable_enum
                 ].into_iter()
             }
 
-            fn as_str(&self) -> String
+            fn as_string(&self) -> String
             {
                 match self
                 {
@@ -447,6 +438,14 @@ macro_rules! iterable_enum
                             .collect::<String>()
                     },)+
                 }
+            }
+
+            fn list_all() -> String
+            {
+                Self::iter().map(|x| x.as_string()).reduce(|acc, x|
+                {
+                    acc + ", " + &x
+                }).unwrap_or_default()
             }
         }
     }
@@ -472,15 +471,10 @@ impl<T: ParsableEnum> ParsableInner for T
     {
         let value = value.to_lowercase();
 
-        Self::iter().find(|x| x.as_str() == value)
+        Self::iter().find(|x| x.as_string() == value)
             .ok_or_else(||
             {
-                let all = Self::iter().map(|x| x.as_str().to_owned()).reduce(|acc, x|
-                {
-                    acc + ", " + &x
-                }).unwrap_or_else(String::new);
-
-                ArgError::EnumParse{value: value.to_owned(), all}
+                ArgError::EnumParse{value: value.to_owned(), all: Self::list_all()}
             })
     }
 }
@@ -623,13 +617,7 @@ impl Config
 
         let mode = mode.unwrap_or_else(||
         {
-            let modes = ProgramMode::iter()
-                .map(|x| x.as_str().to_owned())
-                .reduce(|acc, x|
-                {
-                    acc + ", " + &x
-                })
-                .unwrap_or_else(String::new);
+            let modes = ProgramMode::list_all();
 
             complain(format!("provide a valid mode: {modes}"))
         });
