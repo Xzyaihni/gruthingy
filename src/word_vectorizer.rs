@@ -296,9 +296,18 @@ impl WordDictionary
         VectorWord::new(index)
     }
 
-    pub fn str_to_word(&self, s: &str) -> Option<&VectorWord>
+    pub fn str_to_word(&self, s: &str) -> Option<VectorWord>
     {
-        self.dictionary.by_key(s)
+        if s.len() == 1
+        {
+            let c = s.chars().next().unwrap();
+            if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
+            {
+                return Some(self.separator_word(pos));
+            }
+        }
+
+        self.dictionary.by_key(s).copied()
     }
 }
 

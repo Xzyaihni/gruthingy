@@ -452,7 +452,6 @@ fn closest_embeddings(config: Config)
     let to_vector_word = |network: &NeuralNetwork<_, _, WordDictionary>, s|
     {
         network.dictionary().str_to_word(s)
-            .copied()
             .unwrap_or_else(|| complain(format!("\"{input}\" isnt a valid word")))
     };
 
