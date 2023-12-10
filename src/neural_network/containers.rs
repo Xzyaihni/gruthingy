@@ -1557,6 +1557,18 @@ impl DiffWrapper
         inner_single_from_value!(value, SumTensor, self)
     }
 
+    pub fn cosine_similarity(&self, other: Self) -> f32
+    {
+        let lhs = self.tensor();
+        let rhs = other.tensor();
+
+        let top = lhs.clone().dot(&rhs);
+
+        let bottom = lhs.magnitude() * rhs.magnitude();
+
+        top / bottom
+    }
+
     pub fn total_len(&self) -> usize
     {
         self.tensor().total_len()

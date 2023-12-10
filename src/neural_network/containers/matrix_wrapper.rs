@@ -443,6 +443,11 @@ impl MatrixWrapper
         Self(self.0.simd_cap_magnitude(cap))
     }
 
+    pub fn magnitude(&self) -> f32
+    {
+        self.0.magnitude()
+    }
+
     pub fn total_len(&self) -> usize
     {
         self.0.as_slice().len()

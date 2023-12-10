@@ -295,6 +295,11 @@ impl WordDictionary
 
         VectorWord::new(index)
     }
+
+    pub fn str_to_word(&self, s: &str) -> Option<&VectorWord>
+    {
+        self.dictionary.by_key(s)
+    }
 }
 
 impl NetworkDictionary for WordDictionary

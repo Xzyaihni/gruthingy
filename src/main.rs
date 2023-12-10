@@ -40,6 +40,7 @@ use word_vectorizer::{
     ReaderAdapter,
     NetworkDictionary,
     WordDictionary,
+    VectorWord,
     WORD_SEPARATORS
 };
 
@@ -407,7 +408,7 @@ fn create_word_dictionary(config: Config)
 }
 
 #[derive(Serialize, Deserialize)]
-struct EmbeddingsUnitFactory;
+pub struct EmbeddingsUnitFactory;
 
 impl UnitFactory for EmbeddingsUnitFactory
 {
@@ -438,14 +439,66 @@ fn train_embeddings(config: Config)
 
 fn closest_embeddings(config: Config)
 {
-    let network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
+    let input = config.get_input();
+
+    let mut network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
         &config,
         Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
         false
     );
 
-    drop(network);
-    todo!();
+    network.inner_network_mut().disable_gradients();
+
+    let to_vector_word = |network: &NeuralNetwork<_, _, WordDictionary>, s|
+    {
+        network.dictionary().str_to_word(s)
+            .copied()
+            .unwrap_or_else(|| complain(format!("\"{input}\" isnt a valid word")))
+    };
+
+    let embeddings_of = |network: &mut NeuralNetwork<_, _, WordDictionary>, word|
+    {
+        let input = network.dictionary().word_to_layer(word);
+
+        let input_wrapper = DiffWrapper::new_undiff(input.into());
+
+        network.inner_network_mut().embeddings(&input_wrapper)
+    };
+
+    let this_word = to_vector_word(&network, input);
+    let this_index = this_word.index();
+
+    let this_embeddings = embeddings_of(&mut network, this_word);
+
+    let mut word_similarities = (0..network.dictionary().words_amount())
+        .filter(|v| *v != this_index)
+        .map(|i|
+        {
+            let other_word = VectorWord::from_raw(i);
+
+            let other_embeddings = embeddings_of(&mut network, other_word);
+
+            let similarity = this_embeddings.cosine_similarity(other_embeddings);
+
+            (other_word, similarity)
+        }).collect::<Vec<_>>();
+
+    word_similarities.sort_unstable_by(|this, other| this.1.partial_cmp(&other.1).unwrap());
+
+    let closest_amount = 5.min(word_similarities.len());
+
+    println!("closest {closest_amount} embeddings:");
+    for i in 0..closest_amount
+    {
+        let (vector_word, _similarity) = word_similarities.pop()
+            .expect("closest amount must be less or equal to len");
+
+        let word_bytes = network.dictionary().word_to_bytes(vector_word);
+
+        let word = String::from_utf8_lossy(&word_bytes);
+
+        println!("{}: {word}", i + 1);
+    }
 }
 
 fn main()

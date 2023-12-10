@@ -8,7 +8,7 @@ use crate::{
         DiffWrapper,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
-        network_unit::NetworkUnit
+        network_unit::{NetworkUnit, Embeddingsable}
     }
 };
 
@@ -19,6 +19,14 @@ create_weights_container!{
     (weights, false, LayerSize::Hidden, LayerSize::Input),
     (bias, false, LayerSize::Hidden, LayerSize::One),
     (output, false, LayerSize::Input, LayerSize::Hidden)
+}
+
+impl Embeddingsable for EmbeddingUnit<DiffWrapper>
+{
+    fn embeddings(&mut self, input: &DiffWrapper) -> DiffWrapper
+    {
+        self.weights.matmulv_add(input, &self.bias)
+    }
 }
 
 impl NetworkUnit for EmbeddingUnit<DiffWrapper>
@@ -36,7 +44,7 @@ impl NetworkUnit for EmbeddingUnit<DiffWrapper>
         input: &DiffWrapper
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
-        let hidden = self.weights.matmulv_add(input, &self.bias);
+        let hidden = self.embeddings(input);
 
         let output = self.output.matmulv(hidden);
 

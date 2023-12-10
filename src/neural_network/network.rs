@@ -6,17 +6,21 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use crate::neural_network::{
-    Softmaxer,
-    DiffWrapper,
-    LayerInnerType,
-    NetworkUnit,
-    NewableLayer,
-    GenericUnit,
-    OptimizerUnit,
-    UnitFactory,
-    DROPOUT_PROBABILITY,
-    DROPCONNECT_PROBABILITY
+use crate::{
+    EmbeddingsUnitFactory,
+    neural_network::{
+        Softmaxer,
+        DiffWrapper,
+        LayerInnerType,
+        NetworkUnit,
+        NewableLayer,
+        GenericUnit,
+        OptimizerUnit,
+        UnitFactory,
+        DROPOUT_PROBABILITY,
+        DROPCONNECT_PROBABILITY,
+        network_unit::Embeddingsable
+    }
 };
 
 
@@ -808,5 +812,23 @@ where
                 0.0
             }
         }).into())
+    }
+}
+
+// wut do u mean its not used??
+#[allow(dead_code)]
+type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
+
+impl<O> Network<EmbeddingsUnitFactory, O>
+where
+    EN<O>: OptimizerUnit<O>,
+    EN<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=EN<DiffWrapper>> + Embeddingsable,
+    EmbeddingsUnitFactory: UnitFactory
+{
+    pub fn embeddings(&mut self, input: &DiffWrapper) -> DiffWrapper
+    {
+        debug_assert!(self.layers.len() == 1);
+
+        self.layers[0].embeddings(input)
     }
 }

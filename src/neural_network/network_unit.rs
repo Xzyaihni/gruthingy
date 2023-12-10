@@ -17,6 +17,12 @@ pub trait UnitFactory
     type Unit<T>;
 }
 
+// i hate rust generics i hate rust generics i hate rust generics
+pub trait Embeddingsable
+{
+    fn embeddings(&mut self, input: &DiffWrapper) -> DiffWrapper;
+}
+
 pub trait GenericUnit<T>
 {
     type Unit<U>;

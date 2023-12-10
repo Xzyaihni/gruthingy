@@ -632,10 +632,21 @@ where
         bincode::deserialize_from(reader)
     }
 
+    pub fn dictionary(&self) -> &D
+    {
+        &self.dictionary
+    }
+
     #[allow(dead_code)]
     pub fn inner_network(&self) -> &Network<N, O::WeightParam>
     {
         &self.network
+    }
+
+    #[allow(dead_code)]
+    pub fn inner_network_mut(&mut self) -> &mut Network<N, O::WeightParam>
+    {
+        &mut self.network
     }
 
     pub fn apply_gradients(&mut self, gradients: Vec<N::Unit<LayerInnerType>>)

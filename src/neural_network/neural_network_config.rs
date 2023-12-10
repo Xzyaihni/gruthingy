@@ -32,4 +32,4 @@ pub type NUnit<T> = Lstm<T>;
 pub type NDictionary = CharDictionary;
 
 // options: Sgd, Adam, AdamX, PowerSign
-pub type NOptimizer = Sgd;
+pub type NOptimizer = AdamX;
