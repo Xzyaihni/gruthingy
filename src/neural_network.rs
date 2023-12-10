@@ -527,7 +527,7 @@ impl StepsNum
         match self
         {
             Self::Steps(x) => *x,
-            Self::StepsRange(Range{start, end}) => fastrand::usize(start..end)
+            Self::StepsRange(range) => fastrand::usize(range.clone())
         }
     }
 
