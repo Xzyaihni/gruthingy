@@ -1,7 +1,5 @@
 use std::{
     f32,
-    mem,
-    vec,
     fmt,
     slice,
     io::{Read, Write, BufReader},
@@ -140,108 +138,242 @@ impl KahanSum
     }
 }
 
-pub struct InputOutput<T>
+pub struct InputOutput<'a, const SURROUND: bool, D>
 {
-    container: Vec<T>
+    dictionary: &'a D,
+    values: &'a [VectorWord]
 }
 
-impl<T> InputOutput<T>
+impl<'a, const SURROUND: bool, D> InputOutput<'a, SURROUND, D>
 {
     #[allow(dead_code)]
-    pub fn values_slice<V, F>(
-        values: &[V],
-        f: F,
+    pub fn values_slice(
+        dictionary: &'a D,
+        values: &'a [VectorWord],
         start: usize,
         size: usize
     ) -> Self
-    where
-        F: FnMut(&V) -> T
     {
-        let slice_end = (start + size + 1).min(values.len());
+        let min_slice_len = Self::min_len();
+
+        let slice_end = (start + size + min_slice_len).min(values.len());
         let this_slice = &values[start..slice_end];
 
-        debug_assert!(this_slice.len() > 1);
+        debug_assert!(this_slice.len() > min_slice_len);
 
-        Self::new(this_slice.iter().map(f).collect())
+        Self::new(dictionary, this_slice)
     }
 
-    pub fn new(container: Vec<T>) -> Self
+    pub fn new(dictionary: &'a D, values: &'a [VectorWord]) -> Self
     {
-        Self{container}
+        Self{
+            dictionary,
+            values
+        }
     }
 
-    #[allow(dead_code)]
-    pub fn iter(&self) -> InputOutputIter<slice::Iter<'_, T>, &T>
+    pub const fn min_len() -> usize
     {
-        InputOutputIter::new(self.container.iter())
+        if SURROUND { 2 } else { 1 }
     }
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize
     {
-        self.container.len() - 1
+        self.values.len() - 1
     }
 }
 
-impl<T: Clone> IntoIterator for InputOutput<T>
+// jumping through hoops cuz its not obvious to the compiler that bools
+// cant be anything except true or false
+pub trait InputOutputable
 {
-    type Item = (T, T);
-    type IntoIter = InputOutputIter<vec::IntoIter<T>, T>;
+    type Iter<'a>: Iterator<Item=(LayerInnerType, LayerInnerType)>
+    where
+        Self: 'a;
 
-    fn into_iter(self) -> Self::IntoIter
-    {
-        InputOutputIter::new(self.container.into_iter())
-    }
+    fn iter<'a>(&'a self) -> Self::Iter<'a>;
 }
 
-#[derive(Clone)]
-pub struct InputOutputIter<I, T>
-{
-    previous: T,
-    inputs: I
-}
-
-impl<I, T> InputOutputIter<I, T>
+impl<'a, D> InputOutputable for InputOutput<'a, false, D>
 where
-    I: Iterator<Item=T>
+    D: NetworkDictionary
 {
-    pub fn new(mut inputs: I) -> Self
+    type Iter<'b> = InputOutputIter<'b, D, slice::Iter<'b, VectorWord>>
+    where
+        Self: 'b,
+        D: 'b;
+
+    fn iter(&self) -> Self::Iter<'_>
+    {
+        InputOutputIter::new(self.dictionary, self.values.iter())
+    }
+}
+
+impl<'a, D> InputOutputable for InputOutput<'a, true, D>
+where
+    D: NetworkDictionary
+{
+    type Iter<'b> = InputOutputSurroundIter<'b, D, slice::Iter<'b, VectorWord>>
+    where
+        Self: 'b,
+        D: 'b;
+
+    fn iter(&self) -> Self::Iter<'_>
+    {
+        InputOutputSurroundIter::new(self.dictionary, self.values.iter())
+    }
+}
+
+pub struct InputOutputIter<'a, D, I>
+{
+    dictionary: &'a D,
+    inputs: I,
+    previous: &'a VectorWord
+}
+
+// why cant the macro figure this out :/
+impl<'a, D, I> Clone for InputOutputIter<'a, D, I>
+where
+    I: Clone
+{
+    fn clone(&self) -> Self
     {
         Self{
-            previous: inputs.next().expect("input must not be empty"),
-            inputs
+            dictionary: self.dictionary,
+            inputs: self.inputs.clone(),
+            previous: self.previous
         }
     }
 }
 
-impl<I, T> Iterator for InputOutputIter<I, T>
+impl<'a, D, I> InputOutputIter<'a, D, I>
 where
-    T: Clone,
-    I: Iterator<Item=T>
+    I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (T, T);
+    pub fn new(dictionary: &'a D, mut inputs: I) -> Self
+    {
+        Self{
+            dictionary,
+            previous: inputs.next().expect("input must not be empty"),
+            inputs
+        }
+    }
+
+    fn value_map(&self, value: &'a VectorWord) -> LayerInnerType
+    where
+        D: NetworkDictionary
+    {
+        self.dictionary.word_to_layer(*value)
+    }
+}
+
+impl<'a, D, I> Iterator for InputOutputIter<'a, D, I>
+where
+    D: NetworkDictionary,
+    I: Iterator<Item=&'a VectorWord>
+{
+    type Item = (LayerInnerType, LayerInnerType);
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        let input = self.inputs.next();
-
-        match input
+        match self.inputs.next()
         {
             None => None,
             Some(input) =>
             {
-                let out = (mem::replace(&mut self.previous, input.clone()), input);
+                let out = Some((self.value_map(self.previous), self.value_map(input)));
 
-                Some(out)
+                self.previous = input;
+
+                out
             }
         }
     }
 }
 
-impl<I, T> ExactSizeIterator for InputOutputIter<I, T>
+impl<'a, D, I> ExactSizeIterator for InputOutputIter<'a, D, I>
 where
-    T: Clone,
-    I: Iterator<Item=T> + ExactSizeIterator
+    D: NetworkDictionary,
+    I: Iterator<Item=&'a VectorWord> + ExactSizeIterator
+{
+    fn len(&self) -> usize
+    {
+        self.inputs.len()
+    }
+}
+
+pub struct InputOutputSurroundIter<'a, D, I>
+{
+    dictionary: &'a D,
+    inputs: I,
+    double_previous: &'a VectorWord,
+    previous: &'a VectorWord
+}
+
+// why cant the macro figure this out :/
+impl<'a, D, I> Clone for InputOutputSurroundIter<'a, D, I>
+where
+    I: Clone
+{
+    fn clone(&self) -> Self
+    {
+        Self{
+            dictionary: self.dictionary,
+            inputs: self.inputs.clone(),
+            double_previous: self.double_previous,
+            previous: self.previous
+        }
+    }
+}
+
+impl<'a, D, I> InputOutputSurroundIter<'a, D, I>
+where
+    I: Iterator<Item=&'a VectorWord>
+{
+    pub fn new(dictionary: &'a D, mut inputs: I) -> Self
+    {
+        Self{
+            dictionary,
+            double_previous: inputs.next().expect("input must not be empty"),
+            previous: inputs.next().expect("input must not be 1 len"),
+            inputs
+        }
+    }
+}
+
+impl<'a, D, I> Iterator for InputOutputSurroundIter<'a, D, I>
+where
+    D: NetworkDictionary,
+    I: Iterator<Item=&'a VectorWord>
+{
+    type Item = (LayerInnerType, LayerInnerType);
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        match self.inputs.next()
+        {
+            None => None,
+            Some(input) =>
+            {
+                let this_input = self.dictionary.words_to_layer(*self.double_previous, *input);
+                let this_output = self.dictionary.word_to_layer(*self.previous);
+
+                let out = Some((this_input, this_output));
+
+                self.double_previous = self.previous;
+                self.previous = input;
+
+                out
+            }
+        }
+    }
+}
+
+impl<'a, D, I> ExactSizeIterator for InputOutputSurroundIter<'a, D, I>
+where
+    D: NetworkDictionary,
+    I: Iterator<Item=&'a VectorWord> + ExactSizeIterator
 {
     fn len(&self) -> usize
     {
@@ -550,10 +682,8 @@ where
     )
     {
         let input_outputs = InputOutputIter::new(
-            inputs.iter().map(|word|
-            {
-                self.dictionary.word_to_layer(*word)
-            })
+            &self.dictionary,
+            inputs.iter()
         );
 
         self.network.disable_gradients();
@@ -607,7 +737,7 @@ where
     }
 
     // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
-    pub fn train<RT, R>(
+    pub fn train<const SURROUND: bool, RT, R>(
         &mut self,
         info: TrainingInfo,
         testing_reader: Option<RT>,
@@ -621,7 +751,8 @@ where
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>,
         N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign + fmt::Debug,
-        N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign
+        N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign,
+        for<'b> InputOutput<'b, SURROUND, D>: InputOutputable
     {
         if let Some(learning_rate) = info.learning_rate
         {
@@ -665,7 +796,11 @@ where
                 return;
             }
 
-            network.test_loss_inner(&testing_inputs, info.calculate_loss, info.calculate_accuracy);
+            network.test_loss_inner(
+                &testing_inputs,
+                info.calculate_loss,
+                info.calculate_accuracy
+            );
         };
 
         for input_index in 0..info.iterations
@@ -686,7 +821,8 @@ where
 
                 let mut kahan_sum = KahanSum::new();
 
-                let max_batch_start = inputs.len().saturating_sub(steps_num);
+                let max_batch_start = inputs.len()
+                    .saturating_sub(steps_num + (InputOutput::<SURROUND, D>::min_len() - 1));
 
                 let mut network = self.network.dropconnected();
 
@@ -700,15 +836,15 @@ where
                         fastrand::usize(0..max_batch_start)
                     };
 
-                    let values = InputOutput::values_slice(
+                    let values = InputOutput::<SURROUND, _>::values_slice(
+                        &self.dictionary,
                         &inputs,
-                        |word| self.dictionary.word_to_layer(*word),
                         batch_start,
                         steps_num
                     );
 
                     let (loss, mut gradients): (f32, Vec<_>) =
-                        network.gradients(values.into_iter());
+                        network.gradients(values.iter());
 
                     kahan_sum.add(loss as f64 / info.batch_size as f64);
 

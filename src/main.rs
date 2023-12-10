@@ -31,7 +31,13 @@ use neural_network::{
 
 use config::{Config, ProgramMode};
 
-use word_vectorizer::{CharsAdapter, ReaderAdapter, NetworkDictionary, WORD_SEPARATORS};
+use word_vectorizer::{
+    CharsAdapter,
+    ReaderAdapter,
+    NetworkDictionary,
+    WordDictionary,
+    WORD_SEPARATORS
+};
 
 mod config;
 
@@ -77,18 +83,19 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
-    load_network_with::<NUnitFactory>(config, sizes, auto_create)
+    load_network_with::<NUnitFactory, NDictionary>(config, sizes, auto_create)
 }
 
-fn load_network_with<N>(
+fn load_network_with<N, D>(
     config: &Config,
     sizes: Option<SizesInfo>,
     auto_create: bool
-) -> NeuralNetwork<N, NOptimizer, NDictionary>
+) -> NeuralNetwork<N, NOptimizer, D>
 where
     N: UnitFactory + DeserializeOwned,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>
+    N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
+    D: NetworkDictionary + DeserializeOwned
 {
     let path: &Path = config.network_path.as_ref();
 
@@ -113,7 +120,7 @@ where
             None
         };
 
-        let dictionary = NDictionary::new(data.as_ref().map(|x| x.as_str()));
+        let dictionary = D::new(data.as_ref().map(|x| x.as_str()));
 
         let sizes = sizes.unwrap_or_else(|| SizesInfo::from(config));
 
@@ -149,7 +156,7 @@ fn train(config: Config)
 
     let test_file = config.test_file();
 
-    network.train(training_info, test_file, text_file);
+    network.train::<false, _, _>(training_info, test_file, text_file);
 
     network.save(&config.network_path);
 }
@@ -407,7 +414,7 @@ impl UnitFactory for EmbeddingsUnitFactory
 
 fn train_embeddings(config: Config)
 {
-    let mut network = load_network_with::<EmbeddingsUnitFactory>(
+    let mut network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
         &config,
         Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
         true
@@ -422,14 +429,14 @@ fn train_embeddings(config: Config)
         ..TrainingInfo::from(&config)
     };
 
-    network.train::<File, _>(training_info, test_file, text_file);
+    network.train::<true, _, _>(training_info, test_file, text_file);
 
     network.save(&config.network_path);
 }
 
 fn closest_embeddings(config: Config)
 {
-    let network = load_network_with::<EmbeddingsUnitFactory>(
+    let network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
         &config,
         Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
         false

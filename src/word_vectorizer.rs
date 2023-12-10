@@ -132,6 +132,16 @@ pub trait NetworkDictionary
         true
     }
     
+    fn words_to_layer(&self, w0: VectorWord, w1: VectorWord) -> LayerInnerType
+    {
+        let mut layer = vec![0.0; self.words_amount()];
+
+        layer[w0.index()] = 1.0;
+        layer[w1.index()] = 1.0;
+
+        LayerInnerType::from_raw(layer, self.words_amount(), 1)
+    }
+    
     fn word_to_layer(&self, word: VectorWord) -> LayerInnerType
     {
         let mut layer = vec![0.0; self.words_amount()];
