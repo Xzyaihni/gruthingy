@@ -583,7 +583,8 @@ where
 {
     dictionary: D,
     network: Network<N, O::WeightParam>,
-    optimizer: O
+    optimizer: O,
+    gradient_clip: Option<f32>
 }
 
 impl<N, O, D> NeuralNetwork<N, O, D>
@@ -595,15 +596,20 @@ where
     for<'a> O::WeightParam: Serialize + Deserialize<'a>,
     D: NetworkDictionary
 {
-    pub fn new(dictionary: D, sizes: LayerSizes) -> Self
+    pub fn new(
+        dictionary: D,
+        sizes: LayerSizes,
+        dropout_probability: f32,
+        gradient_clip: Option<f32>
+    ) -> Self
     where
         O::WeightParam: NewableLayer
     {
-        let network = Network::new(sizes);
+        let network = Network::new(sizes, dropout_probability);
 
         let optimizer = O::new();
 
-        Self{dictionary, network, optimizer}
+        Self{dictionary, network, optimizer, gradient_clip}
     }
 
     // these trait bounds feel wrong somehow
@@ -661,7 +667,8 @@ where
 
         combined_iter.for_each(|(gradients, (network_weights, optimizer_info))|
         {
-            *network_weights -= optimizer_info.gradients_to_change(gradients, &self.optimizer);
+            *network_weights -=
+                optimizer_info.gradients_to_change(gradients, &self.optimizer, self.gradient_clip);
         });
 
         self.optimizer.advance_time();

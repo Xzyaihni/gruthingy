@@ -135,7 +135,7 @@ where
             layers: sizes.layers
         };
 
-        NeuralNetwork::new(dictionary, sizes)
+        NeuralNetwork::new(dictionary, sizes, config.dropout_probability, config.gradient_clip)
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))
@@ -415,8 +415,14 @@ impl UnitFactory for EmbeddingsUnitFactory
     type Unit<T> = EmbeddingUnit<T>;
 }
 
-fn train_embeddings(config: Config)
+fn train_embeddings(mut config: Config)
 {
+    // the whole point of embeddings is to overfit right?
+    config.dropout_probability = 0.0;
+
+    // and uhh i dont think it can NaN out on me with just 1 layer
+    config.gradient_clip = None;
+
     let mut network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
         &config,
         Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),

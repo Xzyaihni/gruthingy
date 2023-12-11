@@ -62,7 +62,8 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned
     fn gradients_to_change<O>(
         &mut self,
         gradients: Self::Unit<LayerInnerType>,
-        optimizer: &O
+        optimizer: &O,
+        gradient_clip: Option<f32>
     ) -> Self::Unit<DiffWrapper>
     where
         O: Optimizer<WeightParam=T>;

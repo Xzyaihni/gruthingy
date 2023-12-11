@@ -19,7 +19,6 @@ use crate::{
         GenericUnit,
         OptimizerUnit,
         UnitFactory,
-        DROPOUT_PROBABILITY,
         DROPCONNECT_PROBABILITY,
         network_unit::Embeddingsable
     }
@@ -77,7 +76,6 @@ macro_rules! create_weights_container
 
         use $crate::neural_network::{
             LayerInnerType,
-            GRADIENT_CLIP,
             NewableLayer,
             GenericUnit,
             OptimizerUnit,
@@ -223,14 +221,18 @@ macro_rules! create_weights_container
             fn gradients_to_change<O>(
                 &mut self,
                 gradients: Self::Unit<LayerInnerType>,
-                optimizer: &O
+                optimizer: &O,
+                gradient_clip: Option<f32>
             ) -> Self::Unit<DiffWrapper>
             where
                 O: Optimizer<WeightParam=T>
             {
-                gradients.zip(self.as_mut()).map(|(gradient, this)|
+                gradients.zip(self.as_mut()).map(|(mut gradient, this)|
                 {
-                    let gradient = gradient.cap_magnitude(GRADIENT_CLIP);
+                    if let Some(gradient_clip) = gradient_clip
+                    {
+                        gradient = gradient.cap_magnitude(gradient_clip);
+                    }
 
                     let change = optimizer.gradient_to_change(this, gradient);
 
@@ -442,6 +444,7 @@ where
 {
     sizes: LayerSizes,
     optimizer_info: Option<Vec<N::Unit<O>>>,
+    dropout_probability: f32,
     layers: Vec<N::Unit<DiffWrapper>>
 }
 
@@ -451,7 +454,7 @@ where
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     N: UnitFactory
 {
-    pub fn new(sizes: LayerSizes) -> Self
+    pub fn new(sizes: LayerSizes, dropout_probability: f32) -> Self
     where
         O: NewableLayer
     {
@@ -464,6 +467,7 @@ where
         Self{
             sizes,
             optimizer_info,
+            dropout_probability,
             layers
         }
     }
@@ -499,6 +503,7 @@ where
         NetworkDropped(Self{
             sizes: self.sizes,
             optimizer_info: None,
+            dropout_probability: self.dropout_probability,
             layers
         })
     }
@@ -698,7 +703,7 @@ where
         let mut output: Option<DiffWrapper> = None;
         let mut previous_states: Option<Vec<UnitState<N>>> = None;
 
-        let dropout_masks = self.create_dropout_masks(self.sizes.input, DROPOUT_PROBABILITY);
+        let dropout_masks = self.create_dropout_masks(self.sizes.input, self.dropout_probability);
 
         for (this_input, this_output) in input
         {

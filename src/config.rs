@@ -557,6 +557,8 @@ pub struct Config
     pub output: Option<String>,
     pub tokens_amount: usize,
     pub temperature: f32,
+    pub dropout_probability: f32,
+    pub gradient_clip: Option<f32>,
     pub replace_invalid: bool,
     pub less_info: bool,
     pub mode: ProgramMode,
@@ -584,6 +586,8 @@ impl Config
         let mut output = None;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
+        let mut dropout_probability = 0.5;
+        let mut gradient_clip = Some(1.0);
         let mut replace_invalid = true;
         let mut dictionary_path = "dictionary.txt".to_owned();
         let mut less_info = false;
@@ -608,6 +612,8 @@ impl Config
         parser.push(&mut output, 'o', "output", "output path");
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
+        parser.push(&mut dropout_probability, None, "dropout", "dropout probability");
+        parser.push(&mut gradient_clip, None, "gradient-clip", "magnitude at which gradient vectors get clipped");
         parser.push_flag(&mut replace_invalid, 'r', "raw", "dont replace invalid utf8", false);
         parser.push_flag(&mut less_info, None, "less-info", "display less info when training", true);
         parser.push(&mut mode, 'm', "mode", "program mode");
@@ -643,6 +649,8 @@ impl Config
             output,
             tokens_amount,
             temperature,
+            dropout_probability,
+            gradient_clip,
             replace_invalid,
             dictionary_path,
             less_info,
