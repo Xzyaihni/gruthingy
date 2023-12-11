@@ -91,7 +91,7 @@ impl Softmaxer
 
 impl LayerInnerType
 {
-    pub fn softmax_cross_entropy(mut self, targets: &Self) -> (Self, f32)
+    pub fn softmax_cross_entropy(mut self, targets: &OneHotLayer) -> (Self, f32)
     {
         Softmaxer::softmax(&mut self);
         let softmaxed = self.clone();
@@ -99,7 +99,7 @@ impl LayerInnerType
         // assumes that targets r either 0 or 1
         self.ln();
 
-        let s = self.dot(targets);
+        let s = self.dot_onehot(targets);
 
         (softmaxed, -s)
     }
@@ -255,10 +255,11 @@ pub enum Ops
     Div{lhs: DiffWrapper, rhs: DiffWrapper},
     Matmulv{lhs: DiffWrapper, rhs: DiffWrapper},
     MatmulvAdd{lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper},
+    MatmulOneHotvAdd{lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper},
     SoftmaxCrossEntropy{
         values: DiffWrapper,
         softmaxed_values: LayerInnerType,
-        targets: LayerInnerType
+        targets: OneHotLayer
     }
 }
 
@@ -735,6 +736,72 @@ impl DiffBounds for LayerInnerType
     }
 }
 
+// damn that sure is one hot layer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OneHotLayer
+{
+    pub positions: Box<[usize]>,
+    pub size: usize
+}
+
+impl OneHotLayer
+{
+    pub fn new(positions: impl Into<Box<[usize]>>, size: usize) -> Self
+    {
+        Self{positions: positions.into(), size}
+    }
+
+    pub fn into_layer(self) -> LayerInnerType
+    {
+        let size = self.size;
+        let mut layer = vec![0.0; size];
+
+        for position in self.positions.into_iter()
+        {
+            layer[*position] = 1.0;
+        }
+
+        LayerInnerType::from_raw(layer, size, 1)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InputType<'a>
+{
+    Normal(&'a DiffWrapper),
+    OneHot(&'a OneHotLayer)
+}
+
+impl<'a> From<&'a DiffWrapper> for InputType<'a>
+{
+    fn from(value: &'a DiffWrapper) -> Self
+    {
+        Self::Normal(value)
+    }
+}
+
+impl<'a> From<&'a OneHotLayer> for InputType<'a>
+{
+    fn from(value: &'a OneHotLayer) -> Self
+    {
+        Self::OneHot(value)
+    }
+}
+
+impl<'a> InputType<'a>
+{
+    pub fn into_one_hot(self) -> &'a OneHotLayer
+    {
+        if let Self::OneHot(value) = self
+        {
+            value
+        } else
+        {
+            panic!("expected one_hot layer, got normal")
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DiffType<T>
 {
@@ -986,6 +1053,22 @@ where
                     added.derivatives(gradient.into());
                 }
             },
+            Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
+            {
+                let gradient: LayerInnerType = gradient.try_into()
+                    .ok().expect("matmul must be a tensor");
+                
+                if lhs.is_gradient()
+                {
+                    let d = gradient.outer_product_one_hot(&rhs);
+                    lhs.derivatives(d.into());
+                }
+
+                if added.is_gradient()
+                {
+                    added.derivatives(gradient.into());
+                }
+            },
             Ops::SumTensor{value: x} =>
             {
                 if x.is_gradient()
@@ -1030,7 +1113,7 @@ where
                         values.tensor().clone()
                     });
 
-                    let d = gradient * (softmaxed_values - targets);
+                    let d = gradient * (softmaxed_values - targets.into_layer());
                     values.derivatives(d.into());
                 }
             },
@@ -1442,7 +1525,7 @@ impl From<&DiffWrapper> for Vec<f32>
 
 impl DiffWrapper
 {
-    pub fn softmax_cross_entropy(self, targets: LayerInnerType) -> DiffWrapper
+    pub fn softmax_cross_entropy(self, targets: OneHotLayer) -> DiffWrapper
     {
         let (softmaxed, value) = self.tensor().clone().softmax_cross_entropy(&targets);
 
@@ -1466,9 +1549,17 @@ impl DiffWrapper
         inner_from_value!(value, Matmulv, lhs, self, rhs, rhs)
     }
 
-    pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    pub fn matmulv_add(&self, rhs: InputType, added: impl Borrow<Self>) -> Self
     {
-        let rhs = rhs.borrow();
+        match rhs
+        {
+            InputType::Normal(value) => self.matmul_normalv_add(value, added),
+            InputType::OneHot(value) => self.matmul_onehotv_add(value, added)
+        }
+    }
+
+    pub fn matmul_normalv_add(&self, rhs: &Self, added: impl Borrow<Self>) -> Self
+    {
         let added = added.borrow();
 
         let value = {
@@ -1479,6 +1570,23 @@ impl DiffWrapper
         };
 
         inner_from_value!(value, MatmulvAdd, lhs, self, rhs, rhs, added, added)
+    }
+
+    pub fn matmul_onehotv_add(&self, rhs: &OneHotLayer, added: impl Borrow<Self>) -> Self
+    {
+        let added = added.borrow();
+
+        let value = {
+            let added = added.tensor();
+
+            self.tensor().matmul_onehotv_add(&rhs, &*added)
+        };
+
+        inner_from_value_special_op!(value, Ops::MatmulOneHotvAdd{
+            lhs: self.into(),
+            rhs: rhs.clone(),
+            added: added.into()
+        }, self)
     }
 
     pub fn dot(self, rhs: Self) -> DiffWrapper
@@ -1963,12 +2071,11 @@ mod tests
         check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmulv(b) + b.sum())
     }
 
-    fn create_targets() -> LayerInnerType
+    fn create_targets() -> OneHotLayer
     {
-        let m = random_tensor(LAYER_PREV, 1).tensor().clone();
+        let pos = fastrand::usize(0..LAYER_PREV);
 
-        let pos = fastrand::usize(0..m.total_len());
-        one_hot(m, pos, 1.0, 0.0)
+        OneHotLayer::new([pos], LAYER_PREV)
     }
 
     #[test]

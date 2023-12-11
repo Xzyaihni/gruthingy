@@ -11,6 +11,8 @@ use crate::{
     neural_network::{
         Softmaxer,
         DiffWrapper,
+        OneHotLayer,
+        InputType,
         LayerInnerType,
         NetworkUnit,
         NewableLayer,
@@ -403,7 +405,7 @@ where
 {
     pub fn gradients(
         &mut self,
-        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
+        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
     ) -> (f32, Vec<N::Unit<LayerInnerType>>)
     where
         // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
@@ -558,7 +560,7 @@ where
     #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
-        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
+        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
     ) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -572,17 +574,20 @@ where
         ) as f32 / amount as f32
     }
 
-    fn correct_guesses<P, T>(
+    fn correct_guesses<P>(
         predicted: impl Iterator<Item=P>,
-        target: impl Iterator<Item=T>
+        target: impl Iterator<Item=OneHotLayer>
     ) -> usize
     where
-        P: Borrow<LayerInnerType>,
-        T: Borrow<LayerInnerType>
+        P: Borrow<LayerInnerType>
     {
         predicted.zip(target).map(|(predicted, target)|
         {
-            let target_index = target.borrow().highest_index();
+            let positions = &target.positions;
+            assert_eq!(positions.len(), 1);
+
+            let target_index = positions[0];
+
             if predicted.borrow().highest_index() == target_index
             {
                 1
@@ -598,10 +603,10 @@ where
         last_f: F,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
-        input: &DiffWrapper
+        input: &OneHotLayer
     ) -> NetworkOutput<Vec<UnitState<N>>, T>
     where
-        F: FnOnce(&mut N::Unit<DiffWrapper>, Option<&UnitState<N>>, &DiffWrapper) -> NetworkOutput<UnitState<N>, T>
+        F: FnOnce(&mut N::Unit<DiffWrapper>, Option<&UnitState<N>>, InputType) -> NetworkOutput<UnitState<N>, T>
     {
         let mut output: Option<T> = None;
         let mut last_output: Option<DiffWrapper> = None;
@@ -612,7 +617,9 @@ where
         #[allow(clippy::needless_range_loop)]
         for l_i in 0..self.sizes.layers
         {
-            let input = last_output.as_ref().unwrap_or(input);
+            let input: InputType = last_output.as_ref()
+                .map(|v| v.into())
+                .unwrap_or_else(|| input.into());
 
             debug_assert!(l_i < self.layers.len());
             let layer = unsafe{ self.layers.get_unchecked_mut(l_i) };
@@ -668,8 +675,8 @@ where
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
-        input: &DiffWrapper,
-        targets: LayerInnerType
+        input: OneHotLayer,
+        targets: OneHotLayer
     ) -> NetworkOutput<Vec<UnitState<N>>, DiffWrapper>
     {
         self.feedforward_single_input_with_activation(|layer, previous_state, input|
@@ -679,13 +686,13 @@ where
                 input,
                 targets
             )
-        }, previous_states, dropout_masks, input)
+        }, previous_states, dropout_masks, &input)
     }
 
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
-        input: impl Iterator<Item=(LayerInnerType, LayerInnerType)>
+        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
     ) -> DiffWrapper
     {
         let mut output: Option<DiffWrapper> = None;
@@ -695,15 +702,13 @@ where
 
         for (this_input, this_output) in input
         {
-            let this_input = DiffWrapper::new_undiff(this_input.into());
-
             let NetworkOutput{
                 state,
                 output: this_output
             } = self.feedforward_single_input(
                 previous_states.take(),
                 &dropout_masks,
-                &this_input,
+                this_input,
                 this_output
             );
 
@@ -725,7 +730,7 @@ where
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
-        input: &DiffWrapper,
+        input: &OneHotLayer,
         temperature: f32
     ) -> NetworkOutput<Vec<UnitState<N>>, LayerInnerType>
     {
@@ -747,12 +752,12 @@ where
                 state,
                 output
             }
-        }, previous_states, dropout_masks, input)
+        }, previous_states, dropout_masks, &input)
     }
 
     fn predict(
         &mut self,
-        input: impl Iterator<Item=LayerInnerType> + ExactSizeIterator
+        input: impl Iterator<Item=OneHotLayer> + ExactSizeIterator
     ) -> Vec<LayerInnerType>
     {
         let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
@@ -762,8 +767,6 @@ where
 
         for this_input in input
         {
-            let this_input = DiffWrapper::new_undiff(this_input.into());
-
             let NetworkOutput{
                 state,
                 output
@@ -825,10 +828,10 @@ where
     EN<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=EN<DiffWrapper>> + Embeddingsable,
     EmbeddingsUnitFactory: UnitFactory
 {
-    pub fn embeddings(&mut self, input: &DiffWrapper) -> DiffWrapper
+    pub fn embeddings(&mut self, input: OneHotLayer) -> DiffWrapper
     {
         debug_assert!(self.layers.len() == 1);
 
-        self.layers[0].embeddings(input)
+        self.layers[0].embeddings(&input)
     }
 }

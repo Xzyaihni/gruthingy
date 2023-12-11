@@ -2,6 +2,8 @@ use crate::neural_network::{
     LAYER_ACTIVATION,
     AFType,
     DiffWrapper,
+    InputType,
+    OneHotLayer,
     LayerInnerType,
     LayerSizes,
     WeightsNamed,
@@ -20,7 +22,7 @@ pub trait UnitFactory
 // i hate rust generics i hate rust generics i hate rust generics
 pub trait Embeddingsable
 {
-    fn embeddings(&mut self, input: &DiffWrapper) -> DiffWrapper;
+    fn embeddings(&mut self, input: &OneHotLayer) -> DiffWrapper;
 }
 
 pub trait GenericUnit<T>
@@ -77,14 +79,14 @@ where
     fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &DiffWrapper
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>;
 
     fn feedforward_unit_last(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &DiffWrapper,
-        targets: LayerInnerType
+        input: InputType,
+        targets: OneHotLayer
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let NetworkOutput{
@@ -102,7 +104,7 @@ where
         &mut self,
         previous_state: Option<&Self::State>,
         dropout_mask: &DiffWrapper,
-        input: &DiffWrapper
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut output = self.feedforward_unit(previous_state, input);

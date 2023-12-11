@@ -457,11 +457,9 @@ fn closest_embeddings(config: Config)
 
     let embeddings_of = |network: &mut NeuralNetwork<_, _, WordDictionary>, word|
     {
-        let input = network.dictionary().word_to_layer(word);
+        let input = network.dictionary().words_to_layer([word]);
 
-        let input_wrapper = DiffWrapper::new_undiff(input.into());
-
-        network.inner_network_mut().embeddings(&input_wrapper)
+        network.inner_network_mut().embeddings(input)
     };
 
     let this_word = to_vector_word(&network, input);

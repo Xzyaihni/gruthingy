@@ -16,7 +16,7 @@ use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::LayerInnerType;
+use super::neural_network::{OneHotLayer, LayerInnerType};
 
 
 #[allow(dead_code)]
@@ -132,23 +132,12 @@ pub trait NetworkDictionary
         true
     }
     
-    fn words_to_layer(&self, w0: VectorWord, w1: VectorWord) -> LayerInnerType
+    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
     {
-        let mut layer = vec![0.0; self.words_amount()];
-
-        layer[w0.index()] = 1.0;
-        layer[w1.index()] = 1.0;
-
-        LayerInnerType::from_raw(layer, self.words_amount(), 1)
-    }
-    
-    fn word_to_layer(&self, word: VectorWord) -> LayerInnerType
-    {
-        let mut layer = vec![0.0; self.words_amount()];
-
-        layer[word.index()] = 1.0;
-
-        LayerInnerType::from_raw(layer, self.words_amount(), 1)
+        OneHotLayer::new(
+            words.into_iter().map(|word| word.index()).collect::<Box<[_]>>(),
+            self.words_amount()
+        )
     }
 
     fn layer_to_word(&self, layer: LayerInnerType) -> VectorWord
@@ -604,8 +593,8 @@ mod tests
     {
         let decoded_bytes = vectorizer.flat_map(|word|
         {
-            let layer = dictionary.word_to_layer(word);
-            let word = dictionary.layer_to_word(layer);
+            let layer = dictionary.words_to_layer([word]);
+            let word = dictionary.layer_to_word(layer.into_layer());
 
             dictionary.word_to_bytes(word).into_vec().into_iter()
         }).collect::<Vec<u8>>();

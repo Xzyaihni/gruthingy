@@ -12,6 +12,7 @@ use nalgebra::{DMatrix, Dyn};
 use super::{
     Softmaxer,
     Softmaxable,
+    OneHotLayer,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -350,10 +351,34 @@ impl MatrixWrapper
         Self(&self.0 * &rhs.borrow().0.transpose())
     }
 
+    pub fn outer_product_one_hot(&self, rhs: &OneHotLayer) -> Self
+    {
+        let mut output = Self::new(self.0.nrows(), rhs.size);
+
+        for position in rhs.positions.iter()
+        {
+            output.0.set_column(*position, &self.0.column(0));
+        }
+
+        output
+    }
+
     pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
     {
         let mut this = added.borrow().0.clone();
         this.column_mut(0).gemv(1.0, &self.0, &rhs.borrow().0.column(0), 1.0);
+
+        Self(this)
+    }
+
+    pub fn matmul_onehotv_add(&self, rhs: &OneHotLayer, added: impl Borrow<Self>) -> Self
+    {
+        let mut this = added.borrow().0.clone();
+
+        for position in rhs.positions.iter()
+        {
+            this += self.0.column(*position);
+        }
 
         Self(this)
     }
@@ -364,6 +389,13 @@ impl MatrixWrapper
         {
             *lhs = lhs.max(rhs);
         });
+    }
+
+    pub fn dot_onehot(self, rhs: &OneHotLayer) -> f32
+    {
+        let this = self.0.column(0);
+
+        rhs.positions.iter().map(|position| this.index(*position)).sum()
     }
 
     pub fn dot(self, rhs: &Self) -> f32

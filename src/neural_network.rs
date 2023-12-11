@@ -35,6 +35,8 @@ pub use network::WeightsNamed;
 pub use containers::{
     LayerInnerType,
     DiffWrapper,
+    InputType,
+    OneHotLayer,
     Softmaxer
 };
 
@@ -188,7 +190,7 @@ impl<'a, const SURROUND: bool, D> InputOutput<'a, SURROUND, D>
 // cant be anything except true or false
 pub trait InputOutputable
 {
-    type Iter<'a>: Iterator<Item=(LayerInnerType, LayerInnerType)>
+    type Iter<'a>: Iterator<Item=(OneHotLayer, OneHotLayer)>
     where
         Self: 'a;
 
@@ -260,11 +262,11 @@ where
         }
     }
 
-    fn value_map(&self, value: &'a VectorWord) -> LayerInnerType
+    fn value_map(&self, value: &'a VectorWord) -> OneHotLayer
     where
         D: NetworkDictionary
     {
-        self.dictionary.word_to_layer(*value)
+        self.dictionary.words_to_layer([*value])
     }
 }
 
@@ -273,7 +275,7 @@ where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (LayerInnerType, LayerInnerType);
+    type Item = (OneHotLayer, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -347,7 +349,7 @@ where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (LayerInnerType, LayerInnerType);
+    type Item = (OneHotLayer, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -356,8 +358,8 @@ where
             None => None,
             Some(input) =>
             {
-                let this_input = self.dictionary.words_to_layer(*self.double_previous, *input);
-                let this_output = self.dictionary.word_to_layer(*self.previous);
+                let this_input = self.dictionary.words_to_layer([*self.double_previous, *input]);
+                let this_output = self.dictionary.words_to_layer([*self.previous]);
 
                 let out = Some((this_input, this_output));
 
@@ -384,7 +386,7 @@ where
 struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
-    words: Vec<DiffWrapper>,
+    words: Vec<OneHotLayer>,
     temperature: f32,
     predict_amount: usize
 }
@@ -393,16 +395,11 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
 {
     pub fn new(
         dictionary: &'a mut D,
-        words: Vec<LayerInnerType>,
+        words: Vec<OneHotLayer>,
         temperature: f32,
         predict_amount: usize
     ) -> Self
     {
-        let words = words.into_iter().map(|value|
-        {
-            DiffWrapper::new_undiff(value.into())
-        }).collect();
-
         Self{
             dictionary,
             words,
@@ -450,8 +447,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
                 let word = output.pick_weighed();
                 let word = VectorWord::from_raw(word);
 
-                let layer = self.dictionary.word_to_layer(word);
-                self.words.push(DiffWrapper::new_undiff(layer.into()));
+                let layer = self.dictionary.words_to_layer([word]);
+                self.words.push(layer);
 
                 let bytes = self.dictionary.word_to_bytes(word);
 
@@ -964,7 +961,7 @@ where
             // could do this without a collect but wheres the fun in that
             let words = self.vectorized(reader).into_iter().map(|v|
             {
-                self.dictionary.word_to_layer(v)
+                self.dictionary.words_to_layer([v])
             }).collect::<Vec<_>>();
 
             Predictor::new(&mut self.dictionary, words, temperature, amount)

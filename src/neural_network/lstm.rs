@@ -6,6 +6,7 @@ use crate::{
     create_weights_container,
     neural_network::{
         DiffWrapper,
+        InputType,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
@@ -49,7 +50,7 @@ impl NetworkUnit for Lstm<DiffWrapper>
     fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &DiffWrapper
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut forget_gate = self.input_forget.matmulv_add(input, &self.forget_bias);
@@ -186,7 +187,7 @@ mod tests
 
         let input = one_weight(1.0);
 
-        let output = lstm.feedforward_unit(Some(&state), &input);
+        let output = lstm.feedforward_unit(Some(&state), (&input).into());
 
         let epsilon = 0.0001;
 

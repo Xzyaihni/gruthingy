@@ -6,6 +6,8 @@ use crate::{
     create_weights_container,
     neural_network::{
         DiffWrapper,
+        OneHotLayer,
+        InputType,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, Embeddingsable}
@@ -23,9 +25,9 @@ create_weights_container!{
 
 impl Embeddingsable for EmbeddingUnit<DiffWrapper>
 {
-    fn embeddings(&mut self, input: &DiffWrapper) -> DiffWrapper
+    fn embeddings(&mut self, input: &OneHotLayer) -> DiffWrapper
     {
-        self.weights.matmulv_add(input, &self.bias)
+        self.weights.matmul_onehotv_add(input, &self.bias)
     }
 }
 
@@ -41,10 +43,10 @@ impl NetworkUnit for EmbeddingUnit<DiffWrapper>
     fn feedforward_unit(
         &mut self,
         _previous_state: Option<&Self::State>,
-        input: &DiffWrapper
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
-        let hidden = self.embeddings(input);
+        let hidden = self.embeddings(input.into_one_hot());
 
         let output = self.output.matmulv(hidden);
 

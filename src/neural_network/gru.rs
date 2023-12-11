@@ -6,6 +6,7 @@ use crate::{
     create_weights_container,
     neural_network::{
         DiffWrapper,
+        InputType,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
@@ -40,7 +41,7 @@ impl NetworkUnit for Gru<DiffWrapper>
     fn feedforward_unit(
         &mut self,
         previous_state: Option<&Self::State>,
-        input: &DiffWrapper
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
