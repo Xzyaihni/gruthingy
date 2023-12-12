@@ -791,9 +791,7 @@ where
 
     pub fn create_dropout_masks(&self, input_size: usize, probability: f32) -> Vec<DiffWrapper>
     {
-        // lmao iterating over the layers just to get the layer amount thats stored in a literal
-        // constant
-        self.layers.iter().map(|_|
+        self.layers.iter().skip(1).map(|_|
         {
             Self::create_dropout_mask(input_size, 1, probability)
         }).collect()
@@ -808,18 +806,26 @@ where
     {
         let scaled_value = (1.0 - probability).recip();
 
-        DiffWrapper::new_undiff(LayerInnerType::new_with(previous_size, this_size, ||
+        let inner = if probability == 0.0
         {
-            let roll = fastrand::f32();
-            
-            if roll >= probability
+            LayerInnerType::repeat(previous_size, this_size, 1.0)
+        } else 
+        {
+            LayerInnerType::new_with(previous_size, this_size, ||
             {
-                scaled_value
-            } else
-            {
-                0.0
-            }
-        }).into())
+                let roll = fastrand::f32();
+                
+                if roll >= probability
+                {
+                    scaled_value
+                } else
+                {
+                    0.0
+                }
+            })
+        };
+
+        DiffWrapper::new_undiff(inner.into())
     }
 }
 

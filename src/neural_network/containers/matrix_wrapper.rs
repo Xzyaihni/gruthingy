@@ -315,6 +315,11 @@ impl MatrixWrapper
         Self(DMatrix::from_fn(previous_size, this_size, |_, _| f()))
     }
 
+    pub fn repeat(previous_size: usize, this_size: usize, value: f32) -> Self
+    {
+        Self(DMatrix::repeat(previous_size, this_size, value))
+    }
+
     pub fn from_raw<V: Into<Vec<f32>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         Self(DMatrix::from_vec(previous_size, this_size, values.into()))
