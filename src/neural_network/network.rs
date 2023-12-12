@@ -393,47 +393,6 @@ pub struct NetworkOutput<State, Output>
     pub output: Output
 }
 
-pub struct NetworkDropped<N, O>(Network<N, O>)
-where
-    N: UnitFactory,
-    N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit;
-
-impl<N, O> NetworkDropped<N, O>
-where
-    N: UnitFactory,
-    N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>
-{
-    pub fn gradients(
-        &mut self,
-        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
-    ) -> (f32, Vec<N::Unit<LayerInnerType>>)
-    where
-        // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
-        // like this??????????/
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + fmt::Debug
-    {
-        let loss = self.0.feedforward(input);
-
-        let loss_value = *loss.scalar();
-
-        loss.calculate_gradients();
-
-        let gradients = self.0.layers.iter_mut().map(|layer|
-        {
-            layer.map_mut(|weight|
-            {
-                debug_assert!(weight.parent().is_none());
-
-                weight.take_gradient_tensor()
-            })
-        }).collect::<Vec<_>>();
-
-        (loss_value, gradients)
-    }
-}
-
 type UnitState<N> = <<N as UnitFactory>::Unit<DiffWrapper> as NetworkUnit>::State;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -472,7 +431,7 @@ where
         }
     }
 
-    pub fn dropconnected(&self) -> NetworkDropped<N, O>
+    fn dropconnected(&self) -> Self
     {
         let layers = if N::Unit::<DiffWrapper>::dropconnectable()
         {
@@ -500,12 +459,44 @@ where
             self.layers.clone()
         };
 
-        NetworkDropped(Self{
+        Self{
+            layers,
             sizes: self.sizes,
-            optimizer_info: None,
             dropout_probability: self.dropout_probability,
-            layers
-        })
+            optimizer_info: None
+        }
+    }
+
+    pub fn gradients(
+        &mut self,
+        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
+    ) -> (f32, Vec<N::Unit<LayerInnerType>>)
+    where
+        // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
+        // like this??????????/
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + fmt::Debug
+    {
+        let loss = {
+            let mut dropconnected = self.dropconnected();
+
+            dropconnected.feedforward(input)
+        };
+
+        let loss_value = *loss.scalar();
+
+        loss.calculate_gradients();
+
+        let gradients = self.layers.iter_mut().map(|layer|
+        {
+            layer.map_mut(|weight|
+            {
+                debug_assert!(weight.parent().is_none());
+
+                weight.take_gradient_tensor()
+            })
+        }).collect::<Vec<_>>();
+
+        (loss_value, gradients)
     }
 
     // oh my god wut am i even doing at this point its so over

@@ -844,8 +844,6 @@ where
                 let max_batch_start = inputs.len()
                     .saturating_sub(steps_num + (InputOutput::<SURROUND, D>::min_len() - 1));
 
-                let mut network = self.network.dropconnected();
-
                 let gradients = (0..info.batch_size).map(|_|
                 {
                     let batch_start = if max_batch_start == 0
@@ -864,7 +862,7 @@ where
                     );
 
                     let (loss, mut gradients): (f32, Vec<_>) =
-                        network.gradients(values.iter());
+                        self.network.gradients(values.iter());
 
                     kahan_sum.add(loss as f64 / info.batch_size as f64);
 
