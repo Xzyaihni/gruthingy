@@ -31,7 +31,7 @@ use optimizers::*;
 pub use network::LayerSizes;
 pub use optimizers::Optimizer;
 pub use network_unit::{NetworkUnit, NewableLayer, GenericUnit, UnitFactory, OptimizerUnit};
-pub use network::WeightsNamed;
+pub use network::{WeightsNamed, WeightsSize};
 pub use containers::{
     LayerInnerType,
     DiffWrapper,
@@ -416,6 +416,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     where
         N::Unit<O>: OptimizerUnit<O>,
         N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+        for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+        for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
         N: UnitFactory
     {
         let input_amount = self.words.len();
@@ -465,6 +467,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     where
         N::Unit<O>: OptimizerUnit<O>,
         N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+        for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+        for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
         N: UnitFactory
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
@@ -593,6 +597,8 @@ where
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>,
     D: NetworkDictionary
 {
@@ -652,28 +658,6 @@ where
     pub fn inner_network_mut(&mut self) -> &mut Network<N, O::WeightParam>
     {
         &mut self.network
-    }
-
-    pub fn apply_gradients(&mut self, gradients: Vec<N::Unit<LayerInnerType>>)
-    where
-        N::Unit<DiffWrapper>: SubAssign,
-        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>
-    {
-        self.network.disable_gradients();
-
-        let combined_iter = gradients.into_iter()
-            .zip(self.network.gradients_info());
-
-        combined_iter.for_each(|(gradients, (network_weights, optimizer_info))|
-        {
-            *network_weights -=
-                optimizer_info.gradients_to_change(gradients, &self.optimizer, self.gradient_clip);
-        });
-
-        self.optimizer.advance_time();
-
-        self.network.enable_gradients();
     }
 
     pub fn test_loss<R>(
@@ -765,10 +749,12 @@ where
         R: Read,
         for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
+        for<'b> &'b mut N::Unit<O::WeightParam>: IntoIterator<Item=&'b mut O::WeightParam>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>,
         N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign + fmt::Debug,
-        N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign,
+        N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign + Serialize + DeserializeOwned + IntoIterator<Item=LayerInnerType>,
+        for<'b> &'b mut N::Unit<LayerInnerType>: IntoIterator<Item=&'b mut LayerInnerType>,
         for<'b> InputOutput<'b, SURROUND, D>: InputOutputable
     {
         if let Some(learning_rate) = info.learning_rate
@@ -844,7 +830,7 @@ where
                 let max_batch_start = inputs.len()
                     .saturating_sub(steps_num + (InputOutput::<SURROUND, D>::min_len() - 1));
 
-                let gradients = (0..info.batch_size).map(|_|
+                let mut gradients = (0..info.batch_size).map(|_|
                 {
                     let batch_start = if max_batch_start == 0
                     {
@@ -861,12 +847,9 @@ where
                         steps_num
                     );
 
-                    let (loss, mut gradients): (f32, Vec<_>) =
-                        self.network.gradients(values.iter());
+                    let (loss, gradients): (f32, _) = self.network.gradients(values.iter());
 
                     kahan_sum.add(loss as f64 / info.batch_size as f64);
-
-                    gradients.iter_mut().for_each(|gradient| *gradient /= info.batch_size as f32);
 
                     gradients
                 }).reduce(|mut acc, this|
@@ -879,6 +862,8 @@ where
                     acc
                 }).expect("batch size must not be 0");
 
+                gradients.iter_mut().for_each(|gradient| *gradient /= info.batch_size as f32);
+
                 let batch_loss = kahan_sum.value() / steps_num as f64;
 
                 if display_inner
@@ -886,7 +871,7 @@ where
                     Self::print_loss(false, batch_loss as f32);
                 }
 
-                self.apply_gradients(gradients);
+                self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
 

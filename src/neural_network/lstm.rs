@@ -28,8 +28,7 @@ create_weights_container!{
     (update_bias, false, LayerSize::Hidden, LayerSize::One),
     (forget_bias, false, LayerSize::Hidden, LayerSize::One),
     (output_bias, false, LayerSize::Hidden, LayerSize::One),
-    (memory_bias, false, LayerSize::Hidden, LayerSize::One),
-    (output, false, LayerSize::Input, LayerSize::Hidden)
+    (memory_bias, false, LayerSize::Hidden, LayerSize::One)
 }
 
 pub struct LSTMState
@@ -48,7 +47,7 @@ impl NetworkUnit for Lstm<DiffWrapper>
     }
 
     fn feedforward_unit(
-        &mut self,
+        &self,
         previous_state: Option<&Self::State>,
         input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
@@ -88,16 +87,14 @@ impl NetworkUnit for Lstm<DiffWrapper>
             output_gate * memory
         };
 
-        let output_untrans = self.output.matmulv(&hidden);
-
         let state = LSTMState{
-            hidden,
+            hidden: hidden.clone(),
             memory: this_memory
         };
 
         NetworkOutput{
             state,
-            output: output_untrans
+            output: hidden
         }
     }
 
@@ -106,7 +103,7 @@ impl NetworkUnit for Lstm<DiffWrapper>
         let i = sizes.input as u128;
         let h = sizes.hidden as u128;
 
-        (5 * i * h) + (4 * h * h) + (4 * h)
+        (4 * i * h) + (4 * h * h) + (4 * h)
     }
 }
 
@@ -158,7 +155,7 @@ mod tests
         Output
         */
 
-        let mut lstm = WeightsContainer
+        let lstm = WeightsContainer
         {
             sizes: LayerSizes{hidden: 1, input: 1, layers: 1},
 
@@ -175,9 +172,7 @@ mod tests
             update_bias: one_weight(0.62),
             forget_bias: one_weight(1.62),
             output_bias: one_weight(0.59),
-            memory_bias: one_weight(-0.32),
-
-            output: one_weight(1.0)
+            memory_bias: one_weight(-0.32)
         };
 
         let state = LSTMState{

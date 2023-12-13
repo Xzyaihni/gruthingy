@@ -19,13 +19,12 @@ pub type EmbeddingUnit<T> = WeightsContainer<T>;
 
 create_weights_container!{
     (weights, false, LayerSize::Hidden, LayerSize::Input),
-    (bias, false, LayerSize::Hidden, LayerSize::One),
-    (output, false, LayerSize::Input, LayerSize::Hidden)
+    (bias, false, LayerSize::Hidden, LayerSize::One)
 }
 
 impl Embeddingsable for EmbeddingUnit<DiffWrapper>
 {
-    fn embeddings(&mut self, input: &OneHotLayer) -> DiffWrapper
+    fn embeddings(&self, input: &OneHotLayer) -> DiffWrapper
     {
         self.weights.matmul_onehotv_add(input, &self.bias)
     }
@@ -41,18 +40,16 @@ impl NetworkUnit for EmbeddingUnit<DiffWrapper>
     }
 
     fn feedforward_unit(
-        &mut self,
+        &self,
         _previous_state: Option<&Self::State>,
         input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let hidden = self.embeddings(input.into_one_hot());
 
-        let output = self.output.matmulv(hidden);
-
         NetworkOutput{
             state: (),
-            output
+            output: hidden
         }
     }
 
@@ -61,6 +58,6 @@ impl NetworkUnit for EmbeddingUnit<DiffWrapper>
         let i = sizes.input as u128;
         let h = sizes.hidden as u128;
 
-        i * h
+        i * h + h
     }
 }

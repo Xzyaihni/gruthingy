@@ -25,8 +25,7 @@ create_weights_container!{
     (hidden_activation, true, LayerSize::Hidden, LayerSize::Hidden),
     (update_bias, false, LayerSize::Hidden, LayerSize::One),
     (reset_bias, false, LayerSize::Hidden, LayerSize::One),
-    (activation_bias, false, LayerSize::Hidden, LayerSize::One),
-    (output, false, LayerSize::Input, LayerSize::Hidden)
+    (activation_bias, false, LayerSize::Hidden, LayerSize::One)
 }
 
 impl NetworkUnit for Gru<DiffWrapper>
@@ -39,7 +38,7 @@ impl NetworkUnit for Gru<DiffWrapper>
     }
 
     fn feedforward_unit(
-        &mut self,
+        &self,
         previous_state: Option<&Self::State>,
         input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
@@ -75,11 +74,9 @@ impl NetworkUnit for Gru<DiffWrapper>
             this_activation + DiffWrapper::new_undiff(1.0.into())
         };
 
-        let output_untrans = self.output.matmulv(&state);
-
         NetworkOutput{
-            state,
-            output: output_untrans
+            state: state.clone(),
+            output: state
         }
     }
 
@@ -89,7 +86,7 @@ impl NetworkUnit for Gru<DiffWrapper>
         let h = sizes.hidden as u128;
 
         // i hope i calculated this right
-        (4 * i * h) + (3 * h * h) + (3 * h)
+        (3 * i * h) + (3 * h * h) + (3 * h)
     }
 }
 

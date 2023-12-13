@@ -19,6 +19,7 @@ use neural_network::{
     TrainingInfo,
     NeuralNetwork,
     WeightsNamed,
+    WeightsSize,
     LayerInnerType,
     NetworkUnit,
     OptimizerUnit,
@@ -100,6 +101,8 @@ where
     N: UnitFactory + DeserializeOwned,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
+    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
     D: NetworkDictionary + DeserializeOwned
 {
     let path: &Path = config.network_path.as_ref();
@@ -325,36 +328,46 @@ fn weights_image(config: Config)
 
     let output_folder = PathBuf::from(config.output.unwrap_or_else(|| "output".to_owned()));
 
-    for (layer_index, layer) in weights.into_iter().enumerate()
+    let layer_name = |index|
     {
-        let layer_name = format!("layer{layer_index}");
-        let layer_folder = output_folder.join(layer_name);
+        format!("layer{index}")
+    };
+
+    for WeightsNamed{
+        name,
+        layer,
+        weights_size: WeightsSize{
+            weights,
+            previous_size,
+            current_size,
+            ..
+        }
+    } in weights.into_iter()
+    {
+        let layer_folder = output_folder.join(layer_name(layer));
         fs::create_dir_all(&layer_folder).unwrap();
 
-        layer.for_each_weight(|WeightsNamed{name, weights_size}|
+        let mut image = PPMImage::new(previous_size, current_size);
+
+        for (index, weight) in weights.as_vec().into_iter().enumerate()
         {
-            let mut image = PPMImage::new(weights_size.previous_size, weights_size.current_size);
+            let color = weight_color(weight);
 
-            for (index, weight) in weights_size.weights.as_vec().into_iter().enumerate()
-            {
-                let color = weight_color(weight);
+            let x = index % previous_size;
+            let y = index / previous_size;
 
-                let x = index % weights_size.previous_size;
-                let y = index / weights_size.previous_size;
+            image[(x, y)] = color;
+        }
 
-                image[(x, y)] = color;
-            }
+        let name = name.chars().filter(|c|
+        {
+            c.is_ascii_alphanumeric()
+        }).collect::<String>();
 
-            let name = name.chars().filter(|c|
-            {
-                c.is_ascii_alphanumeric()
-            }).collect::<String>();
+        let filename = format!("{name}.ppm");
+        let full_path = layer_folder.join(filename);
 
-            let filename = format!("{name}.ppm");
-            let full_path = layer_folder.join(filename);
-
-            image.save(full_path).unwrap();
-        });
+        image.save(full_path).unwrap();
     }
 }
 

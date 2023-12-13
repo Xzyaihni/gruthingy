@@ -4,10 +4,8 @@ use crate::neural_network::{
     DiffWrapper,
     InputType,
     OneHotLayer,
-    LayerInnerType,
     LayerSizes,
     WeightsNamed,
-    Optimizer,
     network::{WeightsSize, NetworkOutput}
 };
 
@@ -22,7 +20,7 @@ pub trait UnitFactory
 // i hate rust generics i hate rust generics i hate rust generics
 pub trait Embeddingsable
 {
-    fn embeddings(&mut self, input: &OneHotLayer) -> DiffWrapper;
+    fn embeddings(&self, input: &OneHotLayer) -> DiffWrapper;
 }
 
 pub trait GenericUnit<T>
@@ -43,7 +41,7 @@ pub trait GenericUnit<T>
     where
         F: FnMut(WeightsSize<&T>) -> T;
 
-    fn weights_named_info(&self) -> Self::Unit<WeightsNamed<&T>>;
+    fn weights_named_info(&self, layer: usize) -> Self::Unit<WeightsNamed<&T>>;
 
     fn for_each_weight<F: FnMut(T)>(self, f: F);
     fn for_each_weight_ref<F: FnMut(&T)>(&self, f: F);
@@ -58,15 +56,6 @@ pub trait NewableLayer
 pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned
 {
     fn new_zeroed(sizes: LayerSizes) -> Self;
-
-    fn gradients_to_change<O>(
-        &mut self,
-        gradients: Self::Unit<LayerInnerType>,
-        optimizer: &O,
-        gradient_clip: Option<f32>
-    ) -> Self::Unit<DiffWrapper>
-    where
-        O: Optimizer<WeightParam=T>;
 }
 
 pub trait NetworkUnit: GenericUnit<DiffWrapper> + Serialize + DeserializeOwned + Clone
@@ -78,31 +67,13 @@ where
     fn new(sizes: LayerSizes) -> Self;
 
     fn feedforward_unit(
-        &mut self,
+        &self,
         previous_state: Option<&Self::State>,
         input: InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>;
 
-    fn feedforward_unit_last(
-        &mut self,
-        previous_state: Option<&Self::State>,
-        input: InputType,
-        targets: OneHotLayer
-    ) -> NetworkOutput<Self::State, DiffWrapper>
-    {
-        let NetworkOutput{
-            state,
-            output
-        } = self.feedforward_unit(previous_state, input);
-
-        NetworkOutput{
-            state,
-            output: output.softmax_cross_entropy(targets)
-        }
-    }
-
     fn feedforward_unit_nonlast(
-        &mut self,
+        &self,
         previous_state: Option<&Self::State>,
         dropout_mask: &DiffWrapper,
         input: InputType
