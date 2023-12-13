@@ -387,6 +387,7 @@ struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
     words: Vec<OneHotLayer>,
+    sizes: LayerSizes,
     temperature: f32,
     predict_amount: usize
 }
@@ -396,6 +397,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     pub fn new(
         dictionary: &'a mut D,
         words: Vec<OneHotLayer>,
+        sizes: LayerSizes,
         temperature: f32,
         predict_amount: usize
     ) -> Self
@@ -403,6 +405,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         Self{
             dictionary,
             words,
+            sizes,
             temperature,
             predict_amount
         }
@@ -425,7 +428,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         let mut previous_state: Option<_> = None;
 
         let dropout_masks = network.create_dropout_masks(
-            self.dictionary.words_amount(),
+            self.sizes.hidden,
             0.0
         );
 
@@ -588,7 +591,8 @@ where
     dictionary: D,
     network: Network<N, O::WeightParam>,
     optimizer: O,
-    gradient_clip: Option<f32>
+    gradient_clip: Option<f32>,
+    sizes: LayerSizes
 }
 
 impl<N, O, D> NeuralNetwork<N, O, D>
@@ -615,7 +619,7 @@ where
 
         let optimizer = O::new();
 
-        Self{dictionary, network, optimizer, gradient_clip}
+        Self{dictionary, network, optimizer, gradient_clip, sizes}
     }
 
     // these trait bounds feel wrong somehow
@@ -954,7 +958,7 @@ where
                 self.dictionary.words_to_layer([v])
             }).collect::<Vec<_>>();
 
-            Predictor::new(&mut self.dictionary, words, temperature, amount)
+            Predictor::new(&mut self.dictionary, words, self.sizes, temperature, amount)
         };
 
         let predicted = f(predictor, &mut self.network);

@@ -916,7 +916,7 @@ where
         let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
         let mut previous_state: Option<Vec<_>> = None;
 
-        let dropout_masks = self.create_dropout_masks(self.sizes.input, 0.0);
+        let dropout_masks = self.create_dropout_masks(self.sizes.hidden, 0.0);
 
         for this_input in input
         {
