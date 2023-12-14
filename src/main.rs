@@ -4,6 +4,7 @@
 
 use std::{
     env,
+    iter,
     process,
     path::{PathBuf, Path},
     io::{self, Write, BufReader, Cursor},
@@ -385,7 +386,7 @@ fn create_word_dictionary(config: Config)
 
         for c in chars_reader.by_ref()
         {
-            if WORD_SEPARATORS.contains(&c)
+            if WORD_SEPARATORS.iter().chain(iter::once(&' ')).any(|v| *v == c)
             {
                 if current_word.is_empty()
                 {

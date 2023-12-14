@@ -503,9 +503,15 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
 
         for c in self.adapter.by_ref()
         {
-            if !word.is_empty() && c == ' '
+            if c == ' '
             {
-                break;
+                if !word.is_empty()
+                {
+                    break;
+                } else
+                {
+                    continue;
+                }
             }
 
             if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
