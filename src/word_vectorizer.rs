@@ -232,10 +232,9 @@ impl NetworkDictionary for CharDictionary
     }
 }
 
-pub const WORD_SEPARATORS: [char; 33] = [
+pub const WORD_SEPARATORS: [char; 32] = [
     '>',
     '<',
-    ' ',
     ':',
     '\n',
     '.',
@@ -504,6 +503,11 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
 
         for c in self.adapter.by_ref()
         {
+            if !word.is_empty() && c == ' '
+            {
+                break;
+            }
+
             if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
             {
                 self.dictionary.leftover_separator = Some(pos);
@@ -557,7 +561,7 @@ mod tests
         encode_decode_test_lossy(
             dictionary.clone(),
             WordVectorizer::new(&mut dictionary, reader()),
-            "hello world � � a COOL � (not rly) � � gay"
+            "helloworld��aCOOL�(notrly)��gay"
         );
     }
 
@@ -602,9 +606,8 @@ mod tests
         assert_eq!(
             decoded_bytes,
             expected.bytes().collect::<Vec<u8>>(),
-            "decoded: {}, original: {}",
-            &String::from_utf8_lossy(&decoded_bytes),
-            original_text()
+            "decoded: {}, expected: {expected}",
+            &String::from_utf8_lossy(&decoded_bytes)
         );
     }
 }
