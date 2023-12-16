@@ -50,11 +50,11 @@ pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
-mod network;
 mod gru;
 mod lstm;
 mod embedding_unit;
 
+pub mod network;
 pub mod containers;
 
 pub use neural_network_config::*;
@@ -620,6 +620,11 @@ where
         let optimizer = O::new();
 
         Self{dictionary, network, optimizer, gradient_clip, sizes}
+    }
+
+    pub fn into_embeddings_info(self) -> (D, Network<N, O::WeightParam>)
+    {
+        (self.dictionary, self.network)
     }
 
     // these trait bounds feel wrong somehow

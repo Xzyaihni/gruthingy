@@ -3,6 +3,7 @@ use std::{
     hash::Hash,
     borrow::Borrow,
     ops::Deref,
+    path::PathBuf,
     collections::{HashMap, HashSet},
     io::{
         self,
@@ -16,7 +17,15 @@ use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
-use super::neural_network::{OneHotLayer, LayerInnerType};
+use crate::{load_embeddings, EmbeddingsUnitFactory};
+
+use super::neural_network::{
+    NOptimizer,
+    Optimizer,
+    LayerInnerType,
+    OneHotLayer,
+    network::Network
+};
 
 
 #[allow(dead_code)]
@@ -117,20 +126,31 @@ where
     }
 }
 
+pub enum InputDataType
+{
+    None,
+    String,
+    Path
+}
+
+pub enum InputData
+{
+    None,
+    String(String),
+    Path(PathBuf)
+}
+
 pub trait NetworkDictionary
 {
     type Adapter<R: Read>: ReaderAdapter<R>;
 
 
-    fn new(data: Option<&str>) -> Self;
+    fn new(data: InputData) -> Self;
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
     fn words_amount(&self) -> usize;
 
-    fn needs_data() -> bool
-    {
-        true
-    }
+    fn input_data() -> InputDataType;
     
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
     {
@@ -156,14 +176,14 @@ impl NetworkDictionary for ByteDictionary
     type Adapter<R: Read> = DefaultAdapter<R>;
 
 
-    fn new(_data: Option<&str>) -> Self
+    fn new(_data: InputData) -> Self
     {
         Self{}
     }
 
-    fn needs_data() -> bool
+    fn input_data() -> InputDataType
     {
-        false
+        InputDataType::None
     }
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
@@ -202,9 +222,15 @@ impl NetworkDictionary for CharDictionary
     type Adapter<R: Read> = CharsAdapter<R>;
 
 
-    fn new(data: Option<&str>) -> Self
+    fn new(data: InputData) -> Self
     {
-        let unique_chars: HashSet<_> = data.unwrap().chars().collect();
+        let s = match data
+        {
+            InputData::String(value) => value,
+            _ => unreachable!()
+        };
+
+        let unique_chars: HashSet<_> = s.chars().collect();
 
         let dictionary = unique_chars.into_iter().enumerate().map(|(index, c)|
         {
@@ -212,6 +238,11 @@ impl NetworkDictionary for CharDictionary
         }).collect::<Bimap<_, _>>();
 
         Self{dictionary}
+    }
+
+    fn input_data() -> InputDataType
+    {
+        InputDataType::String
     }
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
@@ -304,14 +335,25 @@ impl NetworkDictionary for WordDictionary
     type Adapter<R: Read> = CharsAdapter<R>;
 
 
-    fn new(data: Option<&str>) -> Self
+    fn new(data: InputData) -> Self
     {
-        let dictionary: Bimap<_, _> = data.unwrap().split('\n').enumerate().map(|(index, word)|
+        let s = match data
+        {
+            InputData::String(value) => value,
+            _ => unreachable!()
+        };
+
+        let dictionary: Bimap<_, _> = s.split('\n').enumerate().map(|(index, word)|
         {
             (word.to_owned(), VectorWord::new(index))
         }).collect();
 
         Self{dictionary, leftover_separator: None}
+    }
+
+    fn input_data() -> InputDataType
+    {
+        InputDataType::String
     }
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
@@ -347,11 +389,12 @@ impl NetworkDictionary for WordDictionary
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
-    network: ()
+    network: Network<EmbeddingsUnitFactory, <NOptimizer as Optimizer>::WeightParam>,
+    embeddings_size: usize
 }
 
 impl NetworkDictionary for EmbeddingsDictionary
@@ -359,11 +402,30 @@ impl NetworkDictionary for EmbeddingsDictionary
     type Adapter<R: Read> = CharsAdapter<R>;
 
 
-    fn new(data: Option<&str>) -> Self
+    fn new(data: InputData) -> Self
     {
-        let word_dictionary = WordDictionary::new(data);
+        let path = match data
+        {
+            InputData::Path(value) => value,
+            _ => unreachable!()
+        };
 
-        Self{word_dictionary, network: ()}
+        let neural_network = load_embeddings(
+            Some(path.as_ref()),
+            None,
+            false
+        );
+
+        let (word_dictionary, network) = neural_network.into_embeddings_info();
+
+        let embeddings_size = network.sizes().hidden;
+
+        Self{word_dictionary, network, embeddings_size}
+    }
+
+    fn input_data() -> InputDataType
+    {
+        InputDataType::Path
     }
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
@@ -373,7 +435,7 @@ impl NetworkDictionary for EmbeddingsDictionary
 
     fn words_amount(&self) -> usize
     {
-        todo!();
+        self.word_dictionary.words_amount()
     }
 }
 
@@ -562,7 +624,9 @@ mod tests
     #[test]
     fn encodes_decodes()
     {
-        let mut dictionary = WordDictionary::new(Some("COOL\ngay\nbro\nhello\nrly\nworld\na\nnot"));
+        let s = "COOL\ngay\nbro\nhello\nrly\nworld\na\nnot";
+
+        let mut dictionary = WordDictionary::new(InputData::String(s.into()));
 
         encode_decode_test_lossy(
             dictionary.clone(),
@@ -574,7 +638,9 @@ mod tests
     #[test]
     fn encodes_decodes_char()
     {
-        let mut dictionary = CharDictionary::new(Some("h elow / im tsngaCLcdr()lyfk)"));
+        let s = "h elow / im tsngaCLcdr()lyfk)";
+
+        let mut dictionary = CharDictionary::new(InputData::String(s.into()));
 
         encode_decode_test_lossy(
             dictionary.clone(),
@@ -586,7 +652,7 @@ mod tests
     #[test]
     fn encodes_decodes_bytes()
     {
-        let mut dictionary = ByteDictionary::new(None);
+        let mut dictionary = ByteDictionary::new(InputData::None);
 
         encode_decode_test_lossy(
             dictionary.clone(),

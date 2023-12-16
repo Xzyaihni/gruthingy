@@ -43,13 +43,15 @@ use word_vectorizer::{
     NetworkDictionary,
     WordDictionary,
     VectorWord,
+    InputDataType,
+    InputData,
     WORD_SEPARATORS
 };
 
 mod config;
-
-mod neural_network;
 mod word_vectorizer;
+
+pub mod neural_network;
 
 
 pub fn complain<S>(message: S) -> !
@@ -90,11 +92,42 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
-    load_network_with::<NUnitFactory, NDictionary>(config, sizes, auto_create)
+    load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
+}
+
+pub fn load_embeddings(
+    path: Option<&Path>,
+    mut config: Option<&mut Config>,
+    auto_create: bool
+) -> NeuralNetwork<EmbeddingsUnitFactory, NOptimizer, WordDictionary>
+{
+    // &mut &mut, im not sure wut im doing wrong
+    let sizes = config.as_mut().map(|config|
+    {
+        // the whole point of embeddings is to overfit right?
+        config.dropout_probability = 0.0;
+
+        // and uhh i dont think it can NaN out on me with just 1 layer
+        config.gradient_clip = None;
+
+        SizesInfo{hidden: config.embeddings_size, layers: 1}
+    });
+
+    let config = config.map(|x| &*x);
+
+    let path = path.unwrap_or_else(||
+    {
+        config.expect("config must be provided if the path is none")
+            .network_path
+            .as_ref()
+    });
+
+    load_network_with(path, config, sizes, auto_create)
 }
 
 fn load_network_with<N, D>(
-    config: &Config,
+    path: &Path,
+    config: Option<&Config>,
     sizes: Option<SizesInfo>,
     auto_create: bool
 ) -> NeuralNetwork<N, NOptimizer, D>
@@ -106,8 +139,6 @@ where
     for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
     D: NetworkDictionary + DeserializeOwned
 {
-    let path: &Path = config.network_path.as_ref();
-
     if path.exists()
     {
         NeuralNetwork::load(path).unwrap_or_else(|err|
@@ -116,20 +147,26 @@ where
         })
     } else if auto_create
     {
-        let data = if NDictionary::needs_data()
-        {
-            let dictionary_path = &config.dictionary_path;
+        let config = config.expect("config must be provided for autocreate");
 
-            Some(fs::read_to_string(dictionary_path).unwrap_or_else(|err|
-            {
-                complain(format!("could not load dictionary at {dictionary_path} ({err})"))
-            }))
-        } else
+        let data = match NDictionary::input_data()
         {
-            None
+            InputDataType::String => {
+                let dictionary_path = &config.dictionary_path;
+
+                InputData::String(fs::read_to_string(dictionary_path).unwrap_or_else(|err|
+                {
+                    complain(format!("could not load dictionary at {dictionary_path} ({err})"))
+                }))
+            },
+            InputDataType::None => InputData::None,
+            InputDataType::Path =>
+            {
+                InputData::Path(config.dictionary_path.as_str().into())
+            }
         };
 
-        let dictionary = D::new(data.as_deref());
+        let dictionary = D::new(data);
 
         let sizes = sizes.unwrap_or_else(|| SizesInfo::from(config));
 
@@ -431,15 +468,9 @@ impl UnitFactory for EmbeddingsUnitFactory
 
 fn train_embeddings(mut config: Config)
 {
-    // the whole point of embeddings is to overfit right?
-    config.dropout_probability = 0.0;
-
-    // and uhh i dont think it can NaN out on me with just 1 layer
-    config.gradient_clip = None;
-
-    let mut network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
-        &config,
-        Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
+    let mut network = load_embeddings(
+        None,
+        Some(&mut config),
         true
     );
 
@@ -457,15 +488,15 @@ fn train_embeddings(mut config: Config)
     network.save(&config.network_path);
 }
 
-fn closest_embeddings(config: Config)
+fn closest_embeddings(mut config: Config)
 {
-    let input = config.get_input();
-
-    let mut network = load_network_with::<EmbeddingsUnitFactory, WordDictionary>(
-        &config,
-        Some(SizesInfo{hidden: config.embeddings_size, layers: 1}),
+    let mut network = load_embeddings(
+        None,
+        Some(&mut config),
         false
     );
+
+    let input = config.get_input();
 
     network.inner_network_mut().disable_gradients();
 

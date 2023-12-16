@@ -7,8 +7,8 @@ use crate::{
     neural_network::{
         DiffWrapper,
         OneHotLayer,
-        InputType,
         LayerSizes,
+        InputType,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, Embeddingsable}
     }

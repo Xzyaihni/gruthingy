@@ -481,6 +481,17 @@ where
     weights: WeightsFullContainer<N, DiffWrapper>
 }
 
+impl<N: UnitFactory, O> Network<N, O>
+where
+    N::Unit<O>: OptimizerUnit<O>,
+    N::Unit<DiffWrapper>: NetworkUnit
+{
+    pub fn sizes(&self) -> &LayerSizes
+    {
+        &self.sizes
+    }
+}
+
 impl<N, O> Network<N, O>
 where
     N::Unit<O>: OptimizerUnit<O>,
