@@ -510,7 +510,7 @@ fn closest_embeddings(mut config: Config)
     {
         let input = network.dictionary().words_to_layer([word]);
 
-        network.inner_network_mut().embeddings(input)
+        network.inner_network_mut().embeddings(input.into_one_hot())
     };
 
     let this_word = to_vector_word(&network, input);

@@ -190,7 +190,7 @@ impl<'a, const SURROUND: bool, D> InputOutput<'a, SURROUND, D>
 // cant be anything except true or false
 pub trait InputOutputable
 {
-    type Iter<'a>: Iterator<Item=(OneHotLayer, OneHotLayer)>
+    type Iter<'a>: Iterator<Item=(InputType, OneHotLayer)>
     where
         Self: 'a;
 
@@ -261,13 +261,6 @@ where
             inputs
         }
     }
-
-    fn value_map(&self, value: &'a VectorWord) -> OneHotLayer
-    where
-        D: NetworkDictionary
-    {
-        self.dictionary.words_to_layer([*value])
-    }
 }
 
 impl<'a, D, I> Iterator for InputOutputIter<'a, D, I>
@@ -275,7 +268,7 @@ where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (OneHotLayer, OneHotLayer);
+    type Item = (InputType, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -284,7 +277,12 @@ where
             None => None,
             Some(input) =>
             {
-                let out = Some((self.value_map(self.previous), self.value_map(input)));
+                let out = Some(
+                    (
+                        self.dictionary.words_to_layer([*self.previous]),
+                        self.dictionary.words_to_onehot([*input])
+                    )
+                );
 
                 self.previous = input;
 
@@ -349,7 +347,7 @@ where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (OneHotLayer, OneHotLayer);
+    type Item = (InputType, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -359,7 +357,7 @@ where
             Some(input) =>
             {
                 let this_input = self.dictionary.words_to_layer([*self.double_previous, *input]);
-                let this_output = self.dictionary.words_to_layer([*self.previous]);
+                let this_output = self.dictionary.words_to_onehot([*self.previous]);
 
                 let out = Some((this_input, this_output));
 
@@ -960,7 +958,7 @@ where
             // could do this without a collect but wheres the fun in that
             let words = self.vectorized(reader).into_iter().map(|v|
             {
-                self.dictionary.words_to_layer([v]).into()
+                self.dictionary.words_to_layer([v])
             }).collect::<Vec<_>>();
 
             Predictor::new(&mut self.dictionary, words, self.sizes, temperature, amount)

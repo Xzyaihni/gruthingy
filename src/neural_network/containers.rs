@@ -774,6 +774,24 @@ pub enum InputType
 
 impl InputType
 {
+    pub fn into_one_hot(self) -> OneHotLayer
+    {
+        match self
+        {
+            Self::OneHot(value) => value,
+            _ => panic!("expected onehot")
+        }
+    }
+
+    pub fn into_normal(self) -> DiffWrapper
+    {
+        match self
+        {
+            Self::Normal(value) => value,
+            _ => panic!("expected normal")
+        }
+    }
+
     pub fn as_one_hot(&self) -> &OneHotLayer
     {
         match self
@@ -2092,7 +2110,7 @@ mod tests
         let targets = create_targets();
         check_vector(|a, b|
         {
-            a + (a + b + DiffWrapper::new_undiff(2.0.into())).softmax_cross_entropy(targets.clone())
+            a + (b + DiffWrapper::new_undiff(2.0.into())).softmax_cross_entropy(targets.clone())
         })
     }
 }

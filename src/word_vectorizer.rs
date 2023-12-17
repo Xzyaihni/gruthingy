@@ -23,6 +23,7 @@ use super::neural_network::{
     NOptimizer,
     Optimizer,
     LayerInnerType,
+    InputType,
     OneHotLayer,
     network::Network
 };
@@ -152,7 +153,12 @@ pub trait NetworkDictionary
 
     fn input_data() -> InputDataType;
     
-    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
+    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
+    {
+        self.words_to_onehot(words).into()
+    }
+    
+    fn words_to_onehot(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
     {
         OneHotLayer::new(
             words.into_iter().map(|word| word.index()).collect::<Box<[_]>>(),
@@ -670,7 +676,7 @@ mod tests
         let decoded_bytes = vectorizer.flat_map(|word|
         {
             let layer = dictionary.words_to_layer([word]);
-            let word = dictionary.layer_to_word(layer.into_layer());
+            let word = dictionary.layer_to_word(layer.into_one_hot().into_layer());
 
             dictionary.word_to_bytes(word).into_vec().into_iter()
         }).collect::<Vec<u8>>();

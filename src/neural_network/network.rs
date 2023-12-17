@@ -612,7 +612,7 @@ where
 
     pub fn gradients(
         &mut self,
-        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> (f32, WeightsFullContainer<N, LayerInnerType>)
     where
         // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
@@ -705,7 +705,7 @@ where
     #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
-        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> f32
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -833,7 +833,7 @@ where
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
-        input: OneHotLayer,
+        input: InputType,
         targets: OneHotLayer
     ) -> NetworkOutput<Vec<UnitState<N>>, DiffWrapper>
     {
@@ -854,7 +854,7 @@ where
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
-        input: impl Iterator<Item=(OneHotLayer, OneHotLayer)>
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> DiffWrapper
     {
         let mut output: Option<DiffWrapper> = None;
@@ -920,7 +920,7 @@ where
 
     fn predict(
         &mut self,
-        input: impl Iterator<Item=OneHotLayer> + ExactSizeIterator
+        input: impl Iterator<Item=InputType> + ExactSizeIterator
     ) -> Vec<LayerInnerType>
     {
         let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
@@ -936,7 +936,7 @@ where
             } = self.predict_single_input(
                 previous_state.take(),
                 &dropout_masks,
-                &this_input.into(),
+                &this_input,
                 1.0
             );
 
