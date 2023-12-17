@@ -149,7 +149,7 @@ where
     {
         let config = config.expect("config must be provided for autocreate");
 
-        let data = match NDictionary::input_data()
+        let data = match D::input_data()
         {
             InputDataType::String => {
                 let dictionary_path = &config.dictionary_path;
@@ -171,7 +171,8 @@ where
         let sizes = sizes.unwrap_or_else(|| SizesInfo::from(config));
 
         let sizes = LayerSizes{
-            input: dictionary.words_amount(),
+            input: dictionary.input_amount(),
+            output: dictionary.words_amount(),
             hidden: sizes.hidden,
             layers: sizes.layers
         };

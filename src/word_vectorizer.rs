@@ -152,7 +152,12 @@ pub trait NetworkDictionary
     fn words_amount(&self) -> usize;
 
     fn input_data() -> InputDataType;
-    
+
+    fn input_amount(&self) -> usize
+    {
+        self.words_amount()
+    }
+
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
     {
         self.words_to_onehot(words).into()
@@ -321,6 +326,56 @@ impl WordDictionary
         VectorWord::new(index)
     }
 
+    fn next_word<R: Read>(&mut self, reader: &mut CharsAdapter<R>) -> Option<VectorWord>
+    {
+        if let Some(separator_index) = self.leftover_separator
+        {
+            self.leftover_separator = None;
+
+            return Some(self.separator_word(separator_index));
+        }
+
+        let mut word = String::new();
+
+        for c in reader
+        {
+            if c == ' '
+            {
+                if !word.is_empty()
+                {
+                    break;
+                } else
+                {
+                    continue;
+                }
+            }
+
+            if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
+            {
+                self.leftover_separator = Some(pos);
+
+                break;
+            } else
+            {
+                word.push(c);
+            }
+        }
+
+        if word.is_empty()
+        {
+            return self.leftover_separator.take().map(|i|
+            {
+                self.separator_word(i)
+            });
+        }
+
+        Some(self.dictionary.by_key(&word).cloned().unwrap_or_else(||
+        {
+            eprintln!("unknown word: {word}");
+            VectorWord::new(self.words_amount() - 1)
+        }))
+    }
+
     pub fn str_to_word(&self, s: &str) -> Option<VectorWord>
     {
         if s.len() == 1
@@ -433,6 +488,11 @@ impl NetworkDictionary for EmbeddingsDictionary
     {
         InputDataType::Path
     }
+    
+    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
+    {
+        self.network.embeddings(self.words_to_onehot(words)).into()
+    }
 
     fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
     {
@@ -442,6 +502,11 @@ impl NetworkDictionary for EmbeddingsDictionary
     fn words_amount(&self) -> usize
     {
         self.word_dictionary.words_amount()
+    }
+    
+    fn input_amount(&self) -> usize
+    {
+        self.embeddings_size
     }
 }
 
@@ -560,52 +625,17 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        if let Some(separator_index) = self.dictionary.leftover_separator
-        {
-            self.dictionary.leftover_separator = None;
+        self.dictionary.next_word(self.adapter.by_ref())
+    }
+}
 
-            return Some(self.dictionary.separator_word(separator_index));
-        }
+impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut EmbeddingsDictionary>
+{
+    type Item = VectorWord;
 
-        let mut word = String::new();
-
-        for c in self.adapter.by_ref()
-        {
-            if c == ' '
-            {
-                if !word.is_empty()
-                {
-                    break;
-                } else
-                {
-                    continue;
-                }
-            }
-
-            if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
-            {
-                self.dictionary.leftover_separator = Some(pos);
-
-                break;
-            } else
-            {
-                word.push(c);
-            }
-        }
-
-        if word.is_empty()
-        {
-            return self.dictionary.leftover_separator.take().map(|i|
-            {
-                self.dictionary.separator_word(i)
-            });
-        }
-
-        Some(self.dictionary.dictionary.by_key(&word).cloned().unwrap_or_else(||
-        {
-            eprintln!("unknown word: {word}");
-            VectorWord::new(self.dictionary.words_amount() - 1)
-        }))
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.dictionary.word_dictionary.next_word(self.adapter.by_ref())
     }
 }
 

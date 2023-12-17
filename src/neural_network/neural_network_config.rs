@@ -10,6 +10,7 @@ use super::{
     Lstm,
     CharDictionary,
     WordDictionary,
+    EmbeddingsDictionary,
     ByteDictionary
 };
 
@@ -25,7 +26,7 @@ pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 // options: Lstm, Gru
 pub type NUnit<T> = Lstm<T>;
 
-// options: WordDictionary, CharDictionary, ByteDictionary
+// options: EmbeddingsDictionary, WordDictionary, CharDictionary, ByteDictionary
 pub type NDictionary = CharDictionary;
 
 // options: Sgd, Adam, AdamX, PowerSign

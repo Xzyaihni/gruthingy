@@ -48,6 +48,7 @@ pub struct WeightsNamed<T>
 pub struct LayerSizes
 {
     pub input: usize,
+    pub output: usize,
     pub hidden: usize,
     pub layers: usize
 }
@@ -510,7 +511,7 @@ where
                 N::Unit::new_zeroed(size)
             }, |size|
             {
-                O::new(size.input, size.hidden)
+                O::new(size.output, size.hidden)
             }));
 
         let weights = WeightsFullContainer::new(sizes, |size|
@@ -519,7 +520,7 @@ where
         }, |size|
         {
             DiffWrapper::new_diff(
-                LayerInnerType::new_with(size.input, size.hidden, ||
+                LayerInnerType::new_with(size.output, size.hidden, ||
                 {
                     let v = 1.0 / (sizes.hidden as f32).sqrt();
 
@@ -997,7 +998,7 @@ where
     EN<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=EN<DiffWrapper>> + Embeddingsable,
     EmbeddingsUnitFactory: UnitFactory
 {
-    pub fn embeddings(&mut self, input: OneHotLayer) -> DiffWrapper
+    pub fn embeddings(&self, input: OneHotLayer) -> DiffWrapper
     {
         debug_assert!(self.weights.layers.len() == 1);
 

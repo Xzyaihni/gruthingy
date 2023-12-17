@@ -19,6 +19,7 @@ use crate::{
         ByteDictionary,
         CharDictionary,
         WordDictionary,
+        EmbeddingsDictionary,
         NetworkDictionary,
         WordVectorizer,
         VectorWord,

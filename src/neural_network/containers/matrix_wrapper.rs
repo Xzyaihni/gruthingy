@@ -337,6 +337,8 @@ impl MatrixWrapper
 
     pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
     {
+        debug_assert!(rhs.borrow().0.shape().1 == 1);
+
         let this = (&self.0).mul(&rhs.borrow().0.column(0));
 
         let rows = this.shape_generic().0;
@@ -345,12 +347,17 @@ impl MatrixWrapper
 
     pub fn matmulv_transposed(&self, rhs: impl Borrow<Self>) -> Self
     {
+        debug_assert!(rhs.borrow().0.shape().1 == 1);
+
         // nope no gemv_tr cuz FUCK me
         Self(self.0.tr_mul(&rhs.borrow().0))
     }
 
     pub fn outer_product(&self, rhs: impl Borrow<Self>) -> Self
     {
+        debug_assert!(self.0.shape().1 == 1);
+        debug_assert!(rhs.borrow().0.shape().1 == 1);
+
         // cant use ger here cuz all linear algebra libraries hate me and r slow
         // if only i could call ger on a matrix that has MaybeUninit<T> >_<
         Self(&self.0 * &rhs.borrow().0.transpose())
@@ -358,6 +365,8 @@ impl MatrixWrapper
 
     pub fn outer_product_one_hot(&self, rhs: &OneHotLayer) -> Self
     {
+        debug_assert!(self.0.shape().1 == 1);
+
         let mut output = Self::new(self.0.nrows(), rhs.size);
 
         for position in rhs.positions.iter()
@@ -370,6 +379,9 @@ impl MatrixWrapper
 
     pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
     {
+        debug_assert!(rhs.borrow().0.shape().1 == 1);
+        debug_assert!(added.borrow().0.shape().1 == 1);
+
         let mut this = added.borrow().0.clone();
         this.column_mut(0).gemv(1.0, &self.0, &rhs.borrow().0.column(0), 1.0);
 
@@ -378,6 +390,8 @@ impl MatrixWrapper
 
     pub fn matmul_onehotv_add(&self, rhs: &OneHotLayer, added: impl Borrow<Self>) -> Self
     {
+        debug_assert!(added.borrow().0.shape().1 == 1);
+
         let mut this = added.borrow().0.clone();
 
         for position in rhs.positions.iter()
