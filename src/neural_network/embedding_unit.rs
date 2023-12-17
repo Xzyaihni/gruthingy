@@ -42,10 +42,10 @@ impl NetworkUnit for EmbeddingUnit<DiffWrapper>
     fn feedforward_unit(
         &self,
         _previous_state: Option<&Self::State>,
-        input: InputType
+        input: &InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
-        let hidden = self.embeddings(input.into_one_hot());
+        let hidden = self.embeddings(input.as_one_hot());
 
         NetworkOutput{
             state: (),

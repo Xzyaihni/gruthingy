@@ -69,14 +69,14 @@ where
     fn feedforward_unit(
         &self,
         previous_state: Option<&Self::State>,
-        input: InputType
+        input: &InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>;
 
     fn feedforward_unit_nonlast(
         &self,
         previous_state: Option<&Self::State>,
         dropout_mask: &DiffWrapper,
-        input: InputType
+        input: &InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut output = self.feedforward_unit(previous_state, input);

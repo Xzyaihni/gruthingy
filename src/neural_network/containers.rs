@@ -765,40 +765,38 @@ impl OneHotLayer
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum InputType<'a>
+#[derive(Debug, Clone)]
+pub enum InputType
 {
-    Normal(&'a DiffWrapper),
-    OneHot(&'a OneHotLayer)
+    Normal(DiffWrapper),
+    OneHot(OneHotLayer)
 }
 
-impl<'a> From<&'a DiffWrapper> for InputType<'a>
+impl InputType
 {
-    fn from(value: &'a DiffWrapper) -> Self
+    pub fn as_one_hot(&self) -> &OneHotLayer
+    {
+        match self
+        {
+            Self::OneHot(value) => value,
+            _ => panic!("expected onehot")
+        }
+    }
+}
+
+impl From<DiffWrapper> for InputType
+{
+    fn from(value: DiffWrapper) -> Self
     {
         Self::Normal(value)
     }
 }
 
-impl<'a> From<&'a OneHotLayer> for InputType<'a>
+impl From<OneHotLayer> for InputType
 {
-    fn from(value: &'a OneHotLayer) -> Self
+    fn from(value: OneHotLayer) -> Self
     {
         Self::OneHot(value)
-    }
-}
-
-impl<'a> InputType<'a>
-{
-    pub fn into_one_hot(self) -> &'a OneHotLayer
-    {
-        if let Self::OneHot(value) = self
-        {
-            value
-        } else
-        {
-            panic!("expected one_hot layer, got normal")
-        }
     }
 }
 
@@ -1549,7 +1547,7 @@ impl DiffWrapper
         inner_from_value!(value, Matmulv, lhs, self, rhs, rhs)
     }
 
-    pub fn matmulv_add(&self, rhs: InputType, added: impl Borrow<Self>) -> Self
+    pub fn matmulv_add(&self, rhs: &InputType, added: impl Borrow<Self>) -> Self
     {
         match rhs
         {

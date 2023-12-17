@@ -49,7 +49,7 @@ impl NetworkUnit for Lstm<DiffWrapper>
     fn feedforward_unit(
         &self,
         previous_state: Option<&Self::State>,
-        input: InputType
+        input: &InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut forget_gate = self.input_forget.matmulv_add(input, &self.forget_bias);
@@ -182,7 +182,7 @@ mod tests
 
         let input = one_weight(1.0);
 
-        let output = lstm.feedforward_unit(Some(&state), (&input).into());
+        let output = lstm.feedforward_unit(Some(&state), &input.into());
 
         let epsilon = 0.0001;
 

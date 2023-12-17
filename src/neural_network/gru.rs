@@ -40,7 +40,7 @@ impl NetworkUnit for Gru<DiffWrapper>
     fn feedforward_unit(
         &self,
         previous_state: Option<&Self::State>,
-        input: InputType
+        input: &InputType
     ) -> NetworkOutput<Self::State, DiffWrapper>
     {
         let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);

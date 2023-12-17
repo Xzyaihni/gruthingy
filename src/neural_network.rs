@@ -386,7 +386,7 @@ where
 struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
-    words: Vec<OneHotLayer>,
+    words: Vec<InputType>,
     sizes: LayerSizes,
     temperature: f32,
     predict_amount: usize
@@ -396,7 +396,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
 {
     pub fn new(
         dictionary: &'a mut D,
-        words: Vec<OneHotLayer>,
+        words: Vec<InputType>,
         sizes: LayerSizes,
         temperature: f32,
         predict_amount: usize
@@ -453,7 +453,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
                 let word = VectorWord::from_raw(word);
 
                 let layer = self.dictionary.words_to_layer([word]);
-                self.words.push(layer);
+                self.words.push(layer.into());
 
                 let bytes = self.dictionary.word_to_bytes(word);
 
@@ -960,7 +960,7 @@ where
             // could do this without a collect but wheres the fun in that
             let words = self.vectorized(reader).into_iter().map(|v|
             {
-                self.dictionary.words_to_layer([v])
+                self.dictionary.words_to_layer([v]).into()
             }).collect::<Vec<_>>();
 
             Predictor::new(&mut self.dictionary, words, self.sizes, temperature, amount)

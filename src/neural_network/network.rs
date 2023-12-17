@@ -748,13 +748,13 @@ where
         last_f: F,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
-        input: &OneHotLayer
+        input: &InputType
     ) -> NetworkOutput<Vec<UnitState<N>>, T>
     where
-        F: FnOnce(&N::Unit<DiffWrapper>, Option<&UnitState<N>>, InputType) -> NetworkOutput<UnitState<N>, T>
+        F: FnOnce(&N::Unit<DiffWrapper>, Option<&UnitState<N>>, &InputType) -> NetworkOutput<UnitState<N>, T>
     {
         let mut output: Option<T> = None;
-        let mut last_output: Option<DiffWrapper> = None;
+        let mut last_output: Option<InputType> = None;
 
         let mut states = Vec::with_capacity(self.sizes.layers);
 
@@ -762,9 +762,8 @@ where
         #[allow(clippy::needless_range_loop)]
         for l_i in 0..self.sizes.layers
         {
-            let input: InputType = last_output.as_ref()
-                .map(|v| v.into())
-                .unwrap_or_else(|| input.into());
+            let input = last_output.as_ref().take()
+                .unwrap_or(input);
 
             debug_assert!(l_i < self.weights.layers.len());
             let layer = unsafe{ self.weights.layers.get_unchecked(l_i) };
@@ -804,7 +803,7 @@ where
                     input
                 );
 
-                last_output = Some(this_output);
+                last_output = Some(this_output.into());
 
                 states.push(state);
             }
@@ -820,7 +819,7 @@ where
         &self,
         layer: &N::Unit<DiffWrapper>,
         previous_state: Option<&UnitState<N>>,
-        input: InputType
+        input: &InputType
     ) -> NetworkOutput<UnitState<N>, DiffWrapper>
     {
         let mut output = layer.feedforward_unit(previous_state, input);
@@ -849,7 +848,7 @@ where
             output.output = output.output.softmax_cross_entropy(targets);
 
             output
-        }, previous_states, dropout_masks, &input)
+        }, previous_states, dropout_masks, &input.into())
     }
 
     #[allow(dead_code)]
@@ -893,7 +892,7 @@ where
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
-        input: &OneHotLayer,
+        input: &InputType,
         temperature: f32
     ) -> NetworkOutput<Vec<UnitState<N>>, LayerInnerType>
     {
@@ -916,7 +915,7 @@ where
             Softmaxer::softmax_temperature(&mut output.output, temperature);
 
             output
-        }, previous_states, dropout_masks, &input)
+        }, previous_states, dropout_masks, input)
     }
 
     fn predict(
@@ -937,7 +936,7 @@ where
             } = self.predict_single_input(
                 previous_state.take(),
                 &dropout_masks,
-                &this_input,
+                &this_input.into(),
                 1.0
             );
 
