@@ -148,7 +148,7 @@ pub trait NetworkDictionary
 
     fn new(data: InputData) -> Self;
 
-    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>;
+    fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>;
     fn words_amount(&self) -> usize;
 
     fn input_data() -> InputDataType;
@@ -197,7 +197,7 @@ impl NetworkDictionary for ByteDictionary
         InputDataType::None
     }
 
-    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    fn word_to_bytes(&self, _previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>
     {
         Box::new([word.index() as u8])
     }
@@ -256,21 +256,50 @@ impl NetworkDictionary for CharDictionary
         InputDataType::String
     }
 
-    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    fn word_to_bytes(&self, _previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>
     {
         let c = self.dictionary.by_value(&word).cloned()
             .unwrap_or(char::REPLACEMENT_CHARACTER);
 
         let mut s = [0_u8; 4];
-        let s = c.encode_utf8(&mut s);
+        let encoded = c.encode_utf8(&mut s);
 
-        s.as_bytes().into()
+        encoded.as_bytes().into()
     }
 
     fn words_amount(&self) -> usize
     {
         // +1 for replacement character
         self.dictionary.len() + 1
+    }
+}
+
+enum SpaceInfo
+{
+    Left,
+    Right,
+    Both,
+    None
+}
+
+impl SpaceInfo
+{
+    pub fn right(self) -> bool
+    {
+        match self
+        {
+            Self::Right | Self::Both => true,
+            _ => false
+        }
+    }
+
+    pub fn left(self) -> bool
+    {
+        match self
+        {
+            Self::Left | Self::Both => true,
+            _ => false
+        }
     }
 }
 
@@ -376,6 +405,100 @@ impl WordDictionary
         }))
     }
 
+    fn word_as_separator(&self, word: VectorWord) -> Option<char>
+    {
+        let index = word.index();
+        let words_amount = self.dictionary.len();
+
+        if index >= words_amount
+        {
+            let c = if index == (self.words_amount() - 1)
+            {
+                char::REPLACEMENT_CHARACTER
+            } else
+            {
+                WORD_SEPARATORS[index - words_amount]
+            };
+
+            Some(c)
+        } else
+        {
+            None
+        }
+    }
+
+    fn word_to_bytes_inner(&self, word: VectorWord) -> Vec<u8>
+    {
+        if let Some(separator) = self.word_as_separator(word)
+        {
+            return separator.to_string().into_bytes();
+        }
+
+        self.dictionary.by_value(&word)
+            .cloned()
+            .unwrap()
+            .into_bytes()
+    }
+
+    fn space_info(separator: char) -> Option<SpaceInfo>
+    {
+        match separator
+        {
+            ')'|']'|'}' => Some(SpaceInfo::Right),
+            '('|'['|'{' => Some(SpaceInfo::Left),
+            '>'|'<' => Some(SpaceInfo::None),
+            ':' => Some(SpaceInfo::Right),
+            '\n' => Some(SpaceInfo::None),
+            '.'|','|'!'|'?' => Some(SpaceInfo::Right),
+            '-' => Some(SpaceInfo::None),
+            '=' => Some(SpaceInfo::Both),
+            '/' => Some(SpaceInfo::None),
+            '*' => Some(SpaceInfo::Both),
+            '\'' => Some(SpaceInfo::Both),
+            '\\' => Some(SpaceInfo::None),
+            '"' => Some(SpaceInfo::Both),
+            '_' => Some(SpaceInfo::None),
+            char::REPLACEMENT_CHARACTER => Some(SpaceInfo::Both),
+            _ => None
+        }
+    }
+
+    fn needs_space(&self, previous_word: Option<VectorWord>, word: VectorWord) -> bool
+    {
+        if let Some(previous_word) = previous_word
+        {
+            let previous_word = self.word_as_separator(previous_word);
+            let word = self.word_as_separator(word);
+
+            let right_space = previous_word.map(|x|
+            {
+                if let Some(info) = Self::space_info(x)
+                {
+                    info.right()
+                } else
+                {
+                    false
+                }
+            }).unwrap_or(true);
+
+            let left_space = word.map(|x|
+            {
+                if let Some(info) = Self::space_info(x)
+                {
+                    info.left()
+                } else
+                {
+                    false
+                }
+            }).unwrap_or(true);
+
+            right_space && left_space
+        } else
+        {
+            false
+        }
+    }
+
     pub fn str_to_word(&self, s: &str) -> Option<VectorWord>
     {
         if s.len() == 1
@@ -417,30 +540,18 @@ impl NetworkDictionary for WordDictionary
         InputDataType::String
     }
 
-    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>
     {
-        let index = word.index();
-        let words_amount = self.dictionary.len();
+        let needs_space = self.needs_space(previous_word, word);
 
-        if index >= words_amount
+        let mut bytes = self.word_to_bytes_inner(word);
+
+        if needs_space
         {
-            let c = if index == (self.words_amount() - 1)
-            {
-                char::REPLACEMENT_CHARACTER
-            } else
-            {
-                WORD_SEPARATORS[index - words_amount]
-            };
-
-            // WHYYYYYYYY i wanna rework all of this garbage but i dont want to touch this
-            // stupid project anymore either (mostly cuz i dont wanna bugfix it)
-            return c.to_string().into_bytes().into_boxed_slice();
+            bytes.insert(0, b' ');
         }
 
-        // why?
-        self.dictionary.by_value(&word).cloned().unwrap()
-            .into_bytes()
-            .into_boxed_slice()
+        bytes.into()
     }
 
     fn words_amount(&self) -> usize
@@ -494,9 +605,9 @@ impl NetworkDictionary for EmbeddingsDictionary
         self.network.embeddings(self.words_to_onehot(words)).into()
     }
 
-    fn word_to_bytes(&self, word: VectorWord) -> Box<[u8]>
+    fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>
     {
-        self.word_dictionary.word_to_bytes(word)
+        self.word_dictionary.word_to_bytes(previous_word, word)
     }
 
     fn words_amount(&self) -> usize
@@ -667,7 +778,7 @@ mod tests
         encode_decode_test_lossy(
             dictionary.clone(),
             WordVectorizer::new(&mut dictionary, reader()),
-            "helloworld��aCOOL�(notrly)��gay"
+            "hello world � � a COOL � (not rly) � � gay"
         );
     }
 
@@ -703,12 +814,21 @@ mod tests
         D: NetworkDictionary,
         V: Iterator<Item=VectorWord>
     {
-        let decoded_bytes = vectorizer.flat_map(|word|
+        let mut previous_word = None;
+
+        let decoded_bytes = vectorizer.map(|word|
+        {
+            let output = (previous_word, word);
+
+            previous_word = Some(word);
+
+            output
+        }).flat_map(|(previous_word, word)|
         {
             let layer = dictionary.words_to_layer([word]);
             let word = dictionary.layer_to_word(layer.into_one_hot().into_layer());
 
-            dictionary.word_to_bytes(word).into_vec().into_iter()
+            dictionary.word_to_bytes(previous_word, word).into_vec().into_iter()
         }).collect::<Vec<u8>>();
 
         assert_eq!(

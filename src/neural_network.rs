@@ -424,7 +424,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     {
         let input_amount = self.words.len();
 
-        let mut previous_state: Option<_> = None;
+        let mut previous_word = None;
+        let mut previous_state = None;
 
         let dropout_masks = network.create_dropout_masks(
             self.sizes.hidden,
@@ -454,7 +455,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
                 let layer = self.dictionary.words_to_layer([word]);
                 self.words.push(layer.into());
 
-                let bytes = self.dictionary.word_to_bytes(word);
+                let bytes = self.dictionary.word_to_bytes(previous_word, word);
+                previous_word = Some(word);
 
                 out.write_all(&bytes).unwrap();
             }

@@ -542,7 +542,7 @@ fn closest_embeddings(mut config: Config)
         let (vector_word, _similarity) = word_similarities.pop()
             .expect("closest amount must be less or equal to len");
 
-        let word_bytes = network.dictionary().word_to_bytes(vector_word);
+        let word_bytes = network.dictionary().word_to_bytes(None, vector_word);
 
         let word = String::from_utf8_lossy(&word_bytes);
 
