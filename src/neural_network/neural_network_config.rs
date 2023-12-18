@@ -24,7 +24,7 @@ pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
-// options: BagOfWords, SkipGram
+// options: BagOfWords, SkipGram (its broken cuz im bad)
 pub const EMBEDDINGS_TYPE: EMType = EMType::BagOfWords(2);
 
 // options: Lstm, Gru

@@ -592,7 +592,7 @@ impl Config
         let mut layers_amount = 3;
         let mut steps_num = 64;
         let mut steps_deviation = 0.1;
-        let mut embeddings_size = 64;
+        let mut embeddings_size = 32;
         let mut learning_rate = None;
         let mut loss_every = None;
         let mut calculate_loss = true;

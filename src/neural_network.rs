@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write, BufReader},
     fs::File,
     path::Path,
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     ops::{Range, DivAssign, AddAssign, SubAssign}
 };
 
@@ -365,11 +365,12 @@ where
         }
     }
 
-    fn around_window(&self, amount: usize) -> impl Iterator<Item=VectorWord> + '_
+    fn around_window(&self, amount: usize) -> HashSet<VectorWord>
     {
         self.context.iter().take(amount)
             .chain(self.context.iter().rev().take(amount))
             .map(|v| **v)
+            .collect()
     }
 
     fn middle_word(&self, amount: usize) -> VectorWord

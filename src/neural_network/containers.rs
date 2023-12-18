@@ -6,6 +6,7 @@ use std::{
     fmt::Debug,
     cell::{self, RefCell},
     borrow::Borrow,
+    collections::HashSet,
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, MulAssign, DivAssign, Neg}
 };
 
@@ -748,7 +749,16 @@ impl OneHotLayer
 {
     pub fn new(positions: impl Into<Box<[usize]>>, size: usize) -> Self
     {
-        Self{positions: positions.into(), size}
+        let this = Self{positions: positions.into(), size};
+
+        debug_assert!(
+        {
+            let s: HashSet<_> = this.positions.iter().collect();
+
+            s.len() == this.positions.len()
+        }, "positions must be unique: {:?}", this.positions.iter().collect::<Vec<_>>());
+
+        this
     }
 
     pub fn into_layer(self) -> LayerType
