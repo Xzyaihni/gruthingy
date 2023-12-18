@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write, BufReader},
     fs::File,
     path::Path,
+    collections::VecDeque,
     ops::{Range, DivAssign, AddAssign, SubAssign}
 };
 
@@ -89,6 +90,13 @@ pub enum AFType
     LeakyRelu
 }
 
+#[allow(dead_code)]
+pub enum EMType
+{
+    BagOfWords(usize),
+    SkipGram(usize)
+}
+
 macro_rules! time_debug
 {
     ($($token:tt)*) =>
@@ -163,7 +171,7 @@ impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
         let slice_end = (start + size + min_slice_len).min(values.len());
         let this_slice = &values[start..slice_end];
 
-        debug_assert!(this_slice.len() > min_slice_len);
+        assert!(this_slice.len() > min_slice_len);
 
         Self::new(dictionary, this_slice)
     }
@@ -178,7 +186,19 @@ impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
 
     pub const fn min_len() -> usize
     {
-        if EMBEDDINGS { 2 } else { 1 }
+        if EMBEDDINGS
+        {
+            let amount = match EMBEDDINGS_TYPE
+            {
+                EMType::BagOfWords(amount) => amount,
+                EMType::SkipGram(amount) => amount
+            };
+
+            amount * 2 + 1
+        } else
+        {
+            1
+        }
     }
 
     #[allow(dead_code)]
@@ -218,14 +238,14 @@ impl<'a, D> InputOutputable for InputOutput<'a, true, D>
 where
     D: NetworkDictionary
 {
-    type Iter<'b> = InputOutputSurroundIter<'b, D, slice::Iter<'b, VectorWord>>
+    type Iter<'b> = InputOutputEmbeddingsIter<'b, D, slice::Iter<'b, VectorWord>>
     where
         Self: 'b,
         D: 'b;
 
     fn iter(&self) -> Self::Iter<'_>
     {
-        InputOutputSurroundIter::new(self.dictionary, self.values.iter())
+        InputOutputEmbeddingsIter::new(self.dictionary, self.values.iter())
     }
 }
 
@@ -305,16 +325,15 @@ where
     }
 }
 
-pub struct InputOutputSurroundIter<'a, D, I>
+pub struct InputOutputEmbeddingsIter<'a, D, I>
 {
     dictionary: &'a D,
     inputs: I,
-    double_previous: &'a VectorWord,
-    previous: &'a VectorWord
+    context: VecDeque<&'a VectorWord>
 }
 
 // why cant the macro figure this out :/
-impl<'a, D, I> Clone for InputOutputSurroundIter<'a, D, I>
+impl<'a, D, I> Clone for InputOutputEmbeddingsIter<'a, D, I>
 where
     I: Clone
 {
@@ -323,28 +342,63 @@ where
         Self{
             dictionary: self.dictionary,
             inputs: self.inputs.clone(),
-            double_previous: self.double_previous,
-            previous: self.previous
+            context: self.context.clone()
         }
     }
 }
 
-impl<'a, D, I> InputOutputSurroundIter<'a, D, I>
+impl<'a, D, I> InputOutputEmbeddingsIter<'a, D, I>
 where
     I: Iterator<Item=&'a VectorWord>
 {
     pub fn new(dictionary: &'a D, mut inputs: I) -> Self
     {
+        let context_len = InputOutput::<true, D>::min_len() - 1;
+        let context: VecDeque<_> = inputs.by_ref().take(context_len).collect();
+
+        assert_eq!(context.len(), context_len);
+
         Self{
             dictionary,
-            double_previous: inputs.next().expect("input must not be empty"),
-            previous: inputs.next().expect("input must not be 1 len"),
+            context,
             inputs
         }
     }
+
+    fn around_window(&self, amount: usize) -> impl Iterator<Item=VectorWord> + '_
+    {
+        self.context.iter().take(amount)
+            .chain(self.context.iter().rev().take(amount))
+            .map(|v| **v)
+    }
+
+    fn middle_word(&self, amount: usize) -> VectorWord
+    {
+        *self.context[amount]
+    }
+
+    fn next_bag_of_words(&mut self, amount: usize) -> (InputType, OneHotLayer)
+    where
+        D: NetworkDictionary
+    {
+        let this_input = self.dictionary.words_to_layer(self.around_window(amount));
+        let this_output = self.dictionary.words_to_onehot([self.middle_word(amount)]);
+
+        (this_input, this_output)
+    }
+
+    fn next_skip_gram(&mut self, amount: usize) -> (InputType, OneHotLayer)
+    where
+        D: NetworkDictionary
+    {
+        let this_input = self.dictionary.words_to_layer([self.middle_word(amount)]);
+        let this_output = self.dictionary.words_to_onehot(self.around_window(amount));
+
+        (this_input, this_output)
+    }
 }
 
-impl<'a, D, I> Iterator for InputOutputSurroundIter<'a, D, I>
+impl<'a, D, I> Iterator for InputOutputEmbeddingsIter<'a, D, I>
 where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
@@ -358,21 +412,29 @@ where
             None => None,
             Some(input) =>
             {
-                let this_input = self.dictionary.words_to_layer([*self.double_previous, *input]);
-                let this_output = self.dictionary.words_to_onehot([*self.previous]);
+                self.context.push_back(input);
 
-                let out = Some((this_input, this_output));
+                let output = match EMBEDDINGS_TYPE
+                {
+                    EMType::BagOfWords(amount) =>
+                    {
+                        self.next_bag_of_words(amount)
+                    },
+                    EMType::SkipGram(amount) =>
+                    {
+                        self.next_skip_gram(amount)
+                    }
+                };
 
-                self.double_previous = self.previous;
-                self.previous = input;
+                let _ = self.context.pop_front();
 
-                out
+                Some(output)
             }
         }
     }
 }
 
-impl<'a, D, I> ExactSizeIterator for InputOutputSurroundIter<'a, D, I>
+impl<'a, D, I> ExactSizeIterator for InputOutputEmbeddingsIter<'a, D, I>
 where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord> + ExactSizeIterator
