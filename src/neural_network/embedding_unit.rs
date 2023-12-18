@@ -18,8 +18,8 @@ use crate::{
 pub type EmbeddingUnit<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (weights, false, LayerSize::Hidden, LayerSize::Input),
-    (bias, false, LayerSize::Hidden, LayerSize::One)
+    (weights, false, LayerSize::Input, LayerSize::Hidden),
+    (bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
 impl Embeddingsable for EmbeddingUnit<DiffWrapper>

@@ -761,7 +761,7 @@ impl OneHotLayer
             layer[*position] = 1.0;
         }
 
-        LayerType::from_raw(layer, size, 1)
+        LayerType::from_raw(layer, 1, size)
     }
 }
 
@@ -1720,7 +1720,7 @@ mod tests
     use super::*;
 
     const LAYER_PREV: usize = 3;
-    const LAYER_CURR: usize = 3;
+    const LAYER_CURR: usize = 2;
 
     pub fn close_enough_loose(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -1768,8 +1768,8 @@ mod tests
 
     fn check_vector(f: impl FnMut(&DiffWrapper, &DiffWrapper) -> DiffWrapper)
     {
-        let a = random_tensor(LAYER_PREV, 1);
-        let b = random_tensor(LAYER_PREV, 1);
+        let a = random_tensor(1, LAYER_CURR);
+        let b = random_tensor(1, LAYER_CURR);
 
         check_tensor_inner(a, b, f);
     }
@@ -2084,14 +2084,14 @@ mod tests
     #[test]
     fn matrix_multiplication()
     {
-        check_tensor_with_dims((2, 10), (10, 1), |a, b| a.matmulv(b) + b.sum())
+        check_tensor_with_dims((4, 2), (1, 4), |a, b| a.matmulv(b) + b.sum())
     }
 
     fn create_targets() -> OneHotLayer
     {
-        let pos = fastrand::usize(0..LAYER_PREV);
+        let pos = fastrand::usize(0..LAYER_CURR);
 
-        OneHotLayer::new([pos], LAYER_PREV)
+        OneHotLayer::new([pos], LAYER_CURR)
     }
 
     #[test]

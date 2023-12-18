@@ -33,7 +33,7 @@ pub struct WeightsSize<T>
 {
     pub weights: T,
     pub previous_size: usize,
-    pub current_size: usize,
+    pub this_size: usize,
     pub is_hidden: bool
 }
 
@@ -76,7 +76,7 @@ impl LayerSize
 #[macro_export]
 macro_rules! create_weights_container
 {
-    ($(($name:ident, $is_hidden:expr, $previous_size:expr, $current_size:expr)),+) =>
+    ($(($name:ident, $is_hidden:expr, $previous_size:expr, $this_size:expr)),+) =>
     {
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
@@ -143,7 +143,7 @@ macro_rules! create_weights_container
                     $(
                         WeightsSize{
                             weights: &mut self.$name,
-                            current_size: $current_size.into_number(self.sizes),
+                            this_size: $this_size.into_number(self.sizes),
                             previous_size: $previous_size.into_number(self.sizes),
                             is_hidden: $is_hidden
                         },
@@ -181,19 +181,19 @@ macro_rules! create_weights_container
                 Self{sizes, $(
                     $name: DiffWrapper::new_diff({
                         let previous_size = $previous_size.into_number(sizes);
-                        let current_size = $current_size.into_number(sizes);
+                        let this_size = $this_size.into_number(sizes);
 
-                        match $current_size
+                        match $previous_size
                         {
                             LayerSize::One =>
                             {
-                                LayerType::new(previous_size, current_size)
+                                LayerType::new(previous_size, this_size)
                             },
                             x =>
                             {
                                 let previous_layer = x.into_number(sizes);
 
-                                LayerType::new_with(previous_size, current_size, ||
+                                LayerType::new_with(previous_size, this_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
@@ -217,7 +217,7 @@ macro_rules! create_weights_container
                     $(
                         $name: T::new(
                             $previous_size.into_number(sizes),
-                            $current_size.into_number(sizes)
+                            $this_size.into_number(sizes)
                         ),
                     )+
                 }
@@ -267,7 +267,7 @@ macro_rules! create_weights_container
                         $name: f(
                             WeightsSize{
                                 weights: &self.$name,
-                                current_size: $current_size.into_number(self.sizes),
+                                this_size: $this_size.into_number(self.sizes),
                                 previous_size: $previous_size.into_number(self.sizes),
                                 is_hidden: $is_hidden
                             }
@@ -286,7 +286,7 @@ macro_rules! create_weights_container
                             layer,
                             weights_size: WeightsSize{
                                 weights: &self.$name,
-                                current_size: $current_size.into_number(self.sizes),
+                                this_size: $this_size.into_number(self.sizes),
                                 previous_size: $previous_size.into_number(self.sizes),
                                 is_hidden: $is_hidden
                             }
@@ -511,7 +511,7 @@ where
                 N::Unit::new_zeroed(size)
             }, |size|
             {
-                O::new(size.output, size.hidden)
+                O::new(size.hidden, size.output)
             }));
 
         let weights = WeightsFullContainer::new(sizes, |size|
@@ -520,7 +520,7 @@ where
         }, |size|
         {
             DiffWrapper::new_diff(
-                LayerType::new_with(size.output, size.hidden, ||
+                LayerType::new_with(size.hidden, size.output, ||
                 {
                     let v = 1.0 / (sizes.hidden as f32).sqrt();
 
@@ -585,7 +585,7 @@ where
                         {
                             let dropconnect_mask = Self::create_dropout_mask(
                                 info.previous_size,
-                                info.current_size,
+                                info.this_size,
                                 DROPCONNECT_PROBABILITY
                             );
 
@@ -676,8 +676,8 @@ where
                 layer: self.sizes.layers.saturating_sub(1),
                 weights_size: WeightsSize{
                     weights: &self.weights.output,
-                    current_size: self.sizes.hidden,
-                    previous_size: self.sizes.input,
+                    this_size: self.sizes.input,
+                    previous_size: self.sizes.hidden,
                     is_hidden: false
                 }
             }))
@@ -952,7 +952,7 @@ where
     {
         self.weights.layers.iter().skip(1).map(|_|
         {
-            Self::create_dropout_mask(input_size, 1, probability)
+            Self::create_dropout_mask(1, input_size, probability)
         }).collect()
     }
 

@@ -17,18 +17,18 @@ use crate::{
 pub type Lstm<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (input_update, false, LayerSize::Hidden, LayerSize::Input),
-    (input_forget, false, LayerSize::Hidden, LayerSize::Input),
-    (input_output, false, LayerSize::Hidden, LayerSize::Input),
-    (input_memory, false, LayerSize::Hidden, LayerSize::Input),
+    (input_update, false, LayerSize::Input, LayerSize::Hidden),
+    (input_forget, false, LayerSize::Input, LayerSize::Hidden),
+    (input_output, false, LayerSize::Input, LayerSize::Hidden),
+    (input_memory, false, LayerSize::Input, LayerSize::Hidden),
     (hidden_update, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_forget, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_output, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_memory, true, LayerSize::Hidden, LayerSize::Hidden),
-    (update_bias, false, LayerSize::Hidden, LayerSize::One),
-    (forget_bias, false, LayerSize::Hidden, LayerSize::One),
-    (output_bias, false, LayerSize::Hidden, LayerSize::One),
-    (memory_bias, false, LayerSize::Hidden, LayerSize::One)
+    (update_bias, false, LayerSize::One, LayerSize::Hidden),
+    (forget_bias, false, LayerSize::One, LayerSize::Hidden),
+    (output_bias, false, LayerSize::One, LayerSize::Hidden),
+    (memory_bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
 pub struct LSTMState

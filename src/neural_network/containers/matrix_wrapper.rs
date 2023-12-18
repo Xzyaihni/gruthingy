@@ -303,7 +303,7 @@ impl MatrixWrapper
 {
     pub fn new(previous_size: usize, this_size: usize) -> Self
     {
-        Self(DMatrix::zeros(previous_size, this_size))
+        Self(DMatrix::zeros(this_size, previous_size))
     }
 
     pub fn new_with<F: FnMut() -> f32>(
@@ -312,17 +312,17 @@ impl MatrixWrapper
         mut f: F
     )-> Self
     {
-        Self(DMatrix::from_fn(previous_size, this_size, |_, _| f()))
+        Self(DMatrix::from_fn(this_size, previous_size, |_, _| f()))
     }
 
     pub fn repeat(previous_size: usize, this_size: usize, value: f32) -> Self
     {
-        Self(DMatrix::repeat(previous_size, this_size, value))
+        Self(DMatrix::repeat(this_size, previous_size, value))
     }
 
     pub fn from_raw<V: Into<Vec<f32>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
-        Self(DMatrix::from_vec(previous_size, this_size, values.into()))
+        Self(DMatrix::from_vec(this_size, previous_size, values.into()))
     }
 
     pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
@@ -367,14 +367,14 @@ impl MatrixWrapper
     {
         debug_assert!(self.0.shape().1 == 1);
 
-        let mut output = Self::new(self.0.nrows(), rhs.size);
+        let mut output = DMatrix::zeros(self.0.nrows(), rhs.size);
 
         for position in rhs.positions.iter()
         {
-            output.0.set_column(*position, &self.0.column(0));
+            output.set_column(*position, &self.0.column(0));
         }
 
-        output
+        Self(output)
     }
 
     pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self

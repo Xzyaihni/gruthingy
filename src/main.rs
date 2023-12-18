@@ -381,7 +381,7 @@ fn weights_image(config: Config)
         weights_size: WeightsSize{
             weights,
             previous_size,
-            current_size,
+            this_size,
             ..
         }
     } in weights.into_iter()
@@ -389,14 +389,14 @@ fn weights_image(config: Config)
         let layer_folder = output_folder.join(layer_name(layer));
         fs::create_dir_all(&layer_folder).unwrap();
 
-        let mut image = PPMImage::new(previous_size, current_size);
+        let mut image = PPMImage::new(this_size, previous_size);
 
         for (index, weight) in weights.as_vec().into_iter().enumerate()
         {
             let color = weight_color(weight);
 
-            let x = index % previous_size;
-            let y = index / previous_size;
+            let x = index % this_size;
+            let y = index / this_size;
 
             image[(x, y)] = color;
         }

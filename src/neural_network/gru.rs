@@ -17,15 +17,15 @@ use crate::{
 pub type Gru<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (input_update, false, LayerSize::Hidden, LayerSize::Input),
-    (input_reset, false, LayerSize::Hidden, LayerSize::Input),
-    (input_activation, false, LayerSize::Hidden, LayerSize::Input),
+    (input_update, false, LayerSize::Input, LayerSize::Hidden),
+    (input_reset, false, LayerSize::Input, LayerSize::Hidden),
+    (input_activation, false, LayerSize::Input, LayerSize::Hidden),
     (hidden_update, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_reset, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_activation, true, LayerSize::Hidden, LayerSize::Hidden),
-    (update_bias, false, LayerSize::Hidden, LayerSize::One),
-    (reset_bias, false, LayerSize::Hidden, LayerSize::One),
-    (activation_bias, false, LayerSize::Hidden, LayerSize::One)
+    (update_bias, false, LayerSize::One, LayerSize::Hidden),
+    (reset_bias, false, LayerSize::One, LayerSize::Hidden),
+    (activation_bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
 impl NetworkUnit for Gru<DiffWrapper>
