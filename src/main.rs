@@ -156,13 +156,16 @@ where
 
                 InputData::String(fs::read_to_string(dictionary_path).unwrap_or_else(|err|
                 {
-                    complain(format!("could not load dictionary at {dictionary_path} ({err})"))
+                    complain(format!(
+                        "could not load dictionary at {} ({err})",
+                        dictionary_path.display()
+                    ))
                 }))
             },
             InputDataType::None => InputData::None,
             InputDataType::Path =>
             {
-                InputData::Path(config.dictionary_path.as_str().into())
+                InputData::Path(config.dictionary_path.clone())
             }
         };
 

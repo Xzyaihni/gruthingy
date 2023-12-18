@@ -3,7 +3,7 @@ use std::{
     iter,
     process,
     fs::File,
-    path::Path,
+    path::{Path, PathBuf},
     fmt::{self, Display},
     collections::HashSet,
     num::{ParseIntError, ParseFloatError}
@@ -323,6 +323,14 @@ macro_rules! impl_displayable_default
     }
 }
 
+impl DisplayableDefault for PathBuf
+{
+    fn display_default(&self) -> Option<String>
+    {
+        Some(self.display().to_string())
+    }
+}
+
 impl_displayable_default!{String}
 impl_displayable_default!{bool}
 impl_displayable_default!{f32}
@@ -479,6 +487,14 @@ impl<T: ParsableEnum> ParsableInner for T
     }
 }
 
+impl ParsableInner for PathBuf
+{
+    fn parse_inner(value: &str) -> Result<Self, ArgError>
+    {
+        Ok(value.into())
+    }
+}
+
 impl ParsableInner for String
 {
     fn parse_inner(value: &str) -> Result<Self, ArgError>
@@ -551,8 +567,9 @@ pub struct Config
     pub loss_every: Option<usize>,
     pub calculate_loss: bool,
     pub calculate_accuracy: bool,
-    pub testing_data: Option<String>,
-    pub network_path: String,
+    pub testing_data: Option<PathBuf>,
+    pub network_path: PathBuf,
+    pub embeddings_path: PathBuf,
     pub input: Option<String>,
     pub output: Option<String>,
     pub tokens_amount: usize,
@@ -562,7 +579,7 @@ pub struct Config
     pub replace_invalid: bool,
     pub less_info: bool,
     pub mode: ProgramMode,
-    pub dictionary_path: String
+    pub dictionary_path: PathBuf
 }
 
 impl Config
@@ -581,7 +598,8 @@ impl Config
         let mut calculate_loss = true;
         let mut calculate_accuracy = false;
         let mut testing_data = None;
-        let mut network_path = "network.nn".to_owned();
+        let mut network_path = "network.nn".into();
+        let mut embeddings_path = "embeddings.nn".into();
         let mut input = None;
         let mut output = None;
         let mut tokens_amount = 100;
@@ -589,7 +607,7 @@ impl Config
         let mut dropout_probability = 0.5;
         let mut gradient_clip = Some(1.0);
         let mut replace_invalid = true;
-        let mut dictionary_path = "dictionary.txt".to_owned();
+        let mut dictionary_path = "dictionary.txt".into();
         let mut less_info = false;
         let mut mode = None;
 
@@ -608,6 +626,7 @@ impl Config
         parser.push_flag(&mut calculate_loss, None, "no-loss", "dont calculate loss", false);
         parser.push(&mut testing_data, 't', "testing", "data for calculating the loss/accuracy");
         parser.push(&mut network_path, 'p', "path", "path to the network");
+        parser.push(&mut embeddings_path, 'E', "embeddings-path", "path to the embeddings network");
         parser.push(&mut input, 'i', "input", "input");
         parser.push(&mut output, 'o', "output", "output path");
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
@@ -645,6 +664,7 @@ impl Config
             calculate_accuracy,
             testing_data,
             network_path,
+            embeddings_path,
             input,
             output,
             tokens_amount,
