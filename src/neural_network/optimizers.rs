@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 
 use super::{
-    LayerInnerType,
+    LayerType,
     NewableLayer,
     DECAY_FUNCTION
 };
@@ -15,8 +15,8 @@ impl NewableLayer for ()
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdamGradientInfo
 {
-    m: LayerInnerType,
-    v: LayerInnerType
+    m: LayerType,
+    v: LayerType
 }
 
 impl NewableLayer for AdamGradientInfo
@@ -24,8 +24,8 @@ impl NewableLayer for AdamGradientInfo
     fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: LayerInnerType::new(previous_size, this_size),
-            v: LayerInnerType::new(previous_size, this_size)
+            m: LayerType::new(previous_size, this_size),
+            v: LayerType::new(previous_size, this_size)
         }
     }
 }
@@ -33,9 +33,9 @@ impl NewableLayer for AdamGradientInfo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdamXGradientInfo
 {
-    m: LayerInnerType,
-    v: LayerInnerType,
-    v_hat: Option<LayerInnerType>
+    m: LayerType,
+    v: LayerType,
+    v_hat: Option<LayerType>
 }
 
 impl NewableLayer for AdamXGradientInfo
@@ -43,8 +43,8 @@ impl NewableLayer for AdamXGradientInfo
     fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: LayerInnerType::new(previous_size, this_size),
-            v: LayerInnerType::new(previous_size, this_size),
+            m: LayerType::new(previous_size, this_size),
+            v: LayerType::new(previous_size, this_size),
             v_hat: None
         }
     }
@@ -53,7 +53,7 @@ impl NewableLayer for AdamXGradientInfo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSignGradientInfo
 {
-    m: LayerInnerType
+    m: LayerType
 }
 
 impl NewableLayer for PowerSignGradientInfo
@@ -61,7 +61,7 @@ impl NewableLayer for PowerSignGradientInfo
     fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: LayerInnerType::new(previous_size, this_size)
+            m: LayerType::new(previous_size, this_size)
         }
     }
 }
@@ -75,8 +75,8 @@ pub trait Optimizer
     fn gradient_to_change(
         &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType
-    ) -> LayerInnerType;
+        gradient: LayerType
+    ) -> LayerType;
 
     fn advance_time(&mut self);
     fn set_learning_rate(&mut self, learning_rate: f32);
@@ -100,8 +100,8 @@ impl Optimizer for Sgd
     fn gradient_to_change(
         &self,
         _gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
+        gradient: LayerType
+    ) -> LayerType
     {
         gradient * self.learning_rate
     }
@@ -137,8 +137,8 @@ impl Optimizer for PowerSign
     fn gradient_to_change(
         &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
+        gradient: LayerType
+    ) -> LayerType
     {
         gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
 
@@ -189,8 +189,8 @@ impl Optimizer for AdamX
     fn gradient_to_change(
         &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
+        gradient: LayerType
+    ) -> LayerType
     {
         let b1_t = DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b1_t = 1.0 - b1_t;
@@ -260,8 +260,8 @@ impl Optimizer for Adam
     fn gradient_to_change(
         &self,
         gradient_info: &mut Self::WeightParam,
-        gradient: LayerInnerType
-    ) -> LayerInnerType
+        gradient: LayerType
+    ) -> LayerType
     {
         let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b2_t = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
@@ -312,11 +312,11 @@ mod tests
 
             let adam_g = {
                 let mut gradient_info = AdamGradientInfo{
-                    m: LayerInnerType::from_raw(m.clone().into_boxed_slice(), 2, 1),
-                    v: LayerInnerType::from_raw(v.clone().into_boxed_slice(), 2, 1)
+                    m: LayerType::from_raw(m.clone().into_boxed_slice(), 2, 1),
+                    v: LayerType::from_raw(v.clone().into_boxed_slice(), 2, 1)
                 };
 
-                let gradient = LayerInnerType::from_raw(g.clone().into_boxed_slice(), 2, 1);
+                let gradient = LayerType::from_raw(g.clone().into_boxed_slice(), 2, 1);
 
                 let adam = Adam{
                     a,
@@ -331,7 +331,7 @@ mod tests
                     gradient.clone()
                 );
 
-                LayerInnerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change
+                LayerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change
             };
 
             m = vec![

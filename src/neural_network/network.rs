@@ -16,7 +16,7 @@ use crate::{
         DiffWrapper,
         OneHotLayer,
         InputType,
-        LayerInnerType,
+        LayerType,
         NetworkUnit,
         NewableLayer,
         GenericUnit,
@@ -81,7 +81,7 @@ macro_rules! create_weights_container
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
         use $crate::neural_network::{
-            LayerInnerType,
+            LayerType,
             NewableLayer,
             GenericUnit,
             OptimizerUnit,
@@ -187,13 +187,13 @@ macro_rules! create_weights_container
                         {
                             LayerSize::One =>
                             {
-                                LayerInnerType::new(previous_size, current_size)
+                                LayerType::new(previous_size, current_size)
                             },
                             x =>
                             {
                                 let previous_layer = x.into_number(sizes);
 
-                                LayerInnerType::new_with(previous_size, current_size, ||
+                                LayerType::new_with(previous_size, current_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
@@ -520,7 +520,7 @@ where
         }, |size|
         {
             DiffWrapper::new_diff(
-                LayerInnerType::new_with(size.output, size.hidden, ||
+                LayerType::new_with(size.output, size.hidden, ||
                 {
                     let v = 1.0 / (sizes.hidden as f32).sqrt();
 
@@ -539,17 +539,17 @@ where
 
     pub fn apply_gradients<OP>(
         &mut self,
-        gradients: WeightsFullContainer<N, LayerInnerType>,
+        gradients: WeightsFullContainer<N, LayerType>,
         optimizer: &mut OP,
         gradient_clip: Option<f32>
     )
     where
         OP: Optimizer<WeightParam=O>,
         N::Unit<DiffWrapper>: SubAssign,
-        N::Unit<LayerInnerType>: Serialize + DeserializeOwned + IntoIterator<Item=LayerInnerType>,
+        N::Unit<LayerType>: Serialize + DeserializeOwned + IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<O>: IntoIterator<Item=&'b mut O>,
         N::Unit<O>: OptimizerUnit<O, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-        N::Unit<O>: OptimizerUnit<O, Unit<LayerInnerType>=N::Unit<LayerInnerType>>
+        N::Unit<O>: OptimizerUnit<O, Unit<LayerType>=N::Unit<LayerType>>
     {
         self.disable_gradients();
 
@@ -614,12 +614,12 @@ where
     pub fn gradients(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>
-    ) -> (f32, WeightsFullContainer<N, LayerInnerType>)
+    ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
         // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
         // like this??????????/
-        N::Unit<LayerInnerType>: Serialize + DeserializeOwned,
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + fmt::Debug
+        N::Unit<LayerType>: Serialize + DeserializeOwned,
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug
     {
         let loss = {
             let mut dropconnected = self.dropconnected();
@@ -725,7 +725,7 @@ where
         target: impl Iterator<Item=OneHotLayer>
     ) -> usize
     where
-        P: Borrow<LayerInnerType>
+        P: Borrow<LayerType>
     {
         predicted.zip(target).map(|(predicted, target)|
         {
@@ -895,7 +895,7 @@ where
         dropout_masks: &[DiffWrapper],
         input: &InputType,
         temperature: f32
-    ) -> NetworkOutput<Vec<UnitState<N>>, LayerInnerType>
+    ) -> NetworkOutput<Vec<UnitState<N>>, LayerType>
     {
         self.feedforward_single_input_with_activation(|layer, previous_state, input|
         {
@@ -922,9 +922,9 @@ where
     fn predict(
         &mut self,
         input: impl Iterator<Item=InputType> + ExactSizeIterator
-    ) -> Vec<LayerInnerType>
+    ) -> Vec<LayerType>
     {
-        let mut outputs: Vec<LayerInnerType> = Vec::with_capacity(input.len());
+        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
         let mut previous_state: Option<Vec<_>> = None;
 
         let dropout_masks = self.create_dropout_masks(self.sizes.hidden, 0.0);
@@ -967,10 +967,10 @@ where
 
         let inner = if probability == 0.0
         {
-            LayerInnerType::repeat(previous_size, this_size, 1.0)
+            LayerType::repeat(previous_size, this_size, 1.0)
         } else 
         {
-            LayerInnerType::new_with(previous_size, this_size, ||
+            LayerType::new_with(previous_size, this_size, ||
             {
                 let roll = fastrand::f32();
                 

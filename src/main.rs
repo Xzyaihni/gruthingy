@@ -21,7 +21,7 @@ use neural_network::{
     NeuralNetwork,
     WeightsNamed,
     WeightsSize,
-    LayerInnerType,
+    LayerType,
     NetworkUnit,
     OptimizerUnit,
     GenericUnit,
@@ -552,7 +552,7 @@ fn closest_embeddings(mut config: Config)
 
 fn main()
 {
-    if LayerInnerType::is_arrayfire()
+    if LayerType::is_arrayfire()
     {
         panic!("what");
         /* arrayfire::set_device(0);

@@ -16,7 +16,7 @@ use matrix_wrapper::MatrixWrapper;
 mod matrix_wrapper;
 
 
-pub type LayerInnerType = MatrixWrapper;
+pub type LayerType = MatrixWrapper;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
@@ -46,7 +46,7 @@ pub struct Softmaxer;
 impl Softmaxer
 {
     #[allow(dead_code)]
-    pub fn softmax_temperature(layer: &mut LayerInnerType, temperature: f32) 
+    pub fn softmax_temperature(layer: &mut LayerType, temperature: f32) 
     {
         *layer /= temperature;
 
@@ -89,7 +89,7 @@ impl Softmaxer
     }
 }
 
-impl LayerInnerType
+impl LayerType
 {
     pub fn softmax_cross_entropy(mut self, targets: &OneHotLayer) -> (Self, f32)
     {
@@ -108,13 +108,13 @@ impl LayerInnerType
 #[derive(Debug, Serialize, Deserialize)]
 enum AnyDiffType
 {
-    Tensor(DiffType<LayerInnerType>),
+    Tensor(DiffType<LayerType>),
     Scalar(DiffType<f32>)
 }
 
-impl From<DiffType<LayerInnerType>> for AnyDiffType
+impl From<DiffType<LayerType>> for AnyDiffType
 {
-    fn from(value: DiffType<LayerInnerType>) -> Self
+    fn from(value: DiffType<LayerType>) -> Self
     {
         Self::Tensor(value)
     }
@@ -139,7 +139,7 @@ impl AnyDiffType
         }
     }
 
-    pub fn take_gradient_tensor(&mut self) -> LayerInnerType
+    pub fn take_gradient_tensor(&mut self) -> LayerType
     {
         match self
         {
@@ -182,7 +182,7 @@ impl AnyDiffType
             Self::Tensor(x) =>
             {
                 x.derivatives(
-                    LayerInnerType::from_gradient(gradient, || unreachable!()),
+                    LayerType::from_gradient(gradient, || unreachable!()),
                     children_amount
                 );
 
@@ -258,7 +258,7 @@ pub enum Ops
     MatmulOneHotvAdd{lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper},
     SoftmaxCrossEntropy{
         values: DiffWrapper,
-        softmaxed_values: LayerInnerType,
+        softmaxed_values: LayerType,
         targets: OneHotLayer
     }
 }
@@ -280,7 +280,7 @@ impl Ops
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GradientType
 {
-    Tensor(LayerInnerType),
+    Tensor(LayerType),
     Scalar(f32)
 }
 
@@ -325,7 +325,7 @@ impl GradientType
         }
     }
 
-    pub fn tensor(&self) -> &LayerInnerType
+    pub fn tensor(&self) -> &LayerType
     {
         match self
         {
@@ -344,9 +344,9 @@ impl GradientType
     }
 }
 
-impl From<LayerInnerType> for GradientType
+impl From<LayerType> for GradientType
 {
-    fn from(value: LayerInnerType) -> Self
+    fn from(value: LayerType) -> Self
     {
         Self::Tensor(value)
     }
@@ -606,7 +606,7 @@ inplace_binary_operator_same!(GradientType, SubAssign, sub_assign);
 binary_operator_fixed_rhs!(GradientType, GradientType, Div, div, Scalar, f32);
 binary_operator_fixed_rhs!(GradientType, GradientType, Mul, mul, Scalar, f32);
 
-binary_operator_fixed_rhs!(GradientType, GradientType, Mul, mul, Tensor, LayerInnerType);
+binary_operator_fixed_rhs!(GradientType, GradientType, Mul, mul, Tensor, LayerType);
 
 binary_operator_diff!(GradientType, GradientType, Add, add);
 binary_operator_diff!(GradientType, GradientType, Sub, sub);
@@ -634,7 +634,7 @@ impl Fillable for f32
     }
 }
 
-impl Fillable for LayerInnerType
+impl Fillable for LayerType
 {
     fn fill(&mut self, value: f32)
     {
@@ -644,7 +644,7 @@ impl Fillable for LayerInnerType
 
 pub trait FromGradient
 {
-    fn from_gradient<F: FnOnce() -> LayerInnerType>(
+    fn from_gradient<F: FnOnce() -> LayerType>(
         gradient: GradientType,
         value_getter: F
     ) -> Self;
@@ -652,7 +652,7 @@ pub trait FromGradient
 
 impl FromGradient for f32
 {
-    fn from_gradient<F: FnOnce() -> LayerInnerType>(
+    fn from_gradient<F: FnOnce() -> LayerType>(
         gradient: GradientType,
         _value_getter: F
     ) -> Self
@@ -668,9 +668,9 @@ impl FromGradient for f32
     }
 }
 
-impl FromGradient for LayerInnerType
+impl FromGradient for LayerType
 {
-    fn from_gradient<F: FnOnce() -> LayerInnerType>(
+    fn from_gradient<F: FnOnce() -> LayerType>(
         gradient: GradientType,
         value_getter: F
     ) -> Self
@@ -692,13 +692,13 @@ impl FromGradient for LayerInnerType
 pub trait DiffBounds
 where
     Self: Fillable + FromGradient + Clone + Into<GradientType>,
-    Self: TryInto<LayerInnerType> + TryInto<f32>,
+    Self: TryInto<LayerType> + TryInto<f32>,
     Self: AddAssign<Self> + Add<f32, Output=Self> + Neg<Output=Self>
 {
     fn reciprocal(self) -> Self;
 }
 
-impl TryFrom<f32> for LayerInnerType
+impl TryFrom<f32> for LayerType
 {
     type Error = ();
 
@@ -708,11 +708,11 @@ impl TryFrom<f32> for LayerInnerType
     }
 }
 
-impl TryFrom<LayerInnerType> for f32
+impl TryFrom<LayerType> for f32
 {
     type Error = ();
 
-    fn try_from(_value: LayerInnerType) -> Result<Self, Self::Error>
+    fn try_from(_value: LayerType) -> Result<Self, Self::Error>
     {
         Err(())
     }
@@ -726,11 +726,11 @@ impl DiffBounds for f32
     }
 }
 
-impl DiffBounds for LayerInnerType
+impl DiffBounds for LayerType
 {
     fn reciprocal(mut self) -> Self
     {
-        LayerInnerType::reciprocal(&mut self);
+        LayerType::reciprocal(&mut self);
 
         self
     }
@@ -751,7 +751,7 @@ impl OneHotLayer
         Self{positions: positions.into(), size}
     }
 
-    pub fn into_layer(self) -> LayerInnerType
+    pub fn into_layer(self) -> LayerType
     {
         let size = self.size;
         let mut layer = vec![0.0; size];
@@ -761,7 +761,7 @@ impl OneHotLayer
             layer[*position] = 1.0;
         }
 
-        LayerInnerType::from_raw(layer, size, 1)
+        LayerType::from_raw(layer, size, 1)
     }
 }
 
@@ -846,7 +846,7 @@ where
     for<'a> T: Mul<&'a T, Output=T>,
     for<'a> &'a T: Mul<&'a T, Output=T> + Mul<f32, Output=T> + Neg<Output=T>,
     GradientType: Mul<GradientType, Output=GradientType>,
-    for<'a> GradientType: Mul<&'a T, Output=GradientType> + Mul<&'a LayerInnerType, Output=GradientType>,
+    for<'a> GradientType: Mul<&'a T, Output=GradientType> + Mul<&'a LayerType, Output=GradientType>,
     for<'a> &'a GradientType: Mul<&'a T, Output=GradientType> + Mul<&'a GradientType, Output=GradientType>
 {
     pub fn calculate_gradients(mut self)
@@ -1030,7 +1030,7 @@ where
             },
             Ops::Matmulv{lhs, rhs} =>
             {
-                let gradient: LayerInnerType = gradient.try_into()
+                let gradient: LayerType = gradient.try_into()
                     .ok().expect("matmul must be a tensor");
                 
                 let rhs_d = rhs.is_gradient().then(|| lhs.tensor().matmulv_transposed(&gradient));
@@ -1048,7 +1048,7 @@ where
             },
             Ops::MatmulvAdd{lhs, rhs, added} =>
             {
-                let gradient: LayerInnerType = gradient.try_into()
+                let gradient: LayerType = gradient.try_into()
                     .ok().expect("matmul must be a tensor");
                 
                 let rhs_d = rhs.is_gradient().then(|| lhs.tensor().matmulv_transposed(&gradient));
@@ -1071,7 +1071,7 @@ where
             },
             Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
             {
-                let gradient: LayerInnerType = gradient.try_into()
+                let gradient: LayerType = gradient.try_into()
                     .ok().expect("matmul must be a tensor");
                 
                 if lhs.is_gradient()
@@ -1089,7 +1089,7 @@ where
             {
                 if x.is_gradient()
                 {
-                    let d = LayerInnerType::from_gradient(gradient.into(), ||
+                    let d = LayerType::from_gradient(gradient.into(), ||
                     {
                         x.tensor().clone()
                     });
@@ -1099,7 +1099,7 @@ where
             },
             Ops::Dot{lhs, rhs} =>
             {
-                let gradient = LayerInnerType::from_gradient(gradient.into(), ||
+                let gradient = LayerType::from_gradient(gradient.into(), ||
                 {
                     lhs.tensor().clone()
                 });
@@ -1124,7 +1124,7 @@ where
             {
                 if values.is_gradient()
                 {
-                    let gradient = LayerInnerType::from_gradient(gradient.into(), ||
+                    let gradient = LayerType::from_gradient(gradient.into(), ||
                     {
                         values.tensor().clone()
                     });
@@ -1181,7 +1181,7 @@ impl DiffWrapper
         self.this_mut().derivatives(gradient, children_amount);
     }
 
-    pub fn take_gradient_tensor(&mut self) -> LayerInnerType
+    pub fn take_gradient_tensor(&mut self) -> LayerType
     {
         self.this_mut().take_gradient_tensor()
     }
@@ -1263,7 +1263,7 @@ impl DiffWrapper
         RefCell::borrow_mut(&self.0)
     }
 
-    pub fn tensor(&self) -> cell::Ref<LayerInnerType>
+    pub fn tensor(&self) -> cell::Ref<LayerType>
     {
         cell::Ref::map(self.this_ref(), |diff|
         {
@@ -1340,15 +1340,15 @@ op_impl!{DiffType, f32, f32, f32, Sub, sub}
 op_impl!{DiffType, f32, f32, f32, Mul, mul}
 op_impl!{DiffType, f32, f32, f32, Div, div}
 
-op_impl!{DiffType, LayerInnerType, LayerInnerType, LayerInnerType, Add, add}
-op_impl!{DiffType, LayerInnerType, LayerInnerType, LayerInnerType, Sub, sub}
-op_impl!{DiffType, LayerInnerType, LayerInnerType, LayerInnerType, Mul, mul}
-op_impl!{DiffType, LayerInnerType, LayerInnerType, LayerInnerType, Div, div}
+op_impl!{DiffType, LayerType, LayerType, LayerType, Add, add}
+op_impl!{DiffType, LayerType, LayerType, LayerType, Sub, sub}
+op_impl!{DiffType, LayerType, LayerType, LayerType, Mul, mul}
+op_impl!{DiffType, LayerType, LayerType, LayerType, Div, div}
 
-op_impl!{DiffType, LayerInnerType, f32, LayerInnerType, Add, add}
-op_impl!{DiffType, LayerInnerType, f32, LayerInnerType, Sub, sub}
-op_impl!{DiffType, LayerInnerType, f32, LayerInnerType, Mul, mul}
-op_impl!{DiffType, LayerInnerType, f32, LayerInnerType, Div, div}
+op_impl!{DiffType, LayerType, f32, LayerType, Add, add}
+op_impl!{DiffType, LayerType, f32, LayerType, Sub, sub}
+op_impl!{DiffType, LayerType, f32, LayerType, Mul, mul}
+op_impl!{DiffType, LayerType, f32, LayerType, Div, div}
 
 macro_rules! wrapper_op_inplace_impl
 {
@@ -1747,7 +1747,7 @@ mod tests
         );
     }
 
-    fn compare_tensor(correct: LayerInnerType, calculated: LayerInnerType)
+    fn compare_tensor(correct: LayerType, calculated: LayerType)
     {
         correct.as_vec().into_iter().zip(calculated.as_vec().into_iter())
             .for_each(|(correct, calculated)| compare_single(correct, calculated));
@@ -1810,7 +1810,7 @@ mod tests
 
         let epsilon: f32 = 0.009;
 
-        let fg = |value: LayerInnerType|
+        let fg = |value: LayerType|
         {
             let value = value.sum();
 
@@ -1865,11 +1865,11 @@ mod tests
     }
 
     fn one_hot(
-        dimensions_match: LayerInnerType,
+        dimensions_match: LayerType,
         position: usize,
         value: f32,
         d_value: f32
-    ) -> LayerInnerType
+    ) -> LayerType
     {
         let values = dimensions_match.as_vec().into_iter().enumerate().map(|(i, _)|
         {
@@ -1896,7 +1896,7 @@ mod tests
     fn random_tensor(prev: usize, curr: usize) -> DiffWrapper
     {
         DiffWrapper::new_diff(
-            LayerInnerType::new_with(
+            LayerType::new_with(
                 prev,
                 curr,
                 random_value

@@ -112,7 +112,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::{LayerInnerType, LayerSizes};
+    use crate::neural_network::{LayerType, LayerSizes};
     
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -136,7 +136,7 @@ mod tests
     {
         let one_weight = |value: f32|
         {
-            DiffWrapper::new_diff(LayerInnerType::from_raw([value], 1, 1).into())
+            DiffWrapper::new_diff(LayerType::from_raw([value], 1, 1).into())
         };
 
         /*

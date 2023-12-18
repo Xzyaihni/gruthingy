@@ -34,7 +34,7 @@ pub use optimizers::Optimizer;
 pub use network_unit::{NetworkUnit, NewableLayer, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::{WeightsNamed, WeightsSize};
 pub use containers::{
-    LayerInnerType,
+    LayerType,
     DiffWrapper,
     InputType,
     OneHotLayer,
@@ -141,13 +141,13 @@ impl KahanSum
     }
 }
 
-pub struct InputOutput<'a, const SURROUND: bool, D>
+pub struct InputOutput<'a, const EMBEDDINGS: bool, D>
 {
     dictionary: &'a D,
     values: &'a [VectorWord]
 }
 
-impl<'a, const SURROUND: bool, D> InputOutput<'a, SURROUND, D>
+impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
 {
     #[allow(dead_code)]
     pub fn values_slice(
@@ -177,7 +177,7 @@ impl<'a, const SURROUND: bool, D> InputOutput<'a, SURROUND, D>
 
     pub const fn min_len() -> usize
     {
-        if SURROUND { 2 } else { 1 }
+        if EMBEDDINGS { 2 } else { 1 }
     }
 
     #[allow(dead_code)]
@@ -746,7 +746,7 @@ where
     }
 
     // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
-    pub fn train<const SURROUND: bool, RT, R>(
+    pub fn train<const EMBEDDINGS: bool, RT, R>(
         &mut self,
         info: TrainingInfo,
         testing_reader: Option<RT>,
@@ -759,11 +759,11 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         for<'b> &'b mut N::Unit<O::WeightParam>: IntoIterator<Item=&'b mut O::WeightParam>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerInnerType>=N::Unit<LayerInnerType>>,
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerInnerType>=N::Unit<LayerInnerType>> + SubAssign + fmt::Debug,
-        N::Unit<LayerInnerType>: DivAssign<f32> + AddAssign + Serialize + DeserializeOwned + IntoIterator<Item=LayerInnerType>,
-        for<'b> &'b mut N::Unit<LayerInnerType>: IntoIterator<Item=&'b mut LayerInnerType>,
-        for<'b> InputOutput<'b, SURROUND, D>: InputOutputable
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + SubAssign + fmt::Debug,
+        N::Unit<LayerType>: DivAssign<f32> + AddAssign + Serialize + DeserializeOwned + IntoIterator<Item=LayerType>,
+        for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
+        for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
     {
         if let Some(learning_rate) = info.learning_rate
         {
@@ -836,7 +836,7 @@ where
                 let mut kahan_sum = KahanSum::new();
 
                 let max_batch_start = inputs.len()
-                    .saturating_sub(steps_num + (InputOutput::<SURROUND, D>::min_len() - 1));
+                    .saturating_sub(steps_num + (InputOutput::<EMBEDDINGS, D>::min_len() - 1));
 
                 let mut gradients = (0..info.batch_size).map(|_|
                 {
@@ -848,7 +848,7 @@ where
                         fastrand::usize(0..max_batch_start)
                     };
 
-                    let values = InputOutput::<SURROUND, _>::values_slice(
+                    let values = InputOutput::<EMBEDDINGS, _>::values_slice(
                         &self.dictionary,
                         &inputs,
                         batch_start,
@@ -991,7 +991,7 @@ mod tests
     #[test]
     fn softmax()
     {
-        let mut test_layer = LayerInnerType::from_raw([1.0, 2.0, 8.0], 3, 1);
+        let mut test_layer = LayerType::from_raw([1.0, 2.0, 8.0], 3, 1);
 
         Softmaxer::softmax(&mut test_layer);
 

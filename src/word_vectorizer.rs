@@ -22,7 +22,7 @@ use crate::{load_embeddings, EmbeddingsUnitFactory};
 use super::neural_network::{
     NOptimizer,
     Optimizer,
-    LayerInnerType,
+    LayerType,
     InputType,
     OneHotLayer,
     network::Network
@@ -171,7 +171,7 @@ pub trait NetworkDictionary
         )
     }
 
-    fn layer_to_word(&self, layer: LayerInnerType) -> VectorWord
+    fn layer_to_word(&self, layer: LayerType) -> VectorWord
     {
         let index = layer.pick_weighed();
 
