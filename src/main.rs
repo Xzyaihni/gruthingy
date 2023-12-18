@@ -30,6 +30,7 @@ use neural_network::{
     UnitFactory,
     NUnit,
     EmbeddingUnit,
+    NewableLayer,
     NOptimizer,
     NDictionary,
     LayerSizes
@@ -95,11 +96,15 @@ fn load_network(
     load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
 }
 
-pub fn load_embeddings(
+pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
     auto_create: bool
-) -> NeuralNetwork<EmbeddingsUnitFactory, NOptimizer, WordDictionary>
+) -> NeuralNetwork<EmbeddingsUnitFactory, O, WordDictionary>
+where
+    O: Optimizer + DeserializeOwned,
+    <EmbeddingsUnitFactory as UnitFactory>::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    for<'a> O::WeightParam: NewableLayer + Serialize + Deserialize<'a>
 {
     // &mut &mut, im not sure wut im doing wrong
     let sizes = config.as_mut().map(|config|
@@ -125,16 +130,19 @@ pub fn load_embeddings(
     load_network_with(path, config, sizes, auto_create)
 }
 
-fn load_network_with<N, D>(
+fn load_network_with<N, O, D>(
     path: &Path,
     config: Option<&Config>,
     sizes: Option<SizesInfo>,
     auto_create: bool
-) -> NeuralNetwork<N, NOptimizer, D>
+) -> NeuralNetwork<N, O, D>
 where
+    O: Optimizer + DeserializeOwned,
     N: UnitFactory + DeserializeOwned,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    for<'b> O::WeightParam: NewableLayer + Serialize + Deserialize<'b>,
     for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
     for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
     D: NetworkDictionary + DeserializeOwned
@@ -472,7 +480,7 @@ impl UnitFactory for EmbeddingsUnitFactory
 
 fn train_embeddings(mut config: Config)
 {
-    let mut network = load_embeddings(
+    let mut network = load_embeddings::<NOptimizer>(
         None,
         Some(&mut config),
         true
@@ -490,11 +498,13 @@ fn train_embeddings(mut config: Config)
     network.train::<true, _, _>(training_info, test_file, text_file);
 
     network.save(&config.network_path);
+
+    network.without_optimizer().save(&config.embeddings_path);
 }
 
 fn closest_embeddings(mut config: Config)
 {
-    let mut network = load_embeddings(
+    let mut network = load_embeddings::<NOptimizer>(
         None,
         Some(&mut config),
         false

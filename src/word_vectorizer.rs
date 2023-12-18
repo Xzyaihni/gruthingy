@@ -20,8 +20,6 @@ use serde::{Serialize, Deserialize};
 use crate::{load_embeddings, EmbeddingsUnitFactory};
 
 use super::neural_network::{
-    NOptimizer,
-    Optimizer,
     LayerType,
     InputType,
     OneHotLayer,
@@ -565,7 +563,7 @@ impl NetworkDictionary for WordDictionary
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
-    network: Network<EmbeddingsUnitFactory, <NOptimizer as Optimizer>::WeightParam>,
+    network: Network<EmbeddingsUnitFactory, ()>,
     embeddings_size: usize
 }
 
@@ -582,7 +580,7 @@ impl NetworkDictionary for EmbeddingsDictionary
             _ => unreachable!()
         };
 
-        let neural_network = load_embeddings(
+        let neural_network = load_embeddings::<()>(
             Some(path.as_ref()),
             None,
             false

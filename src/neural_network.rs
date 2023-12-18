@@ -15,6 +15,7 @@ use network::{NetworkOutput, Network};
 #[allow(unused_imports)]
 use crate::{
     Config,
+    EmbeddingsUnitFactory,
     word_vectorizer::{
         ByteDictionary,
         CharDictionary,
@@ -594,6 +595,31 @@ where
     optimizer: O,
     gradient_clip: Option<f32>,
     sizes: LayerSizes
+}
+
+// wut do u mean its not used??
+#[allow(dead_code)]
+pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
+
+impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
+where
+    O: Optimizer,
+    EN<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    EN<DiffWrapper>: NetworkUnit,
+    for<'a> O::WeightParam: Serialize + Deserialize<'a>
+{
+    pub fn without_optimizer(self) -> NeuralNetwork<EmbeddingsUnitFactory, (), D>
+    where
+        EN<()>: OptimizerUnit<()>,
+    {
+        NeuralNetwork{
+            dictionary: self.dictionary,
+            network: self.network.without_optimizer(),
+            optimizer: (),
+            gradient_clip: self.gradient_clip,
+            sizes: self.sizes
+        }
+    }
 }
 
 impl<N, O, D> NeuralNetwork<N, O, D>

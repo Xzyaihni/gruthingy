@@ -82,6 +82,35 @@ pub trait Optimizer
     fn set_learning_rate(&mut self, learning_rate: f32);
 }
 
+impl Optimizer for ()
+{
+    type WeightParam = ();
+
+    fn new() -> Self
+    {
+        ()
+    }
+
+    fn gradient_to_change(
+        &self,
+        _gradient_info: &mut Self::WeightParam,
+        _gradient: LayerType
+    ) -> LayerType
+    {
+        unreachable!()
+    }
+
+    fn advance_time(&mut self)
+    {
+        unreachable!()
+    }
+
+    fn set_learning_rate(&mut self, _learning_rate: f32)
+    {
+        unreachable!()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sgd
 {

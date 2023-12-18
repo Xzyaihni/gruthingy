@@ -27,7 +27,7 @@ pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 pub type NUnit<T> = Lstm<T>;
 
 // options: EmbeddingsDictionary, WordDictionary, CharDictionary, ByteDictionary
-pub type NDictionary = CharDictionary;
+pub type NDictionary = EmbeddingsDictionary;
 
 // options: Sgd, Adam, AdamX, PowerSign
 pub type NOptimizer = AdamX;

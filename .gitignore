@@ -2,6 +2,7 @@
 /callgrind.*
 /vgcore*
 /network*
+/embeddings.nn
 /*.ppm
 /test*
 /backup_networks

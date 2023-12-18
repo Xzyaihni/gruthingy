@@ -23,6 +23,7 @@ use crate::{
         Optimizer,
         OptimizerUnit,
         UnitFactory,
+        EN,
         DROPCONNECT_PROBABILITY,
         network_unit::Embeddingsable
     }
@@ -988,16 +989,22 @@ where
     }
 }
 
-// wut do u mean its not used??
-#[allow(dead_code)]
-type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
-
 impl<O> Network<EmbeddingsUnitFactory, O>
 where
     EN<O>: OptimizerUnit<O>,
     EN<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=EN<DiffWrapper>> + Embeddingsable,
     EmbeddingsUnitFactory: UnitFactory
 {
+    pub fn without_optimizer(self) -> Network<EmbeddingsUnitFactory, ()>
+    {
+        Network{
+            sizes: self.sizes,
+            dropout_probability: self.dropout_probability,
+            optimizer_info: None,
+            weights: self.weights
+        }
+    }
+
     pub fn embeddings(&self, input: OneHotLayer) -> DiffWrapper
     {
         debug_assert!(self.weights.layers.len() == 1);
