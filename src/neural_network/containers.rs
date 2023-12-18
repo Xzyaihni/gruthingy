@@ -97,7 +97,7 @@ impl LayerType
         let softmaxed = self.clone();
 
         // assumes that targets r either 0 or 1
-        self.ln();
+        self.ln_onehot(targets);
 
         let s = self.dot_onehot(targets);
 

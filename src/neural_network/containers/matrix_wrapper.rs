@@ -412,6 +412,8 @@ impl MatrixWrapper
 
     pub fn dot_onehot(self, rhs: &OneHotLayer) -> f32
     {
+        debug_assert!(self.0.shape().1 == 1);
+
         let this = self.0.column(0);
 
         rhs.positions.iter().map(|position| this.index(*position)).sum()
@@ -420,6 +422,20 @@ impl MatrixWrapper
     pub fn dot(self, rhs: &Self) -> f32
     {
         self.0.dot(&rhs.0)
+    }
+
+    pub fn ln_onehot(&mut self, onehot: &OneHotLayer)
+    {
+        debug_assert!(self.0.shape().1 == 1);
+
+        let mut this = self.0.column_mut(0);
+
+        onehot.positions.iter().for_each(|position|
+        {
+            let value = this.index_mut(*position);
+
+            *value = value.ln();
+        });
     }
 
     pub fn sqrt(&mut self)
