@@ -452,7 +452,7 @@ impl WordDictionary
             '=' => Some(SpaceInfo::Both),
             '/' => Some(SpaceInfo::None),
             '*' => Some(SpaceInfo::Both),
-            '\'' => Some(SpaceInfo::Both),
+            '\'' => Some(SpaceInfo::None),
             '\\' => Some(SpaceInfo::None),
             '"' => Some(SpaceInfo::Both),
             '_' => Some(SpaceInfo::None),
@@ -467,6 +467,8 @@ impl WordDictionary
         {
             let previous_word = self.word_as_separator(previous_word);
             let word = self.word_as_separator(word);
+
+            let is_previous_digit = previous_word.map(|x| x.is_digit(10)).unwrap_or(false);
 
             let right_space = previous_word.map(|x|
             {
@@ -489,6 +491,21 @@ impl WordDictionary
                     false
                 }
             }).unwrap_or(true);
+
+            if word.map(|x| x.is_digit(10)).unwrap_or(false)
+            {
+                if let Some(':') = previous_word
+                {
+                    return false;
+                }
+
+                return right_space && !is_previous_digit;
+            }
+
+            if is_previous_digit
+            {
+                return left_space;
+            }
 
             right_space && left_space
         } else
