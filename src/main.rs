@@ -504,7 +504,7 @@ fn train_embeddings(mut config: Config)
 
 fn closest_embeddings(mut config: Config)
 {
-    let mut network = load_embeddings::<NOptimizer>(
+    let mut network = load_embeddings::<()>(
         None,
         Some(&mut config),
         false
