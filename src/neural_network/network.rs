@@ -677,7 +677,7 @@ where
                 layer: self.sizes.layers.saturating_sub(1),
                 weights_size: WeightsSize{
                     weights: &self.weights.output,
-                    this_size: self.sizes.input,
+                    this_size: self.sizes.output,
                     previous_size: self.sizes.hidden,
                     is_hidden: false
                 }

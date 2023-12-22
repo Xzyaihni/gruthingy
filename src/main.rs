@@ -399,7 +399,11 @@ fn weights_image(config: Config)
 
         let mut image = PPMImage::new(this_size, previous_size);
 
-        for (index, weight) in weights.as_vec().into_iter().enumerate()
+        let weights = weights.as_vec();
+
+        assert_eq!(this_size * previous_size, weights.len(), "{name} size doesnt match");
+
+        for (index, weight) in weights.into_iter().enumerate()
         {
             let color = weight_color(weight);
 
@@ -409,9 +413,15 @@ fn weights_image(config: Config)
             image[(x, y)] = color;
         }
 
-        let name = name.chars().filter(|c|
+        let name = name.chars().enumerate().flat_map(|(index, c)|
         {
-            c.is_ascii_alphanumeric()
+            if index != 0 && c.is_uppercase()
+            {
+                iter::once('_').chain(c.to_lowercase()).collect::<Vec<_>>()
+            } else
+            {
+                c.to_lowercase().collect()
+            }
         }).collect::<String>();
 
         let filename = format!("{name}.ppm");
