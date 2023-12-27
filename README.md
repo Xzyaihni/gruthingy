@@ -12,11 +12,11 @@ u can change network parameters and stuff in src/neural\_network/neural\_network
 
 then do
 ```
-./target/release/gruthingy train ~/path/to/some/cool/text/file.txt -e 100
+./target/release/gruthingy -m train -i ~/path/to/some/cool/text/file.txt -I 100
 ```
 to train it for 100 minibatches!!
 
 then run with this
 ```
-./target/release/gruthingy run 'test text'
+./target/release/gruthingy -m run -i 'test text'
 ```
