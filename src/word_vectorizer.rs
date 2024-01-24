@@ -354,15 +354,9 @@ impl WordDictionary
         VectorWord::new(index)
     }
 
-    fn next_word<R: Read>(&mut self, reader: &mut CharsAdapter<R>) -> Option<VectorWord>
+    pub fn read_word(reader: impl Iterator<Item=char>) -> (Option<usize>, String)
     {
-        if let Some(separator_index) = self.leftover_separator
-        {
-            self.leftover_separator = None;
-
-            return Some(self.separator_word(separator_index));
-        }
-
+        let mut leftover_separator = None;
         let mut word = String::new();
 
         for c in reader
@@ -380,7 +374,7 @@ impl WordDictionary
 
             if let Some(pos) = WORD_SEPARATORS.iter().position(|v| c == *v)
             {
-                self.leftover_separator = Some(pos);
+                leftover_separator = Some(pos);
 
                 break;
             } else
@@ -397,6 +391,22 @@ impl WordDictionary
                 }
             }
         }
+
+        (leftover_separator, word)
+    }
+
+    fn next_word<R: Read>(&mut self, reader: &mut CharsAdapter<R>) -> Option<VectorWord>
+    {
+        if let Some(separator_index) = self.leftover_separator
+        {
+            self.leftover_separator = None;
+
+            return Some(self.separator_word(separator_index));
+        }
+
+        let (leftover_separator, word) = Self::read_word(reader);
+
+        self.leftover_separator = leftover_separator;
 
         if word.is_empty()
         {

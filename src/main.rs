@@ -45,8 +45,7 @@ use word_vectorizer::{
     WordDictionary,
     VectorWord,
     InputDataType,
-    InputData,
-    WORD_SEPARATORS
+    InputData
 };
 
 mod config;
@@ -441,29 +440,14 @@ fn create_word_dictionary(config: Config)
 
     loop
     {
-        let mut current_word = String::new();
+        let (separator, word) = WordDictionary::read_word(&mut chars_reader);
 
-        for c in chars_reader.by_ref()
-        {
-            if WORD_SEPARATORS.iter().chain(iter::once(&' ')).any(|v| *v == c)
-            {
-                if current_word.is_empty()
-                {
-                    continue;
-                }
-
-                break;
-            }
-
-            current_word.push(c);
-        }
-
-        if current_word.is_empty()
+        if separator.is_none() && word.is_empty()
         {
             break;
         }
 
-        words.insert(current_word);
+        words.insert(word);
     }
 
     let mut dictionary_file = File::create(config.dictionary_path).unwrap();
