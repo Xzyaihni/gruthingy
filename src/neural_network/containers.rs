@@ -766,7 +766,7 @@ impl OneHotLayer
         let size = self.size;
         let mut layer = vec![0.0; size];
 
-        for position in self.positions.into_iter()
+        for position in self.positions.iter()
         {
             layer[*position] = 1.0;
         }
@@ -1605,7 +1605,7 @@ impl DiffWrapper
         let value = {
             let added = added.tensor();
 
-            self.tensor().matmul_onehotv_add(&rhs, &*added)
+            self.tensor().matmul_onehotv_add(rhs, &*added)
         };
 
         inner_from_value_special_op!(value, Ops::MatmulOneHotvAdd{

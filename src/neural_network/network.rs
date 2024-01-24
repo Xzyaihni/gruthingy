@@ -764,7 +764,7 @@ where
         #[allow(clippy::needless_range_loop)]
         for l_i in 0..self.sizes.layers
         {
-            let input = last_output.as_ref().take()
+            let input = last_output.as_ref()
                 .unwrap_or(input);
 
             debug_assert!(l_i < self.weights.layers.len());
@@ -850,7 +850,7 @@ where
             output.output = output.output.softmax_cross_entropy(targets);
 
             output
-        }, previous_states, dropout_masks, &input.into())
+        }, previous_states, dropout_masks, &input)
     }
 
     #[allow(dead_code)]

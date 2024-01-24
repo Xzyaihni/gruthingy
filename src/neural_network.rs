@@ -125,6 +125,14 @@ pub struct KahanSum
     compensation: f64
 }
 
+impl Default for KahanSum
+{
+    fn default() -> Self
+    {
+        Self::new()
+    }
+}
+
 impl KahanSum
 {
     pub fn new() -> Self
@@ -517,7 +525,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
                 let word = VectorWord::from_raw(word);
 
                 let layer = self.dictionary.words_to_layer([word]);
-                self.words.push(layer.into());
+                self.words.push(layer);
 
                 let bytes = self.dictionary.word_to_bytes(previous_word, word);
                 previous_word = Some(word);

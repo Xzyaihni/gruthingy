@@ -1,3 +1,7 @@
+#![allow(clippy::suspicious_else_formatting)]
+#![allow(clippy::len_without_is_empty)]
+#![allow(clippy::match_like_matches_macro)]
+
 use std::{process, io::Cursor, path::Path};
 
 use serde::{Serialize, Deserialize};

@@ -86,10 +86,7 @@ impl Optimizer for ()
 {
     type WeightParam = ();
 
-    fn new() -> Self
-    {
-        ()
-    }
+    fn new() -> Self {}
 
     fn gradient_to_change(
         &self,

@@ -379,6 +379,8 @@ impl WordDictionary
                 break;
             } else
             {
+                // i kinda hate clippy cuz of these stupid suggestions
+                #[allow(clippy::collapsible_else_if)]
                 if LOWERCASE_ONLY
                 {
                     c.to_lowercase().for_each(|c|
@@ -488,7 +490,7 @@ impl WordDictionary
             let previous_word = self.word_as_separator(previous_word);
             let word = self.word_as_separator(word);
 
-            let is_previous_digit = previous_word.map(|x| x.is_digit(10)).unwrap_or(false);
+            let is_previous_digit = previous_word.map(|x| x.is_ascii_digit()).unwrap_or(false);
 
             let right_space = previous_word.map(|x|
             {
@@ -512,7 +514,7 @@ impl WordDictionary
                 }
             }).unwrap_or(true);
 
-            if word.map(|x| x.is_digit(10)).unwrap_or(false)
+            if word.map(|x| x.is_ascii_digit()).unwrap_or(false)
             {
                 if let Some(':') = previous_word
                 {

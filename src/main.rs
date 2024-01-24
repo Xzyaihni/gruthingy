@@ -1,6 +1,8 @@
 // >putting else on a different line is suspicious
 // why?
 #![allow(clippy::suspicious_else_formatting)]
+#![allow(clippy::len_without_is_empty)]
+#![allow(clippy::match_like_matches_macro)]
 
 use std::{
     env,
