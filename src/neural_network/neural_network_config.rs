@@ -33,5 +33,8 @@ pub type NUnit<T> = Lstm<T>;
 // options: EmbeddingsDictionary, WordDictionary, CharDictionary, ByteDictionary
 pub type NDictionary = CharDictionary;
 
+// only applies to EmbeddingsDictionary and WordDictionary
+pub const LOWERCASE_ONLY: bool = true;
+
 // options: Sgd, Adam, AdamX, PowerSign
 pub type NOptimizer = AdamX;

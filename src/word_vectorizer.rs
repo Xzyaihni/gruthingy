@@ -23,6 +23,7 @@ use super::neural_network::{
     LayerType,
     InputType,
     OneHotLayer,
+    LOWERCASE_ONLY,
     network::Network
 };
 
@@ -384,7 +385,16 @@ impl WordDictionary
                 break;
             } else
             {
-                word.push(c);
+                if LOWERCASE_ONLY
+                {
+                    c.to_lowercase().for_each(|c|
+                    {
+                        word.push(c);
+                    })
+                } else
+                {
+                    word.push(c);
+                }
             }
         }
 
