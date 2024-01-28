@@ -32,8 +32,8 @@ use crate::{
 use optimizers::*;
 
 pub use network::LayerSizes;
-pub use optimizers::Optimizer;
-pub use network_unit::{NetworkUnit, NewableLayer, GenericUnit, UnitFactory, OptimizerUnit};
+pub use optimizers::{NewableLayer, Optimizer};
+pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::{WeightsNamed, WeightsSize};
 pub use containers::{
     LayerType,

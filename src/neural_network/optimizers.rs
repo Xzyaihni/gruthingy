@@ -2,10 +2,14 @@ use serde::{Serialize, Deserialize};
 
 use super::{
     LayerType,
-    NewableLayer,
     DECAY_FUNCTION
 };
 
+
+pub trait NewableLayer
+{
+    fn new(previous: usize, current: usize) -> Self;
+}
 
 impl NewableLayer for ()
 {

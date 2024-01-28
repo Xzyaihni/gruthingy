@@ -31,7 +31,7 @@ pub const EMBEDDINGS_TYPE: EMType = EMType::BagOfWords(2);
 pub type NUnit<T> = Lstm<T>;
 
 // options: EmbeddingsDictionary, WordDictionary, CharDictionary, ByteDictionary
-pub type NDictionary = CharDictionary;
+pub type NDictionary = EmbeddingsDictionary;
 
 // only applies to EmbeddingsDictionary and WordDictionary
 pub const LOWERCASE_ONLY: bool = true;

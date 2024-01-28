@@ -48,11 +48,6 @@ pub trait GenericUnit<T>
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
-pub trait NewableLayer
-{
-    fn new(previous: usize, current: usize) -> Self;
-}
-
 pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned
 {
     fn new_zeroed(sizes: LayerSizes) -> Self;
