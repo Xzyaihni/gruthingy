@@ -32,7 +32,7 @@ use crate::{
 use optimizers::*;
 
 pub use network::LayerSizes;
-pub use optimizers::{NewableLayer, Optimizer};
+pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
 pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::{WeightsNamed, WeightsSize};
 pub use containers::{
@@ -63,25 +63,6 @@ pub mod containers;
 pub use neural_network_config::*;
 mod neural_network_config;
 
-
-#[allow(dead_code)]
-pub enum DecayFunction
-{
-    Power,
-    Division
-}
-
-impl DecayFunction
-{
-    fn decay(&self, value: f32, t: i32) -> f32
-    {
-        match self
-        {
-            DecayFunction::Power => value.powi(t),
-            DecayFunction::Division => value / t as f32
-        }
-    }
-}
 
 #[allow(dead_code)]
 pub enum AFType

@@ -6,6 +6,25 @@ use super::{
 };
 
 
+#[allow(dead_code)]
+pub enum DecayFunction
+{
+    Power,
+    Division
+}
+
+impl DecayFunction
+{
+    fn decay(&self, value: f32, t: i32) -> f32
+    {
+        match self
+        {
+            DecayFunction::Power => value.powi(t),
+            DecayFunction::Division => value / t as f32
+        }
+    }
+}
+
 pub trait NewableLayer
 {
     fn new(previous: usize, current: usize) -> Self;
