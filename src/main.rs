@@ -110,12 +110,6 @@ where
     // &mut &mut, im not sure wut im doing wrong
     let sizes = config.as_mut().map(|config|
     {
-        // the whole point of embeddings is to overfit right?
-        config.dropout_probability = 0.0;
-
-        // and uhh i dont think it can NaN out on me with just 1 layer
-        config.gradient_clip = None;
-
         SizesInfo{hidden: config.embeddings_size, layers: 1}
     });
 
@@ -174,7 +168,7 @@ where
             InputDataType::None => InputData::None,
             InputDataType::Path =>
             {
-                InputData::Path(config.dictionary_path.clone())
+                InputData::Path(config.embeddings_path.clone())
             }
         };
 
@@ -435,7 +429,7 @@ fn weights_image(config: Config)
 fn create_word_dictionary(config: Config)
 {
     let text_file = BufReader::new(File::open(config.get_input()).unwrap());
- 
+
     let mut words: HashSet<String> = HashSet::new();
 
     let mut chars_reader = CharsAdapter::adapter(text_file);
@@ -577,7 +571,7 @@ fn main()
             );
         } */
     }
-    
+
     let config = Config::parse(env::args().skip(1));
 
     match config.mode
