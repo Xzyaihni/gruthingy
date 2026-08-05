@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::{DMatrix, Dyn};
+use nalgebra::{DMatrix, Matrix, UninitMatrix, Dyn};
 
 use super::{
     Softmaxer,
@@ -355,12 +355,36 @@ impl MatrixWrapper
 
     pub fn outer_product(&self, rhs: impl Borrow<Self>) -> Self
     {
+        let rows = self.0.nrows();
+        let columns = rhs.borrow().0.nrows();
+
         debug_assert!(self.0.shape().1 == 1);
         debug_assert!(rhs.borrow().0.shape().1 == 1);
 
-        // cant use ger here cuz all linear algebra libraries hate me and r slow
-        // if only i could call ger on a matrix that has MaybeUninit<T> >_<
-        Self(&self.0 * &rhs.borrow().0.transpose())
+        let mut output_uninit: UninitMatrix<f32, Dyn, Dyn> = UninitMatrix::uninit(Dyn(rows), Dyn(columns));
+
+        {
+            let this = &self.0.column(0);
+            let rhs = &rhs.borrow().0.column(0);
+
+            for column in 0..columns
+            {
+                let rhs_value = unsafe{ *rhs.vget_unchecked(column) };
+
+                for row in 0..rows
+                {
+                    let this_value = unsafe{ *this.vget_unchecked(row) };
+
+                    unsafe{ output_uninit.get_unchecked_mut((row, column)).write(this_value * rhs_value); }
+                }
+            }
+        }
+
+        let output: Matrix<f32, Dyn, Dyn, _> = unsafe{ UninitMatrix::assume_init(output_uninit) };
+
+        // assert_eq!(output.clone(), &self.0 * &rhs.borrow().0.transpose());
+
+        Self(output)
     }
 
     pub fn outer_product_one_hot(&self, rhs: &OneHotLayer) -> Self
