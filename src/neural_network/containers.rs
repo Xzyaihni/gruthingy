@@ -185,26 +185,15 @@ impl AnyDiffType
                 x.derivatives(
                     LayerType::from_gradient(gradient, || unreachable!()),
                     children_amount
-                );
-
-                return;
+                )
             },
-            Self::Scalar(_) => ()
-        }
-
-        let value = f32::from_gradient(gradient, ||
-        {
-            match self
+            Self::Scalar(x) =>
             {
-                Self::Tensor(x) => x.value.clone(),
-                _ => unreachable!()
+                x.derivatives(
+                    f32::from_gradient(gradient, || unreachable!()),
+                    children_amount
+                )
             }
-        });
-
-        match self
-        {
-            Self::Scalar(x) => x.derivatives(value, children_amount),
-            _ => unreachable!()
         }
     }
 
