@@ -161,7 +161,7 @@ pub trait NetworkDictionary
     {
         self.words_to_onehot(words).into()
     }
-    
+
     fn words_to_onehot(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
     {
         OneHotLayer::new(
@@ -636,7 +636,7 @@ impl NetworkDictionary for EmbeddingsDictionary
     {
         InputDataType::Path
     }
-    
+
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
     {
         self.network.embeddings(self.words_to_onehot(words)).into()
@@ -651,7 +651,7 @@ impl NetworkDictionary for EmbeddingsDictionary
     {
         self.word_dictionary.words_amount()
     }
-    
+
     fn input_amount(&self) -> usize
     {
         self.embeddings_size
@@ -808,14 +808,26 @@ mod tests
     #[test]
     fn encodes_decodes()
     {
-        let s = "COOL\ngay\nbro\nhello\nrly\nworld\na\nnot";
+        let s = if LOWERCASE_ONLY
+        {
+            "cool\ngay\nbro\nhello\nrly\nworld\na\nnot"
+        } else
+        {
+            "COOL\ngay\nbro\nhello\nrly\nworld\na\nnot"
+        };
 
         let mut dictionary = WordDictionary::new(InputData::String(s.into()));
 
         encode_decode_test_lossy(
             dictionary.clone(),
             WordVectorizer::new(&mut dictionary, reader()),
-            "hello world � � a COOL � (not rly) � � gay"
+            if LOWERCASE_ONLY
+            {
+                "hello world � � a cool � (not rly) � � gay"
+            } else
+            {
+                "hello world � � a COOL � (not rly) � � gay"
+            }
         );
     }
 

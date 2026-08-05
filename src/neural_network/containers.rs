@@ -47,14 +47,14 @@ pub struct Softmaxer;
 impl Softmaxer
 {
     #[allow(dead_code)]
-    pub fn softmax_temperature(layer: &mut LayerType, temperature: f32) 
+    pub fn softmax_temperature(layer: &mut LayerType, temperature: f32)
     {
         *layer /= temperature;
 
         Self::softmax(layer)
     }
 
-    pub fn softmax(layer: &mut impl Softmaxable) 
+    pub fn softmax(layer: &mut impl Softmaxable)
     {
         layer.exp();
         let s = layer.sum();
@@ -919,7 +919,7 @@ where
                 {
                     lhs.derivatives(gradient.clone().into());
                 }
-                
+
                 if rhs.is_gradient()
                 {
                     rhs.derivatives((-gradient).into());
@@ -944,7 +944,7 @@ where
             Ops::Div{lhs, rhs} =>
             {
                 let r_recip = rhs.value_clone().reciprocal();
-                
+
                 let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
 
                 if lhs.is_gradient()
@@ -1042,7 +1042,7 @@ where
             {
                 let gradient: LayerType = gradient.try_into()
                     .ok().expect("matmul must be a tensor");
-                
+
                 let rhs_d = rhs.is_gradient().then(|| lhs.tensor().matmulv_transposed(&gradient));
 
                 if lhs.is_gradient()
@@ -1060,7 +1060,7 @@ where
             {
                 let gradient: LayerType = gradient.try_into()
                     .ok().expect("matmul must be a tensor");
-                
+
                 let rhs_d = rhs.is_gradient().then(|| lhs.tensor().matmulv_transposed(&gradient));
 
                 if lhs.is_gradient()
@@ -1083,7 +1083,7 @@ where
             {
                 let gradient: LayerType = gradient.try_into()
                     .ok().expect("matmul must be a tensor");
-                
+
                 if lhs.is_gradient()
                 {
                     let d = gradient.outer_product_one_hot(&rhs);
@@ -1113,13 +1113,13 @@ where
                 {
                     lhs.tensor().clone()
                 });
-                
+
                 let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
 
                 if lhs.is_gradient()
                 {
                     let d = rhs.value_clone() * &gradient;
- 
+
                     lhs.derivatives(d);
                 }
 
@@ -1179,7 +1179,7 @@ impl DiffWrapper
         self.take_inner().calculate_gradients()
     }
 
-    pub fn parent(&self) -> cell::Ref<Ops>
+    pub fn parent(&self) -> cell::Ref<'_, Ops>
     {
         cell::Ref::map(self.this_ref(), |x| x.parent())
     }
@@ -1263,17 +1263,17 @@ impl DiffWrapper
     }
 
     #[allow(dead_code)]
-    fn this_ref(&self) -> cell::Ref<AnyDiffType>
+    fn this_ref(&self) -> cell::Ref<'_, AnyDiffType>
     {
         RefCell::borrow(&self.0)
     }
 
-    fn this_mut(&mut self) -> cell::RefMut<AnyDiffType>
+    fn this_mut(&mut self) -> cell::RefMut<'_, AnyDiffType>
     {
         RefCell::borrow_mut(&self.0)
     }
 
-    pub fn tensor(&self) -> cell::Ref<LayerType>
+    pub fn tensor(&self) -> cell::Ref<'_, LayerType>
     {
         cell::Ref::map(self.this_ref(), |diff|
         {
@@ -1285,7 +1285,7 @@ impl DiffWrapper
         })
     }
 
-    pub fn scalar(&self) -> cell::Ref<f32>
+    pub fn scalar(&self) -> cell::Ref<'_, f32>
     {
         cell::Ref::map(self.this_ref(), |diff|
         {

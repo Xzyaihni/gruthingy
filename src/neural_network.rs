@@ -34,7 +34,7 @@ use optimizers::*;
 pub use network::LayerSizes;
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
 pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
-pub use network::{WeightsNamed, WeightsSize};
+pub use network::WeightsNamed;
 pub use containers::{
     LayerType,
     DiffWrapper,
@@ -42,6 +42,9 @@ pub use containers::{
     OneHotLayer,
     Softmaxer
 };
+
+#[allow(unused_imports)]
+pub use network::WeightsSize;
 
 #[allow(unused_imports)]
 use gru::Gru;
@@ -879,7 +882,7 @@ where
             println!("batch size: {}", info.batch_size);
 
             println!("steps amount: {}", info.steps_num);
-        
+
             println!("calculate loss every ~{inputs_per_loss} inputs");
         }
 
@@ -903,7 +906,7 @@ where
             {
                 eprintln!("iteration: {input_index}");
             }
-            
+
             time_debug! {
                 let steps_num = info.steps_num.get();
 
@@ -1000,7 +1003,7 @@ where
         {
             predictor.predict_bytes(network)
         }).iter().copied().filter(|&c| c != b'\0').collect::<Vec<_>>();
-        
+
         String::from_utf8_lossy(&output).to_string()
     }
 
@@ -1057,7 +1060,7 @@ where
 mod tests
 {
     use super::*;
-    
+
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
         if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))

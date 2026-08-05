@@ -21,6 +21,10 @@ panic = "abort"
 codegen-units = 1
 lto = "fat"
 
+[profile.release-perf]
+inherits = "release"
+strip = false
+
 [profile.release-debug]
 inherits = "release"
 debug = true

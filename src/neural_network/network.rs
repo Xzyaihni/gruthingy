@@ -506,7 +506,7 @@ where
     where
         O: NewableLayer
     {
-        let optimizer_info: Option<_> = 
+        let optimizer_info: Option<_> =
             Some(WeightsFullContainer::new(sizes, |size|
             {
                 N::Unit::new_zeroed(size)
@@ -659,9 +659,9 @@ where
         });
     }
 
-    pub fn weights_info<'b>(
+    pub fn weights_info<'b, 'c>(
         &'b self
-    ) -> Vec<WeightsNamed<&DiffWrapper>>
+    ) -> Vec<WeightsNamed<&'b DiffWrapper>>
     where
         // WORKING LANGUAGE BY THE WAY ITS WORKING JUST FINE HAHAHAHHAHAHAHAHAHHA
         for<'a> N::Unit<DiffWrapper>: NetworkUnit<Unit<WeightsNamed<&'a DiffWrapper>>=N::Unit<WeightsNamed<&'a DiffWrapper>>>,
@@ -969,12 +969,12 @@ where
         let inner = if probability == 0.0
         {
             LayerType::repeat(previous_size, this_size, 1.0)
-        } else 
+        } else
         {
             LayerType::new_with(previous_size, this_size, ||
             {
                 let roll = fastrand::f32();
-                
+
                 if roll >= probability
                 {
                     scaled_value
