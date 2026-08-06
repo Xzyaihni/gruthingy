@@ -13,6 +13,11 @@ use super::{
     Softmaxer,
     Softmaxable,
     OneHotLayer,
+    AnyDiffType,
+    LayerType,
+    DiffOperation,
+    MulGTensorOperation,
+    MulGF32Operation,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -298,6 +303,74 @@ impl Softmaxable for MatrixWrapper
     }
 }
 
+impl<'a> DiffOperation for MulGTensorOperation<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    {
+        |output| *output = Some(self.compute_tensor())
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    {
+        move |output|
+        {
+            match &*self.a
+            {
+                AnyDiffType::Tensor(x) => output.0.gemm(1.0, &x.value.0, &self.b.0, 1.0),
+                AnyDiffType::Scalar(x) => output.0 += &self.b.0 * x.value
+            }
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        match &*self.a
+        {
+            AnyDiffType::Tensor(x) => &x.value * self.b,
+            AnyDiffType::Scalar(x) => self.b * x.value
+        }
+    }
+}
+
+impl<'a> DiffOperation for MulGF32Operation<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    {
+        |output| *output = Some(self.compute_tensor())
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    {
+        move |output|
+        {
+            match &*self.a
+            {
+                AnyDiffType::Tensor(_) => unimplemented!(),
+                AnyDiffType::Scalar(x) => output.0.add_scalar_mut(self.b * x.value)
+            }
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        match &*self.a
+        {
+            AnyDiffType::Tensor(x) => &x.value * self.b,
+            AnyDiffType::Scalar(_) => unimplemented!()
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl MatrixWrapper
 {
@@ -323,6 +396,16 @@ impl MatrixWrapper
     pub fn from_raw<V: Into<Vec<f32>>>(values: V, previous_size: usize, this_size: usize) -> Self
     {
         Self(DMatrix::from_vec(this_size, previous_size, values.into()))
+    }
+
+    pub fn rows(&self) -> usize
+    {
+        self.0.nrows()
+    }
+
+    pub fn columns(&self) -> usize
+    {
+        self.0.ncols()
     }
 
     pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
