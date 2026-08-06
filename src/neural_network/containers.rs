@@ -768,6 +768,19 @@ pub struct MulGF32Operation<'a>
     b: f32
 }
 
+#[derive(Clone)]
+pub struct OuterProduct<'a>
+{
+    a: &'a LayerType,
+    b: &'a LayerType
+}
+
+pub struct OuterProductOneHot<'a>
+{
+    a: &'a LayerType,
+    b: OneHotLayer
+}
+
 pub trait Fillable
 {
     fn fill(&mut self, value: f32);
@@ -892,9 +905,7 @@ impl DiffBounds for LayerType
 
         if lhs.is_gradient()
         {
-            let add_this_as_diff_operation = ();
-            let d = self.outer_product(&*rhs.tensor());
-            lhs.derivatives(d);
+            lhs.derivatives(OuterProduct{a: self, b: &rhs.tensor()});
         }
 
         if let Some(rhs_d) = rhs_d
@@ -910,9 +921,7 @@ impl DiffBounds for LayerType
 
         if lhs.is_gradient()
         {
-            let add_this_as_diff_operation = ();
-            let d = self.outer_product(&*rhs.tensor());
-            lhs.derivatives(d);
+            lhs.derivatives(OuterProduct{a: self, b: &rhs.tensor()});
         }
 
         if let Some(rhs_d) = rhs_d
@@ -930,9 +939,7 @@ impl DiffBounds for LayerType
     {
         if lhs.is_gradient()
         {
-            let add_this_as_diff_operation = ();
-            let d = self.outer_product_one_hot(&rhs);
-            lhs.derivatives(&d);
+            lhs.derivatives(OuterProductOneHot{a: self, b: rhs});
         }
 
         if added.is_gradient()

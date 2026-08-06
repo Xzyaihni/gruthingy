@@ -18,6 +18,8 @@ use super::{
     DiffOperation,
     MulGTensorOperation,
     MulGF32Operation,
+    OuterProduct,
+    OuterProductOneHot,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -371,6 +373,124 @@ impl<'a> DiffOperation for MulGF32Operation<'a>
     }
 }
 
+impl<'a> DiffOperation for OuterProduct<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    {
+        |output| *output = Some(self.compute_tensor())
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    {
+        move |output|
+        {
+            // let compare_result = output.clone() + self.clone().compute_tensor();
+
+            let a = &self.a.0;
+            let b = &self.b.0;
+
+            debug_assert!(a.shape().1 == 1);
+            debug_assert!(b.shape().1 == 1);
+
+            output.0.ger(1.0, &a.column(0), &b.column(0), 1.0);
+
+            // assert_eq!(output.0, compare_result.0); let im_debug = ();
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        let a = &self.a.0;
+        let b = &self.b.0;
+
+        let rows = a.nrows();
+        let columns = b.nrows();
+
+        debug_assert!(a.shape().1 == 1);
+        debug_assert!(b.shape().1 == 1);
+
+        let mut output_uninit: UninitMatrix<f32, Dyn, Dyn> = UninitMatrix::uninit(Dyn(rows), Dyn(columns));
+
+        {
+            let this = &a.column(0);
+            let rhs = &b.column(0);
+
+            for column in 0..columns
+            {
+                let rhs_value = unsafe{ *rhs.vget_unchecked(column) };
+
+                for row in 0..rows
+                {
+                    let this_value = unsafe{ *this.vget_unchecked(row) };
+
+                    unsafe{ output_uninit.get_unchecked_mut((row, column)).write(this_value * rhs_value); }
+                }
+            }
+        }
+
+        let output: Matrix<f32, Dyn, Dyn, _> = unsafe{ UninitMatrix::assume_init(output_uninit) };
+
+        // assert_eq!(output.clone(), &self.0 * &rhs.borrow().0.transpose()); let im_debug = ();
+
+        MatrixWrapper(output)
+    }
+}
+
+impl<'a> DiffOperation for OuterProductOneHot<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    {
+        |output| *output = Some(self.compute_tensor())
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    {
+        move |output|
+        {
+            let a = &self.a.0;
+
+            let output = &mut output.0;
+
+            debug_assert!(a.shape().1 == 1);
+
+            let a = &a.column(0);
+
+            for position in self.b.positions.iter().copied()
+            {
+                output.column_mut(position).axpy(1.0, a, 1.0)
+            }
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        let a = &self.a.0;
+
+        debug_assert!(a.shape().1 == 1);
+
+        let mut output = DMatrix::zeros(a.nrows(), self.b.size);
+
+        let a = &a.column(0);
+
+        for position in self.b.positions.iter().copied()
+        {
+            output.set_column(position, a);
+        }
+
+        MatrixWrapper(output)
+    }
+}
+
 #[allow(dead_code)]
 impl MatrixWrapper
 {
@@ -434,54 +554,6 @@ impl MatrixWrapper
 
         // nope no gemv_tr cuz FUCK me
         Self(self.0.tr_mul(&rhs.borrow().0))
-    }
-
-    pub fn outer_product(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        let rows = self.0.nrows();
-        let columns = rhs.borrow().0.nrows();
-
-        debug_assert!(self.0.shape().1 == 1);
-        debug_assert!(rhs.borrow().0.shape().1 == 1);
-
-        let mut output_uninit: UninitMatrix<f32, Dyn, Dyn> = UninitMatrix::uninit(Dyn(rows), Dyn(columns));
-
-        {
-            let this = &self.0.column(0);
-            let rhs = &rhs.borrow().0.column(0);
-
-            for column in 0..columns
-            {
-                let rhs_value = unsafe{ *rhs.vget_unchecked(column) };
-
-                for row in 0..rows
-                {
-                    let this_value = unsafe{ *this.vget_unchecked(row) };
-
-                    unsafe{ output_uninit.get_unchecked_mut((row, column)).write(this_value * rhs_value); }
-                }
-            }
-        }
-
-        let output: Matrix<f32, Dyn, Dyn, _> = unsafe{ UninitMatrix::assume_init(output_uninit) };
-
-        // assert_eq!(output.clone(), &self.0 * &rhs.borrow().0.transpose());
-
-        Self(output)
-    }
-
-    pub fn outer_product_one_hot(&self, rhs: &OneHotLayer) -> Self
-    {
-        debug_assert!(self.0.shape().1 == 1);
-
-        let mut output = DMatrix::zeros(self.0.nrows(), rhs.size);
-
-        for position in rhs.positions.iter()
-        {
-            output.set_column(*position, &self.0.column(0));
-        }
-
-        Self(output)
     }
 
     pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
