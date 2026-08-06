@@ -416,17 +416,17 @@ impl<'a> DiffOperation for SigmoidOperation<'a>
 {
     fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |value, output|
+        |_, output|
         {
-            *output = Some(MatrixWrapper(value.0.zip_map(&self.0.0, |a, b| (1.0 - a) * a * b)))
+            *output = Some(MatrixWrapper(self.a.0.zip_map(&self.gradient.0, |a, b| (1.0 - a) * a * b)))
         }
     }
 
     fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        |value, output|
+        |_, output|
         {
-            output.0.zip_zip_apply(&value.0, &self.0.0, |output, a, b| *output += (1.0 - a) * a * b)
+            output.0.zip_zip_apply(&self.a.0, &self.gradient.0, |output, a, b| *output += (1.0 - a) * a * b)
         }
     }
 
@@ -446,17 +446,17 @@ impl<'a> DiffOperation for TanhOperation<'a>
 {
     fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |value, output|
+        |_, output|
         {
-            *output = Some(MatrixWrapper(value.0.zip_map(&self.0.0, |a, b| (1.0 - (a * a)) * b)))
+            *output = Some(MatrixWrapper(self.a.0.zip_map(&self.gradient.0, |a, b| (1.0 - (a * a)) * b)))
         }
     }
 
     fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        |value, output|
+        |_, output|
         {
-            output.0.zip_zip_apply(&value.0, &self.0.0, |output, a, b| *output += (1.0 - (a * a)) * b)
+            output.0.zip_zip_apply(&self.a.0, &self.gradient.0, |output, a, b| *output += (1.0 - (a * a)) * b)
         }
     }
 

@@ -771,8 +771,18 @@ pub struct MulGF32Operation<'a>
     b: f32
 }
 
-pub struct SigmoidOperation<'a>(pub &'a LayerType);
-pub struct TanhOperation<'a>(pub &'a LayerType);
+pub struct SigmoidOperation<'a>
+{
+    a: &'a LayerType,
+    gradient: &'a LayerType
+}
+
+pub struct TanhOperation<'a>
+{
+    a: &'a LayerType,
+    gradient: &'a LayerType
+}
+
 pub struct LeakyReluOperation<'a>(pub &'a LayerType);
 
 pub struct MatMulVTransposed<'a>
@@ -830,8 +840,8 @@ where
 
     fn reciprocal(self) -> Self;
 
-    fn sigmoid_operation(&self) -> impl DiffOperation;
-    fn tanh_operation(&self) -> impl DiffOperation;
+    fn sigmoid_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation;
+    fn tanh_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation;
     fn leaky_relu_operation(&self) -> impl DiffOperation;
 
     fn negate_operation(&self) -> impl DiffOperation;
@@ -893,13 +903,13 @@ impl DiffBounds for f32
     }
 
     #[allow(unreachable_code)]
-    fn sigmoid_operation(&self) -> impl DiffOperation
+    fn sigmoid_operation<'a>(&'a self, _a: &'a Self) -> impl DiffOperation
     {
         unimplemented!(); NegateF32Operation(*self)
     }
 
     #[allow(unreachable_code)]
-    fn tanh_operation(&self) -> impl DiffOperation
+    fn tanh_operation<'a>(&'a self, _a: &'a Self) -> impl DiffOperation
     {
         unimplemented!(); NegateF32Operation(*self)
     }
@@ -998,14 +1008,14 @@ impl DiffBounds for LayerType
         self
     }
 
-    fn sigmoid_operation(&self) -> impl DiffOperation
+    fn sigmoid_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation
     {
-        SigmoidOperation(self)
+        SigmoidOperation{a, gradient: self}
     }
 
-    fn tanh_operation(&self) -> impl DiffOperation
+    fn tanh_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation
     {
-        TanhOperation(self)
+        TanhOperation{a, gradient: self}
     }
 
     fn leaky_relu_operation(&self) -> impl DiffOperation
@@ -1290,14 +1300,14 @@ where
             {
                 if x.is_gradient()
                 {
-                    x.derivatives(gradient.sigmoid_operation());
+                    x.derivatives(gradient.sigmoid_operation(&self.value));
                 }
             },
             Ops::Tanh{value: x} =>
             {
                 if x.is_gradient()
                 {
-                    x.derivatives(gradient.tanh_operation());
+                    x.derivatives(gradient.tanh_operation(&self.value));
                 }
             },
             Ops::LeakyRelu{value: x} =>
