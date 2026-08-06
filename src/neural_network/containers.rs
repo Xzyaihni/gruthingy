@@ -768,6 +768,12 @@ pub struct MulGF32Operation<'a>
     b: f32
 }
 
+pub struct MatMulVTransposed<'a>
+{
+    a: &'a LayerType,
+    b: &'a LayerType
+}
+
 #[derive(Clone)]
 pub struct OuterProduct<'a>
 {
@@ -900,8 +906,7 @@ impl DiffBounds for LayerType
 
     fn matmul_v(&self, lhs: DiffWrapper, rhs: DiffWrapper)
     {
-        let add_this_as_diff_operation = ();
-        let rhs_d = rhs.is_gradient().then(|| lhs.tensor().matmulv_transposed(self));
+        let rhs_d = rhs.is_gradient().then(|| MatMulVTransposed{a: &lhs.tensor(), b: self}.compute_tensor());
 
         if lhs.is_gradient()
         {
@@ -916,8 +921,7 @@ impl DiffBounds for LayerType
 
     fn matmul_v_add(&self, lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper)
     {
-        let add_this_as_diff_operation = ();
-        let rhs_d = rhs.is_gradient().then(|| lhs.tensor().matmulv_transposed(self));
+        let rhs_d = rhs.is_gradient().then(|| MatMulVTransposed{a: &lhs.tensor(), b: self}.compute_tensor());
 
         if lhs.is_gradient()
         {

@@ -18,6 +18,7 @@ use super::{
     DiffOperation,
     MulGTensorOperation,
     MulGF32Operation,
+    MatMulVTransposed,
     OuterProduct,
     OuterProductOneHot,
     LEAKY_SLOPE,
@@ -373,6 +374,36 @@ impl<'a> DiffOperation for MulGF32Operation<'a>
     }
 }
 
+impl<'a> DiffOperation for MatMulVTransposed<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    {
+        |output| *output = Some(self.compute_tensor())
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    {
+        move |output|
+        {
+            debug_assert!(self.b.0.shape().1 == 1);
+
+            output.0.column_mut(0).gemv_tr(1.0, &self.a.0, &self.b.0.column(0), 1.0);
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        debug_assert!(self.b.0.shape().1 == 1);
+
+        MatrixWrapper(self.a.0.tr_mul(&self.b.0))
+    }
+}
+
 impl<'a> DiffOperation for OuterProduct<'a>
 {
     fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
@@ -546,14 +577,6 @@ impl MatrixWrapper
 
         let rows = this.shape_generic().0;
         Self(this.reshape_generic(rows, Dyn(1)))
-    }
-
-    pub fn matmulv_transposed(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        debug_assert!(rhs.borrow().0.shape().1 == 1);
-
-        // nope no gemv_tr cuz FUCK me
-        Self(self.0.tr_mul(&rhs.borrow().0))
     }
 
     pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
