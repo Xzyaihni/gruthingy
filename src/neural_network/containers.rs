@@ -185,6 +185,24 @@ impl AnyDiffType
         }
     }
 
+    fn derivatives_set_gradient(&mut self, op: impl DiffOperation)
+    {
+        match self
+        {
+            Self::Tensor(x) => x.derivatives_set_gradient(op, |op, x| op.inplace_tensor()(x), |op, x| op.add_tensor()(x)),
+            Self::Scalar(x) => x.derivatives_set_gradient(op, |op, x| *x = Some(op.scalar_sum()), |op, x| *x += op.scalar_sum())
+        }
+    }
+
+    fn derivatives_skip_gradient(&mut self, children_amount: usize)
+    {
+        match self
+        {
+            Self::Tensor(x) => x.derivatives_skip_gradient(children_amount),
+            Self::Scalar(x) => x.derivatives_skip_gradient(children_amount)
+        }
+    }
+
     fn set_calculate_gradient(&mut self, value: bool)
     {
         match self
@@ -904,33 +922,43 @@ impl DiffBounds for LayerType
         self * rhs
     }
 
-    fn matmul_v(&self, lhs: DiffWrapper, rhs: DiffWrapper)
+    fn matmul_v(&self, lhs: DiffWrapper, mut rhs: DiffWrapper)
     {
-        let rhs_d = rhs.is_gradient().then(|| MatMulVTransposed{a: &lhs.tensor(), b: self}.compute_tensor());
+        let is_rhs_gradient = rhs.is_gradient();
+
+        if is_rhs_gradient
+        {
+            rhs.derivatives_set_gradient(MatMulVTransposed{a: &lhs.tensor(), b: self});
+        }
 
         if lhs.is_gradient()
         {
             lhs.derivatives(OuterProduct{a: self, b: &rhs.tensor()});
         }
 
-        if let Some(rhs_d) = rhs_d
+        if is_rhs_gradient
         {
-            rhs.derivatives(rhs_d);
+            rhs.derivatives_skip_gradient();
         }
     }
 
-    fn matmul_v_add(&self, lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper)
+    fn matmul_v_add(&self, lhs: DiffWrapper, mut rhs: DiffWrapper, added: DiffWrapper)
     {
-        let rhs_d = rhs.is_gradient().then(|| MatMulVTransposed{a: &lhs.tensor(), b: self}.compute_tensor());
+        let is_rhs_gradient = rhs.is_gradient();
+
+        if is_rhs_gradient
+        {
+            rhs.derivatives_set_gradient(MatMulVTransposed{a: &lhs.tensor(), b: self});
+        }
 
         if lhs.is_gradient()
         {
             lhs.derivatives(OuterProduct{a: self, b: &rhs.tensor()});
         }
 
-        if let Some(rhs_d) = rhs_d
+        if is_rhs_gradient
         {
-            rhs.derivatives(rhs_d);
+            rhs.derivatives_skip_gradient();
         }
 
         if added.is_gradient()
@@ -1124,6 +1152,18 @@ where
         added_gradient: impl FnOnce(ThisOp, &mut T)
     )
     {
+        self.derivatives_set_gradient(this_op, starting_gradient, added_gradient);
+
+        self.derivatives_skip_gradient(children_amount);
+    }
+
+    fn derivatives_set_gradient<ThisOp: DiffOperation>(
+        &mut self,
+        this_op: ThisOp,
+        starting_gradient: impl FnOnce(ThisOp, &mut Option<T>),
+        added_gradient: impl FnOnce(ThisOp, &mut T)
+    )
+    {
         if self.gradient.is_none()
         {
             starting_gradient(this_op, &mut self.gradient);
@@ -1131,7 +1171,10 @@ where
         {
             added_gradient(this_op, self.gradient.as_mut().unwrap());
         }
+    }
 
+    fn derivatives_skip_gradient(&mut self, children_amount: usize)
+    {
         if children_amount > 1
         {
             return;
@@ -1387,6 +1430,18 @@ impl DiffWrapper
         let children_amount = Rc::strong_count(&self.0);
 
         self.this_mut().derivatives(children_amount, op);
+    }
+
+    fn derivatives_set_gradient(&mut self, op: impl DiffOperation)
+    {
+        self.this_mut().derivatives_set_gradient(op);
+    }
+
+    fn derivatives_skip_gradient(mut self)
+    {
+        let children_amount = Rc::strong_count(&self.0);
+
+        self.this_mut().derivatives_skip_gradient(children_amount);
     }
 
     pub fn take_gradient_tensor(&mut self) -> LayerType
