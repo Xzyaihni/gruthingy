@@ -19,6 +19,9 @@ use super::{
     MulGTensorOperation,
     MulGF32Operation,
     MatMulVTransposed,
+    SigmoidOperation,
+    TanhOperation,
+    LeakyReluOperation,
     OuterProduct,
     OuterProductOneHot,
     LEAKY_SLOPE,
@@ -308,18 +311,18 @@ impl Softmaxable for MatrixWrapper
 
 impl<'a> DiffOperation for MulGTensorOperation<'a>
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self.compute_tensor())
+        |_, output| *output = Some(self.compute_tensor())
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output|
+        move |_, output|
         {
             match &*self.a
             {
-                AnyDiffType::Tensor(x) => output.0.gemm(1.0, &x.value.0, &self.b.0, 1.0),
+                AnyDiffType::Tensor(_) => unimplemented!(),
                 AnyDiffType::Scalar(x) => output.0 += &self.b.0 * x.value
             }
         }
@@ -327,7 +330,11 @@ impl<'a> DiffOperation for MulGTensorOperation<'a>
 
     fn scalar_sum(self) -> f32
     {
-        unimplemented!()
+        match &*self.a
+        {
+            AnyDiffType::Tensor(x) => x.value.0.dot(&self.b.0),
+            AnyDiffType::Scalar(_) => unimplemented!()
+        }
     }
 
     fn compute_tensor(self) -> LayerType
@@ -342,14 +349,14 @@ impl<'a> DiffOperation for MulGTensorOperation<'a>
 
 impl<'a> DiffOperation for MulGF32Operation<'a>
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self.compute_tensor())
+        |_, output| *output = Some(self.compute_tensor())
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output|
+        move |_, output|
         {
             match &*self.a
             {
@@ -376,14 +383,14 @@ impl<'a> DiffOperation for MulGF32Operation<'a>
 
 impl<'a> DiffOperation for MatMulVTransposed<'a>
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self.compute_tensor())
+        |_, output| *output = Some(self.compute_tensor())
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output|
+        move |_, output|
         {
             debug_assert!(self.b.0.shape().1 == 1);
 
@@ -404,16 +411,105 @@ impl<'a> DiffOperation for MatMulVTransposed<'a>
     }
 }
 
-impl<'a> DiffOperation for OuterProduct<'a>
+// sigmoid(x) * (1.0 - sigmoid(x))
+impl<'a> DiffOperation for SigmoidOperation<'a>
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self.compute_tensor())
+        |value, output|
+        {
+            *output = Some(MatrixWrapper(value.0.zip_map(&self.0.0, |a, b| (1.0 - a) * a * b)))
+        }
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output|
+        |value, output|
+        {
+            output.0.zip_zip_apply(&value.0, &self.0.0, |output, a, b| *output += (1.0 - a) * a * b)
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        unimplemented!()
+    }
+}
+
+// 1 - tanh^2(x)
+impl<'a> DiffOperation for TanhOperation<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
+    {
+        |value, output|
+        {
+            *output = Some(MatrixWrapper(value.0.zip_map(&self.0.0, |a, b| (1.0 - (a * a)) * b)))
+        }
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
+    {
+        |value, output|
+        {
+            output.0.zip_zip_apply(&value.0, &self.0.0, |output, a, b| *output += (1.0 - (a * a)) * b)
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        unimplemented!()
+    }
+}
+
+impl<'a> DiffOperation for LeakyReluOperation<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
+    {
+        |value, output|
+        {
+            *output = Some(MatrixWrapper(value.0.zip_map(&self.0.0, |a, b| leaky_relu_d(a) * b)))
+        }
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
+    {
+        |value, output|
+        {
+            output.0.zip_zip_apply(&value.0, &self.0.0, |output, a, b| *output += leaky_relu_d(a) * b)
+        }
+    }
+
+    fn scalar_sum(self) -> f32
+    {
+        unimplemented!()
+    }
+
+    fn compute_tensor(self) -> LayerType
+    {
+        unimplemented!()
+    }
+}
+
+impl<'a> DiffOperation for OuterProduct<'a>
+{
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
+    {
+        |_, output| *output = Some(self.compute_tensor())
+    }
+
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
+    {
+        move |_, output|
         {
             // let compare_result = output.clone() + self.clone().compute_tensor();
 
@@ -474,14 +570,14 @@ impl<'a> DiffOperation for OuterProduct<'a>
 
 impl<'a> DiffOperation for OuterProductOneHot<'a>
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self.compute_tensor())
+        |_, output| *output = Some(self.compute_tensor())
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output|
+        move |_, output|
         {
             let a = &self.a.0;
 
@@ -687,11 +783,6 @@ impl MatrixWrapper
     pub fn leaky_relu(&mut self)
     {
         self.0.apply(|v| *v = v.max(LEAKY_SLOPE * *v));
-    }
-
-    pub fn leaky_relu_d(&mut self)
-    {
-        self.0.apply(|v| *v = leaky_relu_d(*v));
     }
 
     pub fn sum(&self) -> f32

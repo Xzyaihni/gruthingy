@@ -180,8 +180,8 @@ impl AnyDiffType
     {
         match self
         {
-            Self::Tensor(x) => x.derivatives(children_amount, op, |op, x| op.inplace_tensor()(x), |op, x| op.add_tensor()(x)),
-            Self::Scalar(x) => x.derivatives(children_amount, op, |op, x| *x = Some(op.scalar_sum()), |op, x| *x += op.scalar_sum())
+            Self::Tensor(x) => x.derivatives(children_amount, op, |value, op, x| op.inplace_tensor()(value, x), |value, op, x| op.add_tensor()(value, x)),
+            Self::Scalar(x) => x.derivatives(children_amount, op, |_value, op, x| *x = Some(op.scalar_sum()), |_value, op, x| *x += op.scalar_sum())
         }
     }
 
@@ -189,17 +189,17 @@ impl AnyDiffType
     {
         match self
         {
-            Self::Tensor(x) => x.derivatives_set_gradient(op, |op, x| op.inplace_tensor()(x), |op, x| op.add_tensor()(x)),
-            Self::Scalar(x) => x.derivatives_set_gradient(op, |op, x| *x = Some(op.scalar_sum()), |op, x| *x += op.scalar_sum())
+            Self::Tensor(x) => x.derivatives_set_gradient(op, |value, op, x| op.inplace_tensor()(value, x), |value, op, x| op.add_tensor()(value, x)),
+            Self::Scalar(x) => x.derivatives_set_gradient(op, |_value, op, x| *x = Some(op.scalar_sum()), |_value, op, x| *x += op.scalar_sum())
         }
     }
 
-    fn derivatives_skip_gradient(&mut self, children_amount: usize)
+    fn derivatives_skip_gradient_no_check(&mut self)
     {
         match self
         {
-            Self::Tensor(x) => x.derivatives_skip_gradient(children_amount),
-            Self::Scalar(x) => x.derivatives_skip_gradient(children_amount)
+            Self::Tensor(x) => x.derivatives_skip_gradient_no_check(),
+            Self::Scalar(x) => x.derivatives_skip_gradient_no_check()
         }
     }
 
@@ -303,21 +303,6 @@ impl GradientType
                 Self::Tensor(x)
             },
             Self::Scalar(x) => Self::Scalar(x.powi(power as i32))
-        }
-    }
-
-    pub fn leaky_relu_d(&self) -> Self
-    {
-        match self
-        {
-            Self::Tensor(x) =>
-            {
-                let mut x = x.clone();
-                x.leaky_relu_d();
-
-                Self::Tensor(x)
-            },
-            Self::Scalar(x) => Self::Scalar(leaky_relu_d(*x))
         }
     }
 
@@ -619,8 +604,8 @@ binary_operator_diff!(AnyDiffType, GradientType, Div, div);
 
 pub trait DiffOperation
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>);
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType);
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>);
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType);
     fn scalar_sum(self) -> f32;
 
     fn compute_tensor(self) -> LayerType;
@@ -628,14 +613,14 @@ pub trait DiffOperation
 
 impl DiffOperation for LayerType
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self)
+        |_, output| *output = Some(self)
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output| *output += self
+        move |_, output| *output += self
     }
 
     fn scalar_sum(self) -> f32
@@ -648,14 +633,14 @@ impl DiffOperation for LayerType
 
 impl<'a> DiffOperation for &'a LayerType
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        |output| *output = Some(self.clone())
+        |_, output| *output = Some(self.clone())
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output| *output += self
+        move |_, output| *output += self
     }
 
     fn scalar_sum(self) -> f32
@@ -669,8 +654,8 @@ impl<'a> DiffOperation for &'a LayerType
 #[allow(unreachable_code)]
 impl DiffOperation for f32
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>) { unreachable!(); |_| {} }
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType) { unreachable!(); |_| {} }
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>) { unreachable!(); |_, _| {} }
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType) { unreachable!(); |_, _| {} }
 
     fn scalar_sum(self) -> f32
     {
@@ -683,8 +668,8 @@ impl DiffOperation for f32
 #[allow(unreachable_code)]
 impl<'a> DiffOperation for &'a f32
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>) { unreachable!(); |_| {} }
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType) { unreachable!(); |_| {} }
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>) { unreachable!(); |_, _| {} }
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType) { unreachable!(); |_, _| {} }
 
     fn scalar_sum(self) -> f32
     {
@@ -696,9 +681,9 @@ impl<'a> DiffOperation for &'a f32
 
 impl DiffOperation for GradientType
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        move |output|
+        move |_, output|
         {
             if let Self::Tensor(x) = self
             {
@@ -710,9 +695,9 @@ impl DiffOperation for GradientType
         }
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output|
+        move |_, output|
         {
             if let Self::Tensor(x) = self
             {
@@ -740,14 +725,14 @@ struct NegateTensorOperation<'a>(&'a LayerType);
 
 impl<'a> DiffOperation for NegateTensorOperation<'a>
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>)
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
-        move |output| *output = Some(-self.0)
+        move |_, output| *output = Some(-self.0)
     }
 
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType)
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
     {
-        move |output| *output -= self.0
+        move |_, output| *output -= self.0
     }
 
     fn scalar_sum(self) -> f32
@@ -763,8 +748,8 @@ struct NegateF32Operation(f32);
 #[allow(unreachable_code)]
 impl DiffOperation for NegateF32Operation
 {
-    fn inplace_tensor(self) -> impl FnOnce(&mut Option<LayerType>) { unreachable!(); |_| {} }
-    fn add_tensor(self) -> impl FnOnce(&mut LayerType) { unreachable!(); |_| {} }
+    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>) { unreachable!(); |_, _| {} }
+    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType) { unreachable!(); |_, _| {} }
 
     fn scalar_sum(self) -> f32
     {
@@ -785,6 +770,10 @@ pub struct MulGF32Operation<'a>
     a: cell::Ref<'a, AnyDiffType>,
     b: f32
 }
+
+pub struct SigmoidOperation<'a>(pub &'a LayerType);
+pub struct TanhOperation<'a>(pub &'a LayerType);
+pub struct LeakyReluOperation<'a>(pub &'a LayerType);
 
 pub struct MatMulVTransposed<'a>
 {
@@ -840,6 +829,10 @@ where
     fn matmul_one_hot_v_add(&self, lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper);
 
     fn reciprocal(self) -> Self;
+
+    fn sigmoid_operation(&self) -> impl DiffOperation;
+    fn tanh_operation(&self) -> impl DiffOperation;
+    fn leaky_relu_operation(&self) -> impl DiffOperation;
 
     fn negate_operation(&self) -> impl DiffOperation;
     fn mul_ba_operation<'a>(&'a self, a: cell::Ref<'a, AnyDiffType>) -> impl DiffOperation;
@@ -897,6 +890,24 @@ impl DiffBounds for f32
     fn reciprocal(self) -> Self
     {
         self.recip()
+    }
+
+    #[allow(unreachable_code)]
+    fn sigmoid_operation(&self) -> impl DiffOperation
+    {
+        unimplemented!(); NegateF32Operation(*self)
+    }
+
+    #[allow(unreachable_code)]
+    fn tanh_operation(&self) -> impl DiffOperation
+    {
+        unimplemented!(); NegateF32Operation(*self)
+    }
+
+    #[allow(unreachable_code)]
+    fn leaky_relu_operation(&self) -> impl DiffOperation
+    {
+        unimplemented!(); NegateF32Operation(*self)
     }
 
     fn negate_operation(&self) -> impl DiffOperation
@@ -985,6 +996,21 @@ impl DiffBounds for LayerType
         LayerType::reciprocal(&mut self);
 
         self
+    }
+
+    fn sigmoid_operation(&self) -> impl DiffOperation
+    {
+        SigmoidOperation(self)
+    }
+
+    fn tanh_operation(&self) -> impl DiffOperation
+    {
+        TanhOperation(self)
+    }
+
+    fn leaky_relu_operation(&self) -> impl DiffOperation
+    {
+        LeakyReluOperation(self)
     }
 
     fn negate_operation(&self) -> impl DiffOperation
@@ -1126,7 +1152,7 @@ where
         let mut ones = self.value.clone();
         ones.fill(1.0);
 
-        self.derivatives(0, 1.0, |_, x| *x = Some(ones), |_, _| unreachable!());
+        self.derivatives(0, 1.0, |_, _, x| *x = Some(ones), |_, _, _| unreachable!());
     }
 
     pub fn take_gradient(&mut self) -> T
@@ -1148,8 +1174,8 @@ where
         &mut self,
         children_amount: usize,
         this_op: ThisOp,
-        starting_gradient: impl FnOnce(ThisOp, &mut Option<T>),
-        added_gradient: impl FnOnce(ThisOp, &mut T)
+        starting_gradient: impl FnOnce(&T, ThisOp, &mut Option<T>),
+        added_gradient: impl FnOnce(&T, ThisOp, &mut T)
     )
     {
         self.derivatives_set_gradient(this_op, starting_gradient, added_gradient);
@@ -1160,16 +1186,16 @@ where
     fn derivatives_set_gradient<ThisOp: DiffOperation>(
         &mut self,
         this_op: ThisOp,
-        starting_gradient: impl FnOnce(ThisOp, &mut Option<T>),
-        added_gradient: impl FnOnce(ThisOp, &mut T)
+        starting_gradient: impl FnOnce(&T, ThisOp, &mut Option<T>),
+        added_gradient: impl FnOnce(&T, ThisOp, &mut T)
     )
     {
         if self.gradient.is_none()
         {
-            starting_gradient(this_op, &mut self.gradient);
+            starting_gradient(&self.value, this_op, &mut self.gradient);
         } else
         {
-            added_gradient(this_op, self.gradient.as_mut().unwrap());
+            added_gradient(&self.value, this_op, self.gradient.as_mut().unwrap());
         }
     }
 
@@ -1180,13 +1206,17 @@ where
             return;
         }
 
+        self.derivatives_skip_gradient_no_check();
+    }
+
+    fn derivatives_skip_gradient_no_check(&mut self)
+    {
         let gradient = self.gradient.as_ref().unwrap();
 
         match mem::replace(&mut self.parent, Ops::None)
         {
             Ops::Add{lhs, rhs} =>
             {
-                eprintln!("called add"); let remove_me = ();
                 if lhs.is_gradient()
                 {
                     lhs.derivatives(gradient);
@@ -1199,7 +1229,6 @@ where
             },
             Ops::Sub{lhs, rhs} =>
             {
-                eprintln!("called sub"); let remove_me = ();
                 if lhs.is_gradient()
                 {
                     lhs.derivatives(gradient);
@@ -1210,24 +1239,26 @@ where
                     rhs.derivatives(gradient.negate_operation());
                 }
             },
-            Ops::Mul{lhs, rhs} =>
+            Ops::Mul{lhs, mut rhs} =>
             {
-                eprintln!("called mul"); let remove_me = ();
-                let lhs_value = rhs.is_gradient().then(|| gradient.mul_ba_operation(lhs.this_ref()).compute_tensor());
+                let is_rhs_gradient = rhs.is_gradient();
+                if is_rhs_gradient
+                {
+                    rhs.derivatives_set_gradient(gradient.mul_ba_operation(lhs.this_ref()));
+                }
 
                 if lhs.is_gradient()
                 {
                     lhs.derivatives(gradient.mul_ba_operation(rhs.this_ref()));
                 }
 
-                if let Some(lhs_value) = lhs_value
+                if is_rhs_gradient
                 {
-                    rhs.derivatives(lhs_value);
+                    rhs.derivatives_skip_gradient();
                 }
             },
             Ops::Div{lhs, rhs} =>
             {
-                eprintln!("called div"); let remove_me = ();
                 let r_recip = rhs.value_clone().reciprocal();
 
                 let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
@@ -1250,7 +1281,6 @@ where
             },
             Ops::Exp{value: x} =>
             {
-                eprintln!("called exp"); let remove_me = ();
                 if x.is_gradient()
                 {
                     x.derivatives(gradient * &self.value);
@@ -1258,39 +1288,27 @@ where
             },
             Ops::Sigmoid{value: x} =>
             {
-                eprintln!("called sigmoid"); let remove_me = ();
                 if x.is_gradient()
                 {
-                    // sigmoid(x) * (1.0 - sigmoid(x))
-                    let d = (-&self.value + 1.0) * &self.value;
-
-                    x.derivatives(gradient * &d);
+                    x.derivatives(gradient.sigmoid_operation());
                 }
             },
             Ops::Tanh{value: x} =>
             {
-                eprintln!("called tanh"); let remove_me = ();
                 if x.is_gradient()
                 {
-                    // 1 - tanh^2(x)
-                    let d = -(&self.value * &self.value) + 1.0;
-
-                    x.derivatives(gradient * &d);
+                    x.derivatives(gradient.tanh_operation());
                 }
             },
             Ops::LeakyRelu{value: x} =>
             {
-                eprintln!("called leaky_relu"); let remove_me = ();
                 if x.is_gradient()
                 {
-                    let d = x.value_clone().leaky_relu_d();
-
-                    x.derivatives(d * gradient);
+                    x.derivatives(gradient.leaky_relu_operation());
                 }
             },
             Ops::Ln{value: x} =>
             {
-                eprintln!("called ln"); let remove_me = ();
                 if x.is_gradient()
                 {
                     let d = x.value_clone().reciprocal();
@@ -1300,7 +1318,6 @@ where
             },
             Ops::Sqrt{value: x} =>
             {
-                eprintln!("called sqrt"); let remove_me = ();
                 if x.is_gradient()
                 {
                     let m = &self.value * 2.0;
@@ -1312,7 +1329,6 @@ where
             },
             Ops::Neg{value: x} =>
             {
-                eprintln!("called neg"); let remove_me = ();
                 if x.is_gradient()
                 {
                     x.derivatives(gradient.negate_operation());
@@ -1320,7 +1336,6 @@ where
             },
             Ops::Pow{lhs, power} =>
             {
-                eprintln!("called pow"); let remove_me = ();
                 if lhs.is_gradient()
                 {
                     let p = lhs.value_clone().pow(power - 1);
@@ -1331,22 +1346,18 @@ where
             },
             Ops::Matmulv{lhs, rhs} =>
             {
-                eprintln!("called matmulv"); let remove_me = ();
                 gradient.matmul_v(lhs, rhs);
             },
             Ops::MatmulvAdd{lhs, rhs, added} =>
             {
-                eprintln!("called matmulv_add"); let remove_me = ();
                 gradient.matmul_v_add(lhs, rhs, added);
             },
             Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
             {
-                eprintln!("called matmulonehotv_add"); let remove_me = ();
                 gradient.matmul_one_hot_v_add(lhs, rhs, added);
             },
             Ops::SumTensor{value: x} =>
             {
-                eprintln!("called sumtensor"); let remove_me = ();
                 if x.is_gradient()
                 {
                     let d = gradient.into_layer_type(|| x.tensor());
@@ -1356,7 +1367,6 @@ where
             },
             Ops::Dot{lhs, rhs} =>
             {
-                eprintln!("called dot"); let remove_me = ();
                 let gradient = gradient.into_layer_type(|| lhs.tensor());
 
                 let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
@@ -1377,7 +1387,6 @@ where
             },
             Ops::SoftmaxCrossEntropy{values, softmaxed_values, targets} =>
             {
-                eprintln!("called softmaxcrossentropy"); let remove_me = ();
                 if values.is_gradient()
                 {
                     let d = gradient.component_mul(softmaxed_values - targets.into_layer());
@@ -1441,7 +1450,12 @@ impl DiffWrapper
     {
         let children_amount = Rc::strong_count(&self.0);
 
-        self.this_mut().derivatives_skip_gradient(children_amount);
+        if children_amount > 1
+        {
+            return;
+        }
+
+        self.this_mut().derivatives_skip_gradient_no_check();
     }
 
     pub fn take_gradient_tensor(&mut self) -> LayerType
