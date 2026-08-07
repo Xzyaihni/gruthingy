@@ -6,7 +6,7 @@ use std::{
     io::{Read, Write, BufReader},
     fs::File,
     path::Path,
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     ops::{Range, DivAssign, AddAssign, SubAssign}
 };
 
@@ -358,12 +358,17 @@ where
         }
     }
 
-    fn around_window(&self, amount: usize) -> HashSet<VectorWord>
+    fn around_window(&self, amount: usize) -> Vec<VectorWord>
     {
-        self.context.iter().take(amount)
+        let mut words = self.context.iter().take(amount)
             .chain(self.context.iter().rev().take(amount))
             .map(|v| **v)
-            .collect()
+            .collect::<Vec<_>>();
+
+        words.sort_unstable();
+        words.dedup();
+
+        words
     }
 
     fn middle_word(&self, amount: usize) -> VectorWord
