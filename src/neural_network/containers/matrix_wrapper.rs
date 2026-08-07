@@ -1,6 +1,6 @@
 use std::{
     f32,
-    fmt::Debug,
+    fmt::{self, Debug},
     borrow::Borrow,
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, DivAssign, Neg}
 };
@@ -28,8 +28,16 @@ use super::{
     leaky_relu_d
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
+
+impl Debug for MatrixWrapper
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        write!(f, "{{rows: {}, columns: {}, data: {:?}}}", self.0.nrows(), self.0.ncols(), self.0.data.as_vec())
+    }
+}
 
 macro_rules! op_impl_scalar
 {
