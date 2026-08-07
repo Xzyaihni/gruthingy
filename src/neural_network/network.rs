@@ -883,6 +883,8 @@ where
                 this_output
             );
 
+            // this might cause some networks to not converge at 0 loss (since sometimes its impossible to predict the next word with 0 context)
+            // but it makes it more robust i think?? i forgot why i did it this way but it IS important and it is NOT a bug
             if let Some(output) = output.as_mut()
             {
                 *output += this_output;
