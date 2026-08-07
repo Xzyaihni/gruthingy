@@ -553,6 +553,30 @@ fn closest_embeddings(mut config: Config)
     }
 }
 
+fn accuracy_data(config: Config)
+{
+    let text_file = config.get_input_file();
+
+    let mut network = load_network(&config, None, false);
+
+    let correct_guesses = network.correct_guesses(text_file);
+
+    let path = config.output.unwrap_or_else(|| "output.json".to_owned());
+
+    let data = if !config.replace_invalid
+    {
+        serde_json::to_string_pretty(&correct_guesses)
+    } else
+    {
+        serde_json::to_string_pretty(&correct_guesses.into_iter().map(|(word, is_correct)|
+        {
+            (String::from_utf8_lossy(&word).into_owned(), is_correct)
+        }).collect::<Vec<_>>())
+    };
+
+    fs::write(path, data.unwrap()).unwrap();
+}
+
 fn main()
 {
     if LayerType::is_arrayfire()
@@ -582,6 +606,7 @@ fn main()
         ProgramMode::CreateDictionary => create_word_dictionary(config),
         ProgramMode::ClosestEmbeddings => closest_embeddings(config),
         ProgramMode::TrainEmbeddings => train_embeddings(config),
-        ProgramMode::WeightsImage => weights_image(config)
+        ProgramMode::WeightsImage => weights_image(config),
+        ProgramMode::AccuracyData => accuracy_data(config)
     }
 }

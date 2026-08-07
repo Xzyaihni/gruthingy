@@ -705,26 +705,39 @@ where
     }
 
     #[allow(dead_code)]
+    pub fn correct_guesses(
+        &mut self,
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=bool>
+    {
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let f_output = self.predict(input.into_iter());
+
+        Self::correct_guesses_with(f_output.into_iter(), output.into_iter())
+    }
+
+    #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> f32
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-        let amount = input.len();
+        let mut total = 0;
+        let correct_amount = self.correct_guesses(input).filter(|x|
+        {
+            total += 1;
 
-        let f_output = self.predict(input.into_iter());
+            *x
+        }).count();
 
-        Self::correct_guesses(
-            f_output.into_iter(),
-            output.into_iter()
-        ) as f32 / amount as f32
+        correct_amount as f32 / total as f32
     }
 
-    fn correct_guesses<P>(
+    fn correct_guesses_with<P>(
         predicted: impl Iterator<Item=P>,
         target: impl Iterator<Item=OneHotLayer>
-    ) -> usize
+    ) -> impl Iterator<Item=bool>
     where
         P: Borrow<LayerType>
     {
@@ -735,14 +748,8 @@ where
 
             let target_index = positions[0];
 
-            if predicted.borrow().highest_index() == target_index
-            {
-                1
-            } else
-            {
-                0
-            }
-        }).sum()
+            predicted.borrow().highest_index() == target_index
+        })
     }
 
     fn feedforward_single_input_with_activation<F, T>(

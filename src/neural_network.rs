@@ -2,6 +2,7 @@ use std::{
     f32,
     fmt,
     slice,
+    iter,
     io::{Read, Write, BufReader},
     fs::File,
     path::Path,
@@ -749,6 +750,26 @@ where
     pub fn inner_network_mut(&mut self) -> &mut Network<N, O::WeightParam>
     {
         &mut self.network
+    }
+
+    pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool)>
+    where
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+    {
+        let inputs = self.vectorized(reader);
+
+        let input_outputs = InputOutputIter::new(
+            &self.dictionary,
+            inputs.iter()
+        );
+
+        self.network.disable_gradients();
+
+        iter::once(None).chain(inputs.iter().cloned().map(Some)).zip(inputs.iter().cloned()).map(|(previous_word, word)|
+        {
+            self.dictionary.word_to_bytes(previous_word, word)
+        }).zip(self.network.correct_guesses(input_outputs.clone())).collect()
     }
 
     pub fn test_loss<R>(

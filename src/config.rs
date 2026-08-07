@@ -469,7 +469,8 @@ iterable_enum!
         CreateDictionary,
         TrainEmbeddings,
         ClosestEmbeddings,
-        WeightsImage
+        WeightsImage,
+        AccuracyData
     }
 }
 
