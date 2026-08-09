@@ -35,7 +35,7 @@ impl UnitFactory for NUnitFactory
     type Unit<T> = NUnit<T>;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EmbeddingsUnitFactory;
 
 impl UnitFactory for EmbeddingsUnitFactory
@@ -50,7 +50,7 @@ pub fn load_embeddings<O>(
 ) -> NeuralNetwork<EmbeddingsUnitFactory, O, WordDictionary>
 where
     O: Optimizer,
-    for<'a> O::WeightParam: NewableLayer + Serialize + Deserialize<'a>
+    for<'a> O::WeightParam: Clone + NewableLayer + Serialize + Deserialize<'a>
 {
     unreachable!()
 }

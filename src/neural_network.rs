@@ -2,7 +2,6 @@ use std::{
     f32,
     fmt,
     slice,
-    iter,
     io::{Read, Write, BufReader},
     fs::File,
     path::Path,
@@ -546,6 +545,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
 
 type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
 
+#[derive(Clone)]
 pub enum StepsNum
 {
     Steps(usize),
@@ -613,6 +613,58 @@ impl StepsNum
     }
 }
 
+trait FromGuesses<N, O>
+where
+    N: UnitFactory,
+    O: Optimizer,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+{
+    fn from_guesses(
+        network: &mut Network<N, O::WeightParam>,
+        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=Self>;
+}
+
+impl<N, O> FromGuesses<N, O> for bool
+where
+    N: UnitFactory,
+    O: Optimizer,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+{
+    fn from_guesses(
+        network: &mut Network<N, O::WeightParam>,
+        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=Self>
+    {
+        network.correct_guesses(input_outputs)
+    }
+}
+
+impl<N, O> FromGuesses<N, O> for f32
+where
+    N: UnitFactory,
+    O: Optimizer,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+{
+    fn from_guesses(
+        network: &mut Network<N, O::WeightParam>,
+        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=Self>
+    {
+        network.certainty_guesses(input_outputs)
+    }
+}
+
+#[derive(Clone)]
 pub struct TrainingInfo
 {
     pub iterations: usize,
@@ -642,7 +694,7 @@ impl From<&Config> for TrainingInfo
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NeuralNetwork<N, O, D>
 where
     N: UnitFactory,
@@ -757,7 +809,7 @@ where
         &mut self.network
     }
 
-    pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool)>
+    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T)>
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
@@ -771,10 +823,27 @@ where
 
         self.network.disable_gradients();
 
-        iter::once(None).chain(inputs.iter().cloned().map(Some)).zip(inputs.iter().cloned()).map(|(previous_word, word)|
+        // im only getting the guess info on the output, NOT the inputs, therefore skip the first one cuz it has no prediction for it
+        inputs.iter().cloned().map(Some).zip(inputs.iter().skip(1).cloned()).map(|(previous_word, word)|
         {
             self.dictionary.word_to_bytes(previous_word, word)
-        }).zip(self.network.correct_guesses(input_outputs.clone())).collect()
+        }).zip(T::from_guesses(&mut self.network, input_outputs.clone())).collect()
+    }
+
+    pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool)>
+    where
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+    {
+        self.with_guesses(reader)
+    }
+
+    pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32)>
+    where
+        R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+    {
+        self.with_guesses(reader)
     }
 
     pub fn test_loss<R>(

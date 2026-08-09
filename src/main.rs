@@ -80,7 +80,7 @@ impl From<&Config> for SizesInfo
 }
 
 // this is definitely unneeded in theory, but in practice serde macros r stupid
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct NUnitFactory;
 
 impl UnitFactory for NUnitFactory
@@ -203,15 +203,29 @@ fn train(config: Config)
 {
     let mut network = load_network(&config, None, true);
 
-    let text_file = config.get_input_file();
+    let mut run_this = |training_info|
+    {
+        let text_file = config.get_input_file();
+
+        let test_file = config.test_file();
+
+        network.train::<false, _, _>(training_info, test_file, text_file);
+
+        network.save(&config.network_path);
+    };
 
     let training_info = TrainingInfo::from(&config);
 
-    let test_file = config.test_file();
-
-    network.train::<false, _, _>(training_info, test_file, text_file);
-
-    network.save(&config.network_path);
+    if config.infinite_loop
+    {
+        loop
+        {
+            run_this(training_info.clone());
+        }
+    } else
+    {
+        run_this(training_info);
+    }
 }
 
 fn run(config: Config)
@@ -460,7 +474,7 @@ fn create_word_dictionary(config: Config)
     dictionary_file.flush().unwrap();
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EmbeddingsUnitFactory;
 
 impl UnitFactory for EmbeddingsUnitFactory
@@ -476,20 +490,36 @@ fn train_embeddings(mut config: Config)
         true
     );
 
-    let text_file = config.get_input_file();
+    let run_this = |network: &mut NeuralNetwork<EmbeddingsUnitFactory, NOptimizer, WordDictionary>, training_info|
+    {
+        let text_file = config.get_input_file();
 
-    let test_file = config.test_file();
+        let test_file = config.test_file();
+
+        network.train::<true, _, _>(training_info, test_file, text_file);
+
+        network.save(&config.network_path);
+    };
 
     let training_info = TrainingInfo{
         steps_num: 1.into(),
         ..TrainingInfo::from(&config)
     };
 
-    network.train::<true, _, _>(training_info, test_file, text_file);
+    if config.infinite_loop
+    {
+        loop
+        {
+            run_this(&mut network, training_info.clone());
 
-    network.save(&config.network_path);
+            network.clone().without_optimizer().save(&config.embeddings_path);
+        }
+    } else
+    {
+        run_this(&mut network, training_info);
 
-    network.without_optimizer().save(&config.embeddings_path);
+        network.without_optimizer().save(&config.embeddings_path);
+    }
 }
 
 fn closest_embeddings(mut config: Config)
@@ -555,23 +585,39 @@ fn closest_embeddings(mut config: Config)
 
 fn accuracy_data(config: Config)
 {
+    let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
+
     let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
 
-    let correct_guesses = network.correct_guesses(text_file);
-
-    let path = config.output.unwrap_or_else(|| "output.json".to_owned());
-
-    let data = if !config.replace_invalid
+    fn to_data_with<T: Serialize>(
+        config: Config,
+        correct_guesses: Vec<(Box<[u8]>, T)>
+    ) -> Result<String, serde_json::Error>
     {
-        serde_json::to_string_pretty(&correct_guesses)
+        if !config.replace_invalid
+        {
+            serde_json::to_string_pretty(&correct_guesses)
+        } else
+        {
+            serde_json::to_string_pretty(&correct_guesses.into_iter().map(|(word, value)|
+            {
+                (String::from_utf8_lossy(&word).into_owned(), value)
+            }).collect::<Vec<_>>())
+        }
+    }
+
+    let data = if config.certainty
+    {
+        let correct_guesses = network.certainty_guesses(text_file);
+
+        to_data_with(config, correct_guesses)
     } else
     {
-        serde_json::to_string_pretty(&correct_guesses.into_iter().map(|(word, is_correct)|
-        {
-            (String::from_utf8_lossy(&word).into_owned(), is_correct)
-        }).collect::<Vec<_>>())
+        let correct_guesses = network.correct_guesses(text_file);
+
+        to_data_with(config, correct_guesses)
     };
 
     fs::write(path, data.unwrap()).unwrap();

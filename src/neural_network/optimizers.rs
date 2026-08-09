@@ -89,7 +89,7 @@ impl NewableLayer for PowerSignGradientInfo
     }
 }
 
-pub trait Optimizer
+pub trait Optimizer: Clone
 {
     type WeightParam;
 
@@ -131,7 +131,7 @@ impl Optimizer for ()
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sgd
 {
     learning_rate: f32
@@ -162,7 +162,7 @@ impl Optimizer for Sgd
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSign
 {
     pub b1: f32,
@@ -210,7 +210,7 @@ impl Optimizer for PowerSign
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdamX
 {
     pub a: f32,
@@ -281,7 +281,7 @@ impl Optimizer for AdamX
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Adam
 {
     pub a: f32,
@@ -346,7 +346,7 @@ mod tests
 
         let mut m = vec![0.0, 0.0];
         let mut v = vec![0.0, 0.0];
-        
+
         let mut g = vec![3.1_f32, -0.8_f32];
 
         let mut t = 1;

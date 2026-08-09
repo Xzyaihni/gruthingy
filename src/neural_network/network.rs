@@ -209,7 +209,7 @@ macro_rules! create_weights_container
 
         impl<T> OptimizerUnit<T> for WeightsContainer<T>
         where
-            T: NewableLayer + Serialize + serde::de::DeserializeOwned
+            T: Clone + NewableLayer + Serialize + serde::de::DeserializeOwned
         {
             fn new_zeroed(sizes: $crate::neural_network::LayerSizes) -> Self
             {
@@ -471,7 +471,7 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Network<N: UnitFactory, O>
 where
     N::Unit<O>: OptimizerUnit<O>,
@@ -702,6 +702,27 @@ where
         }).sum();
 
         layers_sum + self.sizes.input as u128 * self.sizes.hidden as u128
+    }
+
+    #[allow(dead_code)]
+    pub fn certainty_guesses(
+        &mut self,
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=f32>
+    {
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let f_output = self.predict(input.into_iter());
+
+        f_output.into_iter().zip(output).map(|(predicted, target)|
+        {
+            let positions = &target.positions;
+            assert_eq!(positions.len(), 1);
+
+            let target_index = positions[0];
+
+            *predicted.borrow().iter().nth(target_index).unwrap()
+        })
     }
 
     #[allow(dead_code)]
