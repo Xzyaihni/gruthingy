@@ -188,11 +188,9 @@ impl SerializeFormat for JsonFormat
 {
     type Error = JsonError;
 
-    fn serialize<T: Serialize>(mut writer: impl Write, value: &T) -> Result<(), Self::Error>
+    fn serialize<T: Serialize>(writer: impl Write, value: &T) -> Result<(), Self::Error>
     {
-        let s = serde_json::to_string(value)?;
-
-        writer.write_all(s.as_bytes())?;
+        serde_json::to_writer(writer, value)?;
 
         Ok(())
     }

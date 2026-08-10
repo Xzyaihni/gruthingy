@@ -585,8 +585,6 @@ fn closest_embeddings(mut config: Config)
 
 fn accuracy_data(config: Config)
 {
-    let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
-
     let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
@@ -595,29 +593,33 @@ fn accuracy_data(config: Config)
         config: Config,
         correct_guesses: Vec<Content>,
         f: F
-    ) -> Result<String, serde_json::Error>
+    ) -> Result<(), serde_json::Error>
     where
         Content: Serialize,
         T: Serialize,
         F: Fn(Content) -> T
     {
+        let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
+
+        let file = File::create(path).unwrap();
+
         if !config.replace_invalid
         {
-            serde_json::to_string_pretty(&correct_guesses)
+            serde_json::to_writer_pretty(file, &correct_guesses)
         } else
         {
-            serde_json::to_string_pretty(&correct_guesses.into_iter().map(f).collect::<Vec<_>>())
+            serde_json::to_writer_pretty(file, &correct_guesses.into_iter().map(f).collect::<Vec<_>>())
         }
     }
 
-    let data = if config.certainty
+    if config.certainty
     {
         let correct_guesses = network.certainty_guesses(text_file);
 
         to_data_with(config, correct_guesses, |(word, value, predicted)|
         {
             (String::from_utf8_lossy(&word).into_owned(), value, String::from_utf8_lossy(&predicted).into_owned())
-        })
+        }).unwrap();
     } else
     {
         let correct_guesses = network.correct_guesses(text_file);
@@ -625,10 +627,8 @@ fn accuracy_data(config: Config)
         to_data_with(config, correct_guesses, |(word, value)|
         {
             (String::from_utf8_lossy(&word).into_owned(), value)
-        })
-    };
-
-    fs::write(path, data.unwrap()).unwrap();
+        }).unwrap();
+    }
 }
 
 fn main()
