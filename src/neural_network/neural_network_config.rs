@@ -12,7 +12,10 @@ use super::{
     CharDictionary,
     WordDictionary,
     EmbeddingsDictionary,
-    ByteDictionary
+    ByteDictionary,
+    BincodeFormat,
+    JsonFormat,
+    MixedFormat
 };
 
 
@@ -31,10 +34,13 @@ pub const EMBEDDINGS_TYPE: EMType = EMType::BagOfWords(2);
 pub type NUnit<T> = Lstm<T>;
 
 // options: EmbeddingsDictionary, WordDictionary, CharDictionary, ByteDictionary
-pub type NDictionary = CharDictionary;
+pub type NDictionary = ByteDictionary;
 
 // only applies to EmbeddingsDictionary and WordDictionary
 pub const LOWERCASE_ONLY: bool = true;
 
 // options: Sgd, Adam, AdamX, PowerSign
 pub type NOptimizer = AdamX;
+
+// options: BincodeFormat, JsonFormat, MixedFormat<Save, Load>
+pub type SaveFormat = BincodeFormat;

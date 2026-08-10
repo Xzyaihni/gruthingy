@@ -2,7 +2,8 @@ use std::{
     f32,
     fmt,
     slice,
-    io::{Read, Write, BufReader},
+    marker::PhantomData,
+    io::{self, Read, Write, BufReader},
     fs::File,
     path::Path,
     collections::VecDeque,
@@ -66,6 +67,143 @@ pub mod containers;
 pub use neural_network_config::*;
 mod neural_network_config;
 
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct BincodeFormat;
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct JsonFormat;
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct MixedFormat<Save, Load>(PhantomData<(Save, Load)>);
+
+pub trait SerializeFormat
+{
+    type Error: fmt::Debug + fmt::Display + From<io::Error>;
+
+    fn serialize<T: Serialize>(writer: impl Write, value: &T) -> Result<(), Self::Error>;
+    fn deserialize<T: for<'de> Deserialize<'de>>(reader: impl Read) -> Result<T, Self::Error>;
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub enum MixedError<Save: SerializeFormat, Load: SerializeFormat>
+{
+    SaveError(Save::Error),
+    LoadError(Load::Error),
+    Io(io::Error)
+}
+
+impl<Save: SerializeFormat, Load: SerializeFormat> From<io::Error> for MixedError<Save, Load>
+{
+    fn from(x: io::Error) -> Self
+    {
+        Self::Io(x)
+    }
+}
+
+impl<Save: SerializeFormat, Load: SerializeFormat> fmt::Display for MixedError<Save, Load>
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result
+    {
+        match self
+        {
+            Self::SaveError(x) => x.fmt(fmt),
+            Self::LoadError(x) => x.fmt(fmt),
+            Self::Io(x) => x.fmt(fmt)
+        }
+    }
+}
+
+impl<Save: SerializeFormat + fmt::Debug, Load: SerializeFormat + fmt::Debug> SerializeFormat for MixedFormat<Save, Load>
+{
+    type Error = MixedError<Save, Load>;
+
+    fn serialize<T: Serialize>(writer: impl Write, value: &T) -> Result<(), Self::Error>
+    {
+        Save::serialize(writer, value).map_err(MixedError::SaveError)
+    }
+
+    fn deserialize<T: for<'de> Deserialize<'de>>(reader: impl Read) -> Result<T, Self::Error>
+    {
+        Load::deserialize(reader).map_err(MixedError::LoadError)
+    }
+}
+
+impl SerializeFormat for BincodeFormat
+{
+    type Error = bincode::Error;
+
+    fn serialize<T: Serialize>(writer: impl Write, value: &T) -> Result<(), Self::Error>
+    {
+        bincode::serialize_into(writer, value)
+    }
+
+    fn deserialize<T: for<'de> Deserialize<'de>>(reader: impl Read) -> Result<T, Self::Error>
+    {
+        bincode::deserialize_from(reader)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub enum JsonError
+{
+    Io(io::Error),
+    Json(serde_json::Error)
+}
+
+impl fmt::Display for JsonError
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result
+    {
+        match self
+        {
+            Self::Io(x) => x.fmt(fmt),
+            Self::Json(x) => x.fmt(fmt)
+        }
+    }
+}
+
+impl From<io::Error> for JsonError
+{
+    fn from(x: io::Error) -> Self
+    {
+        Self::Io(x)
+    }
+}
+
+impl From<serde_json::Error> for JsonError
+{
+    fn from(x: serde_json::Error) -> Self
+    {
+        Self::Json(x)
+    }
+}
+
+impl SerializeFormat for JsonFormat
+{
+    type Error = JsonError;
+
+    fn serialize<T: Serialize>(mut writer: impl Write, value: &T) -> Result<(), Self::Error>
+    {
+        let s = serde_json::to_string(value)?;
+
+        writer.write_all(s.as_bytes())?;
+
+        Ok(())
+    }
+
+    fn deserialize<T: for<'de> Deserialize<'de>>(reader: impl Read) -> Result<T, Self::Error>
+    {
+        let value = serde_json::from_reader(reader)?;
+
+        Ok(value)
+    }
+}
 
 #[allow(dead_code)]
 pub enum AFType
@@ -694,6 +832,22 @@ impl From<&Config> for TrainingInfo
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtraInfo
+{
+    pub iterations: u64
+}
+
+impl Default for ExtraInfo
+{
+    fn default() -> Self
+    {
+        Self{
+            iterations: 0
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NeuralNetwork<N, O, D>
 where
@@ -707,6 +861,8 @@ where
     network: Network<N, O::WeightParam>,
     optimizer: O,
     gradient_clip: Option<f32>,
+    #[serde(default)]
+    extra_info: ExtraInfo,
     sizes: LayerSizes
 }
 
@@ -730,6 +886,7 @@ where
             network: self.network.without_optimizer(),
             optimizer: (),
             gradient_clip: self.gradient_clip,
+            extra_info: self.extra_info,
             sizes: self.sizes
         }
     }
@@ -759,7 +916,9 @@ where
 
         let optimizer = O::new();
 
-        Self{dictionary, network, optimizer, gradient_clip, sizes}
+        let extra_info = ExtraInfo::default();
+
+        Self{dictionary, network, optimizer, gradient_clip, extra_info, sizes}
     }
 
     pub fn into_embeddings_info(self) -> (D, Network<N, O::WeightParam>)
@@ -778,10 +937,10 @@ where
 
         let writer = File::create(path).unwrap();
 
-        bincode::serialize_into(writer, self).unwrap();
+        SaveFormat::serialize(writer, self).unwrap();
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> bincode::Result<Self>
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
     where
         N: DeserializeOwned,
         O: DeserializeOwned,
@@ -789,7 +948,7 @@ where
     {
         let reader = File::open(path)?;
 
-        bincode::deserialize_from(reader)
+        SaveFormat::deserialize(reader)
     }
 
     pub fn dictionary(&self) -> &D
@@ -999,8 +1158,12 @@ where
         {
             if display_inner
             {
-                eprintln!("iteration: {input_index}");
+                let total_iterations = self.extra_info.iterations;
+
+                eprintln!("total iteration: {total_iterations}, iteration: {input_index}");
             }
+
+            self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
 
             time_debug! {
                 let steps_num = info.steps_num.get();
