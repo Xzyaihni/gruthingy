@@ -738,7 +738,7 @@ where
         self.with_predict(input, |predicted, _highest_index, target_index|
         {
             let mut predicted: Vec<(usize, f32)> = predicted.as_vec().into_iter().enumerate().collect();
-            predicted.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+            predicted.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
             predicted.into_iter()
                 .enumerate()

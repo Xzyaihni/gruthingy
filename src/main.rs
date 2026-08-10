@@ -597,12 +597,18 @@ fn accuracy_data(config: Config)
 
     fn to_data_with<T: Serialize>(
         config: Config,
-        correct_guesses: Vec<(Box<[u8]>, T, Box<[u8]>)>
+        metadata: Option<(Box<[u8]>, T, Box<[u8]>)>,
+        mut correct_guesses: Vec<(Box<[u8]>, T, Box<[u8]>)>
     ) -> Result<(), serde_json::Error>
     {
         let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
 
         let file = File::create(path).unwrap();
+
+        if let Some(metadata) = metadata
+        {
+            correct_guesses.push(metadata);
+        }
 
         if !config.replace_invalid
         {
@@ -618,13 +624,17 @@ fn accuracy_data(config: Config)
 
     let result = if config.certainty
     {
-        to_data_with(config, network.certainty_guesses(text_file))
+        to_data_with(config, None, network.certainty_guesses(text_file))
     } else if config.top_guesses
     {
-        to_data_with(config, network.top_guesses(text_file))
+        to_data_with(
+            config,
+            Some((Box::from(b"_WORDS_AMOUNT".clone()), network.dictionary().words_amount() as u32, Box::new([]))),
+            network.top_guesses(text_file)
+        )
     } else
     {
-        to_data_with(config, network.correct_guesses(text_file))
+        to_data_with(config, None, network.correct_guesses(text_file))
     };
 
     if let Err(err) = result
