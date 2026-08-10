@@ -708,20 +708,23 @@ where
     pub fn certainty_guesses(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>
-    ) -> impl Iterator<Item=f32>
+    ) -> impl Iterator<Item=(f32, usize)>
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        let f_output = self.predict(input.into_iter());
-
-        f_output.into_iter().zip(output).map(|(predicted, target)|
+        self.predict(input.into_iter()).into_iter().zip(output).map(|(predicted, target)|
         {
             let positions = &target.positions;
             assert_eq!(positions.len(), 1);
 
             let target_index = positions[0];
 
-            *predicted.borrow().iter().nth(target_index).unwrap()
+            let predicted = predicted.borrow();
+            let highest_index = predicted.highest_index();
+
+            let certainty = *predicted.iter().nth(target_index).unwrap();
+
+            (certainty, highest_index)
         })
     }
 
@@ -733,9 +736,15 @@ where
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        let f_output = self.predict(input.into_iter());
+        self.predict(input.into_iter()).into_iter().zip(output).map(|(predicted, target)|
+        {
+            let positions = &target.positions;
+            assert_eq!(positions.len(), 1);
 
-        Self::correct_guesses_with(f_output.into_iter(), output.into_iter())
+            let target_index = positions[0];
+
+            predicted.borrow().highest_index() == target_index
+        })
     }
 
     #[allow(dead_code)]
@@ -753,24 +762,6 @@ where
         }).count();
 
         correct_amount as f32 / total as f32
-    }
-
-    fn correct_guesses_with<P>(
-        predicted: impl Iterator<Item=P>,
-        target: impl Iterator<Item=OneHotLayer>
-    ) -> impl Iterator<Item=bool>
-    where
-        P: Borrow<LayerType>
-    {
-        predicted.zip(target).map(|(predicted, target)|
-        {
-            let positions = &target.positions;
-            assert_eq!(positions.len(), 1);
-
-            let target_index = positions[0];
-
-            predicted.borrow().highest_index() == target_index
-        })
     }
 
     fn feedforward_single_input_with_activation<F, T>(

@@ -751,54 +751,85 @@ impl StepsNum
     }
 }
 
-trait FromGuesses<N, O>
+trait FromGuesses<N, O, D>
 where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
+    D: NetworkDictionary
 {
+    type Output;
+
     fn from_guesses(
+        dictionary: &D,
         network: &mut Network<N, O::WeightParam>,
         input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> impl Iterator<Item=Self>;
+
+    fn simplify(args: (Box<[u8]>, Self)) -> Self::Output;
 }
 
-impl<N, O> FromGuesses<N, O> for bool
+impl<N, O, D> FromGuesses<N, O, D> for bool
 where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
+    D: NetworkDictionary
 {
+    type Output = (Box<[u8]>, bool);
+
     fn from_guesses(
+        _dictionary: &D,
         network: &mut Network<N, O::WeightParam>,
         input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> impl Iterator<Item=Self>
     {
         network.correct_guesses(input_outputs)
     }
+
+    fn simplify(args: (Box<[u8]>, Self)) -> Self::Output { args }
 }
 
-impl<N, O> FromGuesses<N, O> for f32
+impl<N, O, D> FromGuesses<N, O, D> for (f32, Box<[u8]>)
 where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
+    D: NetworkDictionary
 {
+    type Output = (Box<[u8]>, f32, Box<[u8]>);
+
     fn from_guesses(
+        dictionary: &D,
         network: &mut Network<N, O::WeightParam>,
         input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> impl Iterator<Item=Self>
     {
-        network.certainty_guesses(input_outputs)
+        network.certainty_guesses(input_outputs).map(|(certainty, highest_index)|
+        {
+            (certainty, VectorWord::from_raw(highest_index))
+        }).scan(None, |previous_word, (certainty, word)|
+        {
+            let output = Some((certainty, dictionary.word_to_bytes(*previous_word, word)));
+
+            *previous_word = Some(word);
+
+            output
+        })
+    }
+
+    fn simplify((a, (b, c)): (Box<[u8]>, Self)) -> Self::Output
+    {
+        (a, b, c)
     }
 }
 
@@ -968,7 +999,7 @@ where
         &mut self.network
     }
 
-    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T)>
+    fn with_guesses<R, T: FromGuesses<N, O, D>>(&mut self, reader: R) -> Vec<T::Output>
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
@@ -986,7 +1017,7 @@ where
         inputs.iter().cloned().map(Some).zip(inputs.iter().skip(1).cloned()).map(|(previous_word, word)|
         {
             self.dictionary.word_to_bytes(previous_word, word)
-        }).zip(T::from_guesses(&mut self.network, input_outputs.clone())).collect()
+        }).zip(T::from_guesses(&self.dictionary, &mut self.network, input_outputs.clone())).map(T::simplify).collect()
     }
 
     pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool)>
@@ -994,15 +1025,15 @@ where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        self.with_guesses(reader)
+        self.with_guesses::<R, bool>(reader)
     }
 
-    pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32)>
+    pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32, Box<[u8]>)>
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        self.with_guesses(reader)
+        self.with_guesses::<R, (f32, Box<[u8]>)>(reader)
     }
 
     pub fn test_loss<R>(

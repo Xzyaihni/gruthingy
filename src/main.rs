@@ -591,20 +591,22 @@ fn accuracy_data(config: Config)
 
     let mut network = load_network(&config, None, false);
 
-    fn to_data_with<T: Serialize>(
+    fn to_data_with<Content, T, F>(
         config: Config,
-        correct_guesses: Vec<(Box<[u8]>, T)>
+        correct_guesses: Vec<Content>,
+        f: F
     ) -> Result<String, serde_json::Error>
+    where
+        Content: Serialize,
+        T: Serialize,
+        F: Fn(Content) -> T
     {
         if !config.replace_invalid
         {
             serde_json::to_string_pretty(&correct_guesses)
         } else
         {
-            serde_json::to_string_pretty(&correct_guesses.into_iter().map(|(word, value)|
-            {
-                (String::from_utf8_lossy(&word).into_owned(), value)
-            }).collect::<Vec<_>>())
+            serde_json::to_string_pretty(&correct_guesses.into_iter().map(f).collect::<Vec<_>>())
         }
     }
 
@@ -612,12 +614,18 @@ fn accuracy_data(config: Config)
     {
         let correct_guesses = network.certainty_guesses(text_file);
 
-        to_data_with(config, correct_guesses)
+        to_data_with(config, correct_guesses, |(word, value, predicted)|
+        {
+            (String::from_utf8_lossy(&word).into_owned(), value, String::from_utf8_lossy(&predicted).into_owned())
+        })
     } else
     {
         let correct_guesses = network.correct_guesses(text_file);
 
-        to_data_with(config, correct_guesses)
+        to_data_with(config, correct_guesses, |(word, value)|
+        {
+            (String::from_utf8_lossy(&word).into_owned(), value)
+        })
     };
 
     fs::write(path, data.unwrap()).unwrap();
