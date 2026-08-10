@@ -3,6 +3,7 @@ use std::{
     fmt,
     vec,
     iter,
+    cmp::Ordering,
     borrow::Borrow,
     ops::SubAssign
 };
@@ -704,15 +705,17 @@ where
         layers_sum + self.sizes.input as u128 * self.sizes.hidden as u128
     }
 
-    #[allow(dead_code)]
-    pub fn certainty_guesses(
+    fn with_predict<T, F>(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(f32, usize)>
+        input: impl Iterator<Item=(InputType, OneHotLayer)>,
+        f: F
+    ) -> impl Iterator<Item=(usize, T)>
+    where
+        F: Fn(&LayerType, usize, usize) -> T
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        self.predict(input.into_iter()).into_iter().zip(output).map(|(predicted, target)|
+        self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted, target)|
         {
             let positions = &target.positions;
             assert_eq!(positions.len(), 1);
@@ -722,9 +725,38 @@ where
             let predicted = predicted.borrow();
             let highest_index = predicted.highest_index();
 
-            let certainty = *predicted.iter().nth(target_index).unwrap();
+            (highest_index, f(predicted, highest_index, target_index))
+        })
+    }
 
-            (certainty, highest_index)
+    #[allow(dead_code)]
+    pub fn top_guesses(
+        &mut self,
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=(usize, u32)>
+    {
+        self.with_predict(input, |predicted, _highest_index, target_index|
+        {
+            let mut predicted: Vec<(usize, f32)> = predicted.as_vec().into_iter().enumerate().collect();
+            predicted.sort_unstable_by(|a, b| a.partial_cmp(&b).unwrap_or(Ordering::Equal));
+
+            predicted.into_iter()
+                .enumerate()
+                .find(|(_, (index, _))| *index == target_index)
+                .expect("target index must be within bounds")
+                .0 as u32
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn certainty_guesses(
+        &mut self,
+        input: impl Iterator<Item=(InputType, OneHotLayer)>
+    ) -> impl Iterator<Item=(usize, f32)>
+    {
+        self.with_predict(input, |predicted, _highest_index, target_index|
+        {
+            *predicted.iter().nth(target_index).unwrap()
         })
     }
 
@@ -732,18 +764,11 @@ where
     pub fn correct_guesses(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>
-    ) -> impl Iterator<Item=bool>
+    ) -> impl Iterator<Item=(usize, bool)>
     {
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-
-        self.predict(input.into_iter()).into_iter().zip(output).map(|(predicted, target)|
+        self.with_predict(input, |_predicted, highest_index, target_index|
         {
-            let positions = &target.positions;
-            assert_eq!(positions.len(), 1);
-
-            let target_index = positions[0];
-
-            predicted.borrow().highest_index() == target_index
+            highest_index == target_index
         })
     }
 
@@ -754,7 +779,7 @@ where
     ) -> f32
     {
         let mut total = 0;
-        let correct_amount = self.correct_guesses(input).filter(|x|
+        let correct_amount = self.correct_guesses(input).filter(|(_, x)|
         {
             total += 1;
 

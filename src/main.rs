@@ -585,19 +585,20 @@ fn closest_embeddings(mut config: Config)
 
 fn accuracy_data(config: Config)
 {
+    if config.certainty && config.top_guesses
+    {
+        eprintln!("certainty and top-guesses are contradictory, choose only one");
+        return;
+    }
+
     let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
 
-    fn to_data_with<Content, T, F>(
+    fn to_data_with<T: Serialize>(
         config: Config,
-        correct_guesses: Vec<Content>,
-        f: F
+        correct_guesses: Vec<(Box<[u8]>, T, Box<[u8]>)>
     ) -> Result<(), serde_json::Error>
-    where
-        Content: Serialize,
-        T: Serialize,
-        F: Fn(Content) -> T
     {
         let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
 
@@ -608,26 +609,27 @@ fn accuracy_data(config: Config)
             serde_json::to_writer_pretty(file, &correct_guesses)
         } else
         {
-            serde_json::to_writer_pretty(file, &correct_guesses.into_iter().map(f).collect::<Vec<_>>())
+            serde_json::to_writer_pretty(file, &correct_guesses.into_iter().map(|(word, value, predicted)|
+            {
+                (String::from_utf8_lossy(&word).into_owned(), value, String::from_utf8_lossy(&predicted).into_owned())
+            }).collect::<Vec<_>>())
         }
     }
 
-    if config.certainty
+    let result = if config.certainty
     {
-        let correct_guesses = network.certainty_guesses(text_file);
-
-        to_data_with(config, correct_guesses, |(word, value, predicted)|
-        {
-            (String::from_utf8_lossy(&word).into_owned(), value, String::from_utf8_lossy(&predicted).into_owned())
-        }).unwrap();
+        to_data_with(config, network.certainty_guesses(text_file))
+    } else if config.top_guesses
+    {
+        to_data_with(config, network.top_guesses(text_file))
     } else
     {
-        let correct_guesses = network.correct_guesses(text_file);
+        to_data_with(config, network.correct_guesses(text_file))
+    };
 
-        to_data_with(config, correct_guesses, |(word, value)|
-        {
-            (String::from_utf8_lossy(&word).into_owned(), value)
-        }).unwrap();
+    if let Err(err) = result
+    {
+        eprintln!("error saving accuracy data: {err}");
     }
 }
 
