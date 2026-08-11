@@ -3,7 +3,7 @@ use std::{
     fmt,
     slice,
     marker::PhantomData,
-    io::{self, Read, Write, BufReader},
+    io::{self, Read, Write, BufReader, BufWriter},
     fs::File,
     path::Path,
     collections::VecDeque,
@@ -68,9 +68,13 @@ pub use neural_network_config::*;
 mod neural_network_config;
 
 
+/*#[allow(dead_code)]
+#[derive(Debug)]
+pub struct BincodeFormat;*/
+
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct BincodeFormat;
+pub struct PostcardFormat;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -133,7 +137,7 @@ impl<Save: SerializeFormat + fmt::Debug, Load: SerializeFormat + fmt::Debug> Ser
     }
 }
 
-impl SerializeFormat for BincodeFormat
+/*impl SerializeFormat for BincodeFormat
 {
     type Error = bincode::Error;
 
@@ -145,6 +149,60 @@ impl SerializeFormat for BincodeFormat
     fn deserialize<T: for<'de> Deserialize<'de>>(reader: impl Read) -> Result<T, Self::Error>
     {
         bincode::deserialize_from(reader)
+    }
+}*/
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub enum PostcardError
+{
+    Io(io::Error),
+    Postcard(postcard::Error)
+}
+
+impl fmt::Display for PostcardError
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result
+    {
+        match self
+        {
+            Self::Io(x) => x.fmt(fmt),
+            Self::Postcard(x) => x.fmt(fmt)
+        }
+    }
+}
+
+impl From<io::Error> for PostcardError
+{
+    fn from(x: io::Error) -> Self
+    {
+        Self::Io(x)
+    }
+}
+
+impl From<postcard::Error> for PostcardError
+{
+    fn from(x: postcard::Error) -> Self
+    {
+        Self::Postcard(x)
+    }
+}
+
+impl SerializeFormat for PostcardFormat
+{
+    type Error = PostcardError;
+
+    fn serialize<T: Serialize>(writer: impl Write, value: &T) -> Result<(), Self::Error>
+    {
+        Ok(postcard::to_io(value, writer).map(drop)?)
+    }
+
+    fn deserialize<T: for<'de> Deserialize<'de>>(mut reader: impl Read) -> Result<T, Self::Error>
+    {
+        let mut v = Vec::new();
+        reader.read_to_end(&mut v)?;
+
+        Ok(postcard::from_bytes(&v)?)
     }
 }
 
@@ -953,7 +1011,7 @@ where
 
         let writer = File::create(path).unwrap();
 
-        SaveFormat::serialize(writer, self).unwrap();
+        SaveFormat::serialize(BufWriter::new(writer), self).unwrap();
     }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
@@ -964,7 +1022,7 @@ where
     {
         let reader = File::open(path)?;
 
-        SaveFormat::deserialize(reader)
+        SaveFormat::deserialize(BufReader::new(reader))
     }
 
     pub fn dictionary(&self) -> &D

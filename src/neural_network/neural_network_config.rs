@@ -13,7 +13,7 @@ use super::{
     WordDictionary,
     EmbeddingsDictionary,
     ByteDictionary,
-    BincodeFormat,
+    PostcardFormat,
     JsonFormat,
     MixedFormat
 };
@@ -42,5 +42,5 @@ pub const LOWERCASE_ONLY: bool = true;
 // options: Sgd, Adam, AdamX, PowerSign
 pub type NOptimizer = AdamX;
 
-// options: BincodeFormat, JsonFormat, MixedFormat<Save, Load>
-pub type SaveFormat = BincodeFormat;
+// options: PostcardFormat, JsonFormat, MixedFormat<Save, Load>
+pub type SaveFormat = PostcardFormat;
