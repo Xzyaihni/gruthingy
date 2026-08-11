@@ -310,7 +310,7 @@ impl GradientType
     {
         match self
         {
-            Self::Tensor(ref x) => x,
+            Self::Tensor(x) => x,
             Self::Scalar(_) => panic!("expected tensor, got scalar")
         }
     }
@@ -319,7 +319,7 @@ impl GradientType
     {
         match self
         {
-            Self::Scalar(ref x) => x,
+            Self::Scalar(x) => x,
             Self::Tensor(_) => panic!("expected scalar, got tensor")
         }
     }

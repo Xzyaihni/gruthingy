@@ -9,7 +9,7 @@ use std::{
     iter,
     process,
     path::{PathBuf, Path},
-    io::{self, Write, BufReader, Cursor},
+    io::{self, Write, BufReader, BufWriter, Cursor},
     fs::{self, File},
     collections::HashSet,
     ops::{Index, IndexMut}
@@ -604,6 +604,7 @@ fn accuracy_data(config: Config)
         let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
 
         let file = File::create(path).unwrap();
+        let writer = BufWriter::new(file);
 
         if let Some(metadata) = metadata
         {
@@ -612,10 +613,10 @@ fn accuracy_data(config: Config)
 
         if !config.replace_invalid
         {
-            serde_json::to_writer_pretty(file, &correct_guesses)
+            serde_json::to_writer_pretty(writer, &correct_guesses)
         } else
         {
-            serde_json::to_writer_pretty(file, &correct_guesses.into_iter().map(|(word, value, predicted)|
+            serde_json::to_writer_pretty(writer, &correct_guesses.into_iter().map(|(word, value, predicted)|
             {
                 (String::from_utf8_lossy(&word).into_owned(), value, String::from_utf8_lossy(&predicted).into_owned())
             }).collect::<Vec<_>>())
