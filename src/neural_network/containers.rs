@@ -202,6 +202,24 @@ macro_rules! impl_pair_tensor_op
     }
 }
 
+macro_rules! impl_map_tensor_op
+{
+    ($this:expr, $a:expr, $name:ident) =>
+    {
+        {
+            let source = Some($this.current_source());
+
+            let (rows, columns) = $this.tensor_shape($a.as_value());
+
+            let output = $this.new_tensor_op(source, rows, columns);
+
+            $this.recording_operations.push(Op::$name{value: $a, output});
+
+            output
+        }
+    }
+}
+
 impl OperationsRecorder
 {
     pub fn new() -> Self
@@ -355,6 +373,17 @@ impl OperationsRecorder
         output
     }
 
+    pub fn mul_scalars(&mut self, a: DiffScalar, b: DiffScalar) -> DiffScalar
+    {
+        let source = Some(self.current_source());
+
+        let output = self.new_value_op(source);
+
+        self.recording_operations.push(Op::MulScalars{lhs: a, rhs: b, output});
+
+        output
+    }
+
     pub fn mul_scalar(&mut self, a: DiffTensor, b: DiffScalar) -> DiffTensor
     {
         let source = Some(self.current_source());
@@ -384,17 +413,6 @@ impl OperationsRecorder
         output
     }
 
-    pub fn negate(&mut self, a: DiffTensor) -> DiffTensor
-    {
-        let source = Some(self.current_source());
-
-        let output = self.new_value_op(source);
-
-        self.recording_operations.push(Op::MulScalar{value: a, output});
-
-        output
-    }
-
     pub fn pow(&mut self, a: DiffTensor, power: i32) -> DiffTensor
     {
         let source = Some(self.current_source());
@@ -406,6 +424,21 @@ impl OperationsRecorder
         self.recording_operations.push(Op::Pow{lhs: a, power, output});
 
         output
+    }
+
+    pub fn sigmoid(&mut self, a: DiffTensor) -> DiffTensor
+    {
+        impl_map_tensor_op!(self, a, Sigmoid)
+    }
+
+    pub fn tanh(&mut self, a: DiffTensor) -> DiffTensor
+    {
+        impl_map_tensor_op!(self, a, Tanh)
+    }
+
+    pub fn leaky_relu(&mut self, a: DiffTensor) -> DiffTensor
+    {
+        impl_map_tensor_op!(self, a, LeakyRelu)
     }
 
     pub fn tensor_shape(&self, tensor: TensorIndex) -> (usize, usize)
@@ -455,6 +488,10 @@ impl OperationsRecorder
                     let optimize_this = ();
                     self.tensors[output.0] = &self.tensors[lhs.0] * &self.values[rhs.0];
                 },
+                GradientOp::MulScalars{lhs, rhs, output} =>
+                {
+                    self.values[output.0] = self.values[lhs.0] * self.values[rhs.0];
+                },
                 GradientOp::MulComponentwise{lhs, rhs, output} =>
                 {
                     let optimize_this = ();
@@ -471,10 +508,40 @@ impl OperationsRecorder
                 GradientOp::Pow{lhs, power, output} =>
                 {
                     let optimize_this = ();
-                    let mut o = self.tensors[lhs.0].clone();
-                    o.pow(*power);
+                    self.tensors[output.0] = self.tensors[lhs.0].pow(*power);
+                },
+                GradientOp::Sigmoid{value, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = self.tensors[value.0].sigmoid();
+                },
+                GradientOp::SigmoidDiff{value, gradient, output} =>
+                {
+                    let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
 
-                    self.tensors[output.0] = o;
+                    output.sigmoid_gradient_inplace(value, gradient);
+                },
+                GradientOp::Tanh{value, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = self.tensors[value.0].tanh();
+                },
+                GradientOp::TanhDiff{value, gradient, output} =>
+                {
+                    let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
+
+                    output.tanh_gradient_inplace(value, gradient);
+                },
+                GradientOp::LeakyRelu{value, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = self.tensors[value.0].leaky_relu();
+                },
+                GradientOp::LeakyReluDiff{value, gradient, output} =>
+                {
+                    let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
+
+                    output.leaky_relu_gradient_inplace(value, gradient);
                 }
             }
         });
@@ -508,6 +575,10 @@ impl OperationsRecorder
                 {
                     GradientOp::MulScalar{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 },
+                Op::MulScalars{lhs, rhs, output} =>
+                {
+                    GradientOp::MulScalars{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
                 Op::MulComponentwise{lhs, rhs, output} =>
                 {
                     GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
@@ -519,6 +590,18 @@ impl OperationsRecorder
                 Op::Pow{lhs, power, output} =>
                 {
                     GradientOp::Pow{lhs: lhs.as_value(), power: *power as u32, output: output.as_value()}
+                },
+                Op::Sigmoid{value, output} =>
+                {
+                    GradientOp::Sigmoid{value: value.as_value(), output: output.as_value()}
+                },
+                Op::Tanh{value, output} =>
+                {
+                    GradientOp::Tanh{value: value.as_value(), output: output.as_value()}
+                },
+                Op::LeakyRelu{value, output} =>
+                {
+                    GradientOp::LeakyRelu{value: value.as_value(), output: output.as_value()}
                 }
             }
         }));
@@ -545,8 +628,15 @@ impl OperationsRecorder
                     | GradientOp::MulScalar{output, ..}
                     | GradientOp::MulComponentwise{output, ..}
                     | GradientOp::Fill{output, ..}
-                    | GradientOp::Pow{output, ..} => output.into(),
+                    | GradientOp::Pow{output, ..}
+                    | GradientOp::Sigmoid{output, ..}
+                    | GradientOp::SigmoidDiff{output, ..}
+                    | GradientOp::Tanh{output, ..}
+                    | GradientOp::TanhDiff{output, ..}
+                    | GradientOp::LeakyRelu{output, ..}
+                    | GradientOp::LeakyReluDiff{output, ..} => output.into(),
                     GradientOp::AddScalars{output, ..}
+                    | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..} => output.into()
                 }
             };
@@ -578,7 +668,13 @@ impl OperationsRecorder
                     | GradientOp::MulScalar{output, ..}
                     | GradientOp::MulComponentwise{output, ..}
                     | GradientOp::Fill{output, ..}
-                    | GradientOp::Pow{output, ..} =>
+                    | GradientOp::Pow{output, ..}
+                    | GradientOp::Sigmoid{output, ..}
+                    | GradientOp::SigmoidDiff{output, ..}
+                    | GradientOp::Tanh{output, ..}
+                    | GradientOp::TanhDiff{output, ..}
+                    | GradientOp::LeakyRelu{output, ..}
+                    | GradientOp::LeakyReluDiff{output, ..} =>
                     {
                         let (rows, columns) = maybe_shape.unwrap();
 
@@ -588,12 +684,14 @@ impl OperationsRecorder
 
                         *output = temporary_add_index;
 
+                        let these_are_illegal = (); let replace_with_a_separate_op = ();
                         self.gradient_operations.insert(
                             i + 1,
                             GradientOp::Add{lhs: temporary_add_index, rhs: final_output, output: final_output}
                         );
                     },
                     GradientOp::AddScalars{output, ..}
+                    | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..} =>
                     {
                         let final_output = *output;
@@ -636,7 +734,7 @@ impl OperationsRecorder
 
     fn calculate_gradient(&mut self, respect: DiffWrapper)
     {
-        let (value, gradient, source): (DiffValue, DiffValue, Option<OperationIndex>) = match respect
+        let (this_value, gradient, source): (DiffValue, DiffValue, Option<OperationIndex>) = match respect
         {
             DiffWrapper::Tensor(DiffTensor{index, gradient, source}) =>
             {
@@ -657,8 +755,8 @@ impl OperationsRecorder
             let this_operation = &self.recording_operations[source.0];
             match this_operation
             {
-                Op::Add{lhs, rhs: _, output: _}
-                | Op::AddScalar{lhs, rhs: _, output: _} =>
+                Op::Add{lhs, ..}
+                | Op::AddScalar{lhs, ..} =>
                 {
                     let gradient = gradient.as_tensor();
 
@@ -699,8 +797,8 @@ impl OperationsRecorder
 
                     self.calculate_gradient(lhs.into());
                 },
-                Op::Sub{lhs: _, rhs, output: _}
-                | Op::SubFromScalar{lhs: _, rhs, output: _} =>
+                Op::Sub{rhs, ..}
+                | Op::SubFromScalar{rhs, ..} =>
                 {
                     let gradient = gradient.as_tensor();
 
@@ -744,8 +842,26 @@ impl OperationsRecorder
 
                     self.calculate_gradient(rhs.into());
                 },
-                Op::MulComponentwise{lhs, rhs: _, output: _}
-                | Op::MulScalar{lhs, rhs: _, output: _} =>
+                Op::MulScalars{lhs, rhs, output: _} =>
+                {
+                    let gradient = gradient.as_value();
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::MulScalars{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                    }
+
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::MulScalars{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                    }
+
+                    let lhs = *lhs;
+                    self.calculate_gradient((*rhs).into());
+                    self.calculate_gradient(lhs.into());
+                },
+                Op::MulComponentwise{lhs, ..}
+                | Op::MulScalar{lhs, ..} =>
                 {
                     let gradient = gradient.as_tensor();
 
@@ -831,6 +947,35 @@ impl OperationsRecorder
                         self.gradient_operations.push(GradientOp::MulComponentwise{lhs: pow_d, rhs: gradient, output: lhs_gradient});
 
                         self.calculate_gradient((*lhs).into());
+                    }
+                },
+                Op::Sigmoid{value, output} =>
+                {
+                    // sigmoid(x) * (1.0 - sigmoid(x))
+                    let gradient = gradient.as_tensor();
+
+                    if let Some(value_gradient) = value.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::SigmoidDiff{value: output.as_value(), gradient, output: value_gradient});
+                    }
+                },
+                Op::Tanh{value, output} =>
+                {
+                    // 1 - tanh^2(x)
+                    let gradient = gradient.as_tensor();
+
+                    if let Some(value_gradient) = value.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::TanhDiff{value: output.as_value(), gradient, output: value_gradient});
+                    }
+                },
+                Op::LeakyRelu{value, output: _} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    if let Some(value_gradient) = value.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::LeakyReluDiff{value: value.as_value(), gradient, output: value_gradient});
                     }
                 }
             }
@@ -987,12 +1132,20 @@ pub enum GradientOp
     Sub{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
     SubFromScalar{lhs: ValueIndex, rhs: TensorIndex, output: TensorIndex},
     MulScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
+    MulScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
     MulComponentwise{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
     SumTensor{value: TensorIndex, output: ValueIndex},
     Fill{value: ValueIndex, output: TensorIndex},
-    Pow{lhs: TensorIndex, power: u32, output: TensorIndex}
+    Pow{lhs: TensorIndex, power: u32, output: TensorIndex},
+    LeakyRelu{value: TensorIndex, output: TensorIndex},
+    LeakyReluDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
+    Sigmoid{value: TensorIndex, output: TensorIndex},
+    SigmoidDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
+    Tanh{value: TensorIndex, output: TensorIndex},
+    TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex}
 }
 
+const UNCOMMENT_US: () = {let a = (); ()};
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Op
 {
@@ -1001,18 +1154,14 @@ pub enum Op
     Sub{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
     SubFromScalar{lhs: DiffScalar, rhs: DiffTensor, output: DiffTensor},
     MulScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
+    MulScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     MulComponentwise{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
     SumTensor{value: DiffTensor, output: DiffScalar},
-    Pow{lhs: DiffTensor, power: i32, output: DiffTensor}
+    Pow{lhs: DiffTensor, power: i32, output: DiffTensor},
+    LeakyRelu{value: DiffTensor, output: DiffTensor},
+    Sigmoid{value: DiffTensor, output: DiffTensor},
+    Tanh{value: DiffTensor, output: DiffTensor}
     /*
-    Div{lhs: DiffWrapper, rhs: DiffWrapper},
-    Neg{value: DiffWrapper},
-    Exp{value: DiffWrapper},
-    Ln{value: DiffWrapper},
-    Sqrt{value: DiffWrapper},
-    LeakyRelu{value: DiffWrapper},
-    Sigmoid{value: DiffWrapper},
-    Tanh{value: DiffWrapper},
     Dot{lhs: DiffWrapper, rhs: DiffWrapper},
     Matmulv{lhs: DiffWrapper, rhs: DiffWrapper},
     MatmulvAdd{lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper},
@@ -1024,167 +1173,7 @@ pub enum Op
     }*/
 }
 
-pub trait DiffOperation
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>);
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType);
-    fn scalar_sum(self) -> f32;
-
-    fn compute_tensor(self) -> LayerType;
-}
-
-impl DiffOperation for LayerType
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        |_, output| *output = Some(self)
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        move |_, output| *output += self
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        self.sum()
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
-impl<'a> DiffOperation for &'a LayerType
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        |_, output| *output = Some(self.clone())
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        move |_, output| *output += self
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        self.sum()
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
-#[allow(unreachable_code)]
-impl DiffOperation for f32
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>) { unreachable!(); |_, _| {} }
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType) { unreachable!(); |_, _| {} }
-
-    fn scalar_sum(self) -> f32
-    {
-        self
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
-#[allow(unreachable_code)]
-impl<'a> DiffOperation for &'a f32
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>) { unreachable!(); |_, _| {} }
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType) { unreachable!(); |_, _| {} }
-
-    fn scalar_sum(self) -> f32
-    {
-        *self
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
-struct NegateTensorOperation<'a>(&'a LayerType);
-
-impl<'a> DiffOperation for NegateTensorOperation<'a>
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        move |_, output| *output = Some(-self.0)
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        move |_, output| *output -= self.0
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        -self.0.sum()
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
-struct NegateF32Operation(f32);
-
-#[allow(unreachable_code)]
-impl DiffOperation for NegateF32Operation
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>) { unreachable!(); |_, _| {} }
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType) { unreachable!(); |_, _| {} }
-
-    fn scalar_sum(self) -> f32
-    {
-        -self.0
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
-pub struct MulGTensorOperation<'a>
-{
-    // a: cell::Ref<'a, AnyDiffType>,
-    b: &'a LayerType
-}
-
-pub struct MulGF32Operation<'a>
-{
-    a: &'a (),
-    // a: cell::Ref<'a, AnyDiffType>,
-    b: f32
-}
-
-pub struct SigmoidOperation<'a>
-{
-    a: &'a LayerType,
-    gradient: &'a LayerType
-}
-
-pub struct TanhOperation<'a>
-{
-    a: &'a LayerType,
-    gradient: &'a LayerType
-}
-
-pub struct LeakyReluOperation<'a>(pub &'a LayerType);
-
-pub struct MatMulVTransposed<'a>
-{
-    a: &'a LayerType,
-    b: &'a LayerType
-}
-
-#[derive(Clone)]
-pub struct OuterProduct<'a>
-{
-    a: &'a LayerType,
-    b: &'a LayerType
-}
-
-pub struct OuterProductOneHot<'a>
-{
-    a: &'a LayerType,
-    b: OneHotLayer
-}
-
+const REMOVE_ME_TOO: () = {let a = (); ()};
 /*impl DiffBounds for f32
 {
     fn into_layer_type<'a>(&self, value_getter: impl FnOnce() -> cell::Ref<'a, LayerType>) -> LayerType
@@ -1409,161 +1398,14 @@ impl From<OneHotLayer> for InputType
     }
 }
 
-/*impl<T> DiffType<T>
-where
-    T: DiffBounds + DiffOperation,
-    for<'a> T: Mul<&'a T, Output=T>,
-    for<'a> &'a T: DiffOperation,
-    for<'a> &'a T: Mul<&'a T, Output=T> + Mul<f32, Output=T> + Neg<Output=T>,
-    GradientType: Mul<GradientType, Output=GradientType>,
-    for<'a> GradientType: Mul<&'a T, Output=GradientType> + Mul<&'a LayerType, Output=GradientType>,
-    for<'a> &'a GradientType: Mul<&'a T, Output=GradientType> + Mul<&'a GradientType, Output=GradientType>
-{
-    pub fn calculate_gradients(mut self)
-    {
-        let mut ones = self.value.clone();
-        ones.fill(1.0);
-
-        self.derivatives(0, 1.0, |_, _, x| *x = Some(ones), |_, _, _| unreachable!());
-    }
-
-    pub fn take_gradient(&mut self) -> T
-    {
-        match self.gradient.take()
-        {
-            Some(x) => x,
-            None =>
-            {
-                let mut value = self.value.clone();
-                value.fill(0.0);
-
-                value
-            }
-        }
-    }
-
-    fn derivatives<ThisOp: DiffOperation>(
-        &mut self,
-        children_amount: usize,
-        this_op: ThisOp,
-        starting_gradient: impl FnOnce(&T, ThisOp, &mut Option<T>),
-        added_gradient: impl FnOnce(&T, ThisOp, &mut T)
-    )
-    {
-        self.derivatives_set_gradient(this_op, starting_gradient, added_gradient);
-
-        self.derivatives_skip_gradient(children_amount);
-    }
-
-    fn derivatives_set_gradient<ThisOp: DiffOperation>(
-        &mut self,
-        this_op: ThisOp,
-        starting_gradient: impl FnOnce(&T, ThisOp, &mut Option<T>),
-        added_gradient: impl FnOnce(&T, ThisOp, &mut T)
-    )
-    {
-        if self.gradient.is_none()
-        {
-            starting_gradient(&self.value, this_op, &mut self.gradient);
-        } else
-        {
-            added_gradient(&self.value, this_op, self.gradient.as_mut().unwrap());
-        }
-    }
-
-    fn derivatives_skip_gradient(&mut self, children_amount: usize)
-    {
-        if children_amount > 1
-        {
-            return;
-        }
-
-        self.derivatives_skip_gradient_no_check();
-    }
-
+const REMOVE_ME: () = {let a = (); ()};
+/*
     fn derivatives_skip_gradient_no_check(&mut self)
     {
         let gradient = self.gradient.as_ref().unwrap();
 
         match mem::replace(&mut self.parent, Ops::None)
         {
-            Ops::Div{lhs, rhs} =>
-            {
-                let r_recip = rhs.value_clone().reciprocal();
-
-                let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
-
-                if lhs.is_gradient()
-                {
-                    lhs.derivatives(&r_recip * gradient);
-                }
-
-                if let Some(lhs_value) = lhs_value
-                {
-                    // my favorite syntax
-                    let recip_squared = &r_recip * &r_recip;
-
-                    let d = -lhs_value * gradient;
-                    let d = d * recip_squared;
-
-                    rhs.derivatives(d);
-                }
-            },
-            Ops::Exp{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    x.derivatives(gradient * &self.value);
-                }
-            },
-            Ops::Sigmoid{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    x.derivatives(gradient.sigmoid_operation(&self.value));
-                }
-            },
-            Ops::Tanh{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    x.derivatives(gradient.tanh_operation(&self.value));
-                }
-            },
-            Ops::LeakyRelu{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    x.derivatives(gradient.leaky_relu_operation());
-                }
-            },
-            Ops::Ln{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    let d = x.value_clone().reciprocal();
-
-                    x.derivatives(d * gradient);
-                }
-            },
-            Ops::Sqrt{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    let m = &self.value * 2.0;
-
-                    let d = m.reciprocal();
-
-                    x.derivatives(d * gradient);
-                }
-            },
-            Ops::Neg{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    x.derivatives(gradient.negate_operation());
-                }
-            },
             Ops::Matmulv{lhs, rhs} =>
             {
                 gradient.matmul_v(lhs, rhs);
@@ -1575,15 +1417,6 @@ where
             Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
             {
                 gradient.matmul_one_hot_v_add(lhs, rhs, added);
-            },
-            Ops::SumTensor{value: x} =>
-            {
-                if x.is_gradient()
-                {
-                    let d = gradient.into_layer_type(|| x.tensor());
-
-                    x.derivatives(d);
-                }
             },
             Ops::Dot{lhs, rhs} =>
             {
@@ -1612,11 +1445,10 @@ where
                     let d = gradient.component_mul(softmaxed_values - targets.into_layer());
                     values.derivatives(d);
                 }
-            },
-            Ops::None => ()
+            }
         }
     }
-}*/
+*/
 
 #[cfg(test)]
 mod tests
@@ -1796,6 +1628,7 @@ mod tests
         let a_fg = vec_to_layer(a_fg, a);
         let b_fg = vec_to_layer(b_fg, b);
 
+        dbg!(&a_fg, &a_g);
         eprintln!("derivative of a");
         compare_tensor(a_fg, a_g);
 
@@ -1919,73 +1752,58 @@ mod tests
         })
     }
 
-    const UNCOMMENT_ME_TOO: () = { let a = (); () };
     #[test]
     fn sum_tensor_product_negative()
     {
         check_tensor(|recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
-            let sn = recorder.negate(s);
 
-            recorder.mul_componentwise(a, sn)
+            let m1 = recorder.set_new_value(-1.0);
+            let sn = recorder.mul_scalars(s, m1);
+
+            recorder.mul_scalar(a, sn)
         })
     }
 
+    const UNCOMMENT_ME_AAA: () = { let a = (); () };
     /*#[test]
     fn dot_product()
     {
         check_vector(|a, b| a + a.clone().dot(b.clone()))
-    }
+    }*/
 
     #[test]
     fn scalar_minus_tensor()
     {
-        check_tensor(|a, b| a.sum() - b)
+        check_tensor(|recorder, a, b|
+        {
+            let s = recorder.sum_tensor(a);
+            recorder.sub_from_scalar(s, b)
+        })
     }
 
     #[test]
     fn scalar_minus_tensor_stuff()
     {
-        check_tensor(|a, b| DiffWrapper::new_undiff(2.0.into()) - (a.sum() - b))
-    }
-
-    #[test]
-    fn exponential()
-    {
-        check_tensor(|a, b|
+        check_tensor(|recorder, a, b|
         {
-            let mut a = a.clone();
-            a.exp();
+            let s = recorder.sum_tensor(a);
+            let right = recorder.sub_from_scalar(s, b);
 
-            a + b
-        })
-    }
+            let two = recorder.set_new_value(2.0);
 
-    #[test]
-    fn natural_logarithm()
-    {
-        check_tensor(|a, b|
-        {
-            let mut a = a.clone();
-            a.pow(2);
-
-            let mut a = a.clone();
-            a.ln();
-
-            a + b
+            recorder.sub_from_scalar(two, right)
         })
     }
 
     #[test]
     fn leaky_relu()
     {
-        check_tensor(|a, b|
+        check_tensor(|recorder, a, b|
         {
-            let mut a = a.clone();
-            a.leaky_relu();
-
-            a + b
+            let x = recorder.leaky_relu(a);
+            recorder.add(x, b)
         })
     }
 
@@ -1993,38 +1811,22 @@ mod tests
     #[test]
     fn logistic_function()
     {
-        check_tensor(|a, b|
+        check_tensor(|recorder, a, b|
         {
-            let mut a = a.clone();
-            a.sigmoid();
-
-            a + b
+            let x = recorder.sigmoid(a);
+            recorder.add(x, b)
         })
     }
 
     #[test]
     fn hyperbolic_tangent()
     {
-        check_tensor(|a, b|
+        check_tensor(|recorder, a, b|
         {
-            let mut a = a.clone();
-            a.tanh();
-
-            a + b
+            let x = recorder.tanh(a);
+            recorder.add(x, b)
         })
     }
-
-    #[test]
-    fn sqrt()
-    {
-        check_tensor(|a, b|
-        {
-            let mut a = a.clone();
-            a.sqrt();
-
-            a + b
-        })
-    }*/
 
     #[test]
     fn pow()

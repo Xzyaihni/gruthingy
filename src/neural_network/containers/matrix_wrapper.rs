@@ -13,17 +13,7 @@ use super::{
     Softmaxer,
     Softmaxable,
     OneHotLayer,
-    AnyDiffType,
     LayerType,
-    DiffOperation,
-    MulGTensorOperation,
-    MulGF32Operation,
-    MatMulVTransposed,
-    SigmoidOperation,
-    TanhOperation,
-    LeakyReluOperation,
-    OuterProduct,
-    OuterProductOneHot,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -317,7 +307,8 @@ impl Softmaxable for MatrixWrapper
     }
 }
 
-impl<'a> DiffOperation for MulGTensorOperation<'a>
+const UNCOMMENT_MEA: () = {let a = (); ()};
+/*impl<'a> DiffOperation for MulGTensorOperation<'a>
 {
     fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
     {
@@ -419,37 +410,6 @@ impl<'a> DiffOperation for MatMulVTransposed<'a>
     }
 }
 
-// sigmoid(x) * (1.0 - sigmoid(x))
-impl<'a> DiffOperation for SigmoidOperation<'a>
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        |_, output|
-        {
-            *output = Some(MatrixWrapper(self.a.0.zip_map(&self.gradient.0, |a, b| (1.0 - a) * a * b)))
-        }
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        |_, output|
-        {
-            output.0.zip_zip_apply(&self.a.0, &self.gradient.0, |output, a, b| *output += (1.0 - a) * a * b)
-        }
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        unimplemented!()
-    }
-
-    fn compute_tensor(self) -> LayerType
-    {
-        unimplemented!()
-    }
-}
-
-// 1 - tanh^2(x)
 impl<'a> DiffOperation for TanhOperation<'a>
 {
     fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
@@ -624,33 +584,33 @@ impl<'a> DiffOperation for OuterProductOneHot<'a>
 
         MatrixWrapper(output)
     }
-}
+}*/
 
 #[allow(dead_code)]
 impl MatrixWrapper
 {
-    pub fn new(previous_size: usize, this_size: usize) -> Self
+    pub fn new(rows: usize, columns: usize) -> Self
     {
-        Self(DMatrix::zeros(this_size, previous_size))
+        Self(DMatrix::zeros(rows, columns))
     }
 
     pub fn new_with<F: FnMut() -> f32>(
-        previous_size: usize,
-        this_size: usize,
+        rows: usize,
+        columns: usize,
         mut f: F
     )-> Self
     {
-        Self(DMatrix::from_fn(this_size, previous_size, |_, _| f()))
+        Self(DMatrix::from_fn(rows, columns, |_, _| f()))
     }
 
-    pub fn repeat(previous_size: usize, this_size: usize, value: f32) -> Self
+    pub fn repeat(rows: usize, columns: usize, value: f32) -> Self
     {
-        Self(DMatrix::repeat(this_size, previous_size, value))
+        Self(DMatrix::repeat(rows, columns, value))
     }
 
-    pub fn from_raw<V: Into<Vec<f32>>>(values: V, previous_size: usize, this_size: usize) -> Self
+    pub fn from_raw<V: Into<Vec<f32>>>(values: V, rows: usize, columns: usize) -> Self
     {
-        Self(DMatrix::from_vec(this_size, previous_size, values.into()))
+        Self(DMatrix::from_vec(rows, columns, values.into()))
     }
 
     pub fn rows(&self) -> usize
@@ -744,53 +704,50 @@ impl MatrixWrapper
         });
     }
 
-    pub fn sqrt(&mut self)
+    #[must_use]
+    pub fn sqrt(&self) -> Self
     {
-        self.0.apply(|v| *v = v.sqrt());
+        Self(self.0.map(|x| x.sqrt()))
     }
 
-    pub fn clone_sqrt(&self) -> Self
-    {
-        let mut out = self.clone();
-        out.sqrt();
-
-        out
-    }
-
-    pub fn pow(&mut self, power: u32)
+    #[must_use]
+    pub fn pow(&self, power: u32) -> Self
     {
         let power = power as i32;
-        self.0.apply(|v| *v = v.powi(power));
+        Self(self.0.map(|x| x.powi(power)))
     }
 
-    pub fn exp(&mut self)
+    #[must_use]
+    pub fn sigmoid(&self) -> Self
     {
-        self.0.apply(|v| *v = v.exp());
+        Self(self.0.map(|x| 1.0 / (1.0 + (-x).exp())))
     }
 
-    pub fn ln(&mut self)
+    pub fn sigmoid_gradient_inplace(&mut self, value: &Self, gradient: &Self)
     {
-        self.0.apply(|v| *v = v.ln());
+        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a) * a * b);
     }
 
-    pub fn reciprocal(&mut self)
+    #[must_use]
+    pub fn tanh(&self) -> Self
     {
-        self.0.apply(|v| *v = 1.0 / *v);
+        Self(self.0.map(|x| x.tanh()))
     }
 
-    pub fn sigmoid(&mut self)
+    pub fn tanh_gradient_inplace(&mut self, value: &Self, gradient: &Self)
     {
-        self.0.apply(|v| *v = 1.0 / (1.0 + (-*v).exp()));
+        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a * a) * b);
     }
 
-    pub fn tanh(&mut self)
+    #[must_use]
+    pub fn leaky_relu(&self) -> Self
     {
-        self.0.apply(|v| *v = v.tanh());
+        Self(self.0.map(|x| x.max(LEAKY_SLOPE * x)))
     }
 
-    pub fn leaky_relu(&mut self)
+    pub fn leaky_relu_gradient_inplace(&mut self, value: &Self, gradient: &Self)
     {
-        self.0.apply(|v| *v = v.max(LEAKY_SLOPE * *v));
+        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = leaky_relu_d(a) * b);
     }
 
     pub fn sum(&self) -> f32
@@ -800,10 +757,7 @@ impl MatrixWrapper
 
     pub fn signum(&self) -> Self
     {
-        let mut this = self.0.clone();
-        this.apply(|v| *v = v.signum());
-
-        Self(this)
+        Self(self.0.map(|v| v.signum()))
     }
 
     pub fn cap_magnitude(&self, cap: f32) -> Self
