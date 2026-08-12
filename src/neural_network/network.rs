@@ -21,12 +21,12 @@ use crate::{
         OneHotIndex,
         InputType,
         LayerType,
-//        NetworkUnit,
+        NetworkUnit,
 //        NewableLayer,
 //        GenericUnit,
 //        Optimizer,
 //        OptimizerUnit,
-//        UnitFactory,
+        UnitFactory,
 //        EN,
         DROPCONNECT_PROBABILITY,
 //        network_unit::Embeddingsable
@@ -382,7 +382,7 @@ pub struct NetworkOutput<State, Output>
     pub output: Output
 }
 
-/*type UnitState<N> = <<N as UnitFactory>::Unit<DiffWrapper> as NetworkUnit>::State;*/
+type UnitState<N> = <<N as UnitFactory>::Unit<DiffTensor> as NetworkUnit>::State;
 
 #[derive(Serialize, Deserialize)]
 pub struct WeightsFullContainer<U, T>
