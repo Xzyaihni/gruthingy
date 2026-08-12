@@ -94,6 +94,7 @@ impl LayerType
 {
     pub fn softmax_cross_entropy(mut self, targets: &OneHotLayer) -> (Self, f32)
     {
+        let this_is_horrible = ();
         Softmaxer::softmax(&mut self);
         let softmaxed = self.clone();
 
@@ -452,6 +453,20 @@ impl OperationsRecorder
         impl_map_tensor_op!(self, a, LeakyRelu)
     }
 
+    pub fn softmax_cross_entropy(&mut self, values: DiffTensor, targets: OneHotLayer) -> DiffScalar
+    {
+        let source = Some(self.current_source());
+
+        let (rows, columns) = self.tensor_shape(values.as_value());
+
+        let softmaxed_output = self.new_tensor_op(source, rows, columns);
+        let output = self.new_value_op(source);
+
+        self.recording_operations.push(Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output});
+
+        output
+    }
+
     pub fn tensor_shape(&self, tensor: TensorIndex) -> (usize, usize)
     {
         let tensor = &self.tensors[tensor.0];
@@ -557,13 +572,29 @@ impl OperationsRecorder
                     let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
 
                     output.leaky_relu_gradient_inplace(value, gradient);
+                },
+                GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+                {
+                    let optimize_this = ();
+                    (self.tensors[softmaxed_output.0], self.values[output.0]) = self.tensors[values.0].clone().softmax_cross_entropy(targets);
+                },
+                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = (&self.tensors[softmaxed_values.0] - targets.clone().into_layer()) * self.values[gradient.0];
                 }
             }
         });
 
         // this might give a false positive but its a very important check
-        debug_assert!(self.values.iter().all(|x| *x != 0.0));
-        debug_assert!(self.tensors.iter().all(|x| x.iter().any(|inner| *inner != 0.0)));
+        #[cfg(debug_assertions)]
+        {
+            self.values.iter().enumerate().filter(|(_, x)| **x == 0.0)
+                .for_each(|(index, _)| eprintln!("value at index {index} might be uninitialized"));
+
+            self.tensors.iter().enumerate().filter(|(_, x)| x.iter().all(|inner| *inner == 0.0))
+                .for_each(|(index, _)| eprintln!("tensor at index {index} might be uninitialized"));
+        }
     }
 
     pub fn finish(&mut self)
@@ -625,6 +656,15 @@ impl OperationsRecorder
                 Op::LeakyRelu{value, output} =>
                 {
                     GradientOp::LeakyRelu{value: value.as_value(), output: output.as_value()}
+                },
+                Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+                {
+                    GradientOp::SoftmaxCrossEntropy{
+                        values: values.as_value(),
+                        targets: targets.clone(),
+                        softmaxed_output: softmaxed_output.as_value(),
+                        output: output.as_value()
+                    }
                 }
             }
         }));
@@ -657,11 +697,13 @@ impl OperationsRecorder
                     | GradientOp::Tanh{output, ..}
                     | GradientOp::TanhDiff{output, ..}
                     | GradientOp::LeakyRelu{output, ..}
-                    | GradientOp::LeakyReluDiff{output, ..} => output.into(),
+                    | GradientOp::LeakyReluDiff{output, ..}
+                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..} => output.into(),
                     GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..}
-                    | GradientOp::Dot{output, ..} => output.into()
+                    | GradientOp::Dot{output, ..}
+                    | GradientOp::SoftmaxCrossEntropy{output, ..} => output.into()
                 }
             };
 
@@ -698,7 +740,8 @@ impl OperationsRecorder
                     | GradientOp::Tanh{output, ..}
                     | GradientOp::TanhDiff{output, ..}
                     | GradientOp::LeakyRelu{output, ..}
-                    | GradientOp::LeakyReluDiff{output, ..} =>
+                    | GradientOp::LeakyReluDiff{output, ..}
+                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..} =>
                     {
                         let (rows, columns) = maybe_shape.unwrap();
 
@@ -717,7 +760,8 @@ impl OperationsRecorder
                     GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..}
-                    | GradientOp::Dot{output, ..} =>
+                    | GradientOp::Dot{output, ..}
+                    | GradientOp::SoftmaxCrossEntropy{output, ..} =>
                     {
                         let final_output = *output;
 
@@ -1026,6 +1070,22 @@ impl OperationsRecorder
 
                         self.calculate_gradient((*value).into());
                     }
+                },
+                Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output: _} =>
+                {
+                    let gradient = gradient.as_value();
+
+                    if let Some(values_gradient) = values.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::SoftmaxCrossEntropyDiff{
+                            softmaxed_values: softmaxed_output.as_value(),
+                            gradient,
+                            targets: targets.clone(),
+                            output: values_gradient
+                        });
+
+                        self.calculate_gradient((*values).into());
+                    }
                 }
             }
         } else
@@ -1192,10 +1252,11 @@ pub enum GradientOp
     SigmoidDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
     Tanh{value: TensorIndex, output: TensorIndex},
     TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
-    Dot{lhs: TensorIndex, rhs: TensorIndex, output: ValueIndex}
+    Dot{lhs: TensorIndex, rhs: TensorIndex, output: ValueIndex},
+    SoftmaxCrossEntropy{values: TensorIndex, targets: OneHotLayer, softmaxed_output: TensorIndex, output: ValueIndex},
+    SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotLayer, output: TensorIndex}
 }
 
-const UNCOMMENT_US: () = {let a = (); ()};
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Op
 {
@@ -1211,16 +1272,8 @@ pub enum Op
     LeakyRelu{value: DiffTensor, output: DiffTensor},
     Sigmoid{value: DiffTensor, output: DiffTensor},
     Tanh{value: DiffTensor, output: DiffTensor},
-    Dot{lhs: DiffTensor, rhs: DiffTensor, output: DiffScalar}
-    /*
-    Matmulv{lhs: DiffWrapper, rhs: DiffWrapper},
-    MatmulvAdd{lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper},
-    MatmulOneHotvAdd{lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper},
-    SoftmaxCrossEntropy{
-        values: DiffWrapper,
-        softmaxed_values: LayerType,
-        targets: OneHotLayer
-    }*/
+    Dot{lhs: DiffTensor, rhs: DiffTensor, output: DiffScalar},
+    SoftmaxCrossEntropy{values: DiffTensor, targets: OneHotLayer, softmaxed_output: DiffTensor, output: DiffScalar}
 }
 
 const REMOVE_ME_TOO: () = {let a = (); ()};
@@ -1391,7 +1444,7 @@ impl OneHotLayer
             layer[*position] = 1.0;
         }
 
-        LayerType::from_raw(layer, 1, size)
+        LayerType::from_raw(layer, size, 1)
     }
 }
 
@@ -1468,14 +1521,6 @@ const REMOVE_ME: () = {let a = (); ()};
             {
                 gradient.matmul_one_hot_v_add(lhs, rhs, added);
             },
-            Ops::SoftmaxCrossEntropy{values, softmaxed_values, targets} =>
-            {
-                if values.is_gradient()
-                {
-                    let d = gradient.component_mul(softmaxed_values - targets.into_layer());
-                    values.derivatives(d);
-                }
-            }
         }
     }
 */
@@ -1884,14 +1929,14 @@ mod tests
         OneHotLayer::new([pos], LAYER_CURR)
     }
 
-    const UNCOMMENT_ME_FOUR: () = { let a = (); () };
-    /*#[test]
+    #[test]
     fn softmax_cross_entropy()
     {
         let targets = create_targets();
-        check_vector(|a, b|
+        check_vector(|recorder, a, b|
         {
-            b + a.clone().softmax_cross_entropy(targets.clone())
+            let sm = recorder.softmax_cross_entropy(a, targets.clone());
+            recorder.add_scalar(b, sm)
         })
     }
 
@@ -1899,9 +1944,14 @@ mod tests
     fn softmax_cross_entropy_complicated()
     {
         let targets = create_targets();
-        check_vector(|a, b|
+        check_vector(|recorder, a, b|
         {
-            a + (b + DiffWrapper::new_undiff(2.0.into())).softmax_cross_entropy(targets.clone())
+            let two = recorder.set_new_value(2.0);
+            let btwo = recorder.add_scalar(b, two);
+
+            let sm = recorder.softmax_cross_entropy(btwo, targets.clone());
+
+            recorder.add_scalar(a, sm)
         })
-    }*/
+    }
 }
