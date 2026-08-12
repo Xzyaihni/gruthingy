@@ -6,7 +6,7 @@ use std::{process, io::Cursor, path::Path};
 
 use serde::{Serialize, Deserialize};
 
-use neural_network::{
+/*use neural_network::{
     NeuralNetwork,
     NUnit,
     NOptimizer,
@@ -79,4 +79,4 @@ pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature:
     let predicted = network.predict_bytes(text, amount, temperature);
 
     String::from_utf8_lossy(&predicted).into_owned()
-}
+}*/

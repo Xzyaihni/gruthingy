@@ -17,14 +17,14 @@ use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
-use crate::{load_embeddings, EmbeddingsUnitFactory};
+//use crate::{load_embeddings, EmbeddingsUnitFactory};
 
 use super::neural_network::{
     LayerType,
     InputType,
     OneHotLayer,
     LOWERCASE_ONLY,
-    network::Network
+//    network::Network
 };
 
 
@@ -159,7 +159,8 @@ pub trait NetworkDictionary
 
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
     {
-        self.words_to_onehot(words).into()
+        todo!()
+        // self.words_to_onehot(words).into()
     }
 
     fn words_to_onehot(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
@@ -602,7 +603,7 @@ impl NetworkDictionary for WordDictionary
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
-    network: Network<EmbeddingsUnitFactory, ()>,
+//    network: Network<EmbeddingsUnitFactory, ()>,
     embeddings_size: usize
 }
 
@@ -619,17 +620,18 @@ impl NetworkDictionary for EmbeddingsDictionary
             _ => unreachable!()
         };
 
-        let neural_network = load_embeddings::<()>(
+        let neural_network = /*load_embeddings::<()>(
             Some(path.as_ref()),
             None,
             false
-        );
+        )*/todo!();
 
-        let (word_dictionary, network) = neural_network.into_embeddings_info();
+//        let (word_dictionary, network) = neural_network.into_embeddings_info();
 
-        let embeddings_size = network.sizes().hidden;
+//        let embeddings_size = network.sizes().hidden;
 
-        Self{word_dictionary, network, embeddings_size}
+todo!()
+//        Self{word_dictionary, network, embeddings_size}
     }
 
     fn input_data() -> InputDataType
@@ -639,7 +641,8 @@ impl NetworkDictionary for EmbeddingsDictionary
 
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
     {
-        self.network.embeddings(self.words_to_onehot(words)).into()
+todo!()
+//        self.network.embeddings(self.words_to_onehot(words)).into()
     }
 
     fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>

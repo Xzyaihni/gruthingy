@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::{DMatrix, Matrix, UninitMatrix, Dyn};
+use nalgebra::{DMatrix, Dyn};
 
 use super::{
     Softmaxer,
@@ -687,6 +687,11 @@ impl MatrixWrapper
         Self(self.0.map(|x| x.tanh()))
     }
 
+    pub fn tanh_mul(&self, rhs: &Self) -> Self
+    {
+        Self(self.0.zip_map(&rhs.0, |x, rhs| x.tanh() * rhs))
+    }
+
     pub fn tanh_gradient_inplace(&mut self, value: &Self, gradient: &Self)
     {
         self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a * a) * b);
@@ -698,6 +703,11 @@ impl MatrixWrapper
         Self(self.0.map(|x| x.max(LEAKY_SLOPE * x)))
     }
 
+    pub fn leaky_relu_mul(&self, rhs: &Self) -> Self
+    {
+        Self(self.0.zip_map(&rhs.0, |x, rhs| x.max(LEAKY_SLOPE * x) * rhs))
+    }
+
     pub fn leaky_relu_gradient_inplace(&mut self, value: &Self, gradient: &Self)
     {
         self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = leaky_relu_d(a) * b);
@@ -706,6 +716,11 @@ impl MatrixWrapper
     pub fn exp_inplace(&mut self)
     {
         self.0.apply(|x| *x = x.exp());
+    }
+
+    pub fn sqrt_plus(&self, added: f32) -> Self
+    {
+        Self(self.0.map(|x| x.sqrt() + added))
     }
 
     pub fn sum(&self) -> f32

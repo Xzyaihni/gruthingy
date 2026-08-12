@@ -21,21 +21,21 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use neural_network::{
     TrainingInfo,
     NeuralNetwork,
-    WeightsNamed,
-    WeightsSize,
+//    WeightsNamed,
+//    WeightsSize,
     LayerType,
-    NetworkUnit,
-    OptimizerUnit,
-    GenericUnit,
-    Optimizer,
+//    NetworkUnit,
+//    OptimizerUnit,
+//    GenericUnit,
+//    Optimizer,
     DiffWrapper,
-    UnitFactory,
-    NUnit,
-    EmbeddingUnit,
-    NewableLayer,
-    NOptimizer,
+//    UnitFactory,
+//    NUnit,
+//    EmbeddingUnit,
+//    NewableLayer,
+//    NOptimizer,
     NDictionary,
-    LayerSizes
+//    LayerSizes
 };
 
 use config::{Config, ProgramMode};
@@ -80,7 +80,7 @@ impl From<&Config> for SizesInfo
 }
 
 // this is definitely unneeded in theory, but in practice serde macros r stupid
-#[derive(Clone, Serialize, Deserialize)]
+/*#[derive(Clone, Serialize, Deserialize)]
 struct NUnitFactory;
 
 impl UnitFactory for NUnitFactory
@@ -642,7 +642,7 @@ fn accuracy_data(config: Config)
     {
         eprintln!("error saving accuracy data: {err}");
     }
-}
+}*/
 
 fn main()
 {
@@ -663,7 +663,7 @@ fn main()
         } */
     }
 
-    let config = Config::parse(env::args().skip(1));
+/*    let config = Config::parse(env::args().skip(1));
 
     match config.mode
     {
@@ -675,5 +675,5 @@ fn main()
         ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config),
         ProgramMode::AccuracyData => accuracy_data(config)
-    }
+    }*/
 }

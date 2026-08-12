@@ -11,22 +11,25 @@ use std::{
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 use crate::{
-    EmbeddingsUnitFactory,
+//    EmbeddingsUnitFactory,
     neural_network::{
+        OperationsRecorder,
         Softmaxer,
-        DiffWrapper,
+        DiffTensor,
+        TensorIndex,
         OneHotLayer,
+        OneHotIndex,
         InputType,
         LayerType,
-        NetworkUnit,
-        NewableLayer,
-        GenericUnit,
-        Optimizer,
-        OptimizerUnit,
-        UnitFactory,
-        EN,
+//        NetworkUnit,
+//        NewableLayer,
+//        GenericUnit,
+//        Optimizer,
+//        OptimizerUnit,
+//        UnitFactory,
+//        EN,
         DROPCONNECT_PROBABILITY,
-        network_unit::Embeddingsable
+//        network_unit::Embeddingsable
     }
 };
 
@@ -379,18 +382,16 @@ pub struct NetworkOutput<State, Output>
     pub output: Output
 }
 
-type UnitState<N> = <<N as UnitFactory>::Unit<DiffWrapper> as NetworkUnit>::State;
+/*type UnitState<N> = <<N as UnitFactory>::Unit<DiffWrapper> as NetworkUnit>::State;*/
 
 #[derive(Serialize, Deserialize)]
-pub struct WeightsFullContainer<N: UnitFactory, T>
-where
-    N::Unit<T>: Serialize + DeserializeOwned
+pub struct WeightsFullContainer<U, T>
 {
-    layers: Vec<N::Unit<T>>,
+    layers: Vec<U>,
     output: T
 }
 
-impl<N: UnitFactory, T> Clone for WeightsFullContainer<N, T>
+/*impl<N: UnitFactory, T> Clone for WeightsFullContainer<N, T>
 where
     T: Clone,
     N::Unit<T>: Clone + Serialize + DeserializeOwned
@@ -415,15 +416,13 @@ where
     {
         self.layers.into_iter().flatten().chain(iter::once(self.output))
     }
-}
+}*/
 
-impl<N: UnitFactory, T> WeightsFullContainer<N, T>
-where
-    N::Unit<T>: Serialize + DeserializeOwned
+impl<U, T> WeightsFullContainer<U, T>
 {
     pub fn new(
         sizes: LayerSizes,
-        unit_f: impl FnMut(LayerSizes) -> N::Unit<T>,
+        unit_f: impl FnMut(LayerSizes) -> U,
         f: impl FnOnce(LayerSizes) -> T
     ) -> Self
     {
@@ -445,7 +444,7 @@ where
         }
     }
 
-    pub fn map_mut<F, U>(&mut self, mut f: F) -> WeightsFullContainer<N, U>
+    /*pub fn map_mut<F, U>(&mut self, mut f: F) -> WeightsFullContainer<N, U>
     where
         N::Unit<T>: GenericUnit<T, Unit<U>=N::Unit<U>>,
         N::Unit<U>: Serialize + DeserializeOwned,
@@ -469,25 +468,27 @@ where
         for<'a> &'a mut N::Unit<T>: IntoIterator<Item=&'a mut T>
     {
         self.layers.iter_mut().flatten().chain(iter::once(&mut self.output))
-    }
+    }*/
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Network<N: UnitFactory, O>
-where
+pub struct Network//<N: UnitFactory, O>
+/*where
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit
+    N::Unit<DiffWrapper>: NetworkUnit*/
 {
+    recorder: OperationsRecorder,
     sizes: LayerSizes,
     dropout_probability: f32,
-    optimizer_info: Option<WeightsFullContainer<N, O>>,
-    weights: WeightsFullContainer<N, DiffWrapper>
+    inputs_outputs: Vec<(DiffTensor, DiffTensor)>,
+    output: DiffTensor,
+//    optimizer_info: Option<WeightsFullContainer<N, O>>,
+    weights: WeightsFullContainer</*N::Unit<DiffTensor>*/(), DiffTensor>
 }
 
-impl<N: UnitFactory, O> Network<N, O>
-where
+impl/*<N: UnitFactory, O>*/ Network//<N, O>
+/*where
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit
+    N::Unit<DiffWrapper>: NetworkUnit*/
 {
     pub fn sizes(&self) -> &LayerSizes
     {
@@ -495,51 +496,134 @@ where
     }
 }
 
-impl<N, O> Network<N, O>
-where
+impl/*<N, O>*/ Network//<N, O>
+/*where
     N::Unit<O>: OptimizerUnit<O>,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     for<'a> &'a N::Unit<DiffWrapper>: IntoIterator<Item=&'a DiffWrapper>,
     for<'a> &'a mut N::Unit<DiffWrapper>: IntoIterator<Item=&'a mut DiffWrapper>,
-    N: UnitFactory
+    N: UnitFactory*/
 {
-    pub fn new(sizes: LayerSizes, dropout_probability: f32) -> Self
-    where
-        O: NewableLayer
+    pub fn new(
+        sizes: LayerSizes,
+        inputs_count: usize,
+        dropout_probability: f32
+    ) -> Self
+//    where
+//        O: NewableLayer
     {
-        let optimizer_info: Option<_> =
+        let mut recorder = OperationsRecorder::new();
+
+/*        let optimizer_info: Option<_> =
             Some(WeightsFullContainer::new(sizes, |size|
             {
                 N::Unit::new_zeroed(size)
             }, |size|
             {
                 O::new(size.hidden, size.output)
-            }));
+            }));*/
 
         let weights = WeightsFullContainer::new(sizes, |size|
         {
-            N::Unit::new(size)
+            todo!()
+            // N::Unit::new(size)
         }, |size|
         {
-            DiffWrapper::new_diff(
-                LayerType::new_with(size.hidden, size.output, ||
-                {
-                    let v = 1.0 / (sizes.hidden as f32).sqrt();
+            let weights = recorder.new_tensor(size.output, size.hidden);
+            recorder.set_tensor(weights.as_value(), LayerType::new_with(size.output, size.hidden, ||
+            {
+                let v = 1.0 / (sizes.hidden as f32).sqrt();
 
-                    (fastrand::f32() * 2.0 - 1.0) * v
-                }).into()
-            )
+                (fastrand::f32() * 2.0 - 1.0) * v
+            }));
+
+            weights
         });
 
-        Self{
+        let mut this = Self{
+            recorder,
             sizes,
-            optimizer_info,
+            inputs_outputs: Vec::new(),
+            output: DiffTensor::undefined(),
+//            optimizer_info,
             weights,
             dropout_probability
-        }
+        };
+
+        this.record_feedforward(inputs_count);
+
+        this.recorder.finish();
+
+        this
     }
 
-    pub fn apply_gradients<OP>(
+    fn record_feedforward(&mut self, inputs_count: usize)
+    {
+        let mut output: Option<DiffTensor> = None;
+        // let mut previous_states: Option<Vec<UnitState<N>>> = None;
+
+        let dropout_masks: Vec<_> = self.weights.layers.iter().skip(1).map(|_|
+        {
+            self.recorder.set_new_tensor(LayerType::repeat(self.sizes.hidden, 1, 0.0)).as_value()
+        }).collect();
+
+        for _ in 0..inputs_count
+        {
+            let this_input = self.recorder.new_tensor(self.sizes.input, 1);
+            let this_output = self.recorder.new_tensor(self.sizes.output, 1);
+
+            self.inputs_outputs.push((this_input, this_output));
+
+            let NetworkOutput{
+                state,
+                output: this_output
+            } = self.record_feedforward_single_input(
+//                previous_states.take(),
+                &dropout_masks,
+//                this_input,
+//                this_output
+            );
+
+            // this might cause some networks to not converge at 0 loss (since sometimes its impossible to predict the next word with 0 context)
+            // but it makes it more robust i think?? i forgot why i did it this way but it IS important and it is NOT a bug
+            if let Some(output) = output.as_mut()
+            {
+                *output = self.recorder.add_inplace(*output, this_output);
+            } else
+            {
+                output = Some(this_output)
+            }
+
+            // previous_states = Some(state);
+        }
+
+        self.output = output.unwrap();
+    }
+
+    fn record_feedforward_single_input(
+        &mut self,
+//        previous_states: Option<Vec<UnitState<N>>>,
+        dropout_masks: &[TensorIndex],
+//        input: InputType,
+//        targets: OneHotLayer
+    ) -> NetworkOutput<()/*Vec<UnitState<N>>*/, DiffTensor>
+    {
+todo!()
+/*        self.feedforward_single_input_with_activation(|layer, previous_state, input|
+        {
+            let mut output = self.feedforward_unit_last(
+                layer,
+                previous_state,
+                input
+            );
+
+            output.output = output.output.softmax_cross_entropy(targets);
+
+            output
+        }, previous_states, dropout_masks, &input)*/
+    }
+
+/*    pub fn apply_gradients<OP>(
         &mut self,
         gradients: WeightsFullContainer<N, LayerType>,
         optimizer: &mut OP,
@@ -873,70 +957,19 @@ where
         output.output = self.weights.output.matmulv(output.output);
 
         output
-    }
-
-    fn feedforward_single_input(
-        &mut self,
-        previous_states: Option<Vec<UnitState<N>>>,
-        dropout_masks: &[DiffWrapper],
-        input: InputType,
-        targets: OneHotLayer
-    ) -> NetworkOutput<Vec<UnitState<N>>, DiffWrapper>
-    {
-        self.feedforward_single_input_with_activation(|layer, previous_state, input|
-        {
-            let mut output = self.feedforward_unit_last(
-                layer,
-                previous_state,
-                input
-            );
-
-            output.output = output.output.softmax_cross_entropy(targets);
-
-            output
-        }, previous_states, dropout_masks, &input)
-    }
+    }*/
 
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>
-    ) -> DiffWrapper
+    )
     {
-        let mut output: Option<DiffWrapper> = None;
-        let mut previous_states: Option<Vec<UnitState<N>>> = None;
-
-        let dropout_masks = self.create_dropout_masks(self.sizes.hidden, self.dropout_probability);
-
-        for (this_input, this_output) in input
-        {
-            let NetworkOutput{
-                state,
-                output: this_output
-            } = self.feedforward_single_input(
-                previous_states.take(),
-                &dropout_masks,
-                this_input,
-                this_output
-            );
-
-            // this might cause some networks to not converge at 0 loss (since sometimes its impossible to predict the next word with 0 context)
-            // but it makes it more robust i think?? i forgot why i did it this way but it IS important and it is NOT a bug
-            if let Some(output) = output.as_mut()
-            {
-                *output += this_output;
-            } else
-            {
-                output = Some(this_output)
-            }
-
-            previous_states = Some(state);
-        }
-
-        output.unwrap()
+todo!()
+/*        */
     }
 
-    pub fn predict_single_input(
+/*    pub fn predict_single_input(
         &mut self,
         previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[DiffWrapper],
@@ -1032,10 +1065,10 @@ where
         };
 
         DiffWrapper::new_undiff(inner.into())
-    }
+    }*/
 }
 
-impl<O> Network<EmbeddingsUnitFactory, O>
+/*impl<O> Network<EmbeddingsUnitFactory, O>
 where
     EN<O>: OptimizerUnit<O>,
     EN<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=EN<DiffWrapper>> + Embeddingsable,
@@ -1058,3 +1091,4 @@ where
         self.weights.layers[0].embeddings(&input)
     }
 }
+*/

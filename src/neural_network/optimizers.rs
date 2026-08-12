@@ -189,12 +189,13 @@ impl Optimizer for PowerSign
         gradient: LayerType
     ) -> LayerType
     {
+        let optimize_this = ();
         gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
 
         let decay = DECAY_FUNCTION.decay(self.learning_rate, self.t);
 
         let mut this = gradient.signum() * gradient_info.m.signum() * decay;
-        this.exp();
+        this.exp_inplace();
 
         this * gradient
     }
@@ -241,6 +242,7 @@ impl Optimizer for AdamX
         gradient: LayerType
     ) -> LayerType
     {
+        let optimize_this = ();
         let b1_t = DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b1_t = 1.0 - b1_t;
 
@@ -265,7 +267,7 @@ impl Optimizer for AdamX
         // it can be a / t.sqrt() but this is fine
         let a_t = self.a;
 
-        let rhs = gradient_info.v_hat.as_ref().unwrap().clone_sqrt() + self.epsilon;
+        let rhs = gradient_info.v_hat.as_ref().unwrap().sqrt_plus(self.epsilon);
 
         (&gradient_info.m * a_t) / rhs
     }
@@ -312,6 +314,7 @@ impl Optimizer for Adam
         gradient: LayerType
     ) -> LayerType
     {
+        let optimize_this = ();
         let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b2_t = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
 
@@ -320,7 +323,7 @@ impl Optimizer for Adam
 
         let a_t = self.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
 
-        (&gradient_info.m * a_t) / (gradient_info.v.clone_sqrt() + self.epsilon)
+        (&gradient_info.m * a_t) / gradient_info.v.sqrt_plus(self.epsilon)
     }
 
     fn advance_time(&mut self)

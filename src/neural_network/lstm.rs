@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        DiffWrapper,
+        DiffTensor,
         InputType,
         LayerSizes,
         network::{NetworkOutput, LayerSize},
@@ -33,11 +33,11 @@ create_weights_container!{
 
 pub struct LSTMState
 {
-    hidden: DiffWrapper,
-    memory: DiffWrapper
+    hidden: DiffTensor,
+    memory: DiffTensor
 }
 
-impl NetworkUnit for Lstm<DiffWrapper>
+impl NetworkUnit for Lstm<DiffTensor>
 {
     type State = LSTMState;
 
@@ -48,9 +48,10 @@ impl NetworkUnit for Lstm<DiffWrapper>
 
     fn feedforward_unit(
         &self,
+        recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
         input: &InputType
-    ) -> NetworkOutput<Self::State, DiffWrapper>
+    ) -> NetworkOutput<Self::State, DiffTensor>
     {
         let mut forget_gate = self.input_forget.matmulv_add(input, &self.forget_bias);
         let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
@@ -113,7 +114,7 @@ mod tests
     use super::*;
 
     use crate::neural_network::{LayerType, LayerSizes};
-    
+
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
         if a == b

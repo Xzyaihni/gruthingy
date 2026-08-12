@@ -12,12 +12,12 @@ use std::{
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
-use network::{NetworkOutput, Network};
+//use network::{NetworkOutput, Network};
 
 #[allow(unused_imports)]
 use crate::{
     Config,
-    EmbeddingsUnitFactory,
+//    EmbeddingsUnitFactory,
     word_vectorizer::{
         ByteDictionary,
         CharDictionary,
@@ -30,36 +30,42 @@ use crate::{
     }
 };
 
-use optimizers::*;
+//use optimizers::*;
 
 pub use network::LayerSizes;
-pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
-pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
-pub use network::WeightsNamed;
+//pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
+//pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
+//pub use network::WeightsNamed;
 pub use containers::{
+    OperationsRecorder,
     LayerType,
     DiffWrapper,
+    DiffTensor,
+    DiffScalar,
+    TensorIndex,
+    ValueIndex,
+    OneHotIndex,
     InputType,
     OneHotLayer,
     Softmaxer
 };
 
-#[allow(unused_imports)]
-pub use network::WeightsSize;
+//#[allow(unused_imports)]
+// pub use network::WeightsSize;
 
-#[allow(unused_imports)]
-use gru::Gru;
+/*#[allow(unused_imports)]
+use gru::Gru;*/
 
-#[allow(unused_imports)]
-use lstm::Lstm;
+//#[allow(unused_imports)]
+//use lstm::Lstm;
 
-pub use embedding_unit::EmbeddingUnit;
+//pub use embedding_unit::EmbeddingUnit;
 
-mod optimizers;
-mod network_unit;
-mod gru;
-mod lstm;
-mod embedding_unit;
+//mod optimizers;
+//mod network_unit;
+// mod gru;
+// mod lstm;
+//mod embedding_unit;
 
 pub mod network;
 pub mod containers;
@@ -665,7 +671,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         }
     }
 
-    pub fn predict_into<N, O>(
+const fix_me_0: () = ();
+/*    pub fn predict_into<N, O>(
         mut self,
         network: &mut Network<N, O>,
         mut out: impl Write
@@ -734,7 +741,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         self.predict_into(network, &mut predicted);
 
         predicted.into_boxed_slice()
-    }
+    }*/
 }
 
 type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
@@ -807,7 +814,8 @@ impl StepsNum
     }
 }
 
-trait FromGuesses<N, O>
+const fix_me_1: () = ();
+/*trait FromGuesses<N, O>
 where
     N: UnitFactory,
     O: Optimizer,
@@ -874,7 +882,7 @@ where
     {
         network.certainty_guesses(input_outputs)
     }
-}
+}*/
 
 #[derive(Clone)]
 pub struct TrainingInfo
@@ -922,17 +930,19 @@ impl Default for ExtraInfo
     }
 }
 
+const fix_me_4: () = ();
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NeuralNetwork<N, O, D>
-where
+/*where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffWrapper>: NetworkUnit,
-    for<'a> O::WeightParam: Serialize + Deserialize<'a>
+    for<'a> O::WeightParam: Serialize + Deserialize<'a>*/
 {
     dictionary: D,
-    network: Network<N, O::WeightParam>,
+    network: N,
+//    network: Network<N, O::WeightParam>,
     optimizer: O,
     gradient_clip: Option<f32>,
     #[serde(default)]
@@ -941,10 +951,11 @@ where
 }
 
 // wut do u mean its not used??
-#[allow(dead_code)]
-pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
+//#[allow(dead_code)]
+//pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
-impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
+const fix_me_2: () = ();
+/*impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
 where
     O: Optimizer,
     EN<O::WeightParam>: OptimizerUnit<O::WeightParam>,
@@ -964,10 +975,11 @@ where
             sizes: self.sizes
         }
     }
-}
+}*/
 
-impl<N, O, D> NeuralNetwork<N, O, D>
-where
+const fix_me_3: () = ();
+impl<D> NeuralNetwork<(), (), D>
+/*where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
@@ -975,7 +987,7 @@ where
     for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
     for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>,
-    D: NetworkDictionary
+    D: NetworkDictionary*/
 {
     pub fn new(
         dictionary: D,
@@ -983,19 +995,21 @@ where
         dropout_probability: f32,
         gradient_clip: Option<f32>
     ) -> Self
-    where
-        O::WeightParam: NewableLayer
+//    where
+//        O::WeightParam: NewableLayer
     {
-        let network = Network::new(sizes, dropout_probability);
+        //let network = Network::new(sizes, dropout_probability);
+        let network = ();
 
-        let optimizer = O::new();
+        //let optimizer = O::new();
+        let optimizer = ();
 
         let extra_info = ExtraInfo::default();
 
         Self{dictionary, network, optimizer, gradient_clip, extra_info, sizes}
     }
 
-    pub fn into_embeddings_info(self) -> (D, Network<N, O::WeightParam>)
+/*    pub fn into_embeddings_info(self) -> (D, Network<N, O::WeightParam>)
     {
         (self.dictionary, self.network)
     }
@@ -1172,7 +1186,7 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.vectorizer(reader).collect()
-    }
+    }*/
 
     // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
     pub fn train<const EMBEDDINGS: bool, RT, R>(
@@ -1181,7 +1195,7 @@ where
         testing_reader: Option<RT>,
         reader: R
     )
-    where
+/*    where
         RT: Read,
         R: Read,
         for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
@@ -1192,15 +1206,15 @@ where
         N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + SubAssign + fmt::Debug,
         N::Unit<LayerType>: DivAssign<f32> + AddAssign + Serialize + DeserializeOwned + IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
-        for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
+        for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable*/
     {
         if let Some(learning_rate) = info.learning_rate
         {
-            self.optimizer.set_learning_rate(learning_rate);
+//            self.optimizer.set_learning_rate(learning_rate);
         }
 
         // i dunno wuts the correct way to handle this stuff
-        let batch_step = info.batch_size * info.steps_num.mid();
+/*        let batch_step = info.batch_size * info.steps_num.mid();
 
         let inputs: Vec<_> = self.vectorized(reader);
         let testing_inputs: Vec<_> = if !info.calculate_loss && !info.calculate_accuracy
@@ -1316,10 +1330,10 @@ where
             }
         }
 
-        output_loss(self);
+        output_loss(self);*/
     }
 
-    pub fn predict_into<R>(
+/*    pub fn predict_into<R>(
         &mut self,
         reader: R,
         amount: usize,
@@ -1403,7 +1417,7 @@ where
         self.network.enable_gradients();
 
         predicted
-    }
+    }*/
 }
 
 #[cfg(test)]

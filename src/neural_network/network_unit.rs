@@ -1,7 +1,8 @@
 use crate::neural_network::{
     LAYER_ACTIVATION,
     AFType,
-    DiffWrapper,
+    OperationsRecorder,
+    DiffTensor,
     InputType,
     OneHotLayer,
     LayerSizes,
@@ -20,7 +21,7 @@ pub trait UnitFactory
 // i hate rust generics i hate rust generics i hate rust generics
 pub trait Embeddingsable
 {
-    fn embeddings(&self, input: &OneHotLayer) -> DiffWrapper;
+    fn embeddings(&self, input: &OneHotLayer) -> DiffTensor;
 }
 
 pub trait GenericUnit<T>
@@ -53,7 +54,7 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned + Clon
     fn new_zeroed(sizes: LayerSizes) -> Self;
 }
 
-pub trait NetworkUnit: GenericUnit<DiffWrapper> + Serialize + DeserializeOwned + Clone
+pub trait NetworkUnit: GenericUnit<DiffTensor> + Serialize + DeserializeOwned + Clone
 where
     Self: Sized
 {
@@ -63,45 +64,37 @@ where
 
     fn feedforward_unit(
         &self,
+        recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
         input: &InputType
-    ) -> NetworkOutput<Self::State, DiffWrapper>;
+    ) -> NetworkOutput<Self::State, DiffTensor>;
 
     fn feedforward_unit_nonlast(
         &self,
+        recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
-        dropout_mask: &DiffWrapper,
+        dropout_mask: DiffTensor,
         input: &InputType
-    ) -> NetworkOutput<Self::State, DiffWrapper>
+    ) -> NetworkOutput<Self::State, DiffTensor>
     {
-        let mut output = self.feedforward_unit(previous_state, input);
+        let mut output = self.feedforward_unit(recorder, previous_state, input);
 
-        match LAYER_ACTIVATION
+        let new_output = match LAYER_ACTIVATION
         {
             AFType::LeakyRelu =>
             {
-                output.output.leaky_relu();
+                recorder.leaky_relu(output.output)
             },
             AFType::Tanh =>
             {
-                output.output.tanh();
+                recorder.tanh(output.output)
             }
-        }
+        };
 
-        output.output *= dropout_mask;
+        output.output = recorder.mul_componentwise(new_output, dropout_mask);
 
         output
     }
 
     fn parameters_amount(&self, sizes: LayerSizes) -> u128;
-
-    fn enable_gradients(&mut self)
-    {
-        self.for_each_weight_mut(|v| v.enable_gradients());
-    }
-
-    fn disable_gradients(&mut self)
-    {
-        self.for_each_weight_mut(|v| v.disable_gradients());
-    }
 }
