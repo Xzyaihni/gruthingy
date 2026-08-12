@@ -25,7 +25,7 @@ use crate::{
         NewableLayer,
 //        GenericUnit,
 //        Optimizer,
-//        OptimizerUnit,
+        OptimizerUnit,
         UnitFactory,
 //        EN,
         DROPCONNECT_PROBABILITY,
@@ -472,23 +472,17 @@ impl<U, T> WeightsFullContainer<U, T>
 }
 
 pub struct Network<N: UnitFactory, O>
-/*where
-    N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit*/
 {
     recorder: OperationsRecorder,
     sizes: LayerSizes,
     dropout_probability: f32,
-    inputs_outputs: Vec<(DiffTensor, DiffTensor)>,
+    inputs_targets: Vec<(TensorIndex, OneHotIndex)>,
     output: DiffTensor,
-    optimizer_info: Option<WeightsFullContainer<N, O>>,
-    weights: WeightsFullContainer</*N::Unit<DiffTensor>*/(), DiffTensor>
+    optimizer_info: Option<WeightsFullContainer<N::Unit<O>, O>>,
+    weights: WeightsFullContainer<N::Unit<DiffTensor>, DiffTensor>
 }
 
 impl<N: UnitFactory, O> Network<N, O>
-/*where
-    N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit*/
 {
     pub fn sizes(&self) -> &LayerSizes
     {
@@ -497,12 +491,11 @@ impl<N: UnitFactory, O> Network<N, O>
 }
 
 impl<N: UnitFactory, O> Network<N, O>
-/*where
+where
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    for<'a> &'a N::Unit<DiffWrapper>: IntoIterator<Item=&'a DiffWrapper>,
-    for<'a> &'a mut N::Unit<DiffWrapper>: IntoIterator<Item=&'a mut DiffWrapper>
-*/
+    N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
+//    for<'a> &'a N::Unit<DiffWrapper>: IntoIterator<Item=&'a DiffWrapper>,
+//    for<'a> &'a mut N::Unit<DiffWrapper>: IntoIterator<Item=&'a mut DiffWrapper>
 {
     pub fn new(
         sizes: LayerSizes,
@@ -517,8 +510,7 @@ impl<N: UnitFactory, O> Network<N, O>
         let optimizer_info: Option<_> =
             Some(WeightsFullContainer::new(sizes, |size|
             {
-                todo!()
-                // N::Unit::new_zeroed(size)
+                N::Unit::new_zeroed(size)
             }, |size|
             {
                 O::new(size.hidden, size.output)
@@ -526,8 +518,7 @@ impl<N: UnitFactory, O> Network<N, O>
 
         let weights = WeightsFullContainer::new(sizes, |size|
         {
-            todo!()
-            // N::Unit::new(size)
+            N::Unit::new(size)
         }, |size|
         {
             let weights = recorder.new_tensor(size.output, size.hidden);
@@ -544,7 +535,7 @@ impl<N: UnitFactory, O> Network<N, O>
         let mut this = Self{
             recorder,
             sizes,
-            inputs_outputs: Vec::new(),
+            inputs_targets: Vec::new(),
             output: DiffTensor::undefined(),
             optimizer_info,
             weights,
@@ -561,7 +552,7 @@ impl<N: UnitFactory, O> Network<N, O>
     fn record_feedforward(&mut self, inputs_count: usize)
     {
         let mut output: Option<DiffTensor> = None;
-        // let mut previous_states: Option<Vec<UnitState<N>>> = None;
+        let mut previous_states: Option<Vec<UnitState<N>>> = None;
 
         let dropout_masks: Vec<_> = self.weights.layers.iter().skip(1).map(|_|
         {
@@ -570,19 +561,19 @@ impl<N: UnitFactory, O> Network<N, O>
 
         for _ in 0..inputs_count
         {
-            let this_input = self.recorder.new_tensor(self.sizes.input, 1);
-            let this_output = self.recorder.new_tensor(self.sizes.output, 1);
+            let this_input = self.recorder.new_tensor(self.sizes.input, 1).as_value();
+            let this_target = self.recorder.new_one_hot();
 
-            self.inputs_outputs.push((this_input, this_output));
+            self.inputs_targets.push((this_input, this_target));
 
             let NetworkOutput{
                 state,
                 output: this_output
             } = self.record_feedforward_single_input(
-//                previous_states.take(),
+                previous_states.take(),
                 &dropout_masks,
-//                this_input,
-//                this_output
+                this_input.into(),
+                this_target
             );
 
             // this might cause some networks to not converge at 0 loss (since sometimes its impossible to predict the next word with 0 context)
@@ -595,7 +586,7 @@ impl<N: UnitFactory, O> Network<N, O>
                 output = Some(this_output)
             }
 
-            // previous_states = Some(state);
+            previous_states = Some(state);
         }
 
         self.output = output.unwrap();
@@ -603,11 +594,11 @@ impl<N: UnitFactory, O> Network<N, O>
 
     fn record_feedforward_single_input(
         &mut self,
-//        previous_states: Option<Vec<UnitState<N>>>,
+        previous_states: Option<Vec<UnitState<N>>>,
         dropout_masks: &[TensorIndex],
-//        input: InputType,
-//        targets: OneHotLayer
-    ) -> NetworkOutput<()/*Vec<UnitState<N>>*/, DiffTensor>
+        input: InputType,
+        targets: OneHotIndex
+    ) -> NetworkOutput<Vec<UnitState<N>>, DiffTensor>
     {
 todo!()
 /*        self.feedforward_single_input_with_activation(|layer, previous_state, input|

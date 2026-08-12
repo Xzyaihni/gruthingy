@@ -49,10 +49,10 @@ pub trait GenericUnit<T>
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
-/*pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned + Clone
+pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned + Clone
 {
     fn new_zeroed(sizes: LayerSizes) -> Self;
-}*/
+}
 
 pub trait NetworkUnit: GenericUnit<DiffTensor> + Serialize + DeserializeOwned + Clone
 where
