@@ -33,7 +33,7 @@ use crate::{
 //use optimizers::*;
 
 pub use network::LayerSizes;
-//pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
+pub use optimizers::{NewableLayer, DecayFunction/*, Optimizer*/};
 pub use network_unit::{NetworkUnit, /*GenericUnit, */UnitFactory/*, OptimizerUnit*/};
 pub use network::WeightsNamed;
 pub use containers::{
@@ -61,7 +61,7 @@ use gru::Gru;*/
 
 //pub use embedding_unit::EmbeddingUnit;
 
-//mod optimizers;
+mod optimizers;
 mod network_unit;
 // mod gru;
 // mod lstm;

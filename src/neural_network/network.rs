@@ -22,7 +22,7 @@ use crate::{
         InputType,
         LayerType,
         NetworkUnit,
-//        NewableLayer,
+        NewableLayer,
 //        GenericUnit,
 //        Optimizer,
 //        OptimizerUnit,
@@ -471,7 +471,7 @@ impl<U, T> WeightsFullContainer<U, T>
     }*/
 }
 
-pub struct Network//<N: UnitFactory, O>
+pub struct Network<N: UnitFactory, O>
 /*where
     N::Unit<O>: OptimizerUnit<O>,
     N::Unit<DiffWrapper>: NetworkUnit*/
@@ -481,11 +481,11 @@ pub struct Network//<N: UnitFactory, O>
     dropout_probability: f32,
     inputs_outputs: Vec<(DiffTensor, DiffTensor)>,
     output: DiffTensor,
-//    optimizer_info: Option<WeightsFullContainer<N, O>>,
+    optimizer_info: Option<WeightsFullContainer<N, O>>,
     weights: WeightsFullContainer</*N::Unit<DiffTensor>*/(), DiffTensor>
 }
 
-impl/*<N: UnitFactory, O>*/ Network//<N, O>
+impl<N: UnitFactory, O> Network<N, O>
 /*where
     N::Unit<O>: OptimizerUnit<O>,
     N::Unit<DiffWrapper>: NetworkUnit*/
@@ -496,32 +496,33 @@ impl/*<N: UnitFactory, O>*/ Network//<N, O>
     }
 }
 
-impl/*<N, O>*/ Network//<N, O>
+impl<N: UnitFactory, O> Network<N, O>
 /*where
     N::Unit<O>: OptimizerUnit<O>,
     N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
     for<'a> &'a N::Unit<DiffWrapper>: IntoIterator<Item=&'a DiffWrapper>,
-    for<'a> &'a mut N::Unit<DiffWrapper>: IntoIterator<Item=&'a mut DiffWrapper>,
-    N: UnitFactory*/
+    for<'a> &'a mut N::Unit<DiffWrapper>: IntoIterator<Item=&'a mut DiffWrapper>
+*/
 {
     pub fn new(
         sizes: LayerSizes,
         inputs_count: usize,
         dropout_probability: f32
     ) -> Self
-//    where
-//        O: NewableLayer
+    where
+        O: NewableLayer
     {
         let mut recorder = OperationsRecorder::new();
 
-/*        let optimizer_info: Option<_> =
+        let optimizer_info: Option<_> =
             Some(WeightsFullContainer::new(sizes, |size|
             {
-                N::Unit::new_zeroed(size)
+                todo!()
+                // N::Unit::new_zeroed(size)
             }, |size|
             {
                 O::new(size.hidden, size.output)
-            }));*/
+            }));
 
         let weights = WeightsFullContainer::new(sizes, |size|
         {
@@ -545,7 +546,7 @@ impl/*<N, O>*/ Network//<N, O>
             sizes,
             inputs_outputs: Vec::new(),
             output: DiffTensor::undefined(),
-//            optimizer_info,
+            optimizer_info,
             weights,
             dropout_probability
         };

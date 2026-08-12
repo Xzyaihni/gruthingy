@@ -47,8 +47,8 @@ impl NewableLayer for AdamGradientInfo
     fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: LayerType::new(previous_size, this_size),
-            v: LayerType::new(previous_size, this_size)
+            m: LayerType::new(this_size, previous_size),
+            v: LayerType::new(this_size, previous_size)
         }
     }
 }
@@ -66,8 +66,8 @@ impl NewableLayer for AdamXGradientInfo
     fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: LayerType::new(previous_size, this_size),
-            v: LayerType::new(previous_size, this_size),
+            m: LayerType::new(this_size, previous_size),
+            v: LayerType::new(this_size, previous_size),
             v_hat: None
         }
     }
@@ -84,7 +84,7 @@ impl NewableLayer for PowerSignGradientInfo
     fn new(previous_size: usize, this_size: usize) -> Self
     {
         Self{
-            m: LayerType::new(previous_size, this_size)
+            m: LayerType::new(this_size, previous_size)
         }
     }
 }
@@ -251,7 +251,7 @@ impl Optimizer for AdamX
 
         if let Some(v_hat) = gradient_info.v_hat.as_mut()
         {
-            let one_minus_b1_tlast = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t - 1);
+            let one_minus_b1_tlast: f32 = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t - 1);
 
             let lhs = (one_minus_b1_t).powi(2) / (one_minus_b1_tlast).powi(2);
 
@@ -316,7 +316,7 @@ impl Optimizer for Adam
     {
         let optimize_this = ();
         let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t);
-        let one_minus_b2_t = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
+        let one_minus_b2_t: f32 = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
 
         gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
         gradient_info.v = &gradient_info.v * self.b2 + (&gradient * &gradient) * (1.0 - self.b2);
