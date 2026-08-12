@@ -13,7 +13,6 @@ use super::{
     Softmaxer,
     Softmaxable,
     OneHotLayer,
-    LayerType,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -608,6 +607,18 @@ impl MatrixWrapper
         }
 
         Self(this)
+    }
+
+    pub fn matmulv_transposed_into(&mut self, lhs: &Self, rhs: &Self)
+    {
+        let optimize_this = ();
+        self.0 = lhs.0.tr_mul(&rhs.0)
+    }
+
+    pub fn outer_product_into(&mut self, lhs: &Self, rhs: &Self)
+    {
+        let optimize_this = ();
+        self.0 = &lhs.0 * &rhs.0.transpose();
     }
 
     pub fn max(&mut self, rhs: &Self)

@@ -1,13 +1,9 @@
 use std::{
     f32,
-    mem,
-    iter,
-    rc::Rc,
     fmt::Debug,
-    cell::{self, RefCell},
     borrow::Borrow,
     collections::HashSet,
-    ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, MulAssign, DivAssign, Neg}
+    ops::DivAssign
 };
 
 use serde::{Serialize, Deserialize};
@@ -403,6 +399,20 @@ impl OperationsRecorder
         impl_pair_tensor_op!(self, a, b, MulComponentwise)
     }
 
+    pub fn matmulv(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
+        let (b_rows, b_columns) = self.tensor_shape(b.as_value());
+
+        let output = self.new_tensor_op(source, a_rows, b_columns);
+
+        self.recording_operations.push(Op::Matmulv{lhs: a, rhs: b, output});
+
+        output
+    }
+
     pub fn sum_tensor(&mut self, a: DiffTensor) -> DiffScalar
     {
         let source = Some(self.current_source());
@@ -582,6 +592,23 @@ impl OperationsRecorder
                 {
                     let optimize_this = ();
                     self.tensors[output.0] = (&self.tensors[softmaxed_values.0] - targets.clone().into_layer()) * self.values[gradient.0];
+                },
+                GradientOp::Matmulv{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = self.tensors[lhs.0].matmulv(&self.tensors[rhs.0]);
+                },
+                GradientOp::MatmulvTransposed{lhs, rhs, output} =>
+                {
+                    let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
+
+                    output.matmulv_transposed_into(lhs, rhs);
+                },
+                GradientOp::OuterProduct{lhs, rhs, output} =>
+                {
+                    let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
+
+                    output.outer_product_into(lhs, rhs);
                 }
             }
         });
@@ -665,6 +692,10 @@ impl OperationsRecorder
                         softmaxed_output: softmaxed_output.as_value(),
                         output: output.as_value()
                     }
+                },
+                Op::Matmulv{lhs, rhs, output} =>
+                {
+                    GradientOp::Matmulv{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 }
             }
         }));
@@ -698,7 +729,10 @@ impl OperationsRecorder
                     | GradientOp::TanhDiff{output, ..}
                     | GradientOp::LeakyRelu{output, ..}
                     | GradientOp::LeakyReluDiff{output, ..}
-                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..} => output.into(),
+                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
+                    | GradientOp::Matmulv{output, ..}
+                    | GradientOp::MatmulvTransposed{output, ..}
+                    | GradientOp::OuterProduct{output, ..} => output.into(),
                     GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..}
@@ -741,7 +775,10 @@ impl OperationsRecorder
                     | GradientOp::TanhDiff{output, ..}
                     | GradientOp::LeakyRelu{output, ..}
                     | GradientOp::LeakyReluDiff{output, ..}
-                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..} =>
+                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
+                    | GradientOp::Matmulv{output, ..}
+                    | GradientOp::MatmulvTransposed{output, ..}
+                    | GradientOp::OuterProduct{output, ..} =>
                     {
                         let (rows, columns) = maybe_shape.unwrap();
 
@@ -1086,11 +1123,22 @@ impl OperationsRecorder
 
                         self.calculate_gradient((*values).into());
                     }
+                },
+                Op::Matmulv{lhs, rhs, output} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::OuterProduct{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
+                    }
+
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                    }
                 }
             }
-        } else
-        {
-            let this_gradient_is_one = ();
         }
     }
 }
@@ -1254,7 +1302,10 @@ pub enum GradientOp
     TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
     Dot{lhs: TensorIndex, rhs: TensorIndex, output: ValueIndex},
     SoftmaxCrossEntropy{values: TensorIndex, targets: OneHotLayer, softmaxed_output: TensorIndex, output: ValueIndex},
-    SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotLayer, output: TensorIndex}
+    SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotLayer, output: TensorIndex},
+    Matmulv{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    MatmulvTransposed{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    OuterProduct{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex}
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1273,40 +1324,12 @@ pub enum Op
     Sigmoid{value: DiffTensor, output: DiffTensor},
     Tanh{value: DiffTensor, output: DiffTensor},
     Dot{lhs: DiffTensor, rhs: DiffTensor, output: DiffScalar},
-    SoftmaxCrossEntropy{values: DiffTensor, targets: OneHotLayer, softmaxed_output: DiffTensor, output: DiffScalar}
+    SoftmaxCrossEntropy{values: DiffTensor, targets: OneHotLayer, softmaxed_output: DiffTensor, output: DiffScalar},
+    Matmulv{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor}
 }
 
 const REMOVE_ME_TOO: () = {let a = (); ()};
-/*impl DiffBounds for f32
-{
-    fn into_layer_type<'a>(&self, value_getter: impl FnOnce() -> cell::Ref<'a, LayerType>) -> LayerType
-    {
-        let value = value_getter();
-
-        LayerType::repeat(value.columns(), value.rows(), *self)
-    }
-
-    fn component_mul(&self, rhs: LayerType) -> LayerType
-    {
-        rhs * *self
-    }
-
-    fn reciprocal(self) -> Self
-    {
-        self.recip()
-    }
-
-    fn negate_operation(&self) -> impl DiffOperation
-    {
-        NegateF32Operation(*self)
-    }
-
-    fn mul_ba_operation<'a>(&'a self, a: cell::Ref<'a, AnyDiffType>) -> impl DiffOperation
-    {
-        MulGF32Operation{a, b: *self}
-    }
-}
-
+/*
 impl DiffBounds for LayerType
 {
     fn into_layer_type<'a>(&self, _value_getter: impl FnOnce() -> cell::Ref<'a, LayerType>) -> LayerType
@@ -1375,38 +1398,6 @@ impl DiffBounds for LayerType
         {
             added.derivatives(self);
         }
-    }
-
-    fn reciprocal(mut self) -> Self
-    {
-        LayerType::reciprocal(&mut self);
-
-        self
-    }
-
-    fn sigmoid_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation
-    {
-        SigmoidOperation{a, gradient: self}
-    }
-
-    fn tanh_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation
-    {
-        TanhOperation{a, gradient: self}
-    }
-
-    fn leaky_relu_operation(&self) -> impl DiffOperation
-    {
-        LeakyReluOperation(self)
-    }
-
-    fn negate_operation(&self) -> impl DiffOperation
-    {
-        NegateTensorOperation(self)
-    }
-
-    fn mul_ba_operation<'a>(&'a self, a: cell::Ref<'a, AnyDiffType>) -> impl DiffOperation
-    {
-        MulGTensorOperation{a, b: self}
     }
 }*/
 
@@ -1503,26 +1494,14 @@ impl From<OneHotLayer> for InputType
 
 const REMOVE_ME: () = {let a = (); ()};
 /*
-    fn derivatives_skip_gradient_no_check(&mut self)
+    Ops::MatmulvAdd{lhs, rhs, added} =>
     {
-        let gradient = self.gradient.as_ref().unwrap();
-
-        match mem::replace(&mut self.parent, Ops::None)
-        {
-            Ops::Matmulv{lhs, rhs} =>
-            {
-                gradient.matmul_v(lhs, rhs);
-            },
-            Ops::MatmulvAdd{lhs, rhs, added} =>
-            {
-                gradient.matmul_v_add(lhs, rhs, added);
-            },
-            Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
-            {
-                gradient.matmul_one_hot_v_add(lhs, rhs, added);
-            },
-        }
-    }
+        gradient.matmul_v_add(lhs, rhs, added);
+    },
+    Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
+    {
+        gradient.matmul_one_hot_v_add(lhs, rhs, added);
+    },
 */
 
 #[cfg(test)]
@@ -1605,7 +1584,6 @@ mod tests
         old_tensor: DiffTensor
     ) -> DiffTensor
     {
-        let (rows, columns) = old_recorder.tensor_shape(old_tensor.as_value());
         let old_value = old_recorder.get_tensor(old_tensor.as_value()).clone();
 
         new_recorder.set_new_tensor(old_value)
@@ -1915,12 +1893,17 @@ mod tests
         })
     }
 
-    const UNCOMMENT_ME_THREE: () = { let a = (); () };
-    /*#[test]
+    #[test]
     fn matrix_multiplication()
     {
-        check_tensor_with_dims((4, 2), (1, 4), |a, b| a.matmulv(b) + b.sum())
-    }*/
+        check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
+        {
+            let s = recorder.sum_tensor(b);
+            let mm = recorder.matmulv(a, b);
+
+            recorder.add_scalar(mm, s)
+        })
+    }
 
     fn create_targets() -> OneHotLayer
     {
