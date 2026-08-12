@@ -117,6 +117,7 @@ pub struct OperationsRecorder
     state: RecorderState,
     values: Vec<f32>,
     tensors: Vec<LayerType>,
+    one_hot_layers: Vec<OneHotLayer>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp>,
     feedforward_operations_count: usize
@@ -227,6 +228,7 @@ impl OperationsRecorder
             state: RecorderState::Recording,
             values: Vec::new(),
             tensors: Vec::new(),
+            one_hot_layers: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
             feedforward_operations_count: 0
@@ -241,6 +243,15 @@ impl OperationsRecorder
     pub fn new_value(&mut self) -> DiffScalar
     {
         self.new_value_with_source(None, true)
+    }
+
+    pub fn new_one_hot(&mut self) -> OneHotIndex
+    {
+        let id = self.one_hot_layers.len();
+
+        self.one_hot_layers.push(OneHotLayer::empty());
+
+        OneHotIndex(id)
     }
 
     fn new_tensor_op(
@@ -289,6 +300,11 @@ impl OperationsRecorder
     pub fn set_value(&mut self, index: ValueIndex, value: f32)
     {
         self.values[index.0] = value;
+    }
+
+    pub fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
+    {
+        self.one_hot_layers[index.0] = value;
     }
 
     pub fn set_new_tensor(&mut self, value: LayerType) -> DiffTensor
@@ -481,7 +497,7 @@ impl OperationsRecorder
         impl_map_tensor_op!(self, a, LeakyRelu)
     }
 
-    pub fn softmax_cross_entropy(&mut self, values: DiffTensor, targets: OneHotLayer) -> DiffScalar
+    pub fn softmax_cross_entropy(&mut self, values: DiffTensor, targets: OneHotIndex) -> DiffScalar
     {
         let source = Some(self.current_source());
 
@@ -622,12 +638,13 @@ impl OperationsRecorder
                 GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
                     let optimize_this = ();
-                    (self.tensors[softmaxed_output.0], self.values[output.0]) = self.tensors[values.0].clone().softmax_cross_entropy(targets);
+                    (self.tensors[softmaxed_output.0], self.values[output.0]) = self.tensors[values.0].clone()
+                        .softmax_cross_entropy(&self.one_hot_layers[targets.0]);
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
                     let optimize_this = ();
-                    self.tensors[output.0] = (&self.tensors[softmaxed_values.0] - targets.clone().into_layer()) * self.values[gradient.0];
+                    self.tensors[output.0] = (&self.tensors[softmaxed_values.0] - self.one_hot_layers[targets.0].clone().into_layer()) * self.values[gradient.0];
                 },
                 GradientOp::Matmulv{lhs, rhs, output} =>
                 {
@@ -642,7 +659,7 @@ impl OperationsRecorder
                 GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
                     let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[lhs.0].matmul_onehotv_add(rhs, &self.tensors[added.0]);
+                    self.tensors[output.0] = self.tensors[lhs.0].matmul_onehotv_add(&self.one_hot_layers[rhs.0], &self.tensors[added.0]);
                 },
                 GradientOp::MatmulvTransposed{lhs, rhs, output} =>
                 {
@@ -1218,6 +1235,9 @@ impl OperationsRecorder
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OneHotIndex(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorIndex(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1385,11 +1405,11 @@ pub enum GradientOp
     Tanh{value: TensorIndex, output: TensorIndex},
     TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
     Dot{lhs: TensorIndex, rhs: TensorIndex, output: ValueIndex},
-    SoftmaxCrossEntropy{values: TensorIndex, targets: OneHotLayer, softmaxed_output: TensorIndex, output: ValueIndex},
-    SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotLayer, output: TensorIndex},
+    SoftmaxCrossEntropy{values: TensorIndex, targets: OneHotIndex, softmaxed_output: TensorIndex, output: ValueIndex},
+    SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotIndex, output: TensorIndex},
     Matmulv{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
     MatmulvAdd{lhs: TensorIndex, rhs: TensorIndex, added: TensorIndex, output: TensorIndex},
-    MatmulOneHotvAdd{lhs: TensorIndex, rhs: OneHotLayer, added: TensorIndex, output: TensorIndex},
+    MatmulOneHotvAdd{lhs: TensorIndex, rhs: OneHotIndex, added: TensorIndex, output: TensorIndex},
     MatmulvTransposed{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
     OuterProduct{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex}
 }
@@ -1411,7 +1431,7 @@ pub enum Op
     Sigmoid{value: DiffTensor, output: DiffTensor},
     Tanh{value: DiffTensor, output: DiffTensor},
     Dot{lhs: DiffTensor, rhs: DiffTensor, output: DiffScalar},
-    SoftmaxCrossEntropy{values: DiffTensor, targets: OneHotLayer, softmaxed_output: DiffTensor, output: DiffScalar},
+    SoftmaxCrossEntropy{values: DiffTensor, targets: OneHotIndex, softmaxed_output: DiffTensor, output: DiffScalar},
     Matmulv{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor}
 }
 
@@ -1482,6 +1502,11 @@ impl OneHotLayer
         this
     }
 
+    pub fn empty() -> Self
+    {
+        Self::new([], 0)
+    }
+
     pub fn into_layer(self) -> LayerType
     {
         let size = self.size;
@@ -1496,16 +1521,16 @@ impl OneHotLayer
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum InputType
 {
-    Normal(DiffWrapper),
-    OneHot(OneHotLayer)
+    Normal(TensorIndex),
+    OneHot(OneHotIndex)
 }
 
 impl InputType
 {
-    pub fn into_one_hot(self) -> OneHotLayer
+    pub fn into_one_hot(self) -> OneHotIndex
     {
         match self
         {
@@ -1514,7 +1539,7 @@ impl InputType
         }
     }
 
-    pub fn into_normal(self) -> DiffWrapper
+    pub fn into_normal(self) -> TensorIndex
     {
         match self
         {
@@ -1522,28 +1547,19 @@ impl InputType
             _ => panic!("expected normal")
         }
     }
-
-    pub fn as_one_hot(&self) -> &OneHotLayer
-    {
-        match self
-        {
-            Self::OneHot(value) => value,
-            _ => panic!("expected onehot")
-        }
-    }
 }
 
-impl From<DiffWrapper> for InputType
+impl From<TensorIndex> for InputType
 {
-    fn from(value: DiffWrapper) -> Self
+    fn from(value: TensorIndex) -> Self
     {
         Self::Normal(value)
     }
 }
 
-impl From<OneHotLayer> for InputType
+impl From<OneHotIndex> for InputType
 {
-    fn from(value: OneHotLayer) -> Self
+    fn from(value: OneHotIndex) -> Self
     {
         Self::OneHot(value)
     }
@@ -1967,6 +1983,24 @@ mod tests
         })
     }
 
+    #[test]
+    fn matrix_multiplication_more()
+    {
+        check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
+        {
+            let s = recorder.sum_tensor(b);
+            let mm = recorder.matmulv(a, b);
+            let left = recorder.add_scalar(mm, s);
+
+            let k = recorder.matmulv(a, b);
+            let l = recorder.matmulv(a, b);
+
+            let right = recorder.add(k, l);
+
+            recorder.mul_componentwise(left, right)
+        })
+    }
+
     fn create_targets() -> OneHotLayer
     {
         let pos = fastrand::usize(0..LAYER_CURR);
@@ -1980,7 +2014,10 @@ mod tests
         let targets = create_targets();
         check_vector(|recorder, a, b|
         {
-            let sm = recorder.softmax_cross_entropy(a, targets.clone());
+            let targets_index = recorder.new_one_hot();
+            recorder.set_one_hot(targets_index, targets.clone());
+
+            let sm = recorder.softmax_cross_entropy(a, targets_index);
             recorder.add_scalar(b, sm)
         })
     }
@@ -1991,10 +2028,13 @@ mod tests
         let targets = create_targets();
         check_vector(|recorder, a, b|
         {
+            let targets_index = recorder.new_one_hot();
+            recorder.set_one_hot(targets_index, targets.clone());
+
             let two = recorder.set_new_value(2.0);
             let btwo = recorder.add_scalar(b, two);
 
-            let sm = recorder.softmax_cross_entropy(btwo, targets.clone());
+            let sm = recorder.softmax_cross_entropy(btwo, targets_index);
 
             recorder.add_scalar(a, sm)
         })
