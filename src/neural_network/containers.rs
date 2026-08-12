@@ -413,6 +413,17 @@ impl OperationsRecorder
         output
     }
 
+    pub fn dot(&mut self, a: DiffTensor, b: DiffTensor) -> DiffScalar
+    {
+        let source = Some(self.current_source());
+
+        let output = self.new_value_op(source);
+
+        self.recording_operations.push(Op::Dot{lhs: a, rhs: b, output});
+
+        output
+    }
+
     pub fn pow(&mut self, a: DiffTensor, power: i32) -> DiffTensor
     {
         let source = Some(self.current_source());
@@ -501,6 +512,10 @@ impl OperationsRecorder
                 {
                     self.values[output.0] = self.tensors[value.0].sum();
                 },
+                GradientOp::Dot{lhs, rhs, output} =>
+                {
+                    self.values[output.0] = self.tensors[lhs.0].dot(&self.tensors[rhs.0]);
+                },
                 GradientOp::Fill{value, output} =>
                 {
                     self.tensors[output.0].fill(self.values[value.0]);
@@ -545,6 +560,10 @@ impl OperationsRecorder
                 }
             }
         });
+
+        // this might give a false positive but its a very important check
+        debug_assert!(self.values.iter().all(|x| *x != 0.0));
+        debug_assert!(self.tensors.iter().all(|x| x.iter().any(|inner| *inner != 0.0)));
     }
 
     pub fn finish(&mut self)
@@ -586,6 +605,10 @@ impl OperationsRecorder
                 Op::SumTensor{value, output} =>
                 {
                     GradientOp::SumTensor{value: value.as_value(), output: output.as_value()}
+                },
+                Op::Dot{lhs, rhs, output} =>
+                {
+                    GradientOp::Dot{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 },
                 Op::Pow{lhs, power, output} =>
                 {
@@ -637,7 +660,8 @@ impl OperationsRecorder
                     | GradientOp::LeakyReluDiff{output, ..} => output.into(),
                     GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
-                    | GradientOp::SumTensor{output, ..} => output.into()
+                    | GradientOp::SumTensor{output, ..}
+                    | GradientOp::Dot{output, ..} => output.into()
                 }
             };
 
@@ -692,7 +716,8 @@ impl OperationsRecorder
                     },
                     GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
-                    | GradientOp::SumTensor{output, ..} =>
+                    | GradientOp::SumTensor{output, ..}
+                    | GradientOp::Dot{output, ..} =>
                     {
                         let final_output = *output;
 
@@ -927,6 +952,24 @@ impl OperationsRecorder
                         self.calculate_gradient((*value).into());
                     }
                 },
+                Op::Dot{lhs, rhs, output: _} =>
+                {
+                    let gradient = gradient.as_value();
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::MulScalar{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                    }
+
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::MulScalar{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                    }
+
+                    let lhs = *lhs;
+                    self.calculate_gradient((*rhs).into());
+                    self.calculate_gradient(lhs.into());
+                },
                 Op::Pow{lhs, power, output: _} =>
                 {
                     let gradient = gradient.as_tensor();
@@ -957,6 +1000,8 @@ impl OperationsRecorder
                     if let Some(value_gradient) = value.as_gradient()
                     {
                         self.gradient_operations.push(GradientOp::SigmoidDiff{value: output.as_value(), gradient, output: value_gradient});
+
+                        self.calculate_gradient((*value).into());
                     }
                 },
                 Op::Tanh{value, output} =>
@@ -967,6 +1012,8 @@ impl OperationsRecorder
                     if let Some(value_gradient) = value.as_gradient()
                     {
                         self.gradient_operations.push(GradientOp::TanhDiff{value: output.as_value(), gradient, output: value_gradient});
+
+                        self.calculate_gradient((*value).into());
                     }
                 },
                 Op::LeakyRelu{value, output: _} =>
@@ -976,6 +1023,8 @@ impl OperationsRecorder
                     if let Some(value_gradient) = value.as_gradient()
                     {
                         self.gradient_operations.push(GradientOp::LeakyReluDiff{value: value.as_value(), gradient, output: value_gradient});
+
+                        self.calculate_gradient((*value).into());
                     }
                 }
             }
@@ -1142,7 +1191,8 @@ pub enum GradientOp
     Sigmoid{value: TensorIndex, output: TensorIndex},
     SigmoidDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
     Tanh{value: TensorIndex, output: TensorIndex},
-    TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex}
+    TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
+    Dot{lhs: TensorIndex, rhs: TensorIndex, output: ValueIndex}
 }
 
 const UNCOMMENT_US: () = {let a = (); ()};
@@ -1160,9 +1210,9 @@ pub enum Op
     Pow{lhs: DiffTensor, power: i32, output: DiffTensor},
     LeakyRelu{value: DiffTensor, output: DiffTensor},
     Sigmoid{value: DiffTensor, output: DiffTensor},
-    Tanh{value: DiffTensor, output: DiffTensor}
+    Tanh{value: DiffTensor, output: DiffTensor},
+    Dot{lhs: DiffTensor, rhs: DiffTensor, output: DiffScalar}
     /*
-    Dot{lhs: DiffWrapper, rhs: DiffWrapper},
     Matmulv{lhs: DiffWrapper, rhs: DiffWrapper},
     MatmulvAdd{lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper},
     MatmulOneHotvAdd{lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper},
@@ -1418,26 +1468,6 @@ const REMOVE_ME: () = {let a = (); ()};
             {
                 gradient.matmul_one_hot_v_add(lhs, rhs, added);
             },
-            Ops::Dot{lhs, rhs} =>
-            {
-                let gradient = gradient.into_layer_type(|| lhs.tensor());
-
-                let lhs_value = rhs.is_gradient().then(|| lhs.value_clone());
-
-                if lhs.is_gradient()
-                {
-                    let d = rhs.value_clone() * &gradient;
-
-                    lhs.derivatives(d);
-                }
-
-                if let Some(lhs_value) = lhs_value
-                {
-                    let d = lhs_value * &gradient;
-
-                    rhs.derivatives(d);
-                }
-            },
             Ops::SoftmaxCrossEntropy{values, softmaxed_values, targets} =>
             {
                 if values.is_gradient()
@@ -1628,7 +1658,6 @@ mod tests
         let a_fg = vec_to_layer(a_fg, a);
         let b_fg = vec_to_layer(b_fg, b);
 
-        dbg!(&a_fg, &a_g);
         eprintln!("derivative of a");
         compare_tensor(a_fg, a_g);
 
@@ -1766,12 +1795,15 @@ mod tests
         })
     }
 
-    const UNCOMMENT_ME_AAA: () = { let a = (); () };
-    /*#[test]
+    #[test]
     fn dot_product()
     {
-        check_vector(|a, b| a + a.clone().dot(b.clone()))
-    }*/
+        check_vector(|recorder, a, b|
+        {
+            let a_dot_b = recorder.dot(a, b);
+            recorder.add_scalar(a, a_dot_b)
+        })
+    }
 
     #[test]
     fn scalar_minus_tensor()

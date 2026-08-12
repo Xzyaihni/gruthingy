@@ -298,7 +298,7 @@ impl Softmaxable for MatrixWrapper
 {
     fn exp(&mut self)
     {
-        self.exp();
+        self.exp_inplace();
     }
 
     fn sum(&self) -> f32
@@ -407,64 +407,6 @@ impl<'a> DiffOperation for MatMulVTransposed<'a>
         debug_assert!(self.b.0.shape().1 == 1);
 
         MatrixWrapper(self.a.0.tr_mul(&self.b.0))
-    }
-}
-
-impl<'a> DiffOperation for TanhOperation<'a>
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        |_, output|
-        {
-            *output = Some(MatrixWrapper(self.a.0.zip_map(&self.gradient.0, |a, b| (1.0 - (a * a)) * b)))
-        }
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        |_, output|
-        {
-            output.0.zip_zip_apply(&self.a.0, &self.gradient.0, |output, a, b| *output += (1.0 - (a * a)) * b)
-        }
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        unimplemented!()
-    }
-
-    fn compute_tensor(self) -> LayerType
-    {
-        unimplemented!()
-    }
-}
-
-impl<'a> DiffOperation for LeakyReluOperation<'a>
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        |value, output|
-        {
-            *output = Some(MatrixWrapper(value.0.zip_map(&self.0.0, |a, b| leaky_relu_d(a) * b)))
-        }
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        |value, output|
-        {
-            output.0.zip_zip_apply(&value.0, &self.0.0, |output, a, b| *output += leaky_relu_d(a) * b)
-        }
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        unimplemented!()
-    }
-
-    fn compute_tensor(self) -> LayerType
-    {
-        unimplemented!()
     }
 }
 
@@ -685,7 +627,7 @@ impl MatrixWrapper
         rhs.positions.iter().map(|position| this.index(*position)).sum()
     }
 
-    pub fn dot(self, rhs: &Self) -> f32
+    pub fn dot(&self, rhs: &Self) -> f32
     {
         self.0.dot(&rhs.0)
     }
@@ -748,6 +690,11 @@ impl MatrixWrapper
     pub fn leaky_relu_gradient_inplace(&mut self, value: &Self, gradient: &Self)
     {
         self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = leaky_relu_d(a) * b);
+    }
+
+    pub fn exp_inplace(&mut self)
+    {
+        self.0.apply(|x| *x = x.exp());
     }
 
     pub fn sum(&self) -> f32
