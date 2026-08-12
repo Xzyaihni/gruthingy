@@ -118,7 +118,8 @@ pub struct OperationsRecorder
     values: Vec<f32>,
     tensors: Vec<LayerType>,
     recording_operations: Vec<Op>,
-    gradient_operations: Vec<GradientOp>
+    gradient_operations: Vec<GradientOp>,
+    feedforward_operations_count: usize
 }
 
 // avoids borrow checker
@@ -217,6 +218,7 @@ macro_rules! impl_map_tensor_op
     }
 }
 
+#[allow(dead_code)]
 impl OperationsRecorder
 {
     pub fn new() -> Self
@@ -226,7 +228,8 @@ impl OperationsRecorder
             values: Vec::new(),
             tensors: Vec::new(),
             recording_operations: Vec::new(),
-            gradient_operations: Vec::new()
+            gradient_operations: Vec::new(),
+            feedforward_operations_count: 0
         }
     }
 
@@ -403,8 +406,8 @@ impl OperationsRecorder
     {
         let source = Some(self.current_source());
 
-        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
-        let (b_rows, b_columns) = self.tensor_shape(b.as_value());
+        let (a_rows, _a_columns) = self.tensor_shape(a.as_value());
+        let (_b_rows, b_columns) = self.tensor_shape(b.as_value());
 
         let output = self.new_tensor_op(source, a_rows, b_columns);
 
@@ -484,9 +487,21 @@ impl OperationsRecorder
         (tensor.rows(), tensor.columns())
     }
 
+    pub fn calculate_feedforward(&mut self)
+    {
+        self.calculate_steps(self.feedforward_operations_count);
+    }
+
     pub fn calculate(&mut self)
     {
-        self.gradient_operations.iter().for_each(|gradient_op|
+        self.calculate_steps(self.gradient_operations.len());
+    }
+
+    fn calculate_steps(&mut self, steps: usize)
+    {
+        debug_assert!(self.state == RecorderState::Ready);
+
+        self.gradient_operations.iter().take(steps).for_each(|gradient_op|
         {
             match gradient_op
             {
@@ -508,6 +523,12 @@ impl OperationsRecorder
                 {
                     let optimize_this = ();
                     self.tensors[output.0] = &self.tensors[lhs.0] + &self.tensors[rhs.0];
+                },
+                GradientOp::AddInplace{value, output} =>
+                {
+                    let [output, value] = self.tensors.get_disjoint_mut([output.0, value.0]).unwrap();
+
+                    *output += value;
                 },
                 GradientOp::Sub{lhs, rhs, output} =>
                 {
@@ -598,6 +619,16 @@ impl OperationsRecorder
                     let optimize_this = ();
                     self.tensors[output.0] = self.tensors[lhs.0].matmulv(&self.tensors[rhs.0]);
                 },
+                GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = self.tensors[lhs.0].matmulv(&self.tensors[rhs.0]) + &self.tensors[added.0];
+                },
+                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = self.tensors[lhs.0].matmul_onehotv_add(rhs, &self.tensors[added.0]);
+                },
                 GradientOp::MatmulvTransposed{lhs, rhs, output} =>
                 {
                     let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
@@ -628,7 +659,7 @@ impl OperationsRecorder
     {
         debug_assert!(self.state == RecorderState::Recording);
 
-        self.gradient_operations.extend(self.recording_operations.iter().map(|op|
+        self.gradient_operations = self.recording_operations.iter().map(|op|
         {
             match op
             {
@@ -698,7 +729,9 @@ impl OperationsRecorder
                     GradientOp::Matmulv{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 }
             }
-        }));
+        }).collect();
+
+        self.feedforward_operations_count = self.gradient_operations.len();
 
         self.state = RecorderState::AwaitingGradient;
     }
@@ -717,6 +750,7 @@ impl OperationsRecorder
                     GradientOp::Copy{dst: output, ..}
                     | GradientOp::AddScalar{output, ..}
                     | GradientOp::Add{output, ..}
+                    | GradientOp::AddInplace{output, ..}
                     | GradientOp::Sub{output, ..}
                     | GradientOp::SubFromScalar{output, ..}
                     | GradientOp::MulScalar{output, ..}
@@ -731,6 +765,8 @@ impl OperationsRecorder
                     | GradientOp::LeakyReluDiff{output, ..}
                     | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
                     | GradientOp::Matmulv{output, ..}
+                    | GradientOp::MatmulvAdd{output, ..}
+                    | GradientOp::MatmulOneHotvAdd{output, ..}
                     | GradientOp::MatmulvTransposed{output, ..}
                     | GradientOp::OuterProduct{output, ..} => output.into(),
                     GradientOp::AddScalars{output, ..}
@@ -763,6 +799,7 @@ impl OperationsRecorder
                     GradientOp::Copy{dst: output, ..}
                     | GradientOp::AddScalar{output, ..}
                     | GradientOp::Add{output, ..}
+                    | GradientOp::AddInplace{output, ..}
                     | GradientOp::Sub{output, ..}
                     | GradientOp::SubFromScalar{output, ..}
                     | GradientOp::MulScalar{output, ..}
@@ -777,6 +814,8 @@ impl OperationsRecorder
                     | GradientOp::LeakyReluDiff{output, ..}
                     | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
                     | GradientOp::Matmulv{output, ..}
+                    | GradientOp::MatmulvAdd{output, ..}
+                    | GradientOp::MatmulOneHotvAdd{output, ..}
                     | GradientOp::MatmulvTransposed{output, ..}
                     | GradientOp::OuterProduct{output, ..} =>
                     {
@@ -788,10 +827,9 @@ impl OperationsRecorder
 
                         *output = temporary_add_index;
 
-                        let these_are_illegal = (); let replace_with_a_separate_op = ();
                         self.gradient_operations.insert(
                             i + 1,
-                            GradientOp::Add{lhs: temporary_add_index, rhs: final_output, output: final_output}
+                            GradientOp::AddInplace{value: temporary_add_index, output: final_output}
                         );
                     },
                     GradientOp::AddScalars{output, ..}
@@ -840,7 +878,7 @@ impl OperationsRecorder
 
     fn calculate_gradient(&mut self, respect: DiffWrapper)
     {
-        let (this_value, gradient, source): (DiffValue, DiffValue, Option<OperationIndex>) = match respect
+        let (_this_value, gradient, source): (DiffValue, DiffValue, Option<OperationIndex>) = match respect
         {
             DiffWrapper::Tensor(DiffTensor{index, gradient, source}) =>
             {
@@ -1124,7 +1162,7 @@ impl OperationsRecorder
                         self.calculate_gradient((*values).into());
                     }
                 },
-                Op::Matmulv{lhs, rhs, output} =>
+                Op::Matmulv{lhs, rhs, output: _} =>
                 {
                     let gradient = gradient.as_tensor();
 
@@ -1137,6 +1175,10 @@ impl OperationsRecorder
                     {
                         self.gradient_operations.push(GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
                     }
+
+                    let rhs = *rhs;
+                    self.calculate_gradient((*lhs).into());
+                    self.calculate_gradient(rhs.into());
                 }
             }
         }
@@ -1286,6 +1328,7 @@ pub enum GradientOp
     AddScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
     AddScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
     Add{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    AddInplace{value: TensorIndex, output: TensorIndex},
     Sub{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
     SubFromScalar{lhs: ValueIndex, rhs: TensorIndex, output: TensorIndex},
     MulScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
@@ -1304,6 +1347,8 @@ pub enum GradientOp
     SoftmaxCrossEntropy{values: TensorIndex, targets: OneHotLayer, softmaxed_output: TensorIndex, output: ValueIndex},
     SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotLayer, output: TensorIndex},
     Matmulv{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    MatmulvAdd{lhs: TensorIndex, rhs: TensorIndex, added: TensorIndex, output: TensorIndex},
+    MatmulOneHotvAdd{lhs: TensorIndex, rhs: OneHotLayer, added: TensorIndex, output: TensorIndex},
     MatmulvTransposed{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
     OuterProduct{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex}
 }
@@ -1332,36 +1377,6 @@ const REMOVE_ME_TOO: () = {let a = (); ()};
 /*
 impl DiffBounds for LayerType
 {
-    fn into_layer_type<'a>(&self, _value_getter: impl FnOnce() -> cell::Ref<'a, LayerType>) -> LayerType
-    {
-        self.clone()
-    }
-
-    fn component_mul(&self, rhs: LayerType) -> LayerType
-    {
-        self * rhs
-    }
-
-    fn matmul_v(&self, lhs: DiffWrapper, mut rhs: DiffWrapper)
-    {
-        let is_rhs_gradient = rhs.is_gradient();
-
-        if is_rhs_gradient
-        {
-            rhs.derivatives_set_gradient(MatMulVTransposed{a: &lhs.tensor(), b: self});
-        }
-
-        if lhs.is_gradient()
-        {
-            lhs.derivatives(OuterProduct{a: self, b: &rhs.tensor()});
-        }
-
-        if is_rhs_gradient
-        {
-            rhs.derivatives_skip_gradient();
-        }
-    }
-
     fn matmul_v_add(&self, lhs: DiffWrapper, mut rhs: DiffWrapper, added: DiffWrapper)
     {
         let is_rhs_gradient = rhs.is_gradient();
@@ -1491,18 +1506,6 @@ impl From<OneHotLayer> for InputType
         Self::OneHot(value)
     }
 }
-
-const REMOVE_ME: () = {let a = (); ()};
-/*
-    Ops::MatmulvAdd{lhs, rhs, added} =>
-    {
-        gradient.matmul_v_add(lhs, rhs, added);
-    },
-    Ops::MatmulOneHotvAdd{lhs, rhs, added} =>
-    {
-        gradient.matmul_one_hot_v_add(lhs, rhs, added);
-    },
-*/
 
 #[cfg(test)]
 mod tests
