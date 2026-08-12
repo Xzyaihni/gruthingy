@@ -106,136 +106,906 @@ impl LayerType
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-enum AnyDiffType
+#[derive(Debug, PartialEq, Eq)]
+enum RecorderState
 {
-    Tensor(DiffType<LayerType>),
-    Scalar(DiffType<f32>)
+    Recording,
+    AwaitingGradient,
+    Ready
 }
 
-impl From<DiffType<LayerType>> for AnyDiffType
+#[derive(Debug)]
+pub struct OperationsRecorder
 {
-    fn from(value: DiffType<LayerType>) -> Self
+    state: RecorderState,
+    values: Vec<f32>,
+    tensors: Vec<LayerType>,
+    recording_operations: Vec<Op>,
+    gradient_operations: Vec<GradientOp>
+}
+
+// avoids borrow checker
+macro_rules! new_tensor_index
+{
+    ($this:expr, $rows:expr, $columns:expr) =>
+    {
+        {
+            let id = $this.tensors.len();
+
+            $this.tensors.push(LayerType::repeat($rows, $columns, 0.0));
+
+            TensorIndex(id)
+        }
+    }
+}
+
+macro_rules! new_value_index
+{
+    ($this:expr) =>
+    {
+        {
+            let id = $this.values.len();
+
+            $this.values.push(0.0);
+
+            ValueIndex(id)
+        }
+    }
+}
+
+macro_rules! new_tensor
+{
+    ($this:expr, $source:expr, $gradient:expr, $rows:expr, $columns:expr) =>
+    {
+        {
+            DiffTensor{
+                index: new_tensor_index!($this, $rows, $columns),
+                gradient: $gradient.then(|| new_tensor_index!($this, $rows, $columns)),
+                source: $source
+            }
+        }
+    }
+}
+
+macro_rules! new_value
+{
+    ($this:expr, $source:expr, $gradient:expr) =>
+    {
+        {
+            DiffScalar{
+                index: new_value_index!($this),
+                gradient: $gradient.then(|| new_value_index!($this)),
+                source: $source
+            }
+        }
+    }
+}
+
+macro_rules! impl_pair_tensor_op
+{
+    ($this:expr, $a:expr, $b:expr, $name:ident) =>
+    {
+        {
+            let source = Some($this.current_source());
+
+            let a_shape@(a_rows, a_columns) = $this.tensor_shape($a.as_value());
+            let b_shape = $this.tensor_shape($b.as_value());
+
+            debug_assert!(a_shape == b_shape);
+
+            let output = $this.new_tensor_op(source, a_rows, a_columns);
+
+            $this.recording_operations.push(Op::$name{lhs: $a, rhs: $b, output});
+
+            output
+        }
+    }
+}
+
+impl OperationsRecorder
+{
+    pub fn new() -> Self
+    {
+        Self{
+            state: RecorderState::Recording,
+            values: Vec::new(),
+            tensors: Vec::new(),
+            recording_operations: Vec::new(),
+            gradient_operations: Vec::new()
+        }
+    }
+
+    pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensor
+    {
+        self.new_tensor_with_source(None, true, rows, columns)
+    }
+
+    pub fn new_value(&mut self) -> DiffScalar
+    {
+        self.new_value_with_source(None, true)
+    }
+
+    fn new_tensor_op(
+        &mut self,
+        source: Option<OperationIndex>,
+        rows: usize,
+        columns: usize
+    ) -> DiffTensor
+    {
+        self.new_tensor_with_source(source, true, rows, columns)
+    }
+
+    fn new_value_op(
+        &mut self,
+        source: Option<OperationIndex>
+    ) -> DiffScalar
+    {
+        self.new_value_with_source(source, true)
+    }
+
+    fn new_tensor_with_source(
+        &mut self,
+        source: Option<OperationIndex>,
+        is_gradient: bool,
+        rows: usize,
+        columns: usize
+    ) -> DiffTensor
+    {
+        new_tensor!(self, source, is_gradient, rows, columns)
+    }
+
+    fn new_value_with_source(
+        &mut self,
+        source: Option<OperationIndex>,
+        is_gradient: bool
+    ) -> DiffScalar
+    {
+        new_value!(self, source, is_gradient)
+    }
+
+    pub fn set_tensor(&mut self, index: TensorIndex, value: LayerType)
+    {
+        self.tensors[index.0] = value;
+    }
+
+    pub fn set_value(&mut self, index: ValueIndex, value: f32)
+    {
+        self.values[index.0] = value;
+    }
+
+    pub fn set_new_tensor(&mut self, value: LayerType) -> DiffTensor
+    {
+        let tensor = self.new_tensor_with_source(None, false, value.rows(), value.columns());
+        self.set_tensor(tensor.as_value(), value);
+
+        tensor
+    }
+
+    pub fn set_new_value(&mut self, value: f32) -> DiffScalar
+    {
+        let scalar = self.new_value_with_source(None, false);
+        self.set_value(scalar.as_value(), value);
+
+        scalar
+    }
+
+    fn set_ones(&mut self, wrapper: DiffWrapper)
+    {
+        match wrapper
+        {
+            DiffWrapper::Tensor(DiffTensor{index, gradient, ..}) =>
+            {
+                let (rows, columns) = self.tensor_shape(index);
+                self.set_tensor(gradient.expect("gradient must exist"), LayerType::repeat(rows, columns, 1.0))
+            },
+            DiffWrapper::Value(DiffScalar{gradient, ..}) => self.set_value(gradient.expect("gradient must exist"), 1.0)
+        }
+    }
+
+    pub fn get_tensor(&self, index: TensorIndex) -> &LayerType
+    {
+        &self.tensors[index.0]
+    }
+
+    pub fn get_value(&self, index: ValueIndex) -> f32
+    {
+        self.values[index.0]
+    }
+
+    fn current_source(&self) -> OperationIndex
+    {
+        debug_assert!(self.state == RecorderState::Recording);
+
+        OperationIndex(self.recording_operations.len())
+    }
+
+    pub fn add_scalar(&mut self, a: DiffTensor, b: DiffScalar) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
+
+        let output = self.new_tensor_op(source, a_rows, a_columns);
+
+        self.recording_operations.push(Op::AddScalar{lhs: a, rhs: b, output});
+
+        output
+    }
+
+    pub fn add(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    {
+        impl_pair_tensor_op!(self, a, b, Add)
+    }
+
+    pub fn sub(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    {
+        impl_pair_tensor_op!(self, a, b, Sub)
+    }
+
+    pub fn sub_from_scalar(&mut self, a: DiffScalar, b: DiffTensor) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let (a_rows, a_columns) = self.tensor_shape(b.as_value());
+
+        let output = self.new_tensor_op(source, a_rows, a_columns);
+
+        self.recording_operations.push(Op::SubFromScalar{lhs: a, rhs: b, output});
+
+        output
+    }
+
+    pub fn mul_scalar(&mut self, a: DiffTensor, b: DiffScalar) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
+
+        let output = self.new_tensor_op(source, a_rows, a_columns);
+
+        self.recording_operations.push(Op::MulScalar{lhs: a, rhs: b, output});
+
+        output
+    }
+
+    pub fn mul_componentwise(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    {
+        impl_pair_tensor_op!(self, a, b, MulComponentwise)
+    }
+
+    pub fn sum_tensor(&mut self, a: DiffTensor) -> DiffScalar
+    {
+        let source = Some(self.current_source());
+
+        let output = self.new_value_op(source);
+
+        self.recording_operations.push(Op::SumTensor{value: a, output});
+
+        output
+    }
+
+    pub fn negate(&mut self, a: DiffTensor) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let output = self.new_value_op(source);
+
+        self.recording_operations.push(Op::MulScalar{value: a, output});
+
+        output
+    }
+
+    pub fn pow(&mut self, a: DiffTensor, power: i32) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let (rows, columns) = self.tensor_shape(a.as_value());
+
+        let output = self.new_tensor_op(source, rows, columns);
+
+        self.recording_operations.push(Op::Pow{lhs: a, power, output});
+
+        output
+    }
+
+    pub fn tensor_shape(&self, tensor: TensorIndex) -> (usize, usize)
+    {
+        let tensor = &self.tensors[tensor.0];
+
+        (tensor.rows(), tensor.columns())
+    }
+
+    pub fn calculate(&mut self)
+    {
+        self.gradient_operations.iter().for_each(|gradient_op|
+        {
+            match gradient_op
+            {
+                GradientOp::Copy{src, dst} =>
+                {
+                    let this_should_not_even_exist = ();
+                    self.tensors[dst.0] = self.tensors[src.0].clone();
+                },
+                GradientOp::AddScalars{lhs, rhs, output} =>
+                {
+                    self.values[output.0] = self.values[lhs.0] + self.values[rhs.0];
+                },
+                GradientOp::AddScalar{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = &self.tensors[lhs.0] + self.values[rhs.0];
+                },
+                GradientOp::Add{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = &self.tensors[lhs.0] + &self.tensors[rhs.0];
+                },
+                GradientOp::Sub{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = &self.tensors[lhs.0] - &self.tensors[rhs.0];
+                },
+                GradientOp::SubFromScalar{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = -&self.tensors[rhs.0] + self.values[lhs.0];
+                },
+                GradientOp::MulScalar{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = &self.tensors[lhs.0] * &self.values[rhs.0];
+                },
+                GradientOp::MulComponentwise{lhs, rhs, output} =>
+                {
+                    let optimize_this = ();
+                    self.tensors[output.0] = &self.tensors[lhs.0] * &self.tensors[rhs.0];
+                },
+                GradientOp::SumTensor{value, output} =>
+                {
+                    self.values[output.0] = self.tensors[value.0].sum();
+                },
+                GradientOp::Fill{value, output} =>
+                {
+                    self.tensors[output.0].fill(self.values[value.0]);
+                },
+                GradientOp::Pow{lhs, power, output} =>
+                {
+                    let optimize_this = ();
+                    let mut o = self.tensors[lhs.0].clone();
+                    o.pow(*power);
+
+                    self.tensors[output.0] = o;
+                }
+            }
+        });
+    }
+
+    pub fn finish(&mut self)
+    {
+        debug_assert!(self.state == RecorderState::Recording);
+
+        self.gradient_operations.extend(self.recording_operations.iter().map(|op|
+        {
+            match op
+            {
+                Op::AddScalar{lhs, rhs, output} =>
+                {
+                    GradientOp::AddScalar{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::Add{lhs, rhs, output} =>
+                {
+                    GradientOp::Add{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::Sub{lhs, rhs, output} =>
+                {
+                    GradientOp::Sub{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::SubFromScalar{lhs, rhs, output} =>
+                {
+                    GradientOp::SubFromScalar{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::MulScalar{lhs, rhs, output} =>
+                {
+                    GradientOp::MulScalar{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::MulComponentwise{lhs, rhs, output} =>
+                {
+                    GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::SumTensor{value, output} =>
+                {
+                    GradientOp::SumTensor{value: value.as_value(), output: output.as_value()}
+                },
+                Op::Pow{lhs, power, output} =>
+                {
+                    GradientOp::Pow{lhs: lhs.as_value(), power: *power as u32, output: output.as_value()}
+                }
+            }
+        }));
+
+        self.state = RecorderState::AwaitingGradient;
+    }
+
+    fn combine_same_outputs(&mut self)
+    {
+        let mut handled = Vec::new();
+
+        let mut i = 1;
+        while i < self.gradient_operations.len()
+        {
+            let output_of = |op: &GradientOp| -> DiffValue
+            {
+                match *op
+                {
+                    GradientOp::Copy{dst: output, ..}
+                    | GradientOp::AddScalar{output, ..}
+                    | GradientOp::Add{output, ..}
+                    | GradientOp::Sub{output, ..}
+                    | GradientOp::SubFromScalar{output, ..}
+                    | GradientOp::MulScalar{output, ..}
+                    | GradientOp::MulComponentwise{output, ..}
+                    | GradientOp::Fill{output, ..}
+                    | GradientOp::Pow{output, ..} => output.into(),
+                    GradientOp::AddScalars{output, ..}
+                    | GradientOp::SumTensor{output, ..} => output.into()
+                }
+            };
+
+            let this = &self.gradient_operations[i];
+
+            if let Some(previous) = (0..i).find(|previous|
+            {
+                let is_shared_output = output_of(&self.gradient_operations[*previous]) == output_of(this);
+
+                is_shared_output && !handled.contains(previous)
+            })
+            {
+                let maybe_shape = if let DiffValue::Tensor(x) = output_of(this)
+                {
+                    Some(self.tensor_shape(x))
+                } else
+                {
+                    None
+                };
+
+                match &mut self.gradient_operations[i]
+                {
+                    GradientOp::Copy{dst: output, ..}
+                    | GradientOp::AddScalar{output, ..}
+                    | GradientOp::Add{output, ..}
+                    | GradientOp::Sub{output, ..}
+                    | GradientOp::SubFromScalar{output, ..}
+                    | GradientOp::MulScalar{output, ..}
+                    | GradientOp::MulComponentwise{output, ..}
+                    | GradientOp::Fill{output, ..}
+                    | GradientOp::Pow{output, ..} =>
+                    {
+                        let (rows, columns) = maybe_shape.unwrap();
+
+                        let final_output = *output;
+
+                        let temporary_add_index = new_tensor_index!(self, rows, columns);
+
+                        *output = temporary_add_index;
+
+                        self.gradient_operations.insert(
+                            i + 1,
+                            GradientOp::Add{lhs: temporary_add_index, rhs: final_output, output: final_output}
+                        );
+                    },
+                    GradientOp::AddScalars{output, ..}
+                    | GradientOp::SumTensor{output, ..} =>
+                    {
+                        let final_output = *output;
+
+                        let temporary_add_index = new_value_index!(self);
+
+                        *output = temporary_add_index;
+
+                        self.gradient_operations.insert(
+                            i + 1,
+                            GradientOp::AddScalars{lhs: temporary_add_index, rhs: final_output, output: final_output}
+                        );
+                    }
+                }
+
+                handled.push(i);
+                handled.push(i + 1);
+
+                i += 1;
+            }
+
+            i += 1;
+        }
+    }
+
+    pub fn gradient_with_respect(&mut self, respect: DiffWrapper)
+    {
+        debug_assert!(self.state == RecorderState::AwaitingGradient);
+
+        self.set_ones(respect);
+
+        self.calculate_gradient(respect);
+
+        self.recording_operations.clear();
+
+        self.combine_same_outputs();
+
+        self.state = RecorderState::Ready;
+    }
+
+    fn calculate_gradient(&mut self, respect: DiffWrapper)
+    {
+        let (value, gradient, source): (DiffValue, DiffValue, Option<OperationIndex>) = match respect
+        {
+            DiffWrapper::Tensor(DiffTensor{index, gradient, source}) =>
+            {
+                let gradient = if let Some(x) = gradient { x } else { return; };
+
+                (index.into(), gradient.into(), source)
+            },
+            DiffWrapper::Value(DiffScalar{index, gradient, source}) =>
+            {
+                let gradient = if let Some(x) = gradient { x } else { return; };
+
+                (index.into(), gradient.into(), source)
+            }
+        };
+
+        if let Some(source) = source
+        {
+            let this_operation = &self.recording_operations[source.0];
+            match this_operation
+            {
+                Op::Add{lhs, rhs: _, output: _}
+                | Op::AddScalar{lhs, rhs: _, output: _} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::Copy{src: gradient, dst: lhs_gradient});
+                    }
+
+                    if let Op::Add{rhs, ..} = this_operation
+                    {
+                        if let Some(rhs_gradient) = rhs.as_gradient()
+                        {
+                            self.gradient_operations.push(GradientOp::Copy{src: gradient, dst: rhs_gradient});
+                        }
+                    } else if let Op::AddScalar{rhs, ..} = this_operation
+                    {
+                        if let Some(rhs_gradient) = rhs.as_gradient()
+                        {
+                            self.gradient_operations.push(GradientOp::SumTensor{value: gradient, output: rhs_gradient});
+                        }
+                    } else
+                    {
+                        unreachable!()
+                    }
+
+                    let lhs = *lhs;
+
+                    self.calculate_gradient(if let Op::Add{rhs, ..} = this_operation
+                    {
+                        (*rhs).into()
+                    } else if let Op::AddScalar{rhs, ..} = this_operation
+                    {
+                        (*rhs).into()
+                    } else
+                    {
+                        unreachable!()
+                    });
+
+                    self.calculate_gradient(lhs.into());
+                },
+                Op::Sub{lhs: _, rhs, output: _}
+                | Op::SubFromScalar{lhs: _, rhs, output: _} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    if let Op::Sub{lhs, ..} = this_operation
+                    {
+                        if let Some(lhs_gradient) = lhs.as_gradient()
+                        {
+                            self.gradient_operations.push(GradientOp::Copy{src: gradient, dst: lhs_gradient});
+                        }
+                    } else if let Op::SubFromScalar{lhs, ..} = this_operation
+                    {
+                        if let Some(lhs_gradient) = lhs.as_gradient()
+                        {
+                            self.gradient_operations.push(GradientOp::SumTensor{value: gradient, output: lhs_gradient});
+                        }
+                    } else
+                    {
+                        unreachable!()
+                    }
+
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        let m1_index = new_value_index!(self);
+                        self.values[m1_index.0] = -1.0;
+
+                        self.gradient_operations.push(GradientOp::MulScalar{lhs: gradient, rhs: m1_index, output: rhs_gradient});
+                    }
+
+                    let rhs = *rhs;
+
+                    self.calculate_gradient(if let Op::Sub{lhs, ..} = this_operation
+                    {
+                        (*lhs).into()
+                    } else if let Op::SubFromScalar{lhs, ..} = this_operation
+                    {
+                        (*lhs).into()
+                    } else
+                    {
+                        unreachable!()
+                    });
+
+                    self.calculate_gradient(rhs.into());
+                },
+                Op::MulComponentwise{lhs, rhs: _, output: _}
+                | Op::MulScalar{lhs, rhs: _, output: _} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    let (rows, columns) = self.tensor_shape(gradient);
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        if let Op::MulComponentwise{rhs, ..} = this_operation
+                        {
+                            self.gradient_operations.push(GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                        } else if let Op::MulScalar{rhs, ..} = this_operation
+                        {
+                            self.gradient_operations.push(GradientOp::MulScalar{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
+                        } else
+                        {
+                            unreachable!()
+                        }
+                    }
+
+                    if let Op::MulComponentwise{rhs, ..} = this_operation
+                    {
+                        if let Some(rhs_gradient) = rhs.as_gradient()
+                        {
+                            self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                        }
+                    } else if let Op::MulScalar{rhs, ..} = this_operation
+                    {
+                        if let Some(rhs_gradient) = rhs.as_gradient()
+                        {
+                            let pre_fold = new_tensor_index!(self, rows, columns);
+                            self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: pre_fold});
+
+                            self.gradient_operations.push(GradientOp::SumTensor{value: pre_fold, output: rhs_gradient});
+                        }
+                    } else
+                    {
+                        unreachable!()
+                    }
+
+                    let lhs = *lhs;
+
+                    self.calculate_gradient(if let Op::MulComponentwise{rhs, ..} = this_operation
+                    {
+                        (*rhs).into()
+                    } else if let Op::MulScalar{rhs, ..} = this_operation
+                    {
+                        (*rhs).into()
+                    } else
+                    {
+                        unreachable!()
+                    });
+
+                    self.calculate_gradient(lhs.into());
+                },
+                Op::SumTensor{value, output: _} =>
+                {
+                    let gradient = gradient.as_value();
+
+                    if let Some(value_gradient) = value.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::Fill{value: gradient, output: value_gradient});
+
+                        self.calculate_gradient((*value).into());
+                    }
+                },
+                Op::Pow{lhs, power, output: _} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    let (rows, columns) = self.tensor_shape(lhs.as_value());
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        let power_index = new_value_index!(self);
+                        self.values[power_index.0] = *power as f32;
+
+                        let pow_d_lhs = new_tensor_index!(self, rows, columns);
+                        self.gradient_operations.push(GradientOp::Pow{lhs: lhs.as_value(), power: (power - 1) as u32, output: pow_d_lhs});
+
+                        let pow_d = new_tensor_index!(self, rows, columns);
+                        self.gradient_operations.push(GradientOp::MulScalar{lhs: pow_d_lhs, rhs: power_index.into(), output: pow_d});
+
+                        self.gradient_operations.push(GradientOp::MulComponentwise{lhs: pow_d, rhs: gradient, output: lhs_gradient});
+
+                        self.calculate_gradient((*lhs).into());
+                    }
+                }
+            }
+        } else
+        {
+            let this_gradient_is_one = ();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TensorIndex(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueIndex(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffValue
+{
+    Tensor(TensorIndex),
+    Value(ValueIndex)
+}
+
+impl From<TensorIndex> for DiffValue
+{
+    fn from(index: TensorIndex) -> Self
+    {
+        Self::Tensor(index)
+    }
+}
+
+impl From<ValueIndex> for DiffValue
+{
+    fn from(index: ValueIndex) -> Self
+    {
+        Self::Value(index)
+    }
+}
+
+impl From<DiffWrapper> for DiffValue
+{
+    fn from(value: DiffWrapper) -> Self
+    {
+        match value
+        {
+            DiffWrapper::Tensor(DiffTensor{index, ..}) => Self::Tensor(index),
+            DiffWrapper::Value(DiffScalar{index, ..}) => Self::Value(index)
+        }
+    }
+}
+
+impl DiffValue
+{
+    fn as_tensor(self) -> TensorIndex
+    {
+        if let Self::Tensor(x) = self { x } else { panic!("as_tensor must be called on a tensor") }
+    }
+
+    fn as_value(self) -> ValueIndex
+    {
+        if let Self::Value(x) = self { x } else { panic!("as_value must be called on a value") }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct OperationIndex(usize);
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DiffTensor
+{
+    index: TensorIndex,
+    gradient: Option<TensorIndex>,
+    source: Option<OperationIndex>
+}
+
+impl DiffTensor
+{
+    pub fn as_value(&self) -> TensorIndex
+    {
+        self.index
+    }
+
+    pub fn as_gradient(&self) -> Option<TensorIndex>
+    {
+        self.gradient
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DiffScalar
+{
+    index: ValueIndex,
+    gradient: Option<ValueIndex>,
+    source: Option<OperationIndex>
+}
+
+impl DiffScalar
+{
+    pub fn as_value(&self) -> ValueIndex
+    {
+        self.index
+    }
+
+    pub fn as_gradient(&self) -> Option<ValueIndex>
+    {
+        self.gradient
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum DiffWrapper
+{
+    Tensor(DiffTensor),
+    Value(DiffScalar)
+}
+
+impl From<DiffTensor> for DiffWrapper
+{
+    fn from(value: DiffTensor) -> Self
     {
         Self::Tensor(value)
     }
 }
 
-impl From<DiffType<f32>> for AnyDiffType
+impl From<DiffScalar> for DiffWrapper
 {
-    fn from(value: DiffType<f32>) -> Self
+    fn from(value: DiffScalar) -> Self
     {
-        Self::Scalar(value)
+        Self::Value(value)
     }
 }
 
-impl AnyDiffType
+impl DiffWrapper
 {
-    pub fn take_gradient(&mut self) -> GradientType
+    pub fn as_tensor(&self) -> TensorIndex
     {
-        match self
+        if let Self::Tensor(DiffTensor{index, ..}) = self
         {
-            Self::Tensor(x) => GradientType::Tensor(x.take_gradient()),
-            Self::Scalar(x) => GradientType::Scalar(x.take_gradient())
-        }
-    }
-
-    pub fn take_gradient_tensor(&mut self) -> LayerType
-    {
-        match self
+            *index
+        } else
         {
-            Self::Tensor(x) => x.take_gradient(),
-            Self::Scalar(_) => panic!("expected tensor, got scalar")
-        }
-    }
-
-    pub fn take_gradient_scalar(&mut self) -> f32
-    {
-        match self
-        {
-            Self::Scalar(x) => x.take_gradient(),
-            Self::Tensor(_) => panic!("expected scalar, got tensor")
-        }
-    }
-
-    pub fn calculate_gradients(self)
-    {
-        match self
-        {
-            Self::Tensor(x) => x.calculate_gradients(),
-            Self::Scalar(x) => x.calculate_gradients()
-        }
-    }
-
-    pub fn parent(&self) -> &Ops
-    {
-        match self
-        {
-            Self::Tensor(x) => &x.parent,
-            Self::Scalar(x) => &x.parent
-        }
-    }
-
-    fn derivatives(&mut self, children_amount: usize, op: impl DiffOperation)
-    {
-        match self
-        {
-            Self::Tensor(x) => x.derivatives(children_amount, op, |value, op, x| op.inplace_tensor()(value, x), |value, op, x| op.add_tensor()(value, x)),
-            Self::Scalar(x) => x.derivatives(children_amount, op, |_value, op, x| *x = Some(op.scalar_sum()), |_value, op, x| *x += op.scalar_sum())
-        }
-    }
-
-    fn derivatives_set_gradient(&mut self, op: impl DiffOperation)
-    {
-        match self
-        {
-            Self::Tensor(x) => x.derivatives_set_gradient(op, |value, op, x| op.inplace_tensor()(value, x), |value, op, x| op.add_tensor()(value, x)),
-            Self::Scalar(x) => x.derivatives_set_gradient(op, |_value, op, x| *x = Some(op.scalar_sum()), |_value, op, x| *x += op.scalar_sum())
-        }
-    }
-
-    fn derivatives_skip_gradient_no_check(&mut self)
-    {
-        match self
-        {
-            Self::Tensor(x) => x.derivatives_skip_gradient_no_check(),
-            Self::Scalar(x) => x.derivatives_skip_gradient_no_check()
-        }
-    }
-
-    fn set_calculate_gradient(&mut self, value: bool)
-    {
-        match self
-        {
-            Self::Tensor(x) => x.calculate_gradient = value,
-            Self::Scalar(x) => x.calculate_gradient = value
-        }
-    }
-
-    fn is_gradient(&self) -> bool
-    {
-        match self
-        {
-            Self::Tensor(x) => x.calculate_gradient,
-            Self::Scalar(x) => x.calculate_gradient
-        }
-    }
-
-    fn value_clone(&self) -> GradientType
-    {
-        match self
-        {
-            Self::Tensor(x) => GradientType::Tensor(x.value.clone()),
-            Self::Scalar(x) => GradientType::Scalar(x.value)
+            panic!("as_tensor must only be called on a tensor")
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Ops
+pub enum GradientOp
 {
-    None,
-    SumTensor{value: DiffWrapper},
+    Copy{src: TensorIndex, dst: TensorIndex},
+    AddScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
+    AddScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
+    Add{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    Sub{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    SubFromScalar{lhs: ValueIndex, rhs: TensorIndex, output: TensorIndex},
+    MulScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
+    MulComponentwise{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
+    SumTensor{value: TensorIndex, output: ValueIndex},
+    Fill{value: ValueIndex, output: TensorIndex},
+    Pow{lhs: TensorIndex, power: u32, output: TensorIndex}
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Op
+{
+    AddScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
+    Add{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
+    Sub{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
+    SubFromScalar{lhs: DiffScalar, rhs: DiffTensor, output: DiffTensor},
+    MulScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
+    MulComponentwise{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
+    SumTensor{value: DiffTensor, output: DiffScalar},
+    Pow{lhs: DiffTensor, power: i32, output: DiffTensor}
+    /*
+    Div{lhs: DiffWrapper, rhs: DiffWrapper},
     Neg{value: DiffWrapper},
     Exp{value: DiffWrapper},
     Ln{value: DiffWrapper},
@@ -243,12 +1013,7 @@ pub enum Ops
     LeakyRelu{value: DiffWrapper},
     Sigmoid{value: DiffWrapper},
     Tanh{value: DiffWrapper},
-    Pow{lhs: DiffWrapper, power: u32},
     Dot{lhs: DiffWrapper, rhs: DiffWrapper},
-    Add{lhs: DiffWrapper, rhs: DiffWrapper},
-    Sub{lhs: DiffWrapper, rhs: DiffWrapper},
-    Mul{lhs: DiffWrapper, rhs: DiffWrapper},
-    Div{lhs: DiffWrapper, rhs: DiffWrapper},
     Matmulv{lhs: DiffWrapper, rhs: DiffWrapper},
     MatmulvAdd{lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper},
     MatmulOneHotvAdd{lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper},
@@ -256,351 +1021,8 @@ pub enum Ops
         values: DiffWrapper,
         softmaxed_values: LayerType,
         targets: OneHotLayer
-    }
+    }*/
 }
-
-impl Ops
-{
-    pub fn is_none(&self) -> bool
-    {
-        // i am NOT using the matches macro its TRASH that gives u true if u flip args on accident
-        #[allow(clippy::match_like_matches_macro)]
-        match self
-        {
-            Self::None => true,
-            _ => false
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GradientType
-{
-    Tensor(LayerType),
-    Scalar(f32)
-}
-
-impl GradientType
-{
-    pub fn reciprocal(&self) -> Self
-    {
-        match self
-        {
-            Self::Tensor(x) => Self::Tensor(x.clone().reciprocal()),
-            Self::Scalar(x) => Self::Scalar(x.recip())
-        }
-    }
-
-    pub fn pow(&self, power: u32) -> Self
-    {
-        match self
-        {
-            Self::Tensor(x) =>
-            {
-                let mut x = x.clone();
-                x.pow(power);
-
-                Self::Tensor(x)
-            },
-            Self::Scalar(x) => Self::Scalar(x.powi(power as i32))
-        }
-    }
-
-    pub fn tensor(&self) -> &LayerType
-    {
-        match self
-        {
-            Self::Tensor(x) => x,
-            Self::Scalar(_) => panic!("expected tensor, got scalar")
-        }
-    }
-
-    pub fn scalar(&self) -> &f32
-    {
-        match self
-        {
-            Self::Scalar(x) => x,
-            Self::Tensor(_) => panic!("expected scalar, got tensor")
-        }
-    }
-}
-
-impl From<LayerType> for GradientType
-{
-    fn from(value: LayerType) -> Self
-    {
-        Self::Tensor(value)
-    }
-}
-
-impl From<f32> for GradientType
-{
-    fn from(value: f32) -> Self
-    {
-        Self::Scalar(value)
-    }
-}
-
-macro_rules! inplace_binary_operator_same
-{
-    ($this_t:ident, $trait_name:ident, $func:ident) =>
-    {
-        impl $trait_name for $this_t
-        {
-            fn $func(&mut self, rhs: Self)
-            {
-                match (self, rhs)
-                {
-                    (Self::Tensor(lhs), Self::Tensor(rhs)) =>
-                    {
-                        lhs.$func(rhs);
-                    },
-                    (Self::Scalar(lhs), Self::Scalar(rhs)) =>
-                    {
-                        lhs.$func(rhs);
-                    },
-                    x => unimplemented!("{x:?}")
-                }
-            }
-        }
-    }
-}
-
-macro_rules! binary_operator_fixed_rhs
-{
-    ($this_t:ident, $op_output_t:ident, $trait_name:ident, $func:ident, $output_t:ident, $rhs_t:ident) =>
-    {
-        impl $trait_name<$rhs_t> for $this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: $rhs_t) -> Self::Output
-            {
-                match self
-                {
-                    $this_t::Tensor(x) => $op_output_t::Tensor(x.$func(rhs)),
-                    $this_t::Scalar(x) => $op_output_t::$output_t(rhs.$func(x))
-                }
-            }
-        }
-
-        impl $trait_name<&$rhs_t> for $this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: &$rhs_t) -> Self::Output
-            {
-                match self
-                {
-                    $this_t::Tensor(x) => $op_output_t::Tensor(x.$func(rhs)),
-                    $this_t::Scalar(x) => $op_output_t::$output_t(rhs.$func(x))
-                }
-            }
-        }
-
-        impl $trait_name<$rhs_t> for &$this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: $rhs_t) -> Self::Output
-            {
-                match self
-                {
-                    $this_t::Tensor(x) => $op_output_t::Tensor(x.$func(rhs)),
-                    $this_t::Scalar(x) => $op_output_t::$output_t(rhs.$func(x))
-                }
-            }
-        }
-
-        impl $trait_name<&$rhs_t> for &$this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: &$rhs_t) -> Self::Output
-            {
-                match self
-                {
-                    $this_t::Tensor(x) => $op_output_t::Tensor(x.$func(rhs)),
-                    $this_t::Scalar(x) => $op_output_t::$output_t(rhs.$func(x))
-                }
-            }
-        }
-    }
-}
-
-macro_rules! binary_operator_diff
-{
-    ($this_t:ident, $op_output_t:ident, $trait_name:ident, $func:ident) =>
-    {
-        impl $trait_name<$this_t> for $this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: $this_t) -> Self::Output
-            {
-                match (self, rhs)
-                {
-                    ($this_t::Tensor(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Scalar(lhs.$func(rhs))
-                    },
-                    ($this_t::Tensor(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(rhs.$func(lhs))
-                    }
-                }
-            }
-        }
-
-        impl $trait_name<&$this_t> for $this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: &$this_t) -> Self::Output
-            {
-                match (self, rhs)
-                {
-                    ($this_t::Tensor(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Scalar(lhs.$func(rhs))
-                    },
-                    ($this_t::Tensor(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(rhs.$func(lhs))
-                    }
-                }
-            }
-        }
-
-        impl $trait_name<$this_t> for &$this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: $this_t) -> Self::Output
-            {
-                match (self, rhs)
-                {
-                    ($this_t::Tensor(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Scalar(lhs.$func(rhs))
-                    },
-                    ($this_t::Tensor(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(rhs.$func(lhs))
-                    }
-                }
-            }
-        }
-
-        impl $trait_name<&$this_t> for &$this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self, rhs: &$this_t) -> Self::Output
-            {
-                match (self, rhs)
-                {
-                    ($this_t::Tensor(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Scalar(lhs.$func(rhs))
-                    },
-                    ($this_t::Tensor(lhs), $this_t::Scalar(rhs)) =>
-                    {
-                        $op_output_t::Tensor(lhs.$func(rhs))
-                    },
-                    ($this_t::Scalar(lhs), $this_t::Tensor(rhs)) =>
-                    {
-                        $op_output_t::Tensor(rhs.$func(lhs))
-                    }
-                }
-            }
-        }
-    }
-}
-
-macro_rules! unary_operator
-{
-    ($this_t:ident, $op_output_t:ident, $trait_name:ident, $func:ident) =>
-    {
-        impl $trait_name for $this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self) -> Self::Output
-            {
-                match self
-                {
-                    $this_t::Tensor(x) => $op_output_t::Tensor(x.$func()),
-                    $this_t::Scalar(x) => $op_output_t::Scalar(x.$func())
-                }
-            }
-        }
-
-        impl $trait_name for &$this_t
-        {
-            type Output = $op_output_t;
-
-            fn $func(self) -> Self::Output
-            {
-                match self
-                {
-                    $this_t::Tensor(x) => $op_output_t::Tensor(x.$func()),
-                    $this_t::Scalar(x) => $op_output_t::Scalar(x.$func())
-                }
-            }
-        }
-    }
-}
-
-// code bloat? nah we rust
-inplace_binary_operator_same!(GradientType, AddAssign, add_assign);
-inplace_binary_operator_same!(GradientType, SubAssign, sub_assign);
-
-binary_operator_fixed_rhs!(GradientType, GradientType, Div, div, Scalar, f32);
-binary_operator_fixed_rhs!(GradientType, GradientType, Mul, mul, Scalar, f32);
-
-binary_operator_fixed_rhs!(GradientType, GradientType, Mul, mul, Tensor, LayerType);
-
-binary_operator_diff!(GradientType, GradientType, Add, add);
-binary_operator_diff!(GradientType, GradientType, Sub, sub);
-binary_operator_diff!(GradientType, GradientType, Mul, mul);
-binary_operator_diff!(GradientType, GradientType, Div, div);
-
-unary_operator!(GradientType, GradientType, Neg, neg);
-
-
-binary_operator_diff!(AnyDiffType, GradientType, Add, add);
-binary_operator_diff!(AnyDiffType, GradientType, Sub, sub);
-binary_operator_diff!(AnyDiffType, GradientType, Mul, mul);
-binary_operator_diff!(AnyDiffType, GradientType, Div, div);
 
 pub trait DiffOperation
 {
@@ -679,48 +1101,6 @@ impl<'a> DiffOperation for &'a f32
     fn compute_tensor(self) -> LayerType { unimplemented!() }
 }
 
-impl DiffOperation for GradientType
-{
-    fn inplace_tensor(self) -> impl FnOnce(&LayerType, &mut Option<LayerType>)
-    {
-        move |_, output|
-        {
-            if let Self::Tensor(x) = self
-            {
-                *output = Some(x)
-            } else
-            {
-                unreachable!()
-            }
-        }
-    }
-
-    fn add_tensor(self) -> impl FnOnce(&LayerType, &mut LayerType)
-    {
-        move |_, output|
-        {
-            if let Self::Tensor(x) = self
-            {
-                *output += x
-            } else
-            {
-                unreachable!()
-            }
-        }
-    }
-
-    fn scalar_sum(self) -> f32
-    {
-        match self
-        {
-            Self::Scalar(x) => x,
-            Self::Tensor(x) => x.sum()
-        }
-    }
-
-    fn compute_tensor(self) -> LayerType { unimplemented!() }
-}
-
 struct NegateTensorOperation<'a>(&'a LayerType);
 
 impl<'a> DiffOperation for NegateTensorOperation<'a>
@@ -761,13 +1141,14 @@ impl DiffOperation for NegateF32Operation
 
 pub struct MulGTensorOperation<'a>
 {
-    a: cell::Ref<'a, AnyDiffType>,
+    // a: cell::Ref<'a, AnyDiffType>,
     b: &'a LayerType
 }
 
 pub struct MulGF32Operation<'a>
 {
-    a: cell::Ref<'a, AnyDiffType>,
+    a: &'a (),
+    // a: cell::Ref<'a, AnyDiffType>,
     b: f32
 }
 
@@ -804,71 +1185,7 @@ pub struct OuterProductOneHot<'a>
     b: OneHotLayer
 }
 
-pub trait Fillable
-{
-    fn fill(&mut self, value: f32);
-}
-
-impl Fillable for f32
-{
-    fn fill(&mut self, value: f32)
-    {
-        *self = value;
-    }
-}
-
-impl Fillable for LayerType
-{
-    fn fill(&mut self, value: f32)
-    {
-        self.fill(value);
-    }
-}
-
-trait DiffBounds
-where
-    Self: Fillable + Clone + Into<GradientType>,
-    Self: TryInto<LayerType> + TryInto<f32>,
-    Self: AddAssign<Self> + Add<f32, Output=Self> + Neg<Output=Self>
-{
-    fn into_layer_type<'a>(&self, value_getter: impl FnOnce() -> cell::Ref<'a, LayerType>) -> LayerType;
-    fn component_mul(&self, rhs: LayerType) -> LayerType;
-
-    fn matmul_v(&self, lhs: DiffWrapper, rhs: DiffWrapper);
-    fn matmul_v_add(&self, lhs: DiffWrapper, rhs: DiffWrapper, added: DiffWrapper);
-    fn matmul_one_hot_v_add(&self, lhs: DiffWrapper, rhs: OneHotLayer, added: DiffWrapper);
-
-    fn reciprocal(self) -> Self;
-
-    fn sigmoid_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation;
-    fn tanh_operation<'a>(&'a self, a: &'a Self) -> impl DiffOperation;
-    fn leaky_relu_operation(&self) -> impl DiffOperation;
-
-    fn negate_operation(&self) -> impl DiffOperation;
-    fn mul_ba_operation<'a>(&'a self, a: cell::Ref<'a, AnyDiffType>) -> impl DiffOperation;
-}
-
-impl TryFrom<f32> for LayerType
-{
-    type Error = ();
-
-    fn try_from(_value: f32) -> Result<Self, Self::Error>
-    {
-        Err(())
-    }
-}
-
-impl TryFrom<LayerType> for f32
-{
-    type Error = ();
-
-    fn try_from(_value: LayerType) -> Result<Self, Self::Error>
-    {
-        Err(())
-    }
-}
-
-impl DiffBounds for f32
+/*impl DiffBounds for f32
 {
     fn into_layer_type<'a>(&self, value_getter: impl FnOnce() -> cell::Ref<'a, LayerType>) -> LayerType
     {
@@ -882,42 +1199,9 @@ impl DiffBounds for f32
         rhs * *self
     }
 
-    fn matmul_v(&self, _lhs: DiffWrapper, _rhs: DiffWrapper)
-    {
-        unreachable!()
-    }
-
-    fn matmul_v_add(&self, _lhs: DiffWrapper, _rhs: DiffWrapper, _added: DiffWrapper)
-    {
-        unreachable!()
-    }
-
-    fn matmul_one_hot_v_add(&self, _lhs: DiffWrapper, _rhs: OneHotLayer, _added: DiffWrapper)
-    {
-        unreachable!()
-    }
-
     fn reciprocal(self) -> Self
     {
         self.recip()
-    }
-
-    #[allow(unreachable_code)]
-    fn sigmoid_operation<'a>(&'a self, _a: &'a Self) -> impl DiffOperation
-    {
-        unimplemented!(); NegateF32Operation(*self)
-    }
-
-    #[allow(unreachable_code)]
-    fn tanh_operation<'a>(&'a self, _a: &'a Self) -> impl DiffOperation
-    {
-        unimplemented!(); NegateF32Operation(*self)
-    }
-
-    #[allow(unreachable_code)]
-    fn leaky_relu_operation(&self) -> impl DiffOperation
-    {
-        unimplemented!(); NegateF32Operation(*self)
     }
 
     fn negate_operation(&self) -> impl DiffOperation
@@ -1032,7 +1316,7 @@ impl DiffBounds for LayerType
     {
         MulGTensorOperation{a, b: self}
     }
-}
+}*/
 
 // damn that sure is one hot layer
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1125,29 +1409,7 @@ impl From<OneHotLayer> for InputType
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct DiffType<T>
-{
-    parent: Ops,
-    value: T,
-    gradient: Option<T>,
-    calculate_gradient: bool
-}
-
-impl<T> DiffType<T>
-{
-    fn new(value: T, ops: Ops, calculate_gradient: bool) -> Self
-    {
-        DiffType{
-            value,
-            parent: ops,
-            gradient: None,
-            calculate_gradient
-        }
-    }
-}
-
-impl<T> DiffType<T>
+/*impl<T> DiffType<T>
 where
     T: DiffBounds + DiffOperation,
     for<'a> T: Mul<&'a T, Output=T>,
@@ -1225,48 +1487,6 @@ where
 
         match mem::replace(&mut self.parent, Ops::None)
         {
-            Ops::Add{lhs, rhs} =>
-            {
-                if lhs.is_gradient()
-                {
-                    lhs.derivatives(gradient);
-                }
-
-                if rhs.is_gradient()
-                {
-                    rhs.derivatives(gradient);
-                }
-            },
-            Ops::Sub{lhs, rhs} =>
-            {
-                if lhs.is_gradient()
-                {
-                    lhs.derivatives(gradient);
-                }
-
-                if rhs.is_gradient()
-                {
-                    rhs.derivatives(gradient.negate_operation());
-                }
-            },
-            Ops::Mul{lhs, mut rhs} =>
-            {
-                let is_rhs_gradient = rhs.is_gradient();
-                if is_rhs_gradient
-                {
-                    rhs.derivatives_set_gradient(gradient.mul_ba_operation(lhs.this_ref()));
-                }
-
-                if lhs.is_gradient()
-                {
-                    lhs.derivatives(gradient.mul_ba_operation(rhs.this_ref()));
-                }
-
-                if is_rhs_gradient
-                {
-                    rhs.derivatives_skip_gradient();
-                }
-            },
             Ops::Div{lhs, rhs} =>
             {
                 let r_recip = rhs.value_clone().reciprocal();
@@ -1344,16 +1564,6 @@ where
                     x.derivatives(gradient.negate_operation());
                 }
             },
-            Ops::Pow{lhs, power} =>
-            {
-                if lhs.is_gradient()
-                {
-                    let p = lhs.value_clone().pow(power - 1);
-                    let d = p * power as f32;
-
-                    lhs.derivatives(d * gradient);
-                }
-            },
             Ops::Matmulv{lhs, rhs} =>
             {
                 gradient.matmul_v(lhs, rhs);
@@ -1406,600 +1616,7 @@ where
             Ops::None => ()
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffWrapper(Rc<RefCell<AnyDiffType>>);
-
-impl From<&DiffWrapper> for DiffWrapper
-{
-    fn from(value: &DiffWrapper) -> Self
-    {
-        Self(value.0.clone())
-    }
-}
-
-impl From<&mut DiffWrapper> for DiffWrapper
-{
-    fn from(value: &mut DiffWrapper) -> Self
-    {
-        Self(value.0.clone())
-    }
-}
-
-impl DiffWrapper
-{
-    pub fn take_gradient(&mut self) -> GradientType
-    {
-        self.this_mut().take_gradient()
-    }
-
-    pub fn calculate_gradients(self)
-    {
-        self.take_inner().calculate_gradients()
-    }
-
-    pub fn parent(&self) -> cell::Ref<'_, Ops>
-    {
-        cell::Ref::map(self.this_ref(), |x| x.parent())
-    }
-
-    fn derivatives(mut self, op: impl DiffOperation)
-    {
-        let children_amount = Rc::strong_count(&self.0);
-
-        self.this_mut().derivatives(children_amount, op);
-    }
-
-    fn derivatives_set_gradient(&mut self, op: impl DiffOperation)
-    {
-        self.this_mut().derivatives_set_gradient(op);
-    }
-
-    fn derivatives_skip_gradient(mut self)
-    {
-        let children_amount = Rc::strong_count(&self.0);
-
-        if children_amount > 1
-        {
-            return;
-        }
-
-        self.this_mut().derivatives_skip_gradient_no_check();
-    }
-
-    pub fn take_gradient_tensor(&mut self) -> LayerType
-    {
-        self.this_mut().take_gradient_tensor()
-    }
-
-    pub fn take_gradient_scalar(&mut self) -> f32
-    {
-        self.this_mut().take_gradient_scalar()
-    }
-
-    fn take_inner(self) -> AnyDiffType
-    {
-        Rc::into_inner(self.0)
-            .expect("the value must have no children")
-            .into_inner()
-    }
-
-    pub fn value_clone(&self) -> GradientType
-    {
-        self.this_ref().value_clone()
-    }
-
-    pub fn recreate(&self) -> Self
-    {
-        let this = self.this_ref();
-
-        if this.is_gradient()
-        {
-            DiffWrapper::new_diff(this.value_clone())
-        } else
-        {
-            DiffWrapper::new_inner(this.value_clone(), Ops::None, false)
-        }
-    }
-
-    pub fn new_diff(value: GradientType) -> Self
-    {
-        Self::new_inner(value, Ops::None, true)
-    }
-
-    pub fn new_undiff(value: GradientType) -> Self
-    {
-        Self::new_inner(value, Ops::None, false)
-    }
-
-    fn new_inner(value: GradientType, ops: Ops, calculate_gradient: bool) -> Self
-    {
-        let diff = match value
-        {
-            GradientType::Tensor(x) => DiffType::new(x, ops, calculate_gradient).into(),
-            GradientType::Scalar(x) => DiffType::new(x, ops, calculate_gradient).into()
-        };
-
-        Self(Rc::new(RefCell::new(diff)))
-    }
-
-    pub fn enable_gradients(&mut self)
-    {
-        self.this_mut().set_calculate_gradient(true);
-    }
-
-    pub fn disable_gradients(&mut self)
-    {
-        self.this_mut().set_calculate_gradient(false);
-    }
-
-    fn is_gradient(&self) -> bool
-    {
-        self.this_ref().is_gradient()
-    }
-
-    #[allow(dead_code)]
-    fn this_ref(&self) -> cell::Ref<'_, AnyDiffType>
-    {
-        RefCell::borrow(&self.0)
-    }
-
-    fn this_mut(&mut self) -> cell::RefMut<'_, AnyDiffType>
-    {
-        RefCell::borrow_mut(&self.0)
-    }
-
-    pub fn tensor(&self) -> cell::Ref<'_, LayerType>
-    {
-        cell::Ref::map(self.this_ref(), |diff|
-        {
-            match diff
-            {
-                AnyDiffType::Tensor(x) => &x.value,
-                AnyDiffType::Scalar(_) => panic!("expected tensor, got scalar")
-            }
-        })
-    }
-
-    pub fn scalar(&self) -> cell::Ref<'_, f32>
-    {
-        cell::Ref::map(self.this_ref(), |diff|
-        {
-            match diff
-            {
-                AnyDiffType::Scalar(x) => &x.value,
-                AnyDiffType::Tensor(_) => panic!("expected scalar, got tensor")
-            }
-        })
-    }
-}
-
-macro_rules! op_impl
-{
-    ($this_t:ident, $this_g:ident, $other_g:ident, $output_g:ident, $op:ident, $fun:ident) =>
-    {
-        impl $op<$this_t<$other_g>> for $this_t<$this_g>
-        {
-            type Output = $output_g;
-
-            fn $fun(self, rhs: $this_t<$other_g>) -> Self::Output
-            {
-                self.value.$fun(rhs.value)
-            }
-        }
-
-        impl $op<&$this_t<$other_g>> for $this_t<$this_g>
-        {
-            type Output = $output_g;
-
-            fn $fun(self, rhs: &$this_t<$other_g>) -> Self::Output
-            {
-                self.value.$fun(&rhs.value)
-            }
-        }
-
-        impl $op<$this_t<$other_g>> for &$this_t<$this_g>
-        {
-            type Output = $output_g;
-
-            fn $fun(self, rhs: $this_t<$other_g>) -> Self::Output
-            {
-                (&self.value).$fun(rhs.value)
-            }
-        }
-
-        impl $op<&$this_t<$other_g>> for &$this_t<$this_g>
-        {
-            type Output = $output_g;
-
-            fn $fun(self, rhs: &$this_t<$other_g>) -> Self::Output
-            {
-                (&self.value).$fun(&rhs.value)
-            }
-        }
-    }
-}
-
-// inb4 50 megabyte executable
-op_impl!{DiffType, f32, f32, f32, Add, add}
-op_impl!{DiffType, f32, f32, f32, Sub, sub}
-op_impl!{DiffType, f32, f32, f32, Mul, mul}
-op_impl!{DiffType, f32, f32, f32, Div, div}
-
-op_impl!{DiffType, LayerType, LayerType, LayerType, Add, add}
-op_impl!{DiffType, LayerType, LayerType, LayerType, Sub, sub}
-op_impl!{DiffType, LayerType, LayerType, LayerType, Mul, mul}
-op_impl!{DiffType, LayerType, LayerType, LayerType, Div, div}
-
-op_impl!{DiffType, LayerType, f32, LayerType, Add, add}
-op_impl!{DiffType, LayerType, f32, LayerType, Sub, sub}
-op_impl!{DiffType, LayerType, f32, LayerType, Mul, mul}
-op_impl!{DiffType, LayerType, f32, LayerType, Div, div}
-
-macro_rules! wrapper_op_inplace_impl
-{
-    ($op:ident, $fun:ident, $fun_inner:ident) =>
-    {
-        // i dont know if i can do this inplace cuz i kinda need a copy
-        impl $op for DiffWrapper
-        {
-            fn $fun(&mut self, rhs: DiffWrapper)
-            {
-                *self = (&*self).$fun_inner(rhs);
-            }
-        }
-
-        impl $op<&DiffWrapper> for DiffWrapper
-        {
-            fn $fun(&mut self, rhs: &DiffWrapper)
-            {
-                *self = (&*self).$fun_inner(rhs);
-            }
-        }
-    }
-}
-
-macro_rules! wrapper_op_impl
-{
-    ($op:ident, $fun:ident) =>
-    {
-        impl $op for DiffWrapper
-        {
-            type Output = DiffWrapper;
-
-            fn $fun(self, rhs: DiffWrapper) -> Self::Output
-            {
-                op_impl_inner!(self, rhs, $op, $fun)
-            }
-        }
-
-        impl $op<&DiffWrapper> for DiffWrapper
-        {
-            type Output = DiffWrapper;
-
-            fn $fun(self, rhs: &DiffWrapper) -> Self::Output
-            {
-                op_impl_inner!(self, rhs, $op, $fun)
-            }
-        }
-
-        impl $op<DiffWrapper> for &DiffWrapper
-        {
-            type Output = DiffWrapper;
-
-            fn $fun(self, rhs: DiffWrapper) -> Self::Output
-            {
-                op_impl_inner!(self, rhs, $op, $fun)
-            }
-        }
-
-        impl $op<&DiffWrapper> for &DiffWrapper
-        {
-            type Output = DiffWrapper;
-
-            fn $fun(self, rhs: &DiffWrapper) -> Self::Output
-            {
-                op_impl_inner!(self, rhs, $op, $fun)
-            }
-        }
-    }
-}
-
-macro_rules! op_impl_inner
-{
-    (
-        $lhs:expr, $rhs:expr,
-        $op:ident, $fun:ident
-    ) =>
-    {
-        {
-            let value = (&*$lhs.this_ref()).$fun(&*$rhs.this_ref());
-
-            inner_from_value!(
-                value,
-                $op,
-                lhs, $lhs,
-                rhs, $rhs
-            )
-        }
-    }
-}
-
-macro_rules! inner_single_from_value
-{
-    ($value:expr, $op:ident, $field_value:expr) =>
-    {
-        inner_from_value!{$value, $op, value, $field_value}
-    }
-}
-
-macro_rules! inner_from_value
-{
-    (
-        $value:expr,
-        $op:ident,
-        $($field:ident, $field_value:expr),+
-    ) =>
-    {
-        inner_from_value_special_op!{
-            $value,
-            Ops::$op{
-                $($field: $field_value.into(),)+
-            },
-            $($field_value),+
-        }
-    }
-}
-
-macro_rules! inner_from_value_special_op
-{
-    (
-        $value:expr,
-        $op:expr,
-        $($field_value:expr),+
-    ) =>
-    {
-        {
-            let is_gradient = false $(|| $field_value.is_gradient())+;
-
-            let ops = if is_gradient
-            {
-                $op
-            } else
-            {
-                Ops::None
-            };
-
-            DiffWrapper::new_inner(
-                $value.into(),
-                ops,
-                is_gradient
-            )
-        }
-    }
-}
-
-impl Neg for DiffWrapper
-{
-    type Output = Self;
-
-    fn neg(self) -> Self::Output
-    {
-        let value = -self.value_clone();
-
-        inner_from_value!(
-            value, Neg,
-            value, self
-        )
-    }
-}
-
-impl iter::Sum for DiffWrapper
-{
-    fn sum<I>(iter: I) -> Self
-    where
-        I: Iterator<Item=Self>
-    {
-        iter.reduce(|acc, value|
-        {
-            acc + value
-        }).unwrap_or_else(|| unimplemented!())
-    }
-}
-
-wrapper_op_inplace_impl!{AddAssign, add_assign, add}
-wrapper_op_inplace_impl!{SubAssign, sub_assign, sub}
-wrapper_op_inplace_impl!{MulAssign, mul_assign, mul}
-wrapper_op_inplace_impl!{DivAssign, div_assign, div}
-
-wrapper_op_impl!{Add, add}
-wrapper_op_impl!{Sub, sub}
-wrapper_op_impl!{Mul, mul}
-wrapper_op_impl!{Div, div}
-
-impl From<&DiffWrapper> for Vec<f32>
-{
-    fn from(other: &DiffWrapper) -> Self
-    {
-        other.as_vec()
-    }
-}
-
-impl DiffWrapper
-{
-    pub fn softmax_cross_entropy(self, targets: OneHotLayer) -> DiffWrapper
-    {
-        let (softmaxed, value) = self.tensor().clone().softmax_cross_entropy(&targets);
-
-        inner_from_value_special_op!(value, Ops::SoftmaxCrossEntropy{
-            values: self,
-            softmaxed_values: softmaxed,
-            targets
-        }, self)
-    }
-
-    pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
-    {
-        let rhs = rhs.borrow();
-
-        let value = {
-            let rhs = rhs.tensor();
-
-            self.tensor().matmulv(&*rhs)
-        };
-
-        inner_from_value!(value, Matmulv, lhs, self, rhs, rhs)
-    }
-
-    pub fn matmulv_add(&self, rhs: &InputType, added: impl Borrow<Self>) -> Self
-    {
-        match rhs
-        {
-            InputType::Normal(value) => self.matmul_normalv_add(value, added),
-            InputType::OneHot(value) => self.matmul_onehotv_add(value, added)
-        }
-    }
-
-    pub fn matmul_normalv_add(&self, rhs: &Self, added: impl Borrow<Self>) -> Self
-    {
-        let added = added.borrow();
-
-        let value = {
-            let rhs = rhs.tensor();
-            let added = added.tensor();
-
-            self.tensor().matmulv_add(&*rhs, &*added)
-        };
-
-        inner_from_value!(value, MatmulvAdd, lhs, self, rhs, rhs, added, added)
-    }
-
-    pub fn matmul_onehotv_add(&self, rhs: &OneHotLayer, added: impl Borrow<Self>) -> Self
-    {
-        let added = added.borrow();
-
-        let value = {
-            let added = added.tensor();
-
-            self.tensor().matmul_onehotv_add(rhs, &*added)
-        };
-
-        inner_from_value_special_op!(value, Ops::MatmulOneHotvAdd{
-            lhs: self.into(),
-            rhs: rhs.clone(),
-            added: added.into()
-        }, self)
-    }
-
-    pub fn dot(self, rhs: Self) -> DiffWrapper
-    {
-        let value = {
-            let rhs = rhs.tensor();
-
-            self.tensor().clone().dot(&rhs)
-        };
-
-        inner_from_value!(value, Dot, lhs, self, rhs, rhs)
-    }
-
-    pub fn pow(&mut self, power: u32)
-    {
-        let mut value = self.tensor().clone();
-        value.pow(power);
-
-        *self = inner_from_value_special_op!(value, Ops::Pow{
-            lhs: self.into(),
-            power
-        }, self);
-    }
-
-    pub fn exp(&mut self)
-    {
-        let mut value = self.tensor().clone();
-        value.exp();
-
-        *self = inner_single_from_value!(value, Exp, self);
-    }
-
-    pub fn ln(&mut self)
-    {
-        let mut value = self.tensor().clone();
-        value.ln();
-
-        *self = inner_single_from_value!(value, Ln, self);
-    }
-
-    pub fn sqrt(&mut self)
-    {
-        let mut value = self.tensor().clone();
-        value.sqrt();
-
-        *self = inner_single_from_value!(value, Sqrt, self);
-    }
-
-    pub fn sigmoid(&mut self)
-    {
-        let mut value = self.tensor().clone();
-        value.sigmoid();
-
-        *self = inner_single_from_value!(value, Sigmoid, self);
-    }
-
-    pub fn tanh(&mut self)
-    {
-        let mut value = self.tensor().clone();
-        value.tanh();
-
-        *self = inner_single_from_value!(value, Tanh, self);
-    }
-
-    pub fn leaky_relu(&mut self)
-    {
-        let mut value = self.tensor().clone();
-        value.leaky_relu();
-
-        *self = inner_single_from_value!(value, LeakyRelu, self);
-    }
-
-    pub fn sum(&self) -> DiffWrapper
-    {
-        let value = self.tensor().sum();
-        inner_single_from_value!(value, SumTensor, self)
-    }
-
-    pub fn cosine_similarity(&self, other: Self) -> f32
-    {
-        let lhs = self.tensor();
-        let rhs = other.tensor();
-
-        let top = lhs.clone().dot(&rhs);
-
-        let bottom = lhs.magnitude() * rhs.magnitude();
-
-        top / bottom
-    }
-
-    pub fn total_len(&self) -> usize
-    {
-        self.tensor().total_len()
-    }
-
-    pub fn as_vec(&self) -> Vec<f32>
-    {
-        self.tensor().as_vec()
-    }
-
-    pub fn pick_weighed(&self) -> usize
-    {
-        self.tensor().pick_weighed()
-    }
-
-    pub fn highest_index(&self) -> usize
-    {
-        self.tensor().highest_index()
-    }
-}
+}*/
 
 #[cfg(test)]
 mod tests
@@ -2044,56 +1661,87 @@ mod tests
     fn check_tensor_with_dims(
         a_dims: (usize, usize),
         b_dims: (usize, usize),
-        f: impl FnMut(&DiffWrapper, &DiffWrapper) -> DiffWrapper
+        f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor
     )
     {
-        let a = random_tensor(a_dims.0, a_dims.1);
-        let b = random_tensor(b_dims.0, b_dims.1);
+        let mut recorder = OperationsRecorder::new();
 
-        check_tensor_inner(a, b, f);
+        let a = random_tensor(&mut recorder, a_dims.0, a_dims.1);
+        let b = random_tensor(&mut recorder, b_dims.0, b_dims.1);
+
+        check_tensor_inner(&mut recorder, a, b, f);
     }
 
-    fn check_vector(f: impl FnMut(&DiffWrapper, &DiffWrapper) -> DiffWrapper)
+    fn check_vector(f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor)
     {
-        let a = random_tensor(1, LAYER_CURR);
-        let b = random_tensor(1, LAYER_CURR);
+        let mut recorder = OperationsRecorder::new();
 
-        check_tensor_inner(a, b, f);
+        let a = random_tensor(&mut recorder, 1, LAYER_CURR);
+        let b = random_tensor(&mut recorder, 1, LAYER_CURR);
+
+        check_tensor_inner(&mut recorder, a, b, f);
     }
 
-    fn check_tensor(f: impl FnMut(&DiffWrapper, &DiffWrapper) -> DiffWrapper)
+    fn check_tensor(f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor)
     {
-        let a = random_tensor(LAYER_PREV, LAYER_CURR);
-        let b = random_tensor(LAYER_PREV, LAYER_CURR);
+        let mut recorder = OperationsRecorder::new();
 
-        check_tensor_inner(a, b, f);
+        let a = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
+        let b = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
+
+        check_tensor_inner(&mut recorder, a, b, f);
+    }
+
+    fn copy_tensor(
+        old_recorder: &mut OperationsRecorder,
+        new_recorder: &mut OperationsRecorder,
+        old_tensor: DiffTensor
+    ) -> DiffTensor
+    {
+        let (rows, columns) = old_recorder.tensor_shape(old_tensor.as_value());
+        let old_value = old_recorder.get_tensor(old_tensor.as_value()).clone();
+
+        new_recorder.set_new_tensor(old_value)
     }
 
     fn check_tensor_inner(
-        mut a: DiffWrapper,
-        mut b: DiffWrapper,
-        mut f: impl FnMut(&DiffWrapper, &DiffWrapper) -> DiffWrapper
+        recorder: &mut OperationsRecorder,
+        a: DiffTensor,
+        b: DiffTensor,
+        mut f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor
     )
     {
-        let out = f(&a, &b);
+        let out = f(recorder, a, b);
 
-        out.calculate_gradients();
+        recorder.finish();
+        recorder.gradient_with_respect(out.into());
 
-        let a_g = a.take_gradient();
-        let b_g = b.take_gradient();
+        recorder.calculate();
 
-        a.disable_gradients();
-        b.disable_gradients();
+        let a_g = recorder.get_tensor(a.as_gradient().unwrap()).clone();
+        let b_g = recorder.get_tensor(b.as_gradient().unwrap()).clone();
 
-        let mut vals = |a: &mut DiffWrapper, b: &mut DiffWrapper|
+        let mut vals = |old_recorder: &mut OperationsRecorder, a: DiffTensor, b: DiffTensor|
         {
-            assert!(a.parent().is_none());
-            assert!(b.parent().is_none());
+            assert!(a.source.is_none());
+            assert!(b.source.is_none());
 
-            f(&a, &b).tensor().clone()
+            let mut new_recorder = OperationsRecorder::new();
+
+            let new_a = copy_tensor(old_recorder, &mut new_recorder, a);
+            let new_b = copy_tensor(old_recorder, &mut new_recorder, b);
+
+            let output = f(&mut new_recorder, new_a, new_b);
+
+            new_recorder.finish();
+            new_recorder.gradient_with_respect(output.into());
+
+            new_recorder.calculate();
+
+            new_recorder.get_tensor(output.as_value()).clone()
         };
 
-        let orig = vals(&mut a, &mut b).sum();
+        let orig = vals(recorder, a, b).sum();
 
         let epsilon: f32 = 0.009;
 
@@ -2104,51 +1752,55 @@ mod tests
             (value - orig) / epsilon
         };
 
-        let mut a_fg = vec![0.0; a.total_len()];
+        let mut temp_recorder = OperationsRecorder::new();
+
+        let mut a_fg = vec![0.0; recorder.get_tensor(a.as_value()).total_len()];
         for index in 0..a_fg.len()
         {
-            let v = &a;
-            let epsilon = one_hot(v.tensor().clone(), index, epsilon, 0.0);
+            let v = recorder.get_tensor(a.as_value());
+            let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
             let this_fg = {
-                let mut a = DiffWrapper::new_undiff((v.tensor().clone() + epsilon).into());
-                fg(vals(&mut a, &mut b))
+                let a = temp_recorder.set_new_tensor(v.clone() + epsilon);
+                let b = copy_tensor(recorder, &mut temp_recorder, b);
+                fg(vals(&mut temp_recorder, a, b))
             };
 
             a_fg[index] = this_fg;
         }
 
-        let mut b_fg = vec![0.0; b.total_len()];
+        let mut b_fg = vec![0.0; recorder.get_tensor(b.as_value()).total_len()];
         for index in 0..b_fg.len()
         {
-            let v = &b;
-            let epsilon = one_hot(v.tensor().clone(), index, epsilon, 0.0);
+            let v = recorder.get_tensor(b.as_value());
+            let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
             let this_fg = {
-                let mut b = DiffWrapper::new_undiff((v.tensor().clone() + epsilon).into());
-                fg(vals(&mut a, &mut b))
+                let b = temp_recorder.set_new_tensor(v.clone() + epsilon);
+                let a = copy_tensor(recorder, &mut temp_recorder, a);
+                fg(vals(&mut temp_recorder, a, b))
             };
 
             b_fg[index] = this_fg;
         }
 
-        let vec_to_layer = |v, layer_match: &DiffWrapper|
+        let vec_to_layer = |v, layer_match: DiffTensor|
         {
-            let mut layer = layer_match.tensor().clone();
+            let mut layer = recorder.get_tensor(layer_match.as_value()).clone();
 
             layer.swap_raw_values(v);
 
             layer
         };
 
-        let a_fg = vec_to_layer(a_fg, &a);
-        let b_fg = vec_to_layer(b_fg, &b);
+        let a_fg = vec_to_layer(a_fg, a);
+        let b_fg = vec_to_layer(b_fg, b);
 
         eprintln!("derivative of a");
-        compare_tensor(a_fg, a_g.tensor().clone());
+        compare_tensor(a_fg, a_g);
 
         eprintln!("derivative of b");
-        compare_tensor(b_fg, b_g.tensor().clone());
+        compare_tensor(b_fg, b_g);
     }
 
     fn one_hot(
@@ -2180,90 +1832,107 @@ mod tests
         fastrand::u32(1..5) as f32
     }
 
-    fn random_tensor(prev: usize, curr: usize) -> DiffWrapper
+    fn random_tensor(recorder: &mut OperationsRecorder, columns: usize, rows: usize) -> DiffTensor
     {
-        DiffWrapper::new_diff(
-            LayerType::new_with(
-                prev,
-                curr,
-                random_value
-            ).into()
-        )
+        let tensor = recorder.new_tensor(rows, columns);
+        recorder.set_tensor(tensor.as_value(), LayerType::new_with(rows, columns, random_value));
+
+        tensor
     }
 
     #[test]
     fn subtraction()
     {
-        check_tensor(|a, b| a - b)
+        check_tensor(|recorder, a, b| recorder.sub(a, b))
     }
 
     #[test]
     fn addition()
     {
-        check_tensor(|a, b| a + b)
+        check_tensor(|recorder, a, b| recorder.add(a, b))
     }
 
     #[test]
     fn multiplication()
     {
-        check_tensor(|a, b| a * b)
-    }
-
-    #[test]
-    fn division()
-    {
-        check_tensor(|a, b| a / b)
-    }
-
-    #[test]
-    fn division_sum_inplace()
-    {
-        check_tensor(|a, b|
-        {
-            let mut a = a.clone();
-            a /= b.sum();
-
-            a
-        })
+        check_tensor(|recorder, a, b| recorder.mul_componentwise(a, b))
     }
 
     #[test]
     fn non_diff_subdiff()
     {
-        check_tensor(|a, b| DiffWrapper::new_undiff(1.0.into()) - (a + b))
+        check_tensor(|recorder, a, b|
+        {
+            let one = recorder.set_new_value(1.0);
+            let inner_sum = recorder.add(a, b);
+
+            recorder.sub_from_scalar(one, inner_sum)
+        })
     }
 
     #[test]
     fn basic_combined()
     {
-        check_tensor(|a, b| a * b + a)
+        check_tensor(|recorder, a, b|
+        {
+            let mul_result = recorder.mul_componentwise(a, b);
+            recorder.add(mul_result, a)
+        })
     }
 
     #[test]
     fn complex_combined()
     {
-        check_tensor(|a, b| a * b + a + b - a + b)
+        check_tensor(|recorder, a, b|
+        {
+            let left = recorder.mul_componentwise(a, b);
+            let bb = recorder.mul_componentwise(b, b);
+
+            let lefta = recorder.add(left, a);
+            let leftab = recorder.add(lefta, b);
+
+            let right = recorder.add(bb, a);
+
+            recorder.sub(leftab, right)
+        })
     }
 
     #[test]
     fn sum_tensor_product()
     {
-        check_tensor(|a, b| a * b.sum())
+        check_tensor(|recorder, a, b|
+        {
+            let s = recorder.sum_tensor(b);
+
+            recorder.mul_scalar(a, s)
+        })
     }
 
     #[test]
     fn sum_tensor_addition()
     {
-        check_tensor(|a, b| a + b.sum())
+        check_tensor(|recorder, a, b|
+        {
+            let s = recorder.sum_tensor(b);
+
+            recorder.add_scalar(a, s)
+        })
     }
 
+    const UNCOMMENT_ME_TOO: () = { let a = (); () };
     #[test]
     fn sum_tensor_product_negative()
     {
-        check_tensor(|a, b| a * -b.sum())
+        check_tensor(|recorder, a, b|
+        {
+            let s = recorder.sum_tensor(b);
+            let sn = recorder.negate(s);
+
+            recorder.mul_componentwise(a, sn)
+        })
     }
 
-    #[test]
+    /*#[test]
     fn dot_product()
     {
         check_vector(|a, b| a + a.clone().dot(b.clone()))
@@ -2355,25 +2024,24 @@ mod tests
 
             a + b
         })
-    }
+    }*/
 
     #[test]
     fn pow()
     {
-        check_tensor(|a, b|
+        check_tensor(|recorder, a, b|
         {
-            let mut a = a.clone();
-            a.pow(3);
-
-            a + b
+            let output = recorder.pow(a, 3);
+            recorder.add(output, b)
         })
     }
 
-    #[test]
+    const UNCOMMENT_ME_THREE: () = { let a = (); () };
+    /*#[test]
     fn matrix_multiplication()
     {
         check_tensor_with_dims((4, 2), (1, 4), |a, b| a.matmulv(b) + b.sum())
-    }
+    }*/
 
     fn create_targets() -> OneHotLayer
     {
@@ -2382,7 +2050,8 @@ mod tests
         OneHotLayer::new([pos], LAYER_CURR)
     }
 
-    #[test]
+    const UNCOMMENT_ME_FOUR: () = { let a = (); () };
+    /*#[test]
     fn softmax_cross_entropy()
     {
         let targets = create_targets();
@@ -2400,5 +2069,5 @@ mod tests
         {
             a + (b + DiffWrapper::new_undiff(2.0.into())).softmax_cross_entropy(targets.clone())
         })
-    }
+    }*/
 }
