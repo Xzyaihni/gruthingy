@@ -355,6 +355,21 @@ impl OperationsRecorder
         impl_pair_tensor_op!(self, a, b, Add)
     }
 
+    #[must_use]
+    pub fn add_inplace(&mut self, output_pre: DiffTensor, value: DiffTensor) -> DiffTensor
+    {
+        let source = Some(self.current_source());
+
+        let output = DiffTensor{
+            source,
+            ..output_pre
+        };
+
+        self.recording_operations.push(Op::AddInplace{value, output_pre, output});
+
+        output
+    }
+
     pub fn sub(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
     {
         impl_pair_tensor_op!(self, a, b, Sub)
@@ -671,6 +686,10 @@ impl OperationsRecorder
                 {
                     GradientOp::Add{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 },
+                Op::AddInplace{value, output_pre: _, output} =>
+                {
+                    GradientOp::AddInplace{value: value.as_value(), output: output.as_value()}
+                },
                 Op::Sub{lhs, rhs, output} =>
                 {
                     GradientOp::Sub{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
@@ -940,6 +959,19 @@ impl OperationsRecorder
                     });
 
                     self.calculate_gradient(lhs.into());
+                },
+                Op::AddInplace{value, output_pre, output: _} =>
+                {
+                    let gradient = gradient.as_tensor();
+
+                    if let Some(value_gradient) = value.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::Copy{src: gradient, dst: value_gradient});
+                    }
+
+                    let output_pre = *output_pre;
+                    self.calculate_gradient((*value).into());
+                    self.calculate_gradient(output_pre.into());
                 },
                 Op::Sub{rhs, ..}
                 | Op::SubFromScalar{rhs, ..} =>
@@ -1252,6 +1284,15 @@ pub struct DiffTensor
 
 impl DiffTensor
 {
+    pub fn undefined() -> Self
+    {
+        Self{
+            index: TensorIndex(usize::MAX),
+            gradient: None,
+            source: None
+        }
+    }
+
     pub fn as_value(&self) -> TensorIndex
     {
         self.index
@@ -1358,6 +1399,7 @@ pub enum Op
 {
     AddScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
     Add{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
+    AddInplace{value: DiffTensor, output_pre: DiffTensor, output: DiffTensor},
     Sub{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
     SubFromScalar{lhs: DiffScalar, rhs: DiffTensor, output: DiffTensor},
     MulScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
@@ -1777,6 +1819,23 @@ mod tests
             let bb = recorder.mul_componentwise(b, b);
 
             let lefta = recorder.add(left, a);
+            let leftab = recorder.add(lefta, b);
+
+            let right = recorder.add(bb, a);
+
+            recorder.sub(leftab, right)
+        })
+    }
+
+    #[test]
+    fn complex_inplace_combined()
+    {
+        check_tensor(|recorder, a, b|
+        {
+            let left = recorder.mul_componentwise(a, b);
+            let bb = recorder.mul_componentwise(b, b);
+
+            let lefta = recorder.add_inplace(left, a);
             let leftab = recorder.add(lefta, b);
 
             let right = recorder.add(bb, a);
