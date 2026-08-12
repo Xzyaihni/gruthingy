@@ -16,6 +16,7 @@ use crate::{
         OperationsRecorder,
         Softmaxer,
         DiffTensor,
+        DiffScalar,
         TensorIndex,
         OneHotLayer,
         OneHotIndex,
@@ -477,7 +478,7 @@ pub struct Network<N: UnitFactory, O>
     sizes: LayerSizes,
     dropout_probability: f32,
     inputs_targets: Vec<(TensorIndex, OneHotIndex)>,
-    output: DiffTensor,
+    loss: DiffScalar,
     optimizer_info: Option<WeightsFullContainer<N::Unit<O>, O>>,
     weights: WeightsFullContainer<N::Unit<DiffTensor>, DiffTensor>
 }
@@ -536,7 +537,7 @@ where
             recorder,
             sizes,
             inputs_targets: Vec::new(),
-            output: DiffTensor::undefined(),
+            loss: DiffScalar::undefined(),
             optimizer_info,
             weights,
             dropout_probability
@@ -551,7 +552,7 @@ where
 
     fn record_feedforward(&mut self, inputs_count: usize)
     {
-        let mut output: Option<DiffTensor> = None;
+        let mut loss: Option<DiffScalar> = None;
         let mut previous_states: Option<Vec<UnitState<N>>> = None;
 
         let dropout_masks: Vec<_> = self.weights.layers.iter().skip(1).map(|_|
@@ -568,7 +569,7 @@ where
 
             let NetworkOutput{
                 state,
-                output: this_output
+                output: this_loss
             } = self.record_feedforward_single_input(
                 previous_states.take(),
                 &dropout_masks,
@@ -578,18 +579,18 @@ where
 
             // this might cause some networks to not converge at 0 loss (since sometimes its impossible to predict the next word with 0 context)
             // but it makes it more robust i think?? i forgot why i did it this way but it IS important and it is NOT a bug
-            if let Some(output) = output.as_mut()
+            if let Some(loss) = loss.as_mut()
             {
-                *output = self.recorder.add_inplace(*output, this_output);
+                *loss = self.recorder.add_scalars(*loss, this_loss);
             } else
             {
-                output = Some(this_output)
+                loss = Some(this_loss)
             }
 
             previous_states = Some(state);
         }
 
-        self.output = output.unwrap();
+        self.loss = loss.unwrap();
     }
 
     fn record_feedforward_single_input(
@@ -598,21 +599,109 @@ where
         dropout_masks: &[TensorIndex],
         input: InputType,
         targets: OneHotIndex
-    ) -> NetworkOutput<Vec<UnitState<N>>, DiffTensor>
+    ) -> NetworkOutput<Vec<UnitState<N>>, DiffScalar>
     {
-todo!()
-/*        self.feedforward_single_input_with_activation(|layer, previous_state, input|
+        self.record_feedforward_single_input_with_activation(|this, layer, previous_state, input|
         {
-            let mut output = self.feedforward_unit_last(
+            let output = this.record_feedforward_unit_last(
                 layer,
                 previous_state,
                 input
             );
 
-            output.output = output.output.softmax_cross_entropy(targets);
+            NetworkOutput{
+                state: output.state,
+                output: this.recorder.softmax_cross_entropy(output.output, targets)
+            }
+        }, previous_states, dropout_masks, input)
+    }
 
-            output
-        }, previous_states, dropout_masks, &input)*/
+    fn record_feedforward_single_input_with_activation<F, T>(
+        &mut self,
+        last_f: F,
+        previous_states: Option<Vec<UnitState<N>>>,
+        dropout_masks: &[TensorIndex],
+        input: InputType
+    ) -> NetworkOutput<Vec<UnitState<N>>, T>
+    where
+        F: FnOnce(&mut Self, &N::Unit<DiffTensor>, Option<&UnitState<N>>, InputType) -> NetworkOutput<UnitState<N>, T>
+    {
+todo!()
+/*        let mut output: Option<T> = None;
+        let mut last_output: Option<InputType> = None;
+
+        let mut states = Vec::with_capacity(self.sizes.layers);
+
+        // stfu clippy this is more readable
+        #[allow(clippy::needless_range_loop)]
+        for l_i in 0..self.sizes.layers
+        {
+            let input = last_output.as_ref()
+                .unwrap_or(input);
+
+            debug_assert!(l_i < self.weights.layers.len());
+            let layer = unsafe{ self.weights.layers.get_unchecked(l_i) };
+
+            let previous_state = unsafe{
+                previous_states.as_ref().map(|previous_state|
+                {
+                    previous_state.get_unchecked(l_i)
+                })
+            };
+
+            if l_i == (self.sizes.layers - 1)
+            {
+                // last layer
+                let NetworkOutput{
+                    state,
+                    output: this_output
+                } = last_f(layer, previous_state, input);
+
+                output = Some(this_output);
+
+                states.push(state);
+
+                // i like how rust cant figure out that the last index is the last iteration
+                // without this
+                break;
+            } else
+            {
+                let dropout_mask = &dropout_masks[l_i];
+
+                let NetworkOutput{
+                    state,
+                    output: this_output
+                } = layer.feedforward_unit_nonlast(
+                    previous_state,
+                    dropout_mask,
+                    input
+                );
+
+                last_output = Some(this_output.into());
+
+                states.push(state);
+            }
+        }
+
+        NetworkOutput{
+            state: states,
+            output: output.unwrap()
+        }*/
+    }
+
+    fn record_feedforward_unit_last(
+        &self,
+        layer: &N::Unit<DiffTensor>,
+        previous_state: Option<&UnitState<N>>,
+        input: InputType
+    ) -> NetworkOutput<UnitState<N>, DiffTensor>
+    {
+todo!()
+/*        let mut output = layer.feedforward_unit(previous_state, input);
+
+        output.output = self.weights.output.matmulv(output.output);
+
+        output*/
     }
 
 /*    pub fn apply_gradients<OP>(
@@ -863,92 +952,6 @@ todo!()
         }).count();
 
         correct_amount as f32 / total as f32
-    }
-
-    fn feedforward_single_input_with_activation<F, T>(
-        &self,
-        last_f: F,
-        previous_states: Option<Vec<UnitState<N>>>,
-        dropout_masks: &[DiffWrapper],
-        input: &InputType
-    ) -> NetworkOutput<Vec<UnitState<N>>, T>
-    where
-        F: FnOnce(&N::Unit<DiffWrapper>, Option<&UnitState<N>>, &InputType) -> NetworkOutput<UnitState<N>, T>
-    {
-        let mut output: Option<T> = None;
-        let mut last_output: Option<InputType> = None;
-
-        let mut states = Vec::with_capacity(self.sizes.layers);
-
-        // stfu clippy this is more readable
-        #[allow(clippy::needless_range_loop)]
-        for l_i in 0..self.sizes.layers
-        {
-            let input = last_output.as_ref()
-                .unwrap_or(input);
-
-            debug_assert!(l_i < self.weights.layers.len());
-            let layer = unsafe{ self.weights.layers.get_unchecked(l_i) };
-
-            let previous_state = unsafe{
-                previous_states.as_ref().map(|previous_state|
-                {
-                    previous_state.get_unchecked(l_i)
-                })
-            };
-
-            if l_i == (self.sizes.layers - 1)
-            {
-                // last layer
-                let NetworkOutput{
-                    state,
-                    output: this_output
-                } = last_f(layer, previous_state, input);
-
-                output = Some(this_output);
-
-                states.push(state);
-
-                // i like how rust cant figure out that the last index is the last iteration
-                // without this
-                break;
-            } else
-            {
-                let dropout_mask = &dropout_masks[l_i];
-
-                let NetworkOutput{
-                    state,
-                    output: this_output
-                } = layer.feedforward_unit_nonlast(
-                    previous_state,
-                    dropout_mask,
-                    input
-                );
-
-                last_output = Some(this_output.into());
-
-                states.push(state);
-            }
-        }
-
-        NetworkOutput{
-            state: states,
-            output: output.unwrap()
-        }
-    }
-
-    fn feedforward_unit_last(
-        &self,
-        layer: &N::Unit<DiffWrapper>,
-        previous_state: Option<&UnitState<N>>,
-        input: &InputType
-    ) -> NetworkOutput<UnitState<N>, DiffWrapper>
-    {
-        let mut output = layer.feedforward_unit(previous_state, input);
-
-        output.output = self.weights.output.matmulv(output.output);
-
-        output
     }*/
 
     #[allow(dead_code)]

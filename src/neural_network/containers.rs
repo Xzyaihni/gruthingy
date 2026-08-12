@@ -353,6 +353,17 @@ impl OperationsRecorder
         OperationIndex(self.recording_operations.len())
     }
 
+    pub fn add_scalars(&mut self, a: DiffScalar, b: DiffScalar) -> DiffScalar
+    {
+        let source = Some(self.current_source());
+
+        let output = self.new_value_op(source);
+
+        self.recording_operations.push(Op::AddScalars{lhs: a, rhs: b, output});
+
+        output
+    }
+
     pub fn add_scalar(&mut self, a: DiffTensor, b: DiffScalar) -> DiffTensor
     {
         let source = Some(self.current_source());
@@ -541,6 +552,10 @@ impl OperationsRecorder
                     let this_should_not_even_exist = ();
                     self.tensors[dst.0] = self.tensors[src.0].clone();
                 },
+                GradientOp::CopyScalar{src, dst} =>
+                {
+                    self.values[dst.0] = self.values[src.0].clone();
+                },
                 GradientOp::AddScalars{lhs, rhs, output} =>
                 {
                     self.values[output.0] = self.values[lhs.0] + self.values[rhs.0];
@@ -699,6 +714,10 @@ impl OperationsRecorder
                 {
                     GradientOp::AddScalar{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 },
+                Op::AddScalars{lhs, rhs, output} =>
+                {
+                    GradientOp::AddScalars{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
                 Op::Add{lhs, rhs, output} =>
                 {
                     GradientOp::Add{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
@@ -805,7 +824,8 @@ impl OperationsRecorder
                     | GradientOp::MatmulOneHotvAdd{output, ..}
                     | GradientOp::MatmulvTransposed{output, ..}
                     | GradientOp::OuterProduct{output, ..} => output.into(),
-                    GradientOp::AddScalars{output, ..}
+                    GradientOp::CopyScalar{dst: output, ..}
+                    | GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..}
                     | GradientOp::Dot{output, ..}
@@ -868,7 +888,8 @@ impl OperationsRecorder
                             GradientOp::AddInplace{value: temporary_add_index, output: final_output}
                         );
                     },
-                    GradientOp::AddScalars{output, ..}
+                    GradientOp::CopyScalar{dst: output, ..}
+                    | GradientOp::AddScalars{output, ..}
                     | GradientOp::MulScalars{output, ..}
                     | GradientOp::SumTensor{output, ..}
                     | GradientOp::Dot{output, ..}
@@ -976,6 +997,24 @@ impl OperationsRecorder
                     });
 
                     self.calculate_gradient(lhs.into());
+                },
+                Op::AddScalars{lhs, rhs, output: _} =>
+                {
+                    let gradient = gradient.as_value();
+
+                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::CopyScalar{src: gradient, dst: lhs_gradient});
+                    }
+
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        self.gradient_operations.push(GradientOp::CopyScalar{src: gradient, dst: rhs_gradient});
+                    }
+
+                    let rhs = *rhs;
+                    self.calculate_gradient((*lhs).into());
+                    self.calculate_gradient(rhs.into());
                 },
                 Op::AddInplace{value, output_pre, output: _} =>
                 {
@@ -1334,6 +1373,15 @@ pub struct DiffScalar
 
 impl DiffScalar
 {
+    pub fn undefined() -> Self
+    {
+        Self{
+            index: ValueIndex(usize::MAX),
+            gradient: None,
+            source: None
+        }
+    }
+
     pub fn as_value(&self) -> ValueIndex
     {
         self.index
@@ -1386,6 +1434,7 @@ impl DiffWrapper
 pub enum GradientOp
 {
     Copy{src: TensorIndex, dst: TensorIndex},
+    CopyScalar{src: ValueIndex, dst: ValueIndex},
     AddScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
     AddScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
     Add{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
@@ -1418,6 +1467,7 @@ pub enum GradientOp
 pub enum Op
 {
     AddScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
+    AddScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     Add{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
     AddInplace{value: DiffTensor, output_pre: DiffTensor, output: DiffTensor},
     Sub{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
