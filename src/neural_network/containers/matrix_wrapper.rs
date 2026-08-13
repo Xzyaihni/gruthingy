@@ -783,9 +783,4 @@ impl MatrixWrapper
     {
         Softmaxer::highest_index(self.iter())
     }
-
-    pub const fn is_arrayfire() -> bool
-    {
-        false
-    }
 }

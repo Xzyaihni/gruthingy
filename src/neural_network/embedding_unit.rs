@@ -5,8 +5,9 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        DiffWrapper,
-        OneHotLayer,
+        OperationsRecorder,
+        DiffTensor,
+        OneHotIndex,
         LayerSizes,
         InputType,
         network::{NetworkOutput, LayerSize},
@@ -22,30 +23,31 @@ create_weights_container!{
     (bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
-impl Embeddingsable for EmbeddingUnit<DiffWrapper>
+impl Embeddingsable for EmbeddingUnit<DiffTensor>
 {
-    fn embeddings(&self, input: &OneHotLayer) -> DiffWrapper
+    fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor
     {
-        self.weights.matmul_onehotv_add(input, &self.bias)
+        recorder.matmul_onehotv_add(self.weights, input, self.bias)
     }
 }
 
-impl NetworkUnit for EmbeddingUnit<DiffWrapper>
+impl NetworkUnit for EmbeddingUnit<DiffTensor>
 {
     type State = ();
 
-    fn new(sizes: LayerSizes) -> Self
+    fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
-        WeightsContainer::new_randomized(sizes)
+        WeightsContainer::new(recorder, sizes)
     }
 
     fn feedforward_unit(
         &self,
+        recorder: &mut OperationsRecorder,
         _previous_state: Option<&Self::State>,
-        input: &InputType
-    ) -> NetworkOutput<Self::State, DiffWrapper>
+        input: InputType
+    ) -> NetworkOutput<Self::State, DiffTensor>
     {
-        let hidden = self.embeddings(input.as_one_hot());
+        let hidden = self.embeddings(recorder, input.into_one_hot());
 
         NetworkOutput{
             state: (),

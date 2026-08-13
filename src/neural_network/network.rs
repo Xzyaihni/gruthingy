@@ -220,7 +220,7 @@ macro_rules! create_weights_container
             }*/
         }
 
-        /*impl<T> OptimizerUnit<T> for WeightsContainer<T>
+        impl<T> OptimizerUnit<T> for WeightsContainer<T>
         where
             T: Clone + NewableLayer + Serialize + serde::de::DeserializeOwned
         {
@@ -236,7 +236,7 @@ macro_rules! create_weights_container
                     )+
                 }
             }
-        }*/
+        }
 
         impl<T> GenericUnit<T> for WeightsContainer<T>
         {

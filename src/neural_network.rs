@@ -59,13 +59,13 @@ pub use network::WeightsSize;
 #[allow(unused_imports)]
 use lstm::Lstm;
 
-//pub use embedding_unit::EmbeddingUnit;
+pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
 //mod gru;
 mod lstm;
-//mod embedding_unit;
+mod embedding_unit;
 
 pub mod network;
 pub mod containers;

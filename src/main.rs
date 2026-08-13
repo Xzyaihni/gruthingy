@@ -29,9 +29,10 @@ use neural_network::{
     GenericUnit,
     Optimizer,
     DiffWrapper,
+    DiffTensor,
     UnitFactory,
     NUnit,
-//    EmbeddingUnit,
+    EmbeddingUnit,
     NewableLayer,
     NOptimizer,
     NDictionary,
@@ -94,11 +95,10 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
-    todo!()
-    //load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
+    load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
 }
 
-/*pub fn load_embeddings<O>(
+pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
     auto_create: bool
@@ -108,7 +108,6 @@ where
     <EmbeddingsUnitFactory as UnitFactory>::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     for<'a> O::WeightParam: NewableLayer + Serialize + Deserialize<'a>
 {
-    // &mut &mut, im not sure wut im doing wrong
     let sizes = config.as_mut().map(|config|
     {
         SizesInfo{hidden: config.embeddings_size, layers: 1}
@@ -135,20 +134,21 @@ fn load_network_with<N, O, D>(
 where
     O: Optimizer + DeserializeOwned,
     N: UnitFactory + DeserializeOwned,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+    N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     for<'b> O::WeightParam: NewableLayer + Serialize + Deserialize<'b>,
-    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     D: NetworkDictionary + DeserializeOwned
 {
     if path.exists()
     {
-        NeuralNetwork::load(path).unwrap_or_else(|err|
+        todo!()
+        /*NeuralNetwork::load(path).unwrap_or_else(|err|
         {
             complain(format!("could not load network at {} ({err})", path.display()))
-        })
+        })*/
     } else if auto_create
     {
         let config = config.expect("config must be provided for autocreate");
@@ -184,7 +184,9 @@ where
             layers: sizes.layers
         };
 
-        NeuralNetwork::new(dictionary, sizes, config.dropout_probability, config.gradient_clip)
+        let training_info = TrainingInfo::from(config);
+
+        NeuralNetwork::new(dictionary, sizes, training_info, config.dropout_probability, config.gradient_clip)
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))
@@ -193,16 +195,16 @@ where
 
 fn test_loss(config: Config)
 {
-    let text_file = config.get_input_file();
+    /*let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
 
-    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
+    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);*/
 }
 
 fn train(config: Config)
 {
-    let mut network = load_network(&config, None, true);
+    /*let mut network = load_network(&config, None, true);
 
     let mut run_this = |training_info|
     {
@@ -226,12 +228,12 @@ fn train(config: Config)
     } else
     {
         run_this(training_info);
-    }
+    }*/
 }
 
 fn run(config: Config)
 {
-    let mut network = load_network(&config, None, false);
+    /*let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
     {
@@ -266,7 +268,7 @@ fn run(config: Config)
         });
 
         network.predict_into(text, config.tokens_amount, config.temperature, &mut f);
-    };
+    };*/
 }
 
 #[derive(Clone, Copy)]
@@ -382,7 +384,7 @@ fn weight_color(value: f32) -> Color
 
 fn weights_image(config: Config)
 {
-    let network = load_network(&config, None, false);
+    /*let network = load_network(&config, None, false);
 
     let weights = network.inner_network().weights_info();
 
@@ -438,7 +440,7 @@ fn weights_image(config: Config)
         let full_path = layer_folder.join(filename);
 
         image.save(full_path).unwrap();
-    }
+    }*/
 }
 
 fn create_word_dictionary(config: Config)
@@ -493,13 +495,14 @@ fn train_embeddings(mut config: Config)
 
     let run_this = |network: &mut NeuralNetwork<EmbeddingsUnitFactory, NOptimizer, WordDictionary>, training_info|
     {
-        let text_file = config.get_input_file();
+        todo!()
+        /*let text_file = config.get_input_file();
 
         let test_file = config.test_file();
 
         network.train::<true, _, _>(training_info, test_file, text_file);
 
-        network.save(&config.network_path);
+        network.save(&config.network_path);*/
     };
 
     let training_info = TrainingInfo{
@@ -513,19 +516,21 @@ fn train_embeddings(mut config: Config)
         {
             run_this(&mut network, training_info.clone());
 
-            network.clone().without_optimizer().save(&config.embeddings_path);
+            todo!()
+            //network.clone().without_optimizer().save(&config.embeddings_path);
         }
     } else
     {
         run_this(&mut network, training_info);
 
-        network.without_optimizer().save(&config.embeddings_path);
+        todo!()
+        //network.without_optimizer().save(&config.embeddings_path);
     }
 }
 
 fn closest_embeddings(mut config: Config)
 {
-    let mut network = load_embeddings::<()>(
+    /*let mut network = load_embeddings::<()>(
         None,
         Some(&mut config),
         false
@@ -581,12 +586,12 @@ fn closest_embeddings(mut config: Config)
         let word = String::from_utf8_lossy(&word_bytes);
 
         println!("{}: {word}", i + 1);
-    }
+    }*/
 }
 
 fn accuracy_data(config: Config)
 {
-    if config.certainty && config.top_guesses
+    /*if config.certainty && config.top_guesses
     {
         eprintln!("certainty and top-guesses are contradictory, choose only one");
         return;
@@ -642,29 +647,12 @@ fn accuracy_data(config: Config)
     if let Err(err) = result
     {
         eprintln!("error saving accuracy data: {err}");
-    }
-}*/
+    }*/
+}
 
 fn main()
 {
-    if LayerType::is_arrayfire()
-    {
-        panic!("what");
-        /* arrayfire::set_device(0);
-
-        #[cfg(not(test))]
-        {
-            arrayfire::info();
-
-            let device_info = arrayfire::device_info();
-            eprintln!(
-                "name: {}, platform: {}, toolkit: {}, compute: {}",
-                device_info.0, device_info.1, device_info.2, device_info.3
-            );
-        } */
-    }
-
-/*    let config = Config::parse(env::args().skip(1));
+    let config = Config::parse(env::args().skip(1));
 
     match config.mode
     {
@@ -676,5 +664,5 @@ fn main()
         ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config),
         ProgramMode::AccuracyData => accuracy_data(config)
-    }*/
+    }
 }

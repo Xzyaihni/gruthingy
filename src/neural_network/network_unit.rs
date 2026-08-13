@@ -6,6 +6,7 @@ use crate::neural_network::{
     TensorIndex,
     InputType,
     OneHotLayer,
+    OneHotIndex,
     LayerSizes,
     WeightsNamed,
     network::{WeightsSize, NetworkOutput}
@@ -19,10 +20,9 @@ pub trait UnitFactory
     type Unit<T>;
 }
 
-// i hate rust generics i hate rust generics i hate rust generics
 pub trait Embeddingsable
 {
-    fn embeddings(&self, input: &OneHotLayer) -> DiffTensor;
+    fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor;
 }
 
 pub trait GenericUnit<T>
