@@ -35,9 +35,10 @@ use optimizers::*;
 
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
 pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
-pub use network::{SaveWeightType, LayerSizes, WeightsNamed};
+pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed};
 pub use containers::{
     OperationsRecorder,
+    BlockIndex,
     LayerType,
     DiffWrapper,
     DiffTensor,
@@ -975,7 +976,8 @@ impl Default for ExtraInfo
 pub struct NeuralNetwork<N, O, D>
 where
     N: UnitFactory,
-    O: Optimizer
+    O: Optimizer,
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>
 {
     dictionary: D,
     network: Network<N, O::WeightParam>,
@@ -1034,6 +1036,7 @@ where
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    UnitState<N>: Clone,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     D: NetworkDictionary
@@ -1041,14 +1044,14 @@ where
     pub fn new(
         dictionary: D,
         sizes: LayerSizes,
-        steps_highest: usize,
+        is_multistep: bool,
         dropout_probability: f32,
         gradient_clip: Option<f32>
     ) -> Self
     where
         O::WeightParam: NewableLayer
     {
-        let network = Network::new(sizes, steps_highest, dropout_probability, D::is_input_one_hot());
+        let network = Network::new(sizes, dropout_probability, is_multistep, D::is_input_one_hot());
 
         let optimizer = O::new();
 
@@ -1076,7 +1079,7 @@ where
         SaveFormat::serialize(BufWriter::new(writer), self).unwrap();
     }
 
-    pub fn load<P: AsRef<Path>>(steps_highest: usize, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
+    pub fn load<P: AsRef<Path>>(is_multistep: bool, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
     where
         for<'de> O: Deserialize<'de>,
         for<'de> D: Deserialize<'de>,
@@ -1089,7 +1092,7 @@ where
 
         let mut this: Self = SaveFormat::deserialize(BufReader::new(reader))?;
 
-        this.network.initialize(steps_highest, D::is_input_one_hot());
+        this.network.initialize(is_multistep, D::is_input_one_hot());
 
         Ok(this)
     }

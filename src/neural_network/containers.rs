@@ -114,6 +114,11 @@ enum RecorderState
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockIndex(usize);
 
+impl BlockIndex
+{
+    pub fn undefined() -> Self { Self(usize::MAX) }
+}
+
 struct ForceNoPretty<'a, T>(&'a T);
 impl<'a, T: Debug> Debug for ForceNoPretty<'a, T>
 {
@@ -136,9 +141,22 @@ impl Debug for OperationsBlock
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
         f.debug_struct("OperationsBlock")
+            .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("feedforward_operations_count", &self.feedforward_operations_count)
             .finish()
+    }
+}
+
+impl Default for OperationsBlock
+{
+    fn default() -> Self
+    {
+        OperationsBlock{
+            recording_operations: Vec::new(),
+            gradient_operations: Vec::new(),
+            feedforward_operations_count: 0
+        }
     }
 }
 
@@ -296,11 +314,7 @@ impl OperationsRecorder
             values: Vec::new(),
             tensors: Vec::new(),
             one_hot_layers: Vec::new(),
-            operations_blocks: vec![OperationsBlock{
-                recording_operations: Vec::new(),
-                gradient_operations: Vec::new(),
-                feedforward_operations_count: 0
-            }],
+            operations_blocks: vec![OperationsBlock::default()],
             #[cfg(debug_assertions)]
             allow_uninitialized: Vec::new()
         }
@@ -444,7 +458,7 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Recording);
 
-        OperationIndex(self.operations_blocks[self.current_block.0].recording_operations.len())
+        OperationIndex(self.current_block, self.operations_blocks[self.current_block.0].recording_operations.len())
     }
 
     pub fn add_scalars(&mut self, a: DiffScalar, b: DiffScalar) -> DiffScalar
@@ -667,9 +681,23 @@ impl OperationsRecorder
         tensor_shape!(self, tensor)
     }
 
+    pub fn new_block(&mut self) -> BlockIndex
+    {
+        let id = self.operations_blocks.len();
+
+        self.operations_blocks.push(OperationsBlock::default());
+
+        BlockIndex(id)
+    }
+
     pub fn current_block(&self) -> BlockIndex
     {
         self.current_block
+    }
+
+    pub fn blocks_count(&self) -> usize
+    {
+        self.operations_blocks.len()
     }
 
     pub fn calculate_feedforward(&mut self, block: BlockIndex)
@@ -1090,20 +1118,21 @@ impl OperationsRecorder
         self.state == RecorderState::Ready
     }
 
-    pub fn gradient_with_respect(&mut self, respect: DiffWrapper)
+    pub fn gradient_with_respect(&mut self, respect: Vec<DiffWrapper>)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
-        (0..self.operations_blocks.len()).map(BlockIndex).for_each(|block|
+        let blocks_count = self.operations_blocks.len();
+        (0..blocks_count).map(BlockIndex).for_each(|block|
         {
-            self.set_ones(respect);
+            self.set_ones(respect[block.0]);
 
-            self.calculate_gradient(block, respect);
-
-            self.operations_blocks[block.0].recording_operations.clear();
+            self.calculate_gradient(block, respect[block.0]);
 
             self.combine_same_outputs(block);
         });
+
+        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations.clear());
 
         self.state = RecorderState::Ready;
     }
@@ -1128,9 +1157,8 @@ impl OperationsRecorder
 
         if let Some(source) = source
         {
-            let this_block = &mut self.operations_blocks[block.0];
-            let this_operation = &this_block.recording_operations[source.0];
-            let this_gradient_operations = &mut this_block.gradient_operations;
+            let this_operation = self.operations_blocks[source.0.0].recording_operations[source.1].clone();
+            let this_gradient_operations = &mut self.operations_blocks[block.0].gradient_operations;
 
             match this_operation
             {
@@ -1161,13 +1189,12 @@ impl OperationsRecorder
                         unreachable!()
                     }
 
-                    let lhs = *lhs;
                     let rhs = if let Op::Add{rhs, ..} = this_operation
                     {
-                        (*rhs).into()
+                        rhs.into()
                     } else if let Op::AddScalar{rhs, ..} = this_operation
                     {
-                        (*rhs).into()
+                        rhs.into()
                     } else
                     {
                         unreachable!()
@@ -1190,9 +1217,6 @@ impl OperationsRecorder
                         this_gradient_operations.push(GradientOp::CopyScalar{src: gradient, dst: rhs_gradient});
                     }
 
-                    let lhs = *lhs;
-                    let rhs = *rhs;
-
                     self.calculate_gradient(block, lhs.into());
                     self.calculate_gradient(block, rhs.into());
                 },
@@ -1204,9 +1228,6 @@ impl OperationsRecorder
                     {
                         this_gradient_operations.push(GradientOp::Copy{src: gradient, dst: value_gradient});
                     }
-
-                    let output_pre = *output_pre;
-                    let value = *value;
 
                     self.calculate_gradient(block, value.into());
                     self.calculate_gradient(block, output_pre.into());
@@ -1241,14 +1262,12 @@ impl OperationsRecorder
                         this_gradient_operations.push(GradientOp::MulScalar{lhs: gradient, rhs: m1_index, output: rhs_gradient});
                     }
 
-                    let rhs = *rhs;
-
                     let lhs = if let Op::Sub{lhs, ..} = this_operation
                     {
-                        (*lhs).into()
+                        lhs.into()
                     } else if let Op::SubFromScalar{lhs, ..} = this_operation
                     {
-                        (*lhs).into()
+                        lhs.into()
                     } else
                     {
                         unreachable!()
@@ -1270,9 +1289,6 @@ impl OperationsRecorder
                     {
                         this_gradient_operations.push(GradientOp::MulScalars{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
                     }
-
-                    let lhs = *lhs;
-                    let rhs = *rhs;
 
                     self.calculate_gradient(block, rhs.into());
                     self.calculate_gradient(block, lhs.into());
@@ -1318,13 +1334,12 @@ impl OperationsRecorder
                         unreachable!()
                     }
 
-                    let lhs = *lhs;
                     let rhs = if let Op::MulComponentwise{rhs, ..} = this_operation
                     {
-                        (*rhs).into()
+                        rhs.into()
                     } else if let Op::MulScalar{rhs, ..} = this_operation
                     {
-                        (*rhs).into()
+                        rhs.into()
                     } else
                     {
                         unreachable!()
@@ -1340,8 +1355,6 @@ impl OperationsRecorder
                     if let Some(value_gradient) = value.as_gradient()
                     {
                         this_gradient_operations.push(GradientOp::Fill{value: gradient, output: value_gradient});
-
-                        let value = *value;
 
                         self.calculate_gradient(block, value.into());
                     }
@@ -1360,9 +1373,6 @@ impl OperationsRecorder
                         this_gradient_operations.push(GradientOp::MulScalar{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
                     }
 
-                    let lhs = *lhs;
-                    let rhs = *rhs;
-
                     self.calculate_gradient(block, rhs.into());
                     self.calculate_gradient(block, lhs.into());
                 },
@@ -1375,7 +1385,7 @@ impl OperationsRecorder
                     if let Some(lhs_gradient) = lhs.as_gradient()
                     {
                         let power_index = new_value_index!(self);
-                        self.values[power_index.0] = *power as f32;
+                        self.values[power_index.0] = power as f32;
 
                         let pow_d_lhs = new_tensor_index!(self, rows, columns);
                         this_gradient_operations.push(GradientOp::Pow{lhs: lhs.as_value(), power: (power - 1) as u32, output: pow_d_lhs});
@@ -1384,8 +1394,6 @@ impl OperationsRecorder
                         this_gradient_operations.push(GradientOp::MulScalar{lhs: pow_d_lhs, rhs: power_index.into(), output: pow_d});
 
                         this_gradient_operations.push(GradientOp::MulComponentwise{lhs: pow_d, rhs: gradient, output: lhs_gradient});
-
-                        let lhs = *lhs;
 
                         self.calculate_gradient(block, lhs.into());
                     }
@@ -1399,8 +1407,6 @@ impl OperationsRecorder
                     {
                         this_gradient_operations.push(GradientOp::SigmoidDiff{value: output.as_value(), gradient, output: value_gradient});
 
-                        let value = *value;
-
                         self.calculate_gradient(block, value.into());
                     }
                 },
@@ -1413,8 +1419,6 @@ impl OperationsRecorder
                     {
                         this_gradient_operations.push(GradientOp::TanhDiff{value: output.as_value(), gradient, output: value_gradient});
 
-                        let value = *value;
-
                         self.calculate_gradient(block, value.into());
                     }
                 },
@@ -1425,8 +1429,6 @@ impl OperationsRecorder
                     if let Some(value_gradient) = value.as_gradient()
                     {
                         this_gradient_operations.push(GradientOp::LeakyReluDiff{value: value.as_value(), gradient, output: value_gradient});
-
-                        let value = *value;
 
                         self.calculate_gradient(block, value.into());
                     }
@@ -1444,8 +1446,6 @@ impl OperationsRecorder
                             output: values_gradient
                         });
 
-                        let values = *values;
-
                         self.calculate_gradient(block, values.into());
                     }
                 },
@@ -1462,9 +1462,6 @@ impl OperationsRecorder
                     {
                         this_gradient_operations.push(GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
                     }
-
-                    let lhs = *lhs;
-                    let rhs = *rhs;
 
                     self.calculate_gradient(block, lhs.into());
                     self.calculate_gradient(block, rhs.into());
@@ -1488,10 +1485,6 @@ impl OperationsRecorder
                         this_gradient_operations.push(GradientOp::Copy{src: gradient, dst: added_gradient});
                     }
 
-                    let lhs = *lhs;
-                    let rhs = *rhs;
-                    let added = *added;
-
                     self.calculate_gradient(block, lhs.into());
                     self.calculate_gradient(block, rhs.into());
                     self.calculate_gradient(block, added.into());
@@ -1502,16 +1495,13 @@ impl OperationsRecorder
 
                     if let Some(lhs_gradient) = lhs.as_gradient()
                     {
-                        this_gradient_operations.push(GradientOp::OuterProductOneHot{lhs: gradient, rhs: *rhs, output: lhs_gradient});
+                        this_gradient_operations.push(GradientOp::OuterProductOneHot{lhs: gradient, rhs: rhs, output: lhs_gradient});
                     }
 
                     if let Some(added_gradient) = added.as_gradient()
                     {
                         this_gradient_operations.push(GradientOp::Copy{src: gradient, dst: added_gradient});
                     }
-
-                    let lhs = *lhs;
-                    let added = *added;
 
                     self.calculate_gradient(block, lhs.into());
                     self.calculate_gradient(block, added.into());
@@ -1594,7 +1584,7 @@ impl DiffValue
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct OperationIndex(usize);
+struct OperationIndex(BlockIndex, usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffTensor
@@ -2019,7 +2009,7 @@ mod tests
         let out = f(recorder, a, b);
 
         recorder.finish();
-        recorder.gradient_with_respect(out.into());
+        recorder.gradient_with_respect(vec![out.into()]);
 
         let current_block = recorder.current_block();
         recorder.calculate(current_block);
@@ -2040,7 +2030,7 @@ mod tests
             let output = f(&mut new_recorder, new_a, new_b);
 
             new_recorder.finish();
-            new_recorder.gradient_with_respect(output.into());
+            new_recorder.gradient_with_respect(vec![output.into()]);
 
             let current_block = new_recorder.current_block();
             new_recorder.calculate(current_block);

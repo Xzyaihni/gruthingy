@@ -33,6 +33,7 @@ create_weights_container!{
     (memory_bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
+#[derive(Clone)]
 pub struct LSTMState
 {
     hidden: DiffTensor,
@@ -48,7 +49,7 @@ impl NetworkUnit for Lstm<WeightInfo>
         WeightsContainer::new_randomized(recorder, sizes)
     }
 
-    fn feedforward_unit(
+    fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,

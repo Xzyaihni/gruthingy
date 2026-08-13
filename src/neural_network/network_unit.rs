@@ -70,14 +70,14 @@ where
 
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
 
-    fn feedforward_unit(
+    fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
         input: InputType
     ) -> NetworkOutput<Self::State, DiffTensor>;
 
-    fn feedforward_unit_nonlast(
+    fn record_feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
@@ -85,7 +85,7 @@ where
         input: InputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
-        let mut output = self.feedforward_unit(recorder, previous_state, input);
+        let mut output = self.record_feedforward_unit(recorder, previous_state, input);
 
         let new_output = match LAYER_ACTIVATION
         {

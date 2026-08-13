@@ -50,7 +50,7 @@ impl NetworkUnit for EmbeddingUnit<WeightInfo>
         WeightsContainer::new_randomized(recorder, sizes)
     }
 
-    fn feedforward_unit(
+    fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
         _previous_state: Option<&Self::State>,

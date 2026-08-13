@@ -21,6 +21,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use neural_network::{
     TrainingInfo,
     NeuralNetwork,
+    UnitState,
     WeightsNamed,
     WeightsSize,
     LayerType,
@@ -97,8 +98,7 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
-    let training_info = TrainingInfo::from(config);
-    load_network_with(config.network_path.as_ref(), Some(config), sizes, training_info.steps_num.highest(), auto_create)
+    load_network_with(config.network_path.as_ref(), Some(config), sizes, true, auto_create)
 }
 
 pub fn load_embeddings<O>(
@@ -125,14 +125,14 @@ where
             .as_ref()
     });
 
-    load_network_with(path, config, sizes, 1, auto_create)
+    load_network_with(path, config, sizes, false, auto_create)
 }
 
 fn load_network_with<N, O, D>(
     path: &Path,
     config: Option<&Config>,
     sizes: Option<SizesInfo>,
-    steps_highest: usize,
+    is_multistep: bool,
     auto_create: bool
 ) -> NeuralNetwork<N, O, D>
 where
@@ -140,6 +140,7 @@ where
     for<'de> N: UnitFactory + Deserialize<'de>,
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
+    UnitState<N>: Clone,
     for<'de> N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam> + Deserialize<'de>,
     for<'de> O::WeightParam: NewableLayer + Serialize + Deserialize<'de>,
     for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>> + Deserialize<'de>,
@@ -149,7 +150,7 @@ where
 {
     if path.exists()
     {
-        NeuralNetwork::load(steps_highest, path).unwrap_or_else(|err|
+        NeuralNetwork::load(is_multistep, path).unwrap_or_else(|err|
         {
             complain(format!("could not load network at {} ({err})", path.display()))
         })
@@ -188,7 +189,7 @@ where
             layers: sizes.layers
         };
 
-        NeuralNetwork::new(dictionary, sizes, steps_highest, config.dropout_probability, config.gradient_clip)
+        NeuralNetwork::new(dictionary, sizes, is_multistep, config.dropout_probability, config.gradient_clip)
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))
