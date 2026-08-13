@@ -981,8 +981,8 @@ where
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
-    /*for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
+    /*for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     for<'a> O::WeightParam: Serialize + Deserialize<'a>,*/
     D: NetworkDictionary
 {
@@ -1033,7 +1033,7 @@ where
         let reader = File::open(path)?;
 
         SaveFormat::deserialize(BufReader::new(reader))
-    }
+    }*/
 
     pub fn dictionary(&self) -> &D
     {
@@ -1052,7 +1052,7 @@ where
         &mut self.network
     }
 
-    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
+    /*fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
@@ -1151,7 +1151,7 @@ where
         }
 
         self.network.enable_gradients();
-    }
+    }*/
 
     fn print_loss(testing: bool, loss: f32)
     {
@@ -1182,7 +1182,7 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.vectorizer(reader).collect()
-    }*/
+    }
 
     // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
     pub fn train<const EMBEDDINGS: bool, RT, R>(
@@ -1191,19 +1191,21 @@ where
         testing_reader: Option<RT>,
         reader: R
     )
-/*    where
+    where
         RT: Read,
         R: Read,
         for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         for<'b> &'b mut N::Unit<O::WeightParam>: IntoIterator<Item=&'b mut O::WeightParam>,
-        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
+        N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffTensor>=N::Unit<DiffTensor>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + SubAssign + fmt::Debug,
+        N::Unit<DiffTensor>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
         N::Unit<LayerType>: DivAssign<f32> + AddAssign + Serialize + DeserializeOwned + IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
-        for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable*/
+        for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
     {
+        self.network.calculate_gradients();
+
         if let Some(learning_rate) = info.learning_rate
         {
             self.optimizer.set_learning_rate(learning_rate);
@@ -1212,7 +1214,7 @@ where
         // i dunno wuts the correct way to handle this stuff
         let batch_step = info.batch_size * info.steps_num.mid();
 
-/*        let inputs: Vec<_> = self.vectorized(reader);
+        let inputs: Vec<_> = self.vectorized(reader);
         let testing_inputs: Vec<_> = if !info.calculate_loss && !info.calculate_accuracy
         {
             Vec::new()
@@ -1249,11 +1251,12 @@ where
                 return;
             }
 
-            network.test_loss_inner(
+            todo!()
+            /*network.test_loss_inner(
                 &testing_inputs,
                 info.calculate_loss,
                 info.calculate_accuracy
-            );
+            );*/
         };
 
         for input_index in 0..info.iterations
@@ -1281,7 +1284,7 @@ where
                 let max_batch_start = inputs.len()
                     .saturating_sub(steps_num + (InputOutput::<EMBEDDINGS, D>::min_len() - 1));
 
-                let mut gradients = (0..info.batch_size).map(|_|
+                /*let mut gradients = (0..info.batch_size).map(|_|
                 {
                     let batch_start = if max_batch_start == 0
                     {
@@ -1322,11 +1325,11 @@ where
                     Self::print_loss(false, batch_loss as f32);
                 }
 
-                self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
+                self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);*/
             }
         }
 
-        output_loss(self);*/
+        output_loss(self);
     }
 
 /*    pub fn predict_into<R>(

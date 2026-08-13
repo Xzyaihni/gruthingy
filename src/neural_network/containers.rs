@@ -980,6 +980,11 @@ impl OperationsRecorder
         }
     }
 
+    pub fn is_ready(&self) -> bool
+    {
+        self.state == RecorderState::Ready
+    }
+
     pub fn gradient_with_respect(&mut self, respect: DiffWrapper)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
@@ -1437,10 +1442,10 @@ impl DiffValue
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct OperationIndex(usize);
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffTensor
 {
     index: TensorIndex,
@@ -1479,7 +1484,7 @@ impl DiffTensor
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffScalar
 {
     index: ValueIndex,

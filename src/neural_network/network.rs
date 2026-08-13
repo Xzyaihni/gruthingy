@@ -559,6 +559,16 @@ where
         this
     }
 
+    pub fn calculate_gradients(&mut self)
+    {
+        if !self.recorder.is_ready()
+        {
+            debug_assert_ne!(self.loss, DiffScalar::undefined());
+
+            self.recorder.gradient_with_respect(self.loss.into());
+        }
+    }
+
     fn record_feedforward(&mut self, inputs_count: usize, is_input_one_hot: bool)
     {
         let mut loss: Option<DiffScalar> = None;
@@ -866,7 +876,7 @@ where
         {
             assert!(weight.parent().is_none());
         });
-    }
+    }*/
 
     #[allow(dead_code)]
     pub fn parameters_amount(&self) -> u128
@@ -879,7 +889,7 @@ where
         layers_sum + self.sizes.input as u128 * self.sizes.hidden as u128
     }
 
-    fn with_predict<T, F>(
+    /*fn with_predict<T, F>(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>,
         f: F
