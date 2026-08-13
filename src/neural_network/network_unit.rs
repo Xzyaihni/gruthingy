@@ -3,6 +3,7 @@ use crate::neural_network::{
     AFType,
     OperationsRecorder,
     DiffTensor,
+    TensorIndex,
     InputType,
     OneHotLayer,
     LayerSizes,
@@ -60,21 +61,21 @@ where
 {
     type State;
 
-    fn new(sizes: LayerSizes) -> Self;
+    fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
 
     fn feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
-        input: &InputType
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffTensor>;
 
     fn feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
-        dropout_mask: DiffTensor,
-        input: &InputType
+        dropout_mask: TensorIndex,
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
         let mut output = self.feedforward_unit(recorder, previous_state, input);
@@ -91,7 +92,7 @@ where
             }
         };
 
-        output.output = recorder.mul_componentwise(new_output, dropout_mask);
+        output.output = recorder.mul_componentwise(new_output, DiffTensor::no_gradient(dropout_mask));
 
         output
     }

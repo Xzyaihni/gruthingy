@@ -8,6 +8,7 @@ use crate::{
         DiffTensor,
         InputType,
         LayerSizes,
+        OperationsRecorder,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
     }
@@ -41,51 +42,67 @@ impl NetworkUnit for Lstm<DiffTensor>
 {
     type State = LSTMState;
 
-    fn new(sizes: LayerSizes) -> Self
+    fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
-        WeightsContainer::new_randomized(sizes)
+        WeightsContainer::new(recorder, sizes)
     }
 
     fn feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
-        input: &InputType
+        input: InputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
-        let mut forget_gate = self.input_forget.matmulv_add(input, &self.forget_bias);
-        let mut update_gate = self.input_update.matmulv_add(input, &self.update_bias);
-        let mut output_gate = self.input_output.matmulv_add(input, &self.output_bias);
-        let mut memory_gate = self.input_memory.matmulv_add(input, &self.memory_bias);
+        let mut matmul_inputv_add = |weights, input, bias|
+        {
+            match input
+            {
+                InputType::Normal(x) => recorder.matmulv_add(weights, DiffTensor::no_gradient(x), bias),
+                InputType::OneHot(x) => recorder.matmul_onehotv_add(weights, x, bias)
+            }
+        };
+
+        let mut forget_gate = matmul_inputv_add(self.input_forget, input, self.forget_bias);
+        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
+        let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
+        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
 
         if let Some(previous_state) = previous_state
         {
-            forget_gate += self.hidden_forget.matmulv(&previous_state.hidden);
-            update_gate += self.hidden_update.matmulv(&previous_state.hidden);
-            output_gate += self.hidden_output.matmulv(&previous_state.hidden);
-            memory_gate += self.hidden_memory.matmulv(&previous_state.hidden);
+            let mut do_gate = |gate: &mut _, hidden, previous_hidden|
+            {
+                let mm = recorder.matmulv(hidden, previous_hidden);
+                *gate = recorder.add_inplace(*gate, mm);
+            };
+
+            do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
+            do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
+            do_gate(&mut output_gate, self.hidden_output, previous_state.hidden);
+            do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
         }
 
-        forget_gate.sigmoid();
-        update_gate.sigmoid();
-        output_gate.sigmoid();
-        memory_gate.tanh();
+        let sigmoid_inplace_use_that_here = ();
+        forget_gate = recorder.sigmoid(forget_gate);
+        update_gate = recorder.sigmoid(update_gate);
+        output_gate = recorder.sigmoid(output_gate);
+        memory_gate = recorder.tanh(memory_gate);
 
-        let this_memory_rhs = update_gate * memory_gate;
+        let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
         let this_memory = if let Some(previous_state) = previous_state
         {
-            forget_gate * &previous_state.memory + this_memory_rhs
+            let left = recorder.mul_componentwise(forget_gate, previous_state.memory);
+            recorder.add(left, this_memory_rhs)
         } else
         {
             this_memory_rhs
         };
 
         let hidden = {
-            let mut memory = this_memory.clone();
-            memory.tanh();
+            let memory = recorder.tanh(this_memory);
 
-            output_gate * memory
+            recorder.mul_componentwise(output_gate, memory)
         };
 
         let state = LSTMState{

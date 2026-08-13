@@ -12,7 +12,7 @@ use std::{
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
-//use network::{NetworkOutput, Network};
+use network::{NetworkOutput, Network};
 
 #[allow(unused_imports)]
 use crate::{
@@ -30,11 +30,11 @@ use crate::{
     }
 };
 
-//use optimizers::*;
+use optimizers::*;
 
 pub use network::LayerSizes;
-pub use optimizers::{NewableLayer, DecayFunction/*, Optimizer*/};
-pub use network_unit::{NetworkUnit, /*GenericUnit, */UnitFactory, OptimizerUnit};
+pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
+pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::WeightsNamed;
 pub use containers::{
     OperationsRecorder,
@@ -50,21 +50,21 @@ pub use containers::{
     Softmaxer
 };
 
-//#[allow(unused_imports)]
-// pub use network::WeightsSize;
-
-/*#[allow(unused_imports)]
-use gru::Gru;*/
+#[allow(unused_imports)]
+pub use network::WeightsSize;
 
 //#[allow(unused_imports)]
-//use lstm::Lstm;
+//use gru::Gru;
+
+#[allow(unused_imports)]
+use lstm::Lstm;
 
 //pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
-// mod gru;
-// mod lstm;
+//mod gru;
+mod lstm;
 //mod embedding_unit;
 
 pub mod network;
@@ -931,21 +931,18 @@ impl Default for ExtraInfo
 }
 
 const fix_me_4: () = ();
-#[derive(Clone, Serialize, Deserialize)]
 pub struct NeuralNetwork<N, O, D>
-/*where
+where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<DiffWrapper>: NetworkUnit,
-    for<'a> O::WeightParam: Serialize + Deserialize<'a>*/
+//    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+//    N::Unit<DiffWrapper>: NetworkUnit,
+//    for<'a> O::WeightParam: Serialize + Deserialize<'a>
 {
     dictionary: D,
-    network: N,
-//    network: Network<N, O::WeightParam>,
+    network: Network<N, O::WeightParam>,
     optimizer: O,
     gradient_clip: Option<f32>,
-    #[serde(default)]
     extra_info: ExtraInfo,
     sizes: LayerSizes
 }
@@ -978,31 +975,30 @@ where
 }*/
 
 const fix_me_3: () = ();
-impl<D> NeuralNetwork<(), (), D>
-/*where
+impl<N, O, D> NeuralNetwork<N, O, D>
+where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
+    N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
+    /*for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
     for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
-    for<'a> O::WeightParam: Serialize + Deserialize<'a>,
-    D: NetworkDictionary*/
+    for<'a> O::WeightParam: Serialize + Deserialize<'a>,*/
+    D: NetworkDictionary
 {
     pub fn new(
         dictionary: D,
         sizes: LayerSizes,
+        info: TrainingInfo,
         dropout_probability: f32,
         gradient_clip: Option<f32>
     ) -> Self
-//    where
-//        O::WeightParam: NewableLayer
+    where
+        O::WeightParam: NewableLayer
     {
-        //let network = Network::new(sizes, dropout_probability);
-        let network = ();
+        let network = Network::new(sizes, info.steps_num.get(), dropout_probability);
 
-        //let optimizer = O::new();
-        let optimizer = ();
+        let optimizer = O::new();
 
         let extra_info = ExtraInfo::default();
 
@@ -1210,13 +1206,13 @@ impl<D> NeuralNetwork<(), (), D>
     {
         if let Some(learning_rate) = info.learning_rate
         {
-//            self.optimizer.set_learning_rate(learning_rate);
+            self.optimizer.set_learning_rate(learning_rate);
         }
 
         // i dunno wuts the correct way to handle this stuff
-/*        let batch_step = info.batch_size * info.steps_num.mid();
+        let batch_step = info.batch_size * info.steps_num.mid();
 
-        let inputs: Vec<_> = self.vectorized(reader);
+/*        let inputs: Vec<_> = self.vectorized(reader);
         let testing_inputs: Vec<_> = if !info.calculate_loss && !info.calculate_accuracy
         {
             Vec::new()

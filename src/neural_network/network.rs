@@ -178,9 +178,17 @@ macro_rules! create_weights_container
             }
         }
 
-        impl WeightsContainer<DiffWrapper>
+        impl WeightsContainer<DiffTensor>
         {
-            pub fn new_randomized(sizes: $crate::neural_network::LayerSizes) -> Self
+            pub fn new(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
+            {
+                use $crate::neural_network::network::LayerSize;
+
+                Self{sizes, $(
+                    $name: recorder.new_tensor($this_size.into_number(sizes), $previous_size.into_number(sizes)),
+                )+}
+            }
+            /*pub fn new_randomized(sizes: $crate::neural_network::LayerSizes) -> Self
             {
                 use $crate::neural_network::network::LayerSize;
 
@@ -193,13 +201,13 @@ macro_rules! create_weights_container
                         {
                             LayerSize::One =>
                             {
-                                LayerType::new(previous_size, this_size)
+                                LayerType::new(this_size, previous_size)
                             },
                             x =>
                             {
                                 let previous_layer = x.into_number(sizes);
 
-                                LayerType::new_with(previous_size, this_size, ||
+                                LayerType::new_with(this_size, previous_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
@@ -209,10 +217,10 @@ macro_rules! create_weights_container
                         }.into()
                     }),
                 )+}
-            }
+            }*/
         }
 
-        impl<T> OptimizerUnit<T> for WeightsContainer<T>
+        /*impl<T> OptimizerUnit<T> for WeightsContainer<T>
         where
             T: Clone + NewableLayer + Serialize + serde::de::DeserializeOwned
         {
@@ -228,7 +236,7 @@ macro_rules! create_weights_container
                     )+
                 }
             }
-        }
+        }*/
 
         impl<T> GenericUnit<T> for WeightsContainer<T>
         {
@@ -424,7 +432,7 @@ impl<U, T> WeightsFullContainer<U, T>
     pub fn new(
         sizes: LayerSizes,
         unit_f: impl FnMut(LayerSizes) -> U,
-        f: impl FnOnce(LayerSizes) -> T
+        output: T
     ) -> Self
     {
         Self{
@@ -441,7 +449,7 @@ impl<U, T> WeightsFullContainer<U, T>
                     }
                 }
             }).map(unit_f).collect(),
-            output: f(sizes)
+            output
         }
     }
 
@@ -512,18 +520,13 @@ where
             Some(WeightsFullContainer::new(sizes, |size|
             {
                 N::Unit::new_zeroed(size)
-            }, |size|
-            {
-                O::new(size.hidden, size.output)
+            }, {
+                O::new(sizes.hidden, sizes.output)
             }));
 
-        let weights = WeightsFullContainer::new(sizes, |size|
-        {
-            N::Unit::new(size)
-        }, |size|
-        {
-            let weights = recorder.new_tensor(size.output, size.hidden);
-            recorder.set_tensor(weights.as_value(), LayerType::new_with(size.output, size.hidden, ||
+        let output_weights_tensor = {
+            let weights = recorder.new_tensor(sizes.output, sizes.hidden);
+            recorder.set_tensor(weights.as_value(), LayerType::new_with(sizes.output, sizes.hidden, ||
             {
                 let v = 1.0 / (sizes.hidden as f32).sqrt();
 
@@ -531,7 +534,12 @@ where
             }));
 
             weights
-        });
+        };
+
+        let weights = WeightsFullContainer::new(sizes, |size|
+        {
+            N::Unit::new(&mut recorder, size)
+        }, output_weights_tensor);
 
         let mut this = Self{
             recorder,
@@ -601,10 +609,10 @@ where
         targets: OneHotIndex
     ) -> NetworkOutput<Vec<UnitState<N>>, DiffScalar>
     {
-        self.record_feedforward_single_input_with_activation(|this, layer, previous_state, input|
+        self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
         {
             let output = this.record_feedforward_unit_last(
-                layer,
+                layer_index,
                 previous_state,
                 input
             );
@@ -624,30 +632,24 @@ where
         input: InputType
     ) -> NetworkOutput<Vec<UnitState<N>>, T>
     where
-        F: FnOnce(&mut Self, &N::Unit<DiffTensor>, Option<&UnitState<N>>, InputType) -> NetworkOutput<UnitState<N>, T>
+        F: FnOnce(&mut Self, usize, Option<&UnitState<N>>, InputType) -> NetworkOutput<UnitState<N>, T>
     {
-todo!()
-/*        let mut output: Option<T> = None;
+        let mut output: Option<T> = None;
         let mut last_output: Option<InputType> = None;
 
         let mut states = Vec::with_capacity(self.sizes.layers);
 
-        // stfu clippy this is more readable
         #[allow(clippy::needless_range_loop)]
         for l_i in 0..self.sizes.layers
         {
-            let input = last_output.as_ref()
-                .unwrap_or(input);
+            let input = last_output.unwrap_or(input);
 
-            debug_assert!(l_i < self.weights.layers.len());
-            let layer = unsafe{ self.weights.layers.get_unchecked(l_i) };
+            let layer = &self.weights.layers[l_i];
 
-            let previous_state = unsafe{
-                previous_states.as_ref().map(|previous_state|
-                {
-                    previous_state.get_unchecked(l_i)
-                })
-            };
+            let previous_state = previous_states.as_ref().map(|previous_state|
+            {
+                &previous_state[l_i]
+            });
 
             if l_i == (self.sizes.layers - 1)
             {
@@ -655,29 +657,28 @@ todo!()
                 let NetworkOutput{
                     state,
                     output: this_output
-                } = last_f(layer, previous_state, input);
+                } = last_f(self, l_i, previous_state, input);
 
                 output = Some(this_output);
 
                 states.push(state);
 
-                // i like how rust cant figure out that the last index is the last iteration
-                // without this
                 break;
             } else
             {
-                let dropout_mask = &dropout_masks[l_i];
+                let dropout_mask = dropout_masks[l_i];
 
                 let NetworkOutput{
                     state,
                     output: this_output
                 } = layer.feedforward_unit_nonlast(
+                    &mut self.recorder,
                     previous_state,
                     dropout_mask,
                     input
                 );
 
-                last_output = Some(this_output.into());
+                last_output = Some(this_output.as_value().into());
 
                 states.push(state);
             }
@@ -686,22 +687,21 @@ todo!()
         NetworkOutput{
             state: states,
             output: output.unwrap()
-        }*/
+        }
     }
 
     fn record_feedforward_unit_last(
-        &self,
-        layer: &N::Unit<DiffTensor>,
+        &mut self,
+        layer_index: usize,
         previous_state: Option<&UnitState<N>>,
         input: InputType
     ) -> NetworkOutput<UnitState<N>, DiffTensor>
     {
-todo!()
-/*        let mut output = layer.feedforward_unit(previous_state, input);
+        let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
 
-        output.output = self.weights.output.matmulv(output.output);
+        output.output = self.recorder.matmulv(self.weights.output, output.output);
 
-        output*/
+        output
     }
 
 /*    pub fn apply_gradients<OP>(

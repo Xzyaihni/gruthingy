@@ -21,21 +21,21 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use neural_network::{
     TrainingInfo,
     NeuralNetwork,
-//    WeightsNamed,
-//    WeightsSize,
+    WeightsNamed,
+    WeightsSize,
     LayerType,
-//    NetworkUnit,
-//    OptimizerUnit,
-//    GenericUnit,
-//    Optimizer,
+    NetworkUnit,
+    OptimizerUnit,
+    GenericUnit,
+    Optimizer,
     DiffWrapper,
-//    UnitFactory,
-//    NUnit,
+    UnitFactory,
+    NUnit,
 //    EmbeddingUnit,
-//    NewableLayer,
-//    NOptimizer,
+    NewableLayer,
+    NOptimizer,
     NDictionary,
-//    LayerSizes
+    LayerSizes
 };
 
 use config::{Config, ProgramMode};
@@ -80,7 +80,7 @@ impl From<&Config> for SizesInfo
 }
 
 // this is definitely unneeded in theory, but in practice serde macros r stupid
-/*#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct NUnitFactory;
 
 impl UnitFactory for NUnitFactory
@@ -94,10 +94,11 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
-    load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
+    todo!()
+    //load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
 }
 
-pub fn load_embeddings<O>(
+/*pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
     auto_create: bool
