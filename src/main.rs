@@ -386,7 +386,7 @@ fn weight_color(value: f32) -> Color
 
 fn weights_image(config: Config)
 {
-    /*let network = load_network(&config, None, false);
+    let network = load_network(&config, None, false);
 
     let weights = network.inner_network().weights_info();
 
@@ -442,7 +442,7 @@ fn weights_image(config: Config)
         let full_path = layer_folder.join(filename);
 
         image.save(full_path).unwrap();
-    }*/
+    }
 }
 
 fn create_word_dictionary(config: Config)

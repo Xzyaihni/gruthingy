@@ -46,11 +46,40 @@ pub struct WeightsSize<T>
     pub is_hidden: bool
 }
 
+impl<T> WeightsSize<T>
+{
+    fn map<F, U>(self, f: F) -> WeightsSize<U>
+    where
+        F: FnOnce(T) -> U
+    {
+        WeightsSize{
+            previous_size: self.previous_size,
+            this_size: self.this_size,
+            is_hidden: self.is_hidden,
+            weights: f(self.weights)
+        }
+    }
+}
+
 pub struct WeightsNamed<T>
 {
     pub name: String,
     pub layer: usize,
     pub weights_size: WeightsSize<T>
+}
+
+impl<T> WeightsNamed<T>
+{
+    fn map<F, U>(self, f: F) -> WeightsNamed<U>
+    where
+        F: FnOnce(T) -> U
+    {
+        WeightsNamed{
+            name: self.name,
+            layer: self.layer,
+            weights_size: self.weights_size.map(f)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -952,13 +981,12 @@ where
         (self.recorder.get_value(self.loss.as_value()), gradients)
     }
 
-/*
     pub fn weights_info<'b, 'c>(
         &'b self
-    ) -> Vec<WeightsNamed<&'b DiffWrapper>>
+    ) -> Vec<WeightsNamed<&'b LayerType>>
     where
-        for<'a> N::Unit<DiffWrapper>: NetworkUnit<Unit<WeightsNamed<&'a DiffWrapper>>=N::Unit<WeightsNamed<&'a DiffWrapper>>>,
-        N::Unit<WeightsNamed<&'b DiffWrapper>>: IntoIterator<Item=WeightsNamed<&'b DiffWrapper>>
+        for<'a> N::Unit<WeightInfo>: NetworkUnit<Unit<WeightsNamed<&'a WeightInfo>>=N::Unit<WeightsNamed<&'a WeightInfo>>>,
+        N::Unit<WeightsNamed<&'b WeightInfo>>: IntoIterator<Item=WeightsNamed<&'b WeightInfo>>
     {
         self.weights.layers.iter().enumerate()
             .flat_map(|(layer_index, layer)|
@@ -975,8 +1003,9 @@ where
                     is_hidden: false
                 }
             }))
+            .map(|x| x.map(|x| self.recorder.get_tensor(x.weight_original.as_value())))
             .collect::<Vec<_>>()
-    }*/
+    }
 
     #[allow(dead_code)]
     pub fn parameters_amount(&self) -> u128
