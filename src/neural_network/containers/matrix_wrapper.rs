@@ -621,6 +621,22 @@ impl MatrixWrapper
         self.0 = &lhs.0 * &rhs.0.transpose();
     }
 
+    pub fn outer_product_one_hot_into(&mut self, lhs: &Self, rhs: &OneHotLayer)
+    {
+        let a = &lhs.0;
+
+        debug_assert!(a.shape().1 == 1);
+
+        self.0 = DMatrix::zeros(a.nrows(), rhs.size);
+
+        let a = &a.column(0);
+
+        for position in rhs.positions.iter().copied()
+        {
+            self.0.set_column(position, a);
+        }
+    }
+
     pub fn max(&mut self, rhs: &Self)
     {
         self.0.zip_apply(&rhs.0, |lhs, rhs|
