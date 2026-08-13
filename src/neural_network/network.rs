@@ -17,6 +17,7 @@ use crate::{
         Softmaxer,
         DiffTensor,
         DiffScalar,
+        OwnedDiffValue,
         TensorIndex,
         OneHotLayer,
         OneHotIndex,
@@ -29,7 +30,7 @@ use crate::{
         Optimizer,
         OptimizerUnit,
         UnitFactory,
-//        EN,
+        EN,
         DROPCONNECT_PROBABILITY,
         network_unit::Embeddingsable
     }
@@ -267,6 +268,35 @@ macro_rules! create_weights_container
                 false $(|| $is_hidden)+
             }
 
+            fn map<U, F>(self, mut f: F) -> WeightsContainer<U>
+            where
+                F: FnMut(T) -> U
+            {
+                WeightsContainer{
+                    sizes: self.sizes,
+                    $(
+                        $name: f(self.$name),
+                    )+
+                }
+            }
+
+            fn map_with_info<U, F>(self, mut f: F) -> WeightsContainer<U>
+            where
+                F: FnMut(WeightsSize<T>) -> U
+            {
+                WeightsContainer{
+                    sizes: self.sizes,
+                    $(
+                        $name: f(WeightsSize{
+                            weights: self.$name,
+                            this_size: $this_size.into_number(self.sizes),
+                            previous_size: $previous_size.into_number(self.sizes),
+                            is_hidden: $is_hidden
+                        }),
+                    )+
+                }
+            }
+
             fn map_ref<U, F>(&self, mut f: F) -> WeightsContainer<U>
             where
                 F: FnMut(&T) -> U
@@ -401,8 +431,8 @@ pub struct NetworkOutput<State, Output>
 
 type UnitState<N> = <<N as UnitFactory>::Unit<WeightInfo> as NetworkUnit>::State;
 
-const uhh: () = ();
-//#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(bound(serialize = "T: Serialize, N::Unit<T>: Serialize", deserialize = "T: Deserialize<'de>, N::Unit<T>: Deserialize<'de>"))]
 pub struct WeightsFullContainer<N: UnitFactory, T>
 {
     layers: Vec<N::Unit<T>>,
@@ -462,6 +492,17 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
         }
     }
 
+    pub fn map<F, U>(self, mut f: F) -> WeightsFullContainer<N, U>
+    where
+        N::Unit<T>: GenericUnit<T, Unit<U>=N::Unit<U>>,
+        F: FnMut(T) -> U
+    {
+        WeightsFullContainer{
+            output: f(self.output),
+            layers: self.layers.into_iter().map(|layer| layer.map(&mut f)).collect()
+        }
+    }
+
     pub fn map_ref<F, U>(&self, mut f: F) -> WeightsFullContainer<N, U>
     where
         N::Unit<T>: GenericUnit<T, Unit<U>=N::Unit<U>>,
@@ -496,6 +537,40 @@ pub struct WeightInfo
     pub dropconnect_mask: Option<TensorIndex>
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound(serialize = "O: Serialize, N::Unit<O>: Serialize, N::Unit<OwnedDiffValue>: Serialize", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<OwnedDiffValue>: Deserialize<'de>"))]
+pub struct SaveNetwork<N: UnitFactory, O>
+{
+    sizes: LayerSizes,
+    dropout_probability: f32,
+    optimizer_info: Option<WeightsFullContainer<N, O>>,
+    // all of these will be Tensor but i want it to be backwards compatible with my previous version
+    weights: WeightsFullContainer<N, OwnedDiffValue>
+}
+
+impl<N: UnitFactory, O> From<Network<N, O>> for SaveNetwork<N, O>
+where
+    N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<OwnedDiffValue>=N::Unit<OwnedDiffValue>>
+{
+    fn from(x: Network<N, O>) -> Self
+    {
+        Self{
+            sizes: x.sizes,
+            dropout_probability: x.dropout_probability,
+            optimizer_info: x.optimizer_info,
+            weights: x.weights.map(|weight_info|
+            {
+                let tensor = x.recorder.get_tensor(weight_info.weight_value.as_value()).clone();
+                OwnedDiffValue::Tensor(tensor)
+            })
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(from = "SaveNetwork<N, O>")]
+#[serde(into = "SaveNetwork<N, O>")]
+#[serde(bound(serialize = "O: Serialize, N::Unit<O>: Serialize, N::Unit<OwnedDiffValue>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<OwnedDiffValue>=N::Unit<OwnedDiffValue>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<OwnedDiffValue>: Deserialize<'de> + GenericUnit<OwnedDiffValue, Unit<WeightInfo>=N::Unit<WeightInfo>>"))]
 pub struct Network<N: UnitFactory, O>
 {
     recorder: OperationsRecorder,
@@ -506,6 +581,82 @@ pub struct Network<N: UnitFactory, O>
     loss: DiffScalar,
     optimizer_info: Option<WeightsFullContainer<N, O>>,
     weights: WeightsFullContainer<N, WeightInfo>
+}
+
+// this clone is ONLY used for serialization, dont use for ANYTHING else
+impl<N: UnitFactory, O> Clone for Network<N, O>
+where
+    N::Unit<WeightInfo>: Clone
+{
+    fn clone(&self) -> Self
+    {
+        Self{
+            recorder: OperationsRecorder::new(),
+            sizes: self.sizes,
+            dropout_probability: self.dropout_probability,
+            dropout_masks: Vec::new(),
+            inputs_targets: Vec::new(),
+            loss: DiffScalar::undefined(),
+            optimizer_info: None,
+            weights: self.weights.clone()
+        }
+    }
+}
+
+impl<N: UnitFactory, O> From<SaveNetwork<N, O>> for Network<N, O>
+where
+    N::Unit<OwnedDiffValue>: GenericUnit<OwnedDiffValue, Unit<WeightInfo>=N::Unit<WeightInfo>>
+{
+    fn from(x: SaveNetwork<N, O>) -> Self
+    {
+        let mut recorder = OperationsRecorder::new();
+
+        let weight_info_from = |recorder: &mut OperationsRecorder, value: OwnedDiffValue| -> WeightInfo
+        {
+            let tensor = value.as_tensor();
+
+            let weights = recorder.set_new_tensor_gradientable(tensor);
+
+            WeightInfo{
+                weight_value: weights,
+                weight_gradient: weights.as_gradient().unwrap(),
+                dropconnect_mask: None
+            }
+        };
+
+        Self{
+            sizes: x.sizes,
+            dropout_probability: x.dropout_probability,
+            optimizer_info: x.optimizer_info,
+            weights: WeightsFullContainer{
+                output: weight_info_from(&mut recorder, x.weights.output),
+                layers: x.weights.layers.into_iter().map(|x| x.map_with_info(|WeightsSize{weights: value, this_size, previous_size, is_hidden}|
+                {
+                    let info = weight_info_from(&mut recorder, value);
+
+                    if is_hidden
+                    {
+                        let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
+
+                        let new_weights = recorder.mul_componentwise(info.weight_value, dropconnect_mask);
+
+                        WeightInfo{
+                            weight_value: info.weight_value,
+                            weight_gradient: new_weights.as_gradient().unwrap(),
+                            dropconnect_mask: Some(dropconnect_mask.as_value())
+                        }
+                    } else
+                    {
+                        info
+                    }
+                })).collect()
+            },
+            dropout_masks: Vec::new(),
+            inputs_targets: Vec::new(),
+            loss: DiffScalar::undefined(),
+            recorder
+        }
+    }
 }
 
 impl<N: UnitFactory, O> Network<N, O>

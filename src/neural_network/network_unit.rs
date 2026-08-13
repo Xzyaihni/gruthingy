@@ -32,6 +32,14 @@ pub trait GenericUnit<T>
 
     fn dropconnectable() -> bool;
 
+    fn map<U, F>(self, f: F) -> Self::Unit<U>
+    where
+        F: FnMut(T) -> U;
+
+    fn map_with_info<U, F>(self, f: F) -> Self::Unit<U>
+    where
+        F: FnMut(WeightsSize<T>) -> U;
+
     fn map_ref<U, F>(&self, f: F) -> Self::Unit<U>
     where
         F: FnMut(&T) -> U;

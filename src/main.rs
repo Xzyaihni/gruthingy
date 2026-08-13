@@ -502,8 +502,7 @@ fn train_embeddings(mut config: Config)
 
         network.train::<true, _, _>(training_info, test_file, text_file);
 
-        todo!()
-        //network.save(&config.network_path);
+        network.save(&config.network_path);
     };
 
     let training_info = TrainingInfo{

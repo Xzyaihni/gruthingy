@@ -1626,6 +1626,37 @@ impl DiffWrapper
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OwnedDiffValue
+{
+    Tensor(LayerType),
+    Value(f32)
+}
+
+impl From<LayerType> for OwnedDiffValue
+{
+    fn from(x: LayerType) -> Self
+    {
+        Self::Tensor(x)
+    }
+}
+
+impl From<f32> for OwnedDiffValue
+{
+    fn from(x: f32) -> Self
+    {
+        Self::Value(x)
+    }
+}
+
+impl OwnedDiffValue
+{
+    pub fn as_tensor(self) -> LayerType
+    {
+        if let Self::Tensor(x) = self { x } else { panic!("as_tensor must be called on a tensor") }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum GradientOp
 {

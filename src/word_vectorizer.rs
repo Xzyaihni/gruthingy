@@ -609,7 +609,7 @@ impl NetworkDictionary for WordDictionary
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
-    //network: Network<EmbeddingsUnitFactory, ()>,
+    network: Network<EmbeddingsUnitFactory, ()>,
     embeddings_size: usize
 }
 
@@ -632,12 +632,11 @@ impl NetworkDictionary for EmbeddingsDictionary
             false
         );
 
-//        let (word_dictionary, network) = neural_network.into_embeddings_info();
+        let (word_dictionary, network) = neural_network.into_embeddings_info();
 
-//        let embeddings_size = network.sizes().hidden;
+        let embeddings_size = network.sizes().hidden;
 
-todo!()
-//        Self{word_dictionary, network, embeddings_size}
+        Self{word_dictionary, network, embeddings_size}
     }
 
     fn is_input_one_hot() -> bool { false }
