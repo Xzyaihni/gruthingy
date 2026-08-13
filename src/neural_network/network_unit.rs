@@ -3,6 +3,7 @@ use crate::neural_network::{
     AFType,
     OperationsRecorder,
     DiffTensor,
+    LayerType,
     TensorIndex,
     InputType,
     WeightInfo,
@@ -24,6 +25,7 @@ pub trait UnitFactory
 pub trait Embeddingsable
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor;
+    fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType;
 }
 
 pub trait GenericUnit<T>

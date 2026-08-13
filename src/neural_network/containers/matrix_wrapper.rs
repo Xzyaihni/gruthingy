@@ -754,6 +754,15 @@ impl MatrixWrapper
         Self(self.0.map(|v| v.signum()))
     }
 
+    pub fn cosine_similarity(&self, other: &Self) -> f32
+    {
+        let top = self.dot(other);
+
+        let bottom = self.magnitude() * other.magnitude();
+
+        top / bottom
+    }
+
     pub fn cap_magnitude(&self, cap: f32) -> Self
     {
         Self(self.0.simd_cap_magnitude(cap))

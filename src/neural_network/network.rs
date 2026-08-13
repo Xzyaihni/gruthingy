@@ -216,7 +216,7 @@ macro_rules! create_weights_container
                             }
                         };
 
-                        let weight_value = weights;
+                        let weight_original = weights;
 
                         if $is_hidden
                         {
@@ -225,15 +225,15 @@ macro_rules! create_weights_container
                             let new_weights = recorder.mul_componentwise(weights, dropconnect_mask);
 
                             WeightInfo{
-                                weight_value,
-                                weight_gradient: new_weights.as_gradient().unwrap(),
+                                weight_dropped: new_weights,
+                                weight_original,
                                 dropconnect_mask: Some(dropconnect_mask.as_value())
                             }
                         } else
                         {
                             WeightInfo{
-                                weight_value,
-                                weight_gradient: weights.as_gradient().unwrap(),
+                                weight_dropped: weight_original,
+                                weight_original,
                                 dropconnect_mask: None
                             }
                         }
@@ -533,8 +533,8 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 #[derive(Debug, Clone, Copy)]
 pub struct WeightInfo
 {
-    pub weight_value: DiffTensor,
-    pub weight_gradient: TensorIndex,
+    pub weight_dropped: DiffTensor,
+    pub weight_original: DiffTensor,
     pub dropconnect_mask: Option<TensorIndex>
 }
 
@@ -562,7 +562,7 @@ where
             optimizer_info: x.optimizer_info,
             weights: x.weights.map(|weight_info|
             {
-                x.recorder.get_tensor(weight_info.weight_value.as_value()).clone()
+                x.recorder.get_tensor(weight_info.weight_original.as_value()).clone()
             })
         }
     }
@@ -619,8 +619,8 @@ where
             let weights = recorder.set_new_tensor_gradientable(value);
 
             WeightInfo{
-                weight_value: weights,
-                weight_gradient: weights.as_gradient().unwrap(),
+                weight_dropped: weights,
+                weight_original: weights,
                 dropconnect_mask: None
             }
         };
@@ -639,11 +639,11 @@ where
                     {
                         let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
-                        let new_weights = recorder.mul_componentwise(info.weight_value, dropconnect_mask);
+                        let new_weights = recorder.mul_componentwise(info.weight_original, dropconnect_mask);
 
                         WeightInfo{
-                            weight_value: info.weight_value,
-                            weight_gradient: new_weights.as_gradient().unwrap(),
+                            weight_dropped: new_weights,
+                            weight_original: info.weight_original,
                             dropconnect_mask: Some(dropconnect_mask.as_value())
                         }
                     } else
@@ -703,8 +703,8 @@ where
             }));
 
             WeightInfo{
-                weight_value: weights,
-                weight_gradient: weights.as_gradient().unwrap(),
+                weight_dropped: weights,
+                weight_original: weights,
                 dropconnect_mask: None
             }
         };
@@ -897,7 +897,7 @@ where
     {
         let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
 
-        output.output = self.recorder.matmulv(self.weights.output.weight_value, output.output);
+        output.output = self.recorder.matmulv(self.weights.output.weight_dropped, output.output);
 
         output
     }
@@ -926,7 +926,7 @@ where
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
                 let maybe_optimize_this = ();
-                *self.recorder.get_tensor_mut(network_weights.weight_value.as_value()) -= change;
+                *self.recorder.get_tensor_mut(network_weights.weight_original.as_value()) -= change;
             });
 
         optimizer.advance_time();
@@ -946,7 +946,7 @@ where
 
         let gradients = self.weights.map_ref(|weight|
         {
-            self.recorder.get_tensor(weight.weight_gradient).clone()
+            self.recorder.get_tensor(weight.weight_original.as_gradient().unwrap()).clone()
         });
 
         (self.recorder.get_value(self.loss.as_value()), gradients)
@@ -1269,10 +1269,10 @@ where
         }
     }
 
-    pub fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor
+    pub fn embeddings(&self, input: &OneHotLayer) -> LayerType
     {
         debug_assert_eq!(self.weights.layers.len(), 1);
 
-        self.weights.layers[0].embeddings(recorder, input)
+        self.weights.layers[0].embeddings_calculate(&self.recorder, input)
     }
 }

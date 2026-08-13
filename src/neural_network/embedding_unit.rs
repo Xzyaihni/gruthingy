@@ -8,6 +8,7 @@ use crate::{
         OperationsRecorder,
         DiffTensor,
         OneHotIndex,
+        OneHotLayer,
         LayerSizes,
         InputType,
         WeightInfo,
@@ -28,7 +29,15 @@ impl Embeddingsable for EmbeddingUnit<WeightInfo>
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor
     {
-        recorder.matmul_onehotv_add(self.weights.weight_value, input, self.bias.weight_value)
+        recorder.matmul_onehotv_add(self.weights.weight_dropped, input, self.bias.weight_dropped)
+    }
+
+    fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType
+    {
+        let weights = recorder.get_tensor(self.weights.weight_dropped.as_value());
+        let bias = recorder.get_tensor(self.bias.weight_dropped.as_value());
+
+        weights.matmul_onehotv_add(input, bias)
     }
 }
 

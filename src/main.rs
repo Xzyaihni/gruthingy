@@ -529,15 +529,13 @@ fn train_embeddings(mut config: Config)
 
 fn closest_embeddings(mut config: Config)
 {
-    /*let mut network = load_embeddings::<()>(
+    let mut network = load_embeddings::<()>(
         None,
         Some(&mut config),
         false
     );
 
     let input = config.get_input();
-
-    network.inner_network_mut().disable_gradients();
 
     let to_vector_word = |network: &NeuralNetwork<_, _, WordDictionary>, s|
     {
@@ -549,7 +547,7 @@ fn closest_embeddings(mut config: Config)
     {
         let input = network.dictionary().words_to_layer([word]);
 
-        network.inner_network_mut().embeddings(input.into_one_hot())
+        network.inner_network_mut().embeddings(&input.into_one_hot())
     };
 
     let this_word = to_vector_word(&network, input);
@@ -565,7 +563,7 @@ fn closest_embeddings(mut config: Config)
 
             let other_embeddings = embeddings_of(&mut network, other_word);
 
-            let similarity = this_embeddings.cosine_similarity(other_embeddings);
+            let similarity = this_embeddings.cosine_similarity(&other_embeddings);
 
             (other_word, similarity)
         }).collect::<Vec<_>>();
@@ -585,7 +583,7 @@ fn closest_embeddings(mut config: Config)
         let word = String::from_utf8_lossy(&word_bytes);
 
         println!("{}: {word}", i + 1);
-    }*/
+    }
 }
 
 fn accuracy_data(config: Config)
