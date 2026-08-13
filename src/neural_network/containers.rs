@@ -488,11 +488,9 @@ impl OperationsRecorder
         let source = Some(self.current_source());
 
         let (a_rows, a_columns) = self.tensor_shape(a.as_value());
-        let (b_rows, b_columns) = (self.one_hot_layers[b.0].size, 1);
+        let b_columns = 1;
 
         let (rows, columns) = self.tensor_shape(added.as_value());
-
-        debug_assert_eq!(a_columns, b_rows);
 
         debug_assert_eq!(a_rows, rows);
         debug_assert_eq!(b_columns, columns);

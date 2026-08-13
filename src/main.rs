@@ -495,14 +495,14 @@ fn train_embeddings(mut config: Config)
 
     let run_this = |network: &mut NeuralNetwork<EmbeddingsUnitFactory, NOptimizer, WordDictionary>, training_info|
     {
-        todo!()
-        /*let text_file = config.get_input_file();
+        let text_file = config.get_input_file();
 
         let test_file = config.test_file();
 
         network.train::<true, _, _>(training_info, test_file, text_file);
 
-        network.save(&config.network_path);*/
+        todo!()
+        //network.save(&config.network_path);
     };
 
     let training_info = TrainingInfo{

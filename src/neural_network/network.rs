@@ -485,7 +485,7 @@ pub struct Network<N: UnitFactory, O>
     recorder: OperationsRecorder,
     sizes: LayerSizes,
     dropout_probability: f32,
-    inputs_targets: Vec<(TensorIndex, OneHotIndex)>,
+    inputs_targets: Vec<(InputType, OneHotIndex)>,
     loss: DiffScalar,
     optimizer_info: Option<WeightsFullContainer<N::Unit<O>, O>>,
     weights: WeightsFullContainer<N::Unit<DiffTensor>, DiffTensor>
@@ -509,7 +509,8 @@ where
     pub fn new(
         sizes: LayerSizes,
         inputs_count: usize,
-        dropout_probability: f32
+        dropout_probability: f32,
+        is_input_one_hot: bool
     ) -> Self
     where
         O: NewableLayer
@@ -551,14 +552,14 @@ where
             dropout_probability
         };
 
-        this.record_feedforward(inputs_count);
+        this.record_feedforward(inputs_count, is_input_one_hot);
 
         this.recorder.finish();
 
         this
     }
 
-    fn record_feedforward(&mut self, inputs_count: usize)
+    fn record_feedforward(&mut self, inputs_count: usize, is_input_one_hot: bool)
     {
         let mut loss: Option<DiffScalar> = None;
         let mut previous_states: Option<Vec<UnitState<N>>> = None;
@@ -570,7 +571,15 @@ where
 
         for _ in 0..inputs_count
         {
-            let this_input = self.recorder.new_tensor(self.sizes.input, 1).as_value();
+            let this_is_wrong = ();
+            let this_input: InputType = if is_input_one_hot
+            {
+                self.recorder.new_one_hot().into()
+            } else
+            {
+                self.recorder.new_tensor(self.sizes.input, 1).as_value().into()
+            };
+
             let this_target = self.recorder.new_one_hot();
 
             self.inputs_targets.push((this_input, this_target));
@@ -1083,7 +1092,7 @@ where
     {
         debug_assert!(self.weights.layers.len() == 1);
 
-        self.weights.layers[0].embeddings(&input)
+        self.weights.layers[0].embeddings(input)
     }
 }
 */

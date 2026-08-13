@@ -17,14 +17,14 @@ use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
-//use crate::{load_embeddings, EmbeddingsUnitFactory};
+use crate::{load_embeddings, EmbeddingsUnitFactory};
 
 use super::neural_network::{
     LayerType,
     InputType,
     OneHotLayer,
     LOWERCASE_ONLY,
-//    network::Network
+    network::Network
 };
 
 
@@ -150,6 +150,7 @@ pub trait NetworkDictionary
     fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>;
     fn words_amount(&self) -> usize;
 
+    fn is_input_one_hot() -> bool;
     fn input_data() -> InputDataType;
 
     fn input_amount(&self) -> usize
@@ -191,6 +192,8 @@ impl NetworkDictionary for ByteDictionary
     {
         Self{}
     }
+
+    fn is_input_one_hot() -> bool { true }
 
     fn input_data() -> InputDataType
     {
@@ -250,6 +253,8 @@ impl NetworkDictionary for CharDictionary
 
         Self{dictionary}
     }
+
+    fn is_input_one_hot() -> bool { true }
 
     fn input_data() -> InputDataType
     {
@@ -573,6 +578,8 @@ impl NetworkDictionary for WordDictionary
         Self{dictionary, leftover_separator: None}
     }
 
+    fn is_input_one_hot() -> bool { true }
+
     fn input_data() -> InputDataType
     {
         InputDataType::String
@@ -603,7 +610,7 @@ impl NetworkDictionary for WordDictionary
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
-//    network: Network<EmbeddingsUnitFactory, ()>,
+    //network: Network<EmbeddingsUnitFactory, ()>,
     embeddings_size: usize
 }
 
@@ -620,11 +627,11 @@ impl NetworkDictionary for EmbeddingsDictionary
             _ => unreachable!()
         };
 
-        let neural_network = /*load_embeddings::<()>(
+        let neural_network = load_embeddings::<()>(
             Some(path.as_ref()),
             None,
             false
-        )*/todo!();
+        );
 
 //        let (word_dictionary, network) = neural_network.into_embeddings_info();
 
@@ -633,6 +640,8 @@ impl NetworkDictionary for EmbeddingsDictionary
 todo!()
 //        Self{word_dictionary, network, embeddings_size}
     }
+
+    fn is_input_one_hot() -> bool { false }
 
     fn input_data() -> InputDataType
     {

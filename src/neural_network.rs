@@ -996,7 +996,7 @@ where
     where
         O::WeightParam: NewableLayer
     {
-        let network = Network::new(sizes, info.steps_num.get(), dropout_probability);
+        let network = Network::new(sizes, info.steps_num.get(), dropout_probability, D::is_input_one_hot());
 
         let optimizer = O::new();
 
