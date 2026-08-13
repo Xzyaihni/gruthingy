@@ -14,6 +14,7 @@ use crate::{
     EmbeddingsUnitFactory,
     neural_network::{
         OperationsRecorder,
+        ExactSizeTake,
         Softmaxer,
         DiffTensor,
         DiffScalar,
@@ -1072,11 +1073,7 @@ where
         correct_amount as f32 / total as f32
     }*/
 
-    #[allow(dead_code)]
-    pub fn feedforward(
-        &mut self,
-        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
-    )
+    pub fn feedforward_setup_dropout(&mut self)
     {
         if N::Unit::<WeightInfo>::dropconnectable()
         {
@@ -1096,19 +1093,75 @@ where
         {
             Self::set_dropout_mask(self.recorder.get_tensor_mut(*dropout_mask), self.dropout_probability);
         });
+    }
 
-        self.inputs_targets.iter().zip(input).for_each(|((input_tensor, target_tensor), (this_input, this_target))|
+    pub fn feedforward_setup(
+        &mut self,
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    )
+    {
+        self.feedforward_setup_dropout();
+
+        self.feedforward_setup_input(input);
+    }
+
+    fn feedforward_setup_input(&mut self, input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>)
+    {
+        if self.inputs_targets.len() == input.len()
         {
-            match *input_tensor
+            self.inputs_targets.iter().zip(input).for_each(|((input_tensor, target_tensor), (this_input, this_target))|
             {
-                InputType::Normal(x) => self.recorder.set_tensor(x, this_input.into_normal()),
-                InputType::OneHot(x) => self.recorder.set_one_hot(x, this_input.into_one_hot())
-            }
+                match *input_tensor
+                {
+                    InputType::Normal(x) => self.recorder.set_tensor(x, this_input.into_normal()),
+                    InputType::OneHot(x) => self.recorder.set_one_hot(x, this_input.into_one_hot())
+                }
 
-            self.recorder.set_one_hot(*target_tensor, this_target);
-        });
+                self.recorder.set_one_hot(*target_tensor, this_target);
+            });
+        } else
+        {
+            debug_assert!(self.inputs_targets.len() > input.len(), "{} > {} not satisfied", self.inputs_targets.len(), input.len());
+
+            todo!()
+        }
+    }
+
+    pub fn feedforward(
+        &mut self,
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    )
+    {
+        self.feedforward_setup(input);
 
         self.recorder.calculate();
+    }
+
+    pub fn feedforward_no_gradient(
+        &mut self,
+        mut input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    ) -> f32
+    {
+        self.feedforward_setup_dropout();
+
+        let mut total_loss = 0.0;
+
+        let max_inputs = self.inputs_targets.len();
+
+        while input.len() > 0
+        {
+            self.feedforward_setup_input(ExactSizeTake::new(input.by_ref(), max_inputs));
+            self.recorder.calculate_feedforward();
+
+            total_loss += self.loss();
+        }
+
+        total_loss
+    }
+
+    pub fn loss(&self) -> f32
+    {
+        self.recorder.get_value(self.loss.as_value())
     }
 
 /*    pub fn predict_single_input(

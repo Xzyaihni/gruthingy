@@ -197,16 +197,16 @@ where
 
 fn test_loss(config: Config)
 {
-    /*let text_file = config.get_input_file();
+    let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
 
-    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);*/
+    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
 }
 
 fn train(config: Config)
 {
-    /*let mut network = load_network(&config, None, true);
+    let mut network = load_network(&config, None, true);
 
     let mut run_this = |training_info|
     {
@@ -230,7 +230,7 @@ fn train(config: Config)
     } else
     {
         run_this(training_info);
-    }*/
+    }
 }
 
 fn run(config: Config)

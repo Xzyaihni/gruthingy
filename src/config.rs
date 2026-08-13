@@ -642,9 +642,9 @@ impl Config
         parser.push(&mut gradient_clip, None, "gradient-clip", "magnitude at which gradient vectors get clipped");
         parser.push_flag(&mut replace_invalid, 'r', "raw", "dont replace invalid utf8", false);
         parser.push_flag(&mut less_info, None, "less-info", "display less info when training", true);
-        parser.push_flag(&mut certainty, None, "certainty", "show certainty instead of true/false in accuracy_data mode", true);
-        parser.push_flag(&mut top_guesses, None, "top-guesses", "show guess place from the top instead of true/false in accuracy_data mode", true);
-        parser.push_flag(&mut infinite_loop, None, "loop", "training never stops, instead it saves the network every -I iterations", true);
+        parser.push_flag(&mut certainty, None, "certainty", "show certainty instead of bool in accuracy_data mode", true);
+        parser.push_flag(&mut top_guesses, None, "top-guesses", "show guess place from the top instead of bool in accuracy_data mode", true);
+        parser.push_flag(&mut infinite_loop, None, "loop", "training never stops, instead saves the network every -I iterations", true);
         parser.push(&mut mode, 'm', "mode", "program mode");
         parser.push(&mut dictionary_path, 'd', "dictionary", "path to the dictionary");
 

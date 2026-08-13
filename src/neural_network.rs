@@ -2,6 +2,7 @@ use std::{
     f32,
     fmt,
     slice,
+    iter,
     marker::PhantomData,
     io::{self, Read, Write, BufReader, BufWriter},
     fs::File,
@@ -395,6 +396,45 @@ impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
     }
 }
 
+pub struct ExactSizeTake<I>
+{
+    len: usize,
+    iter: I
+}
+
+impl<I: ExactSizeIterator> ExactSizeTake<iter::Take<I>>
+{
+    pub fn new(iter: I, amount: usize) -> Self
+    {
+        let len = if iter.len() < amount { iter.len() } else { amount };
+
+        Self{
+            len,
+            iter: iter.take(amount)
+        }
+    }
+}
+
+impl<T, I: Iterator<Item=T>> Iterator for ExactSizeTake<I>
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.len = self.len.saturating_sub(1);
+
+        self.iter.next()
+    }
+}
+
+impl<I: Iterator> ExactSizeIterator for ExactSizeTake<I>
+{
+    fn len(&self) -> usize
+    {
+        self.len
+    }
+}
+
 pub trait InputOutputable
 {
     type Iter<'a>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
@@ -501,7 +541,7 @@ where
 impl<'a, D, I> ExactSizeIterator for InputOutputIter<'a, D, I>
 where
     D: NetworkDictionary,
-    I: Iterator<Item=&'a VectorWord> + ExactSizeIterator
+    I: ExactSizeIterator<Item=&'a VectorWord>
 {
     fn len(&self) -> usize
     {
@@ -626,7 +666,7 @@ where
 impl<'a, D, I> ExactSizeIterator for InputOutputEmbeddingsIter<'a, D, I>
 where
     D: NetworkDictionary,
-    I: Iterator<Item=&'a VectorWord> + ExactSizeIterator
+    I: ExactSizeIterator<Item=&'a VectorWord>
 {
     fn len(&self) -> usize
     {
@@ -1124,7 +1164,7 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.with_guesses(reader)
-    }
+    }*/
 
     pub fn test_loss<R>(
         &mut self,
@@ -1153,24 +1193,20 @@ where
             inputs.iter()
         );
 
-        self.network.disable_gradients();
-
         if calculate_accuracy
         {
-            let accuracy = self.network.accuracy(input_outputs.clone());
+            /*let accuracy = self.network.accuracy(input_outputs.clone());
 
-            println!("accuracy: {}%", accuracy * 100.0);
+            println!("accuracy: {}%", accuracy * 100.0);*/todo!()
         }
 
         if calculate_loss
         {
-            let loss = self.network.feedforward(input_outputs);
+            let total_loss = self.network.feedforward_no_gradient(input_outputs);
 
-            Self::print_loss(true, *loss.scalar() / inputs.len() as f32);
+            Self::print_loss(true, total_loss / inputs.len() as f32);
         }
-
-        self.network.enable_gradients();
-    }*/
+    }
 
     fn print_loss(testing: bool, loss: f32)
     {
@@ -1271,12 +1307,11 @@ where
                 return;
             }
 
-            todo!()
-            /*network.test_loss_inner(
+            network.test_loss_inner(
                 &testing_inputs,
                 info.calculate_loss,
                 info.calculate_accuracy
-            );*/
+            );
         };
 
         for input_index in 0..info.iterations
