@@ -205,7 +205,7 @@ macro_rules! create_weights_container
                             {
                                 let previous_layer = x.into_number(sizes);
 
-                                recorder.set_new_tensor(LayerType::new_with(this_size, previous_size, ||
+                                recorder.set_new_tensor_gradientable(LayerType::new_with(this_size, previous_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
@@ -214,16 +214,26 @@ macro_rules! create_weights_container
                             }
                         };
 
+                        let weight_value = weights;
+
                         if $is_hidden
                         {
-                            let dropconnect_mask = DiffTensor::no_gradient(recorder.new_tensor(this_size, previous_size).as_value());
+                            let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
-                            let weight = recorder.mul_componentwise(weights, dropconnect_mask);
+                            let new_weights = recorder.mul_componentwise(weights, dropconnect_mask);
 
-                            WeightInfo{weight, dropconnect_mask: Some(dropconnect_mask.as_value())}
+                            WeightInfo{
+                                weight_value,
+                                weight_gradient: new_weights.as_gradient().unwrap(),
+                                dropconnect_mask: Some(dropconnect_mask.as_value())
+                            }
                         } else
                         {
-                            WeightInfo{weight: weights, dropconnect_mask: None}
+                            WeightInfo{
+                                weight_value,
+                                weight_gradient: weights.as_gradient().unwrap(),
+                                dropconnect_mask: None
+                            }
                         }
                     },
                 )+}
@@ -481,7 +491,8 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 #[derive(Debug, Clone, Copy)]
 pub struct WeightInfo
 {
-    pub weight: DiffTensor,
+    pub weight_value: DiffTensor,
+    pub weight_gradient: TensorIndex,
     pub dropconnect_mask: Option<TensorIndex>
 }
 
@@ -532,15 +543,18 @@ where
             }));
 
         let output_weights_tensor = {
-            let weights = recorder.new_tensor(sizes.output, sizes.hidden);
-            recorder.set_tensor(weights.as_value(), LayerType::new_with(sizes.output, sizes.hidden, ||
+            let weights = recorder.set_new_tensor_gradientable(LayerType::new_with(sizes.output, sizes.hidden, ||
             {
                 let v = 1.0 / (sizes.hidden as f32).sqrt();
 
                 (fastrand::f32() * 2.0 - 1.0) * v
             }));
 
-            WeightInfo{weight: weights, dropconnect_mask: None}
+            WeightInfo{
+                weight_value: weights,
+                weight_gradient: weights.as_gradient().unwrap(),
+                dropconnect_mask: None
+            }
         };
 
         let weights = WeightsFullContainer::new(sizes, |size|
@@ -726,7 +740,7 @@ where
     {
         let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
 
-        output.output = self.recorder.matmulv(self.weights.output.weight, output.output);
+        output.output = self.recorder.matmulv(self.weights.output.weight_value, output.output);
 
         output
     }
@@ -780,7 +794,7 @@ where
 
         let gradients = self.weights.map_ref(|weight|
         {
-            self.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone()
+            self.recorder.get_tensor(weight.weight_gradient).clone()
         });
 
         (self.recorder.get_value(self.loss.as_value()), gradients)

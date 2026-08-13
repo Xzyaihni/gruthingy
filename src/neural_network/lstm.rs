@@ -57,8 +57,8 @@ impl NetworkUnit for Lstm<WeightInfo>
     {
         let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
         {
-            let weights = weights.weight;
-            let bias = bias.weight;
+            let weights = weights.weight_value;
+            let bias = bias.weight_value;
 
             match input
             {
@@ -76,7 +76,7 @@ impl NetworkUnit for Lstm<WeightInfo>
         {
             let mut do_gate = |gate: &mut _, hidden: WeightInfo, previous_hidden|
             {
-                let mm = recorder.matmulv(hidden.weight, previous_hidden);
+                let mm = recorder.matmulv(hidden.weight_value, previous_hidden);
                 *gate = recorder.add_inplace(*gate, mm);
             };
 

@@ -153,10 +153,14 @@ macro_rules! new_tensor_index
 {
     ($this:expr, $rows:expr, $columns:expr) =>
     {
+        new_tensor_index!($this, $rows, $columns, LayerType::repeat($rows, $columns, 0.0))
+    };
+    ($this:expr, $rows:expr, $columns:expr, $value:expr) =>
+    {
         {
             let id = $this.tensors.len();
 
-            $this.tensors.push(LayerType::repeat($rows, $columns, 0.0));
+            $this.tensors.push($value);
 
             TensorIndex(id)
         }
@@ -181,9 +185,13 @@ macro_rules! new_tensor
 {
     ($this:expr, $source:expr, $gradient:expr, $rows:expr, $columns:expr) =>
     {
+        new_tensor!($this, $source, $gradient, $rows, $columns, LayerType::repeat($rows, $columns, 0.0))
+    };
+    ($this:expr, $source:expr, $gradient:expr, $rows:expr, $columns:expr, $value:expr) =>
+    {
         {
             DiffTensor{
-                index: new_tensor_index!($this, $rows, $columns),
+                index: new_tensor_index!($this, $rows, $columns, $value),
                 gradient: $gradient.then(|| new_tensor_index!($this, $rows, $columns)),
                 source: $source
             }
@@ -279,6 +287,11 @@ impl OperationsRecorder
         self.new_tensor_with_source(None, true, rows, columns)
     }
 
+    pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensor
+    {
+        self.new_tensor_with_source(None, false, rows, columns)
+    }
+
     pub fn new_value(&mut self) -> DiffScalar
     {
         self.new_value_with_source(None, true)
@@ -346,12 +359,20 @@ impl OperationsRecorder
         self.one_hot_layers[index.0] = value;
     }
 
+    pub fn set_new_tensor_gradientable(&mut self, value: LayerType) -> DiffTensor
+    {
+        let rows = value.rows();
+        let columns = value.columns();
+
+        new_tensor!(self, None, true, rows, columns, value)
+    }
+
     pub fn set_new_tensor(&mut self, value: LayerType) -> DiffTensor
     {
-        let tensor = self.new_tensor_with_source(None, false, value.rows(), value.columns());
-        self.set_tensor(tensor.as_value(), value);
+        let rows = value.rows();
+        let columns = value.columns();
 
-        tensor
+        new_tensor!(self, None, false, rows, columns, value)
     }
 
     pub fn set_new_value(&mut self, value: f32) -> DiffScalar
