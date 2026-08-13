@@ -10,7 +10,7 @@ edition = "2024"
 fastrand = "2.5"
 nalgebra = { version = "0.35", features = ["serde-serialize"] }
 postcard = { version = "1.1", features = ["use-std"] }
-serde = { version = "1.0", features = ["rc"] }
+serde = "1.0"
 serde_json = "1.0"
 unicode_reader = "1.0"
 # the cancer design of having to have a mut slice for the output array is preventing me

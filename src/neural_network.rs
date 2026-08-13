@@ -949,11 +949,28 @@ where
 #[allow(dead_code)]
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
-impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
+// only use this for saving the network, it doesnt fully clone things!!
+impl<O, D> Clone for NeuralNetwork<EmbeddingsUnitFactory, O, D>
 where
     O: Optimizer,
-    EN<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    EN<WeightInfo>: NetworkUnit
+    D: Clone
+{
+    fn clone(&self) -> Self
+    {
+        Self{
+            dictionary: self.dictionary.clone(),
+            network: self.network.clone(),
+            optimizer: self.optimizer.clone(),
+            gradient_clip: self.gradient_clip.clone(),
+            extra_info: self.extra_info.clone(),
+            sizes: self.sizes.clone()
+        }
+    }
+}
+
+impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
+where
+    O: Optimizer
 {
     pub fn without_optimizer(self) -> NeuralNetwork<EmbeddingsUnitFactory, (), D>
     where
@@ -970,7 +987,6 @@ where
     }
 }
 
-const fix_me_3: () = ();
 impl<N, O, D> NeuralNetwork<N, O, D>
 where
     N: UnitFactory,
@@ -979,7 +995,6 @@ where
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
-    //for<'a> O::WeightParam: Serialize + Deserialize<'a>,
     D: NetworkDictionary
 {
     pub fn new(
@@ -1006,7 +1021,7 @@ where
         (self.dictionary, self.network)
     }
 
-    pub fn save<P: AsRef<Path>>(&mut self, path: P)
+    pub fn save<P: AsRef<Path>>(&self, path: P)
     where
         O: Serialize,
         D: Serialize,

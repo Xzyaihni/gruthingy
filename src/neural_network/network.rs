@@ -1193,8 +1193,6 @@ where
 
 impl<O> Network<EmbeddingsUnitFactory, O>
 where
-    EN<O>: OptimizerUnit<O>,
-    EN<WeightInfo>: NetworkUnit<Unit<WeightInfo>=EN<WeightInfo>> + Embeddingsable,
     EmbeddingsUnitFactory: UnitFactory
 {
     pub fn without_optimizer(self) -> Network<EmbeddingsUnitFactory, ()>
