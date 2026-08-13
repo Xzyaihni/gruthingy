@@ -1,6 +1,6 @@
 use std::{
     f32,
-    fmt::Debug,
+    fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
     ops::DivAssign
@@ -111,7 +111,6 @@ enum RecorderState
     Ready
 }
 
-#[derive(Debug)]
 pub struct OperationsRecorder
 {
     state: RecorderState,
@@ -120,7 +119,33 @@ pub struct OperationsRecorder
     one_hot_layers: Vec<OneHotLayer>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp>,
-    feedforward_operations_count: usize
+    feedforward_operations_count: usize,
+    #[cfg(debug_assertions)]
+    pub allow_uninitialized: Vec<DiffValue>
+}
+
+impl Debug for OperationsRecorder
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        struct ForceNoPretty<'a, T>(&'a T);
+        impl<'a, T: Debug> Debug for ForceNoPretty<'a, T>
+        {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+            {
+                write!(f, "{:?}", self.0)
+            }
+        }
+
+        f.debug_struct("OperationsRecorder")
+            .field("state", &self.state)
+            .field("values", &ForceNoPretty(&self.values))
+            .field("tensors", &self.tensors)
+            .field("one_hot_layers", &self.one_hot_layers)
+            .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("feedforward_operations_count", &self.feedforward_operations_count)
+            .finish()
+    }
 }
 
 // avoids borrow checker
@@ -180,6 +205,18 @@ macro_rules! new_value
     }
 }
 
+macro_rules! tensor_shape
+{
+    ($this:expr, $tensor:expr) =>
+    {
+        {
+            let tensor = &$this.tensors[$tensor.0];
+
+            (tensor.rows(), tensor.columns())
+        }
+    }
+}
+
 macro_rules! impl_pair_tensor_op
 {
     ($this:expr, $a:expr, $b:expr, $name:ident) =>
@@ -231,7 +268,9 @@ impl OperationsRecorder
             one_hot_layers: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
-            feedforward_operations_count: 0
+            feedforward_operations_count: 0,
+            #[cfg(debug_assertions)]
+            allow_uninitialized: Vec::new()
         }
     }
 
@@ -349,6 +388,11 @@ impl OperationsRecorder
     pub fn get_value(&self, index: ValueIndex) -> f32
     {
         self.values[index.0]
+    }
+
+    pub fn get_one_hot(&self, index: OneHotIndex) -> &OneHotLayer
+    {
+        &self.one_hot_layers[index.0]
     }
 
     fn current_source(&self) -> OperationIndex
@@ -565,7 +609,7 @@ impl OperationsRecorder
 
         let (rows, columns) = self.tensor_shape(values.as_value());
 
-        let softmaxed_output = self.new_tensor_op(source, rows, columns);
+        let softmaxed_output = self.new_tensor_with_source(source, false, rows, columns);
         let output = self.new_value_op(source);
 
         self.recording_operations.push(Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output});
@@ -575,9 +619,7 @@ impl OperationsRecorder
 
     pub fn tensor_shape(&self, tensor: TensorIndex) -> (usize, usize)
     {
-        let tensor = &self.tensors[tensor.0];
-
-        (tensor.rows(), tensor.columns())
+        tensor_shape!(self, tensor)
     }
 
     pub fn calculate_feedforward(&mut self)
@@ -709,6 +751,11 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
+                    debug_assert_eq!(
+                        tensor_shape!(self, *softmaxed_values), (self.one_hot_layers[targets.0].size, 1),
+                        "softmaxed: {softmaxed_values:?}, targets: {targets:?}"
+                    );
+
                     let optimize_this = ();
                     self.tensors[output.0] = (&self.tensors[softmaxed_values.0] - self.one_hot_layers[targets.0].clone().into_layer()) * self.values[gradient.0];
                 },
@@ -752,9 +799,11 @@ impl OperationsRecorder
         #[cfg(debug_assertions)]
         {
             self.values.iter().enumerate().filter(|(_, x)| **x == 0.0)
+                .filter(|(index, _)| !self.allow_uninitialized.contains(&ValueIndex(*index).into()))
                 .for_each(|(index, _)| eprintln!("value at index {index} might be uninitialized"));
 
             self.tensors.iter().enumerate().filter(|(_, x)| x.iter().all(|inner| *inner == 0.0))
+                .filter(|(index, _)| !self.allow_uninitialized.contains(&TensorIndex(*index).into()))
                 .for_each(|(index, _)| eprintln!("tensor at index {index} might be uninitialized"));
         }
     }
@@ -1696,6 +1745,50 @@ impl From<TensorIndex> for InputType
 impl From<OneHotIndex> for InputType
 {
     fn from(value: OneHotIndex) -> Self
+    {
+        Self::OneHot(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum OwnedInputType
+{
+    Normal(LayerType),
+    OneHot(OneHotLayer)
+}
+
+impl OwnedInputType
+{
+    pub fn into_one_hot(self) -> OneHotLayer
+    {
+        match self
+        {
+            Self::OneHot(value) => value,
+            _ => panic!("expected onehot")
+        }
+    }
+
+    pub fn into_normal(self) -> LayerType
+    {
+        match self
+        {
+            Self::Normal(value) => value,
+            _ => panic!("expected normal")
+        }
+    }
+}
+
+impl From<LayerType> for OwnedInputType
+{
+    fn from(value: LayerType) -> Self
+    {
+        Self::Normal(value)
+    }
+}
+
+impl From<OneHotLayer> for OwnedInputType
+{
+    fn from(value: OneHotLayer) -> Self
     {
         Self::OneHot(value)
     }

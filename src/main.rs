@@ -96,7 +96,8 @@ fn load_network(
     auto_create: bool
 ) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
 {
-    load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
+    let training_info = TrainingInfo::from(config);
+    load_network_with(config.network_path.as_ref(), Some(config), sizes, training_info.steps_num.highest(), auto_create)
 }
 
 pub fn load_embeddings<O>(
@@ -123,13 +124,14 @@ where
             .as_ref()
     });
 
-    load_network_with(path, config, sizes, auto_create)
+    load_network_with(path, config, sizes, 1, auto_create)
 }
 
 fn load_network_with<N, O, D>(
     path: &Path,
     config: Option<&Config>,
     sizes: Option<SizesInfo>,
+    steps_highest: usize,
     auto_create: bool
 ) -> NeuralNetwork<N, O, D>
 where
@@ -185,9 +187,7 @@ where
             layers: sizes.layers
         };
 
-        let training_info = TrainingInfo::from(config);
-
-        NeuralNetwork::new(dictionary, sizes, training_info, config.dropout_probability, config.gradient_clip)
+        NeuralNetwork::new(dictionary, sizes, steps_highest, config.dropout_probability, config.gradient_clip)
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))

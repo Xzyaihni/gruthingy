@@ -21,6 +21,7 @@ use crate::{
         OneHotLayer,
         OneHotIndex,
         InputType,
+        OwnedInputType,
         LayerType,
         NetworkUnit,
         NewableLayer,
@@ -193,7 +194,12 @@ macro_rules! create_weights_container
                         {
                             LayerSize::One =>
                             {
-                                recorder.new_tensor(this_size, previous_size)
+                                let tensor = recorder.new_tensor(this_size, previous_size);
+
+                                #[cfg(debug_assertions)]
+                                recorder.allow_uninitialized.push(tensor.as_value().into());
+
+                                tensor
                             },
                             x =>
                             {
@@ -484,6 +490,7 @@ pub struct Network<N: UnitFactory, O>
     recorder: OperationsRecorder,
     sizes: LayerSizes,
     dropout_probability: f32,
+    dropout_masks: Vec<TensorIndex>,
     inputs_targets: Vec<(InputType, OneHotIndex)>,
     loss: DiffScalar,
     optimizer_info: Option<WeightsFullContainer<N, O>>,
@@ -544,6 +551,7 @@ where
         let mut this = Self{
             recorder,
             sizes,
+            dropout_masks: Vec::new(),
             inputs_targets: Vec::new(),
             loss: DiffScalar::undefined(),
             optimizer_info,
@@ -616,6 +624,7 @@ where
             previous_states = Some(state);
         }
 
+        self.dropout_masks = dropout_masks;
         self.loss = loss.unwrap();
     }
 
@@ -684,7 +693,7 @@ where
                 break;
             } else
             {
-                /*let dropout_mask = dropout_masks[l_i];
+                let dropout_mask = dropout_masks[l_i];
 
                 let NetworkOutput{
                     state,
@@ -698,7 +707,7 @@ where
 
                 last_output = Some(this_output.as_value().into());
 
-                states.push(state);*/todo!()
+                states.push(state);
             }
         }
 
@@ -759,7 +768,7 @@ where
 
     pub fn gradients(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
@@ -926,7 +935,7 @@ where
     #[allow(dead_code)]
     pub fn feedforward(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     )
     {
         if N::Unit::<WeightInfo>::dropconnectable()
@@ -937,16 +946,29 @@ where
                 {
                     if let Some(dropconnect_mask) = weight_info.dropconnect_mask
                     {
-                        Self::set_dropout_mask(
-                            self.recorder.get_tensor_mut(dropconnect_mask),
-                            DROPCONNECT_PROBABILITY
-                        );
+                        Self::set_dropout_mask(self.recorder.get_tensor_mut(dropconnect_mask), DROPCONNECT_PROBABILITY);
                     }
                 });
             });
         }
 
-        todo!()
+        self.dropout_masks.iter().for_each(|dropout_mask|
+        {
+            Self::set_dropout_mask(self.recorder.get_tensor_mut(*dropout_mask), self.dropout_probability);
+        });
+
+        self.inputs_targets.iter().zip(input).for_each(|((input_tensor, target_tensor), (this_input, this_target))|
+        {
+            match *input_tensor
+            {
+                InputType::Normal(x) => self.recorder.set_tensor(x, this_input.into_normal()),
+                InputType::OneHot(x) => self.recorder.set_one_hot(x, this_input.into_one_hot())
+            }
+
+            self.recorder.set_one_hot(*target_tensor, this_target);
+        });
+
+        self.recorder.calculate();
     }
 
 /*    pub fn predict_single_input(
@@ -1006,17 +1028,8 @@ where
         }
 
         outputs
-    }
-
-    pub fn create_dropout_masks(&self, input_size: usize, probability: f32) -> Vec<DiffWrapper>
-    {
-        self.weights.layers.iter().skip(1).map(|_|
-        {
-            Self::create_dropout_mask(1, input_size, probability)
-        }).collect()
     }*/
 
-    // i love my inconsistent naming of current/this size thing
     fn set_dropout_mask(
         target: &mut LayerType,
         probability: f32

@@ -46,6 +46,7 @@ pub use containers::{
     ValueIndex,
     OneHotIndex,
     InputType,
+    OwnedInputType,
     OneHotLayer,
     Softmaxer
 };
@@ -386,25 +387,17 @@ impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
                 EMType::SkipGram(amount) => amount
             };
 
-            amount * 2 + 1
+            amount * 2
         } else
         {
             1
         }
     }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize
-    {
-        self.values.len() - 1
-    }
 }
 
-// jumping through hoops cuz its not obvious to the compiler that bools
-// cant be anything except true or false
 pub trait InputOutputable
 {
-    type Iter<'a>: Iterator<Item=(InputType, OneHotLayer)>
+    type Iter<'a>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     where
         Self: 'a;
 
@@ -448,7 +441,6 @@ pub struct InputOutputIter<'a, D, I>
     previous: &'a VectorWord
 }
 
-// why cant the macro figure this out :/
 impl<'a, D, I> Clone for InputOutputIter<'a, D, I>
 where
     I: Clone
@@ -482,7 +474,7 @@ where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (InputType, OneHotLayer);
+    type Item = (OwnedInputType, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -524,7 +516,6 @@ pub struct InputOutputEmbeddingsIter<'a, D, I>
     context: VecDeque<&'a VectorWord>
 }
 
-// why cant the macro figure this out :/
 impl<'a, D, I> Clone for InputOutputEmbeddingsIter<'a, D, I>
 where
     I: Clone
@@ -545,7 +536,7 @@ where
 {
     pub fn new(dictionary: &'a D, mut inputs: I) -> Self
     {
-        let context_len = InputOutput::<true, D>::min_len() - 1;
+        let context_len = InputOutput::<true, D>::min_len();
         let context: VecDeque<_> = inputs.by_ref().take(context_len).collect();
 
         assert_eq!(context.len(), context_len);
@@ -575,7 +566,7 @@ where
         *self.context[amount]
     }
 
-    fn next_bag_of_words(&mut self, amount: usize) -> (InputType, OneHotLayer)
+    fn next_bag_of_words(&mut self, amount: usize) -> (OwnedInputType, OneHotLayer)
     where
         D: NetworkDictionary
     {
@@ -585,7 +576,7 @@ where
         (this_input, this_output)
     }
 
-    fn next_skip_gram(&mut self, amount: usize) -> (InputType, OneHotLayer)
+    fn next_skip_gram(&mut self, amount: usize) -> (OwnedInputType, OneHotLayer)
     where
         D: NetworkDictionary
     {
@@ -601,7 +592,7 @@ where
     D: NetworkDictionary,
     I: Iterator<Item=&'a VectorWord>
 {
-    type Item = (InputType, OneHotLayer);
+    type Item = (OwnedInputType, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
@@ -646,7 +637,7 @@ where
 struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
-    words: Vec<InputType>,
+    words: Vec<OwnedInputType>,
     sizes: LayerSizes,
     temperature: f32,
     predict_amount: usize
@@ -656,7 +647,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
 {
     pub fn new(
         dictionary: &'a mut D,
-        words: Vec<InputType>,
+        words: Vec<OwnedInputType>,
         sizes: LayerSizes,
         temperature: f32,
         predict_amount: usize
@@ -835,7 +826,7 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
-        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>;
 }
 
@@ -850,7 +841,7 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
-        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>
     {
         network.correct_guesses(input_outputs)
@@ -868,7 +859,7 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
-        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>
     {
         network.top_guesses(input_outputs)
@@ -886,7 +877,7 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
-        input_outputs: impl Iterator<Item=(InputType, OneHotLayer)>
+        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>
     {
         network.certainty_guesses(input_outputs)
@@ -998,14 +989,14 @@ where
     pub fn new(
         dictionary: D,
         sizes: LayerSizes,
-        info: TrainingInfo,
+        steps_highest: usize,
         dropout_probability: f32,
         gradient_clip: Option<f32>
     ) -> Self
     where
         O::WeightParam: NewableLayer
     {
-        let network = Network::new(sizes, info.steps_num.highest(), dropout_probability, D::is_input_one_hot());
+        let network = Network::new(sizes, steps_highest, dropout_probability, D::is_input_one_hot());
 
         let optimizer = O::new();
 

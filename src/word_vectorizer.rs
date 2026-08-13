@@ -21,7 +21,7 @@ use crate::{load_embeddings, EmbeddingsUnitFactory};
 
 use super::neural_network::{
     LayerType,
-    InputType,
+    OwnedInputType,
     OneHotLayer,
     LOWERCASE_ONLY,
     network::Network
@@ -158,10 +158,9 @@ pub trait NetworkDictionary
         self.words_amount()
     }
 
-    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
+    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OwnedInputType
     {
-        todo!()
-        // self.words_to_onehot(words).into()
+        self.words_to_onehot(words).into()
     }
 
     fn words_to_onehot(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
@@ -648,7 +647,7 @@ todo!()
         InputDataType::Path
     }
 
-    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> InputType
+    fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OwnedInputType
     {
 todo!()
 //        self.network.embeddings(self.words_to_onehot(words)).into()
