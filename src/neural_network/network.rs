@@ -11,7 +11,7 @@ use std::{
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 use crate::{
-//    EmbeddingsUnitFactory,
+    EmbeddingsUnitFactory,
     neural_network::{
         OperationsRecorder,
         Softmaxer,
@@ -24,13 +24,13 @@ use crate::{
         LayerType,
         NetworkUnit,
         NewableLayer,
-//        GenericUnit,
-//        Optimizer,
+        GenericUnit,
+        Optimizer,
         OptimizerUnit,
         UnitFactory,
 //        EN,
         DROPCONNECT_PROBABILITY,
-//        network_unit::Embeddingsable
+        network_unit::Embeddingsable
     }
 };
 
@@ -180,44 +180,46 @@ macro_rules! create_weights_container
 
         impl WeightsContainer<DiffTensor>
         {
-            pub fn new(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
+            pub fn new_randomized(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
             {
                 use $crate::neural_network::network::LayerSize;
 
                 Self{sizes, $(
-                    $name: recorder.new_tensor($this_size.into_number(sizes), $previous_size.into_number(sizes)),
-                )+}
-            }
-            /*pub fn new_randomized(sizes: $crate::neural_network::LayerSizes) -> Self
-            {
-                use $crate::neural_network::network::LayerSize;
-
-                Self{sizes, $(
-                    $name: DiffWrapper::new_diff({
-                        let previous_size = $previous_size.into_number(sizes);
+                    $name: {
                         let this_size = $this_size.into_number(sizes);
+                        let previous_size = $previous_size.into_number(sizes);
 
-                        match $previous_size
+                        let weights = match $previous_size
                         {
                             LayerSize::One =>
                             {
-                                LayerType::new(this_size, previous_size)
+                                recorder.new_tensor(this_size, previous_size)
                             },
                             x =>
                             {
                                 let previous_layer = x.into_number(sizes);
 
-                                LayerType::new_with(this_size, previous_size, ||
+                                recorder.set_new_tensor(LayerType::new_with(this_size, previous_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
                                     (fastrand::f32() * 2.0 - 1.0) * v
-                                })
+                                }))
                             }
-                        }.into()
-                    }),
+                        };
+
+                        if $is_hidden
+                        {
+                            let dropconnect_mask = recorder.new_tensor(this_size, previous_size);
+
+                            recorder.mul_componentwise(weights, dropconnect_mask)
+                        } else
+                        {
+                            weights
+                        }
+                    },
                 )+}
-            }*/
+            }
         }
 
         impl<T> OptimizerUnit<T> for WeightsContainer<T>
@@ -247,26 +249,14 @@ macro_rules! create_weights_container
                 false $(|| $is_hidden)+
             }
 
-            fn map<U, F>(self, mut f: F) -> WeightsContainer<U>
+            fn map_ref<U, F>(&self, mut f: F) -> WeightsContainer<U>
             where
-                F: FnMut(T) -> U
+                F: FnMut(&T) -> U
             {
                 WeightsContainer{
                     sizes: self.sizes,
                     $(
-                        $name: f(self.$name),
-                    )+
-                }
-            }
-
-            fn map_mut<U, F>(&mut self, mut f: F) -> WeightsContainer<U>
-            where
-                F: FnMut(&mut T) -> U
-            {
-                WeightsContainer{
-                    sizes: self.sizes,
-                    $(
-                        $name: f(&mut self.$name),
+                        $name: f(&self.$name),
                     )+
                 }
             }
@@ -393,17 +383,18 @@ pub struct NetworkOutput<State, Output>
 
 type UnitState<N> = <<N as UnitFactory>::Unit<DiffTensor> as NetworkUnit>::State;
 
-#[derive(Serialize, Deserialize)]
-pub struct WeightsFullContainer<U, T>
+const uhh: () = ();
+//#[derive(Serialize, Deserialize)]
+pub struct WeightsFullContainer<N: UnitFactory, T>
 {
-    layers: Vec<U>,
+    layers: Vec<N::Unit<T>>,
     output: T
 }
 
-/*impl<N: UnitFactory, T> Clone for WeightsFullContainer<N, T>
+impl<N: UnitFactory, T> Clone for WeightsFullContainer<N, T>
 where
     T: Clone,
-    N::Unit<T>: Clone + Serialize + DeserializeOwned
+    N::Unit<T>: Clone
 {
     fn clone(&self) -> Self
     {
@@ -416,7 +407,7 @@ where
 
 impl<N: UnitFactory, T> IntoIterator for WeightsFullContainer<N, T>
 where
-    N::Unit<T>: IntoIterator<Item=T> + Serialize + DeserializeOwned
+    N::Unit<T>: IntoIterator<Item=T>
 {
     type Item = T;
     type IntoIter = iter::Chain<iter::Flatten<vec::IntoIter<N::Unit<T>>>, iter::Once<T>>;
@@ -425,13 +416,13 @@ where
     {
         self.layers.into_iter().flatten().chain(iter::once(self.output))
     }
-}*/
+}
 
-impl<U, T> WeightsFullContainer<U, T>
+impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 {
     pub fn new(
         sizes: LayerSizes,
-        unit_f: impl FnMut(LayerSizes) -> U,
+        unit_f: impl FnMut(LayerSizes) -> N::Unit<T>,
         output: T
     ) -> Self
     {
@@ -453,15 +444,14 @@ impl<U, T> WeightsFullContainer<U, T>
         }
     }
 
-    /*pub fn map_mut<F, U>(&mut self, mut f: F) -> WeightsFullContainer<N, U>
+    pub fn map_ref<F, U>(&self, mut f: F) -> WeightsFullContainer<N, U>
     where
         N::Unit<T>: GenericUnit<T, Unit<U>=N::Unit<U>>,
-        N::Unit<U>: Serialize + DeserializeOwned,
-        F: FnMut(&mut T) -> U
+        F: FnMut(&T) -> U
     {
         WeightsFullContainer{
-            output: f(&mut self.output),
-            layers: self.layers.iter_mut().map(|layer| layer.map_mut(&mut f)).collect()
+            output: f(&self.output),
+            layers: self.layers.iter().map(|layer| layer.map_ref(&mut f)).collect()
         }
     }
 
@@ -477,7 +467,13 @@ impl<U, T> WeightsFullContainer<U, T>
         for<'a> &'a mut N::Unit<T>: IntoIterator<Item=&'a mut T>
     {
         self.layers.iter_mut().flatten().chain(iter::once(&mut self.output))
-    }*/
+    }
+}
+
+pub struct WeightInfo
+{
+    pub weight: DiffTensor,
+    pub dropconnect_mask: DiffTensor
 }
 
 pub struct Network<N: UnitFactory, O>
@@ -487,8 +483,8 @@ pub struct Network<N: UnitFactory, O>
     dropout_probability: f32,
     inputs_targets: Vec<(InputType, OneHotIndex)>,
     loss: DiffScalar,
-    optimizer_info: Option<WeightsFullContainer<N::Unit<O>, O>>,
-    weights: WeightsFullContainer<N::Unit<DiffTensor>, DiffTensor>
+    optimizer_info: Option<WeightsFullContainer<N, O>>,
+    weights: WeightsFullContainer<N, DiffTensor>
 }
 
 impl<N: UnitFactory, O> Network<N, O>
@@ -503,8 +499,8 @@ impl<N: UnitFactory, O> Network<N, O>
 where
     N::Unit<O>: OptimizerUnit<O>,
     N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
-//    for<'a> &'a N::Unit<DiffWrapper>: IntoIterator<Item=&'a DiffWrapper>,
-//    for<'a> &'a mut N::Unit<DiffWrapper>: IntoIterator<Item=&'a mut DiffWrapper>
+    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
+    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     pub fn new(
         sizes: LayerSizes,
@@ -756,77 +752,29 @@ where
         optimizer.advance_time();
 
         self.enable_gradients();
-    }
-
-    fn dropconnected(&self) -> Self
-    {
-        let weights = if N::Unit::<DiffWrapper>::dropconnectable()
-        {
-            WeightsFullContainer{
-                layers: self.weights.layers.iter().map(|layer|
-                {
-                    layer.clone_weights_with_info(|info|
-                    {
-                        if info.is_hidden
-                        {
-                            let dropconnect_mask = Self::create_dropout_mask(
-                                info.previous_size,
-                                info.this_size,
-                                DROPCONNECT_PROBABILITY
-                            );
-
-                            info.weights * dropconnect_mask
-                        } else
-                        {
-                            info.weights.clone()
-                        }
-                    })
-                }).collect(),
-                output: self.weights.output.clone()
-            }
-        } else
-        {
-            self.weights.clone()
-        };
-
-        Self{
-            weights,
-            optimizer_info: None,
-            sizes: self.sizes,
-            dropout_probability: self.dropout_probability,
-        }
-    }
+    }*/
 
     pub fn gradients(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
-        // i am going to go on a rampage, this is insane, this shouldnt be a thing, why is rust
-        // like this??????????/
         N::Unit<LayerType>: Serialize + DeserializeOwned,
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug
+        N::Unit<DiffTensor>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug
     {
-        let loss = {
-            let mut dropconnected = self.dropconnected();
+        self.feedforward(input);
 
-            dropconnected.feedforward(input)
-        };
+        self.recorder.calculate();
 
-        let loss_value = *loss.scalar();
-
-        loss.calculate_gradients();
-
-        let gradients = self.weights.map_mut(|weight|
+        let gradients = self.weights.map_ref(|weight|
         {
-            debug_assert!(weight.parent().is_none());
-
-            weight.take_gradient_tensor()
+            self.recorder.get_tensor(weight.as_gradient().unwrap()).clone()
         });
 
-        (loss_value, gradients)
+        (self.recorder.get_value(self.loss.as_value()), gradients)
     }
 
+/*
     // oh my god wut am i even doing at this point its so over
     pub fn enable_gradients(&mut self)
     {
@@ -848,7 +796,6 @@ where
         &'b self
     ) -> Vec<WeightsNamed<&'b DiffWrapper>>
     where
-        // WORKING LANGUAGE BY THE WAY ITS WORKING JUST FINE HAHAHAHHAHAHAHAHAHHA
         for<'a> N::Unit<DiffWrapper>: NetworkUnit<Unit<WeightsNamed<&'a DiffWrapper>>=N::Unit<WeightsNamed<&'a DiffWrapper>>>,
         N::Unit<WeightsNamed<&'b DiffWrapper>>: IntoIterator<Item=WeightsNamed<&'b DiffWrapper>>
     {
@@ -979,8 +926,21 @@ where
         input: impl Iterator<Item=(InputType, OneHotLayer)>
     )
     {
-todo!()
-/*        */
+        if N::Unit::<DiffTensor>::dropconnectable()
+        {
+            self.weights.layers.iter().for_each(|layer|
+            {
+                /*if let Some(dropconnect_mask) = layer.dropconnect_mask
+                {
+                    Self::set_dropout_mask(
+                        self.recorder.get_tensor_mut(dropconnect_mask),
+                        DROPCONNECT_PROBABILITY
+                    );
+                }*/todo!()
+            });
+        }
+
+        todo!()
     }
 
 /*    pub fn predict_single_input(
@@ -1048,23 +1008,22 @@ todo!()
         {
             Self::create_dropout_mask(1, input_size, probability)
         }).collect()
-    }
+    }*/
 
     // i love my inconsistent naming of current/this size thing
-    fn create_dropout_mask(
-        previous_size: usize,
-        this_size: usize,
+    fn set_dropout_mask(
+        target: &mut LayerType,
         probability: f32
-    ) -> DiffWrapper
+    )
     {
         let scaled_value = (1.0 - probability).recip();
 
-        let inner = if probability == 0.0
+        if probability == 0.0
         {
-            LayerType::repeat(previous_size, this_size, 1.0)
+            target.fill(1.0);
         } else
         {
-            LayerType::new_with(previous_size, this_size, ||
+            target.fill_with(||
             {
                 let roll = fastrand::f32();
 
@@ -1075,11 +1034,9 @@ todo!()
                 {
                     0.0
                 }
-            })
-        };
-
-        DiffWrapper::new_undiff(inner.into())
-    }*/
+            });
+        }
+    }
 }
 
 /*impl<O> Network<EmbeddingsUnitFactory, O>

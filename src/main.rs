@@ -30,6 +30,7 @@ use neural_network::{
     Optimizer,
     DiffWrapper,
     DiffTensor,
+    WeightInfo,
     UnitFactory,
     NUnit,
     EmbeddingUnit,
@@ -122,7 +123,8 @@ where
             .as_ref()
     });
 
-    load_network_with(path, config, sizes, auto_create)
+    todo!()
+    // load_network_with(path, config, sizes, auto_create)
 }
 
 fn load_network_with<N, O, D>(
@@ -499,7 +501,7 @@ fn train_embeddings(mut config: Config)
 
         let test_file = config.test_file();
 
-        network.train::<true, _, _>(training_info, test_file, text_file);
+        // network.train::<true, _, _>(training_info, test_file, text_file);
 
         todo!()
         //network.save(&config.network_path);

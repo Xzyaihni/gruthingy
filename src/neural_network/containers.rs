@@ -341,6 +341,11 @@ impl OperationsRecorder
         &self.tensors[index.0]
     }
 
+    pub fn get_tensor_mut(&mut self, index: TensorIndex) -> &mut LayerType
+    {
+        &mut self.tensors[index.0]
+    }
+
     pub fn get_value(&self, index: ValueIndex) -> f32
     {
         self.values[index.0]
@@ -487,7 +492,7 @@ impl OperationsRecorder
     {
         let source = Some(self.current_source());
 
-        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
+        let (a_rows, _a_columns) = self.tensor_shape(a.as_value());
         let b_columns = 1;
 
         let (rows, columns) = self.tensor_shape(added.as_value());

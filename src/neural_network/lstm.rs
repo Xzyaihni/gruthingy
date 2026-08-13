@@ -7,6 +7,7 @@ use crate::{
     neural_network::{
         DiffTensor,
         InputType,
+        WeightInfo,
         LayerSizes,
         OperationsRecorder,
         network::{NetworkOutput, LayerSize},
@@ -44,7 +45,7 @@ impl NetworkUnit for Lstm<DiffTensor>
 
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
-        WeightsContainer::new(recorder, sizes)
+        WeightsContainer::new_randomized(recorder, sizes)
     }
 
     fn feedforward_unit(

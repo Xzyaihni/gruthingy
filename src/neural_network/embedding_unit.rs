@@ -37,7 +37,7 @@ impl NetworkUnit for EmbeddingUnit<DiffTensor>
 
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
-        WeightsContainer::new(recorder, sizes)
+        WeightsContainer::new_randomized(recorder, sizes)
     }
 
     fn feedforward_unit(

@@ -51,7 +51,7 @@ pub use containers::{
 };
 
 #[allow(unused_imports)]
-pub use network::WeightsSize;
+pub use network::{WeightInfo, WeightsSize};
 
 //#[allow(unused_imports)]
 //use gru::Gru;
@@ -790,6 +790,15 @@ impl StepsNum
         Self::StepsRange(Range{start, end})
     }
 
+    pub fn highest(&self) -> usize
+    {
+        match self
+        {
+            Self::Steps(x) => *x,
+            Self::StepsRange(range) => range.end
+        }
+    }
+
     pub fn get(&self) -> usize
     {
         match self
@@ -981,9 +990,9 @@ where
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
-    /*for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
-    for<'a> O::WeightParam: Serialize + Deserialize<'a>,*/
+    //for<'a> O::WeightParam: Serialize + Deserialize<'a>,
     D: NetworkDictionary
 {
     pub fn new(
@@ -996,7 +1005,7 @@ where
     where
         O::WeightParam: NewableLayer
     {
-        let network = Network::new(sizes, info.steps_num.get(), dropout_probability, D::is_input_one_hot());
+        let network = Network::new(sizes, info.steps_num.highest(), dropout_probability, D::is_input_one_hot());
 
         let optimizer = O::new();
 
@@ -1323,9 +1332,10 @@ where
                 if display_inner
                 {
                     Self::print_loss(false, batch_loss as f32);
-                }
+                }*/
 
-                self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);*/
+                todo!()
+                //self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
 

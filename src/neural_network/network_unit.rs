@@ -5,6 +5,7 @@ use crate::neural_network::{
     DiffTensor,
     TensorIndex,
     InputType,
+    WeightInfo,
     OneHotLayer,
     OneHotIndex,
     LayerSizes,
@@ -31,13 +32,9 @@ pub trait GenericUnit<T>
 
     fn dropconnectable() -> bool;
 
-    fn map<U, F>(self, f: F) -> Self::Unit<U>
+    fn map_ref<U, F>(&self, f: F) -> Self::Unit<U>
     where
-        F: FnMut(T) -> U;
-
-    fn map_mut<U, F>(&mut self, f: F) -> Self::Unit<U>
-    where
-        F: FnMut(&mut T) -> U;
+        F: FnMut(&T) -> U;
 
     fn clone_weights_with_info<F>(&self, f: F) -> Self
     where
@@ -50,12 +47,12 @@ pub trait GenericUnit<T>
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
-pub trait OptimizerUnit<T>: GenericUnit<T> + Serialize + DeserializeOwned + Clone
+pub trait OptimizerUnit<T>: GenericUnit<T> + Clone
 {
     fn new_zeroed(sizes: LayerSizes) -> Self;
 }
 
-pub trait NetworkUnit: GenericUnit<DiffTensor> + Serialize + DeserializeOwned + Clone
+pub trait NetworkUnit: GenericUnit<DiffTensor> + Clone
 where
     Self: Sized
 {
