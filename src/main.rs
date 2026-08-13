@@ -516,15 +516,14 @@ fn train_embeddings(mut config: Config)
         {
             run_this(&mut network, training_info.clone());
 
-            todo!()
-            //network.clone().without_optimizer().save(&config.embeddings_path);
+todo!()
+//            network.clone().without_optimizer().save(&config.embeddings_path);
         }
     } else
     {
         run_this(&mut network, training_info);
 
-        todo!()
-        //network.without_optimizer().save(&config.embeddings_path);
+        network.without_optimizer().save(&config.embeddings_path);
     }
 }
 

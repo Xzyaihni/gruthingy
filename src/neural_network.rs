@@ -12,7 +12,7 @@ use std::{
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
-use network::{NetworkOutput, Network};
+use network::{SaveWeightType, NetworkOutput, Network};
 
 #[allow(unused_imports)]
 use crate::{
@@ -32,10 +32,9 @@ use crate::{
 
 use optimizers::*;
 
-pub use network::LayerSizes;
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
 pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
-pub use network::WeightsNamed;
+pub use network::{LayerSizes, WeightsNamed};
 pub use containers::{
     OperationsRecorder,
     LayerType,
@@ -932,7 +931,7 @@ impl Default for ExtraInfo
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize, D: Serialize, N::Unit<OwnedDiffValue>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<OwnedDiffValue>=N::Unit<OwnedDiffValue>>, N::Unit<O::WeightParam>: Serialize", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<OwnedDiffValue>: Deserialize<'de> + GenericUnit<OwnedDiffValue, Unit<WeightInfo>=N::Unit<WeightInfo>>, N::Unit<O::WeightParam>: Deserialize<'de>"))]
+#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize, D: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<O::WeightParam>: Serialize", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>>, N::Unit<O::WeightParam>: Deserialize<'de>"))]
 pub struct NeuralNetwork<N, O, D>
 where
     N: UnitFactory,
@@ -950,13 +949,11 @@ where
 #[allow(dead_code)]
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
-const fix_me_2: () = ();
-/*impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
+impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
 where
     O: Optimizer,
     EN<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    EN<DiffWrapper>: NetworkUnit,
-    for<'a> O::WeightParam: Serialize + Deserialize<'a>
+    EN<WeightInfo>: NetworkUnit
 {
     pub fn without_optimizer(self) -> NeuralNetwork<EmbeddingsUnitFactory, (), D>
     where
@@ -971,7 +968,7 @@ where
             sizes: self.sizes
         }
     }
-}*/
+}
 
 const fix_me_3: () = ();
 impl<N, O, D> NeuralNetwork<N, O, D>
@@ -1014,8 +1011,8 @@ where
         O: Serialize,
         D: Serialize,
         O::WeightParam: Serialize,
-        N::Unit<OwnedDiffValue>: Serialize,
-        N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<OwnedDiffValue>=N::Unit<OwnedDiffValue>>,
+        N::Unit<SaveWeightType>: Serialize,
+        N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<O::WeightParam>: Serialize
     {
         let writer = File::create(path).unwrap();
@@ -1029,8 +1026,8 @@ where
         for<'de> D: Deserialize<'de>,
         for<'de> O::WeightParam: Deserialize<'de>,
         for<'de> N::Unit<O::WeightParam>: Deserialize<'de>,
-        for<'de> N::Unit<OwnedDiffValue>: Deserialize<'de>,
-        N::Unit<OwnedDiffValue>: GenericUnit<OwnedDiffValue, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        for<'de> N::Unit<SaveWeightType>: Deserialize<'de>,
+        N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         let reader = File::open(path)?;
 

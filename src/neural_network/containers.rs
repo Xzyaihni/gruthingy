@@ -103,7 +103,7 @@ impl LayerType
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RecorderState
 {
     Recording,
@@ -111,6 +111,7 @@ enum RecorderState
     Ready
 }
 
+#[derive(Clone)]
 pub struct OperationsRecorder
 {
     state: RecorderState,
@@ -1657,7 +1658,7 @@ impl OwnedDiffValue
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GradientOp
 {
     Copy{src: TensorIndex, dst: TensorIndex},
@@ -1691,7 +1692,7 @@ pub enum GradientOp
     OuterProductOneHot{lhs: TensorIndex, rhs: OneHotIndex, output: TensorIndex}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op
 {
     AddScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
