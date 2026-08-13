@@ -24,6 +24,7 @@ use neural_network::{
     WeightsNamed,
     WeightsSize,
     LayerType,
+    SaveWeightType,
     NetworkUnit,
     OptimizerUnit,
     GenericUnit,
@@ -135,23 +136,23 @@ fn load_network_with<N, O, D>(
     auto_create: bool
 ) -> NeuralNetwork<N, O, D>
 where
-    O: Optimizer + DeserializeOwned,
-    N: UnitFactory + DeserializeOwned,
+    for<'de> O: Optimizer + Deserialize<'de>,
+    for<'de> N: UnitFactory + Deserialize<'de>,
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
-    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    for<'b> O::WeightParam: NewableLayer + Serialize + Deserialize<'b>,
+    for<'de> N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam> + Deserialize<'de>,
+    for<'de> O::WeightParam: NewableLayer + Serialize + Deserialize<'de>,
+    for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>> + Deserialize<'de>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
-    D: NetworkDictionary + DeserializeOwned
+    for<'de> D: NetworkDictionary + Deserialize<'de>
 {
     if path.exists()
     {
-        todo!()
-        /*NeuralNetwork::load(path).unwrap_or_else(|err|
+        NeuralNetwork::load(steps_highest, path).unwrap_or_else(|err|
         {
             complain(format!("could not load network at {} ({err})", path.display()))
-        })*/
+        })
     } else if auto_create
     {
         let config = config.expect("config must be provided for autocreate");

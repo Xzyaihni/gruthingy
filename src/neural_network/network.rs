@@ -570,7 +570,7 @@ where
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
-#[serde(bound(serialize = "O: Serialize, N::Unit<O>: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>>"))]
+#[serde(bound(serialize = "O: Serialize + Clone, N::Unit<O>: Serialize + Clone, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>>"))]
 pub struct Network<N: UnitFactory, O>
 {
     recorder: OperationsRecorder,
@@ -586,7 +586,9 @@ pub struct Network<N: UnitFactory, O>
 // this clone is ONLY used for serialization, dont use for ANYTHING else
 impl<N: UnitFactory, O> Clone for Network<N, O>
 where
-    N::Unit<WeightInfo>: Clone
+    N::Unit<WeightInfo>: Clone,
+    O: Clone,
+    N::Unit<O>: Clone
 {
     fn clone(&self) -> Self
     {
@@ -597,7 +599,7 @@ where
             dropout_masks: Vec::new(),
             inputs_targets: Vec::new(),
             loss: DiffScalar::undefined(),
-            optimizer_info: None,
+            optimizer_info: self.optimizer_info.clone(),
             weights: self.weights.clone()
         }
     }
@@ -722,11 +724,16 @@ where
             dropout_probability
         };
 
-        this.record_feedforward(inputs_count, is_input_one_hot);
-
-        this.recorder.finish();
+        this.initialize(inputs_count, is_input_one_hot);
 
         this
+    }
+
+    pub fn initialize(&mut self, inputs_count: usize, is_input_one_hot: bool)
+    {
+        self.record_feedforward(inputs_count, is_input_one_hot);
+
+        self.recorder.finish();
     }
 
     pub fn calculate_gradients(&mut self)

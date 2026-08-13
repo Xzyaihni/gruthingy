@@ -12,7 +12,7 @@ use std::{
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
-use network::{SaveWeightType, NetworkOutput, Network};
+use network::{NetworkOutput, Network};
 
 #[allow(unused_imports)]
 use crate::{
@@ -34,7 +34,7 @@ use optimizers::*;
 
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
 pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
-pub use network::{LayerSizes, WeightsNamed};
+pub use network::{SaveWeightType, LayerSizes, WeightsNamed};
 pub use containers::{
     OperationsRecorder,
     LayerType,
@@ -931,7 +931,7 @@ impl Default for ExtraInfo
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize, D: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<O::WeightParam>: Serialize", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>>, N::Unit<O::WeightParam>: Deserialize<'de>"))]
+#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize + Clone, D: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<O::WeightParam>: Serialize + Clone", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>>, N::Unit<O::WeightParam>: Deserialize<'de>"))]
 pub struct NeuralNetwork<N, O, D>
 where
     N: UnitFactory,
@@ -953,7 +953,8 @@ pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 impl<O, D> Clone for NeuralNetwork<EmbeddingsUnitFactory, O, D>
 where
     O: Optimizer,
-    D: Clone
+    D: Clone,
+    O::WeightParam: Clone
 {
     fn clone(&self) -> Self
     {
@@ -1025,17 +1026,17 @@ where
     where
         O: Serialize,
         D: Serialize,
-        O::WeightParam: Serialize,
+        O::WeightParam: Serialize + Clone,
         N::Unit<SaveWeightType>: Serialize,
         N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<O::WeightParam>: Serialize
+        N::Unit<O::WeightParam>: Serialize + Clone
     {
         let writer = File::create(path).unwrap();
 
         SaveFormat::serialize(BufWriter::new(writer), self).unwrap();
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
+    pub fn load<P: AsRef<Path>>(steps_highest: usize, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
     where
         for<'de> O: Deserialize<'de>,
         for<'de> D: Deserialize<'de>,
@@ -1046,7 +1047,11 @@ where
     {
         let reader = File::open(path)?;
 
-        SaveFormat::deserialize(BufReader::new(reader))
+        let mut this: Self = SaveFormat::deserialize(BufReader::new(reader))?;
+
+        this.network.initialize(steps_highest, D::is_input_one_hot());
+
+        Ok(this)
     }
 
     pub fn dictionary(&self) -> &D
