@@ -52,7 +52,7 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Clone
     fn new_zeroed(sizes: LayerSizes) -> Self;
 }
 
-pub trait NetworkUnit: GenericUnit<DiffTensor> + Clone
+pub trait NetworkUnit: GenericUnit<WeightInfo> + Clone
 where
     Self: Sized
 {

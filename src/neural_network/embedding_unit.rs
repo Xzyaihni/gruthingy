@@ -10,6 +10,7 @@ use crate::{
         OneHotIndex,
         LayerSizes,
         InputType,
+        WeightInfo,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, Embeddingsable}
     }
@@ -23,15 +24,15 @@ create_weights_container!{
     (bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
-impl Embeddingsable for EmbeddingUnit<DiffTensor>
+impl Embeddingsable for EmbeddingUnit<WeightInfo>
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor
     {
-        recorder.matmul_onehotv_add(self.weights, input, self.bias)
+        recorder.matmul_onehotv_add(self.weights.weight, input, self.bias.weight)
     }
 }
 
-impl NetworkUnit for EmbeddingUnit<DiffTensor>
+impl NetworkUnit for EmbeddingUnit<WeightInfo>
 {
     type State = ();
 

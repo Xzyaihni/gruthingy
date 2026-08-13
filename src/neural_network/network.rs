@@ -178,7 +178,7 @@ macro_rules! create_weights_container
             }
         }
 
-        impl WeightsContainer<DiffTensor>
+        impl WeightsContainer<WeightInfo>
         {
             pub fn new_randomized(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
             {
@@ -212,10 +212,12 @@ macro_rules! create_weights_container
                         {
                             let dropconnect_mask = recorder.new_tensor(this_size, previous_size);
 
-                            recorder.mul_componentwise(weights, dropconnect_mask)
+                            let weight = recorder.mul_componentwise(weights, dropconnect_mask);
+
+                            WeightInfo{weight, dropconnect_mask: Some(dropconnect_mask)}
                         } else
                         {
-                            weights
+                            WeightInfo{weight: weights, dropconnect_mask: None}
                         }
                     },
                 )+}
@@ -228,7 +230,7 @@ macro_rules! create_weights_container
         {
             fn new_zeroed(sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                Self{
+                /*Self{
                     sizes,
                     $(
                         $name: T::new(
@@ -236,7 +238,7 @@ macro_rules! create_weights_container
                             $this_size.into_number(sizes)
                         ),
                     )+
-                }
+                }*/todo!()
             }
         }
 
@@ -381,7 +383,7 @@ pub struct NetworkOutput<State, Output>
     pub output: Output
 }
 
-type UnitState<N> = <<N as UnitFactory>::Unit<DiffTensor> as NetworkUnit>::State;
+type UnitState<N> = <<N as UnitFactory>::Unit<WeightInfo> as NetworkUnit>::State;
 
 const uhh: () = ();
 //#[derive(Serialize, Deserialize)]
@@ -470,10 +472,11 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct WeightInfo
 {
     pub weight: DiffTensor,
-    pub dropconnect_mask: DiffTensor
+    pub dropconnect_mask: Option<DiffTensor>
 }
 
 pub struct Network<N: UnitFactory, O>
@@ -484,7 +487,7 @@ pub struct Network<N: UnitFactory, O>
     inputs_targets: Vec<(InputType, OneHotIndex)>,
     loss: DiffScalar,
     optimizer_info: Option<WeightsFullContainer<N, O>>,
-    weights: WeightsFullContainer<N, DiffTensor>
+    weights: WeightsFullContainer<N, WeightInfo>
 }
 
 impl<N: UnitFactory, O> Network<N, O>
@@ -498,7 +501,7 @@ impl<N: UnitFactory, O> Network<N, O>
 impl<N: UnitFactory, O> Network<N, O>
 where
     N::Unit<O>: OptimizerUnit<O>,
-    N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
@@ -530,12 +533,13 @@ where
                 (fastrand::f32() * 2.0 - 1.0) * v
             }));
 
-            weights
+            WeightInfo{weight: weights, dropconnect_mask: None}
         };
 
         let weights = WeightsFullContainer::new(sizes, |size|
         {
-            N::Unit::new(&mut recorder, size)
+            todo!()
+            //N::Unit::new(&mut recorder, size)
         }, output_weights_tensor);
 
         let mut this = Self{
@@ -681,7 +685,7 @@ where
                 break;
             } else
             {
-                let dropout_mask = dropout_masks[l_i];
+                /*let dropout_mask = dropout_masks[l_i];
 
                 let NetworkOutput{
                     state,
@@ -695,7 +699,7 @@ where
 
                 last_output = Some(this_output.as_value().into());
 
-                states.push(state);
+                states.push(state);*/todo!()
             }
         }
 
@@ -712,11 +716,11 @@ where
         input: InputType
     ) -> NetworkOutput<UnitState<N>, DiffTensor>
     {
-        let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
+        /*let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
 
-        output.output = self.recorder.matmulv(self.weights.output, output.output);
+        output.output = self.recorder.matmulv(self.weights.output.weight, output.output);
 
-        output
+        output*/todo!()
     }
 
 /*    pub fn apply_gradients<OP>(
@@ -766,12 +770,12 @@ where
 
         self.recorder.calculate();
 
-        let gradients = self.weights.map_ref(|weight|
+        /*let gradients = self.weights.map_ref(|weight|
         {
-            self.recorder.get_tensor(weight.as_gradient().unwrap()).clone()
+            self.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone()
         });
 
-        (self.recorder.get_value(self.loss.as_value()), gradients)
+        (self.recorder.get_value(self.loss.as_value()), gradients)*/todo!()
     }
 
 /*
@@ -926,7 +930,7 @@ where
         input: impl Iterator<Item=(InputType, OneHotLayer)>
     )
     {
-        if N::Unit::<DiffTensor>::dropconnectable()
+        if N::Unit::<WeightInfo>::dropconnectable()
         {
             self.weights.layers.iter().for_each(|layer|
             {

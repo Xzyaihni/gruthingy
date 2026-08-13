@@ -136,7 +136,7 @@ fn load_network_with<N, O, D>(
 where
     O: Optimizer + DeserializeOwned,
     N: UnitFactory + DeserializeOwned,
-    N::Unit<DiffTensor>: NetworkUnit<Unit<DiffTensor>=N::Unit<DiffTensor>>,
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     for<'b> O::WeightParam: NewableLayer + Serialize + Deserialize<'b>,

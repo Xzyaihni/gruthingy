@@ -39,7 +39,7 @@ pub struct LSTMState
     memory: DiffTensor
 }
 
-impl NetworkUnit for Lstm<DiffTensor>
+impl NetworkUnit for Lstm<WeightInfo>
 {
     type State = LSTMState;
 
@@ -55,8 +55,11 @@ impl NetworkUnit for Lstm<DiffTensor>
         input: InputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
-        let mut matmul_inputv_add = |weights, input, bias|
+        let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
         {
+            let weights = weights.weight;
+            let bias = bias.weight;
+
             match input
             {
                 InputType::Normal(x) => recorder.matmulv_add(weights, DiffTensor::no_gradient(x), bias),
@@ -71,9 +74,9 @@ impl NetworkUnit for Lstm<DiffTensor>
 
         if let Some(previous_state) = previous_state
         {
-            let mut do_gate = |gate: &mut _, hidden, previous_hidden|
+            let mut do_gate = |gate: &mut _, hidden: WeightInfo, previous_hidden|
             {
-                let mm = recorder.matmulv(hidden, previous_hidden);
+                let mm = recorder.matmulv(hidden.weight, previous_hidden);
                 *gate = recorder.add_inplace(*gate, mm);
             };
 
