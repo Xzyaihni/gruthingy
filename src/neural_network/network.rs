@@ -745,7 +745,7 @@ where
         output
     }
 
-/*    pub fn apply_gradients<OP>(
+    pub fn apply_gradients<OP>(
         &mut self,
         gradients: WeightsFullContainer<N, LayerType>,
         optimizer: &mut OP,
@@ -753,14 +753,10 @@ where
     )
     where
         OP: Optimizer<WeightParam=O>,
-        N::Unit<DiffWrapper>: SubAssign,
-        N::Unit<LayerType>: Serialize + DeserializeOwned + IntoIterator<Item=LayerType>,
-        for<'b> &'b mut N::Unit<O>: IntoIterator<Item=&'b mut O>,
-        N::Unit<O>: OptimizerUnit<O, Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-        N::Unit<O>: OptimizerUnit<O, Unit<LayerType>=N::Unit<LayerType>>
+        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
+        for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
+        for<'b> &'b mut N::Unit<O>: IntoIterator<Item=&'b mut O>
     {
-        self.disable_gradients();
-
         gradients.into_iter()
             .zip(self.weights.iter_mut().zip(self.optimizer_info.as_mut().unwrap().iter_mut()))
             .for_each(|(mut gradient, (network_weights, optimizer_info))|
@@ -772,13 +768,12 @@ where
 
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
-                *network_weights -= DiffWrapper::new_undiff(change.into());
+                let maybe_optimize_this = ();
+                *self.recorder.get_tensor_mut(network_weights.weight_value.as_value()) -= change;
             });
 
         optimizer.advance_time();
-
-        self.enable_gradients();
-    }*/
+    }
 
     pub fn gradients(
         &mut self,
@@ -801,23 +796,6 @@ where
     }
 
 /*
-    // oh my god wut am i even doing at this point its so over
-    pub fn enable_gradients(&mut self)
-    {
-        self.weights.iter_mut().for_each(|weight|
-        {
-            weight.enable_gradients();
-        });
-    }
-
-    pub fn disable_gradients(&mut self)
-    {
-        self.weights.iter_mut().for_each(|weight|
-        {
-            weight.disable_gradients();
-        });
-    }
-
     pub fn weights_info<'b, 'c>(
         &'b self
     ) -> Vec<WeightsNamed<&'b DiffWrapper>>
@@ -841,14 +819,6 @@ where
                 }
             }))
             .collect::<Vec<_>>()
-    }
-
-    pub fn assert_empty(&self)
-    {
-        self.weights.iter().for_each(|weight|
-        {
-            assert!(weight.parent().is_none());
-        });
     }*/
 
     #[allow(dead_code)]

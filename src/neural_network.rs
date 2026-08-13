@@ -1202,6 +1202,7 @@ where
         N::Unit<WeightInfo>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
+        for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
         for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
     {
         self.network.calculate_gradients();
@@ -1325,8 +1326,7 @@ where
                     Self::print_loss(false, batch_loss as f32);
                 }
 
-                todo!()
-                //self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
+                self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
 
