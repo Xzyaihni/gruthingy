@@ -1208,8 +1208,8 @@ where
         for<'b> &'b mut N::Unit<O::WeightParam>: IntoIterator<Item=&'b mut O::WeightParam>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffTensor>=N::Unit<DiffTensor>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
-        N::Unit<DiffTensor>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
-        N::Unit<LayerType>: DivAssign<f32> + AddAssign + Serialize + DeserializeOwned + IntoIterator<Item=LayerType>,
+        N::Unit<WeightInfo>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
+        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
         for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
     {
@@ -1293,7 +1293,7 @@ where
                 let max_batch_start = inputs.len()
                     .saturating_sub(steps_num + (InputOutput::<EMBEDDINGS, D>::min_len() - 1));
 
-                /*let mut gradients = (0..info.batch_size).map(|_|
+                let mut gradients = (0..info.batch_size).map(|_|
                 {
                     let batch_start = if max_batch_start == 0
                     {
@@ -1332,7 +1332,7 @@ where
                 if display_inner
                 {
                     Self::print_loss(false, batch_loss as f32);
-                }*/
+                }
 
                 todo!()
                 //self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);

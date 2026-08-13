@@ -210,11 +210,11 @@ macro_rules! create_weights_container
 
                         if $is_hidden
                         {
-                            let dropconnect_mask = recorder.new_tensor(this_size, previous_size);
+                            let dropconnect_mask = DiffTensor::no_gradient(recorder.new_tensor(this_size, previous_size).as_value());
 
                             let weight = recorder.mul_componentwise(weights, dropconnect_mask);
 
-                            WeightInfo{weight, dropconnect_mask: Some(dropconnect_mask)}
+                            WeightInfo{weight, dropconnect_mask: Some(dropconnect_mask.as_value())}
                         } else
                         {
                             WeightInfo{weight: weights, dropconnect_mask: None}
@@ -230,7 +230,7 @@ macro_rules! create_weights_container
         {
             fn new_zeroed(sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                /*Self{
+                Self{
                     sizes,
                     $(
                         $name: T::new(
@@ -238,7 +238,7 @@ macro_rules! create_weights_container
                             $this_size.into_number(sizes)
                         ),
                     )+
-                }*/todo!()
+                }
             }
         }
 
@@ -476,7 +476,7 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 pub struct WeightInfo
 {
     pub weight: DiffTensor,
-    pub dropconnect_mask: Option<DiffTensor>
+    pub dropconnect_mask: Option<TensorIndex>
 }
 
 pub struct Network<N: UnitFactory, O>
@@ -538,8 +538,7 @@ where
 
         let weights = WeightsFullContainer::new(sizes, |size|
         {
-            todo!()
-            //N::Unit::new(&mut recorder, size)
+            N::Unit::new(&mut recorder, size)
         }, output_weights_tensor);
 
         let mut this = Self{
@@ -716,11 +715,11 @@ where
         input: InputType
     ) -> NetworkOutput<UnitState<N>, DiffTensor>
     {
-        /*let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
+        let mut output = self.weights.layers[layer_index].feedforward_unit(&mut self.recorder, previous_state, input);
 
         output.output = self.recorder.matmulv(self.weights.output.weight, output.output);
 
-        output*/todo!()
+        output
     }
 
 /*    pub fn apply_gradients<OP>(
@@ -763,19 +762,19 @@ where
         input: impl Iterator<Item=(InputType, OneHotLayer)>
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
-        N::Unit<LayerType>: Serialize + DeserializeOwned,
-        N::Unit<DiffTensor>: NetworkUnit<Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>> + fmt::Debug
     {
         self.feedforward(input);
 
         self.recorder.calculate();
 
-        /*let gradients = self.weights.map_ref(|weight|
+        let gradients = self.weights.map_ref(|weight|
         {
             self.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone()
         });
 
-        (self.recorder.get_value(self.loss.as_value()), gradients)*/todo!()
+        (self.recorder.get_value(self.loss.as_value()), gradients)
     }
 
 /*
@@ -934,13 +933,16 @@ where
         {
             self.weights.layers.iter().for_each(|layer|
             {
-                /*if let Some(dropconnect_mask) = layer.dropconnect_mask
+                layer.for_each_weight_ref(|weight_info|
                 {
-                    Self::set_dropout_mask(
-                        self.recorder.get_tensor_mut(dropconnect_mask),
-                        DROPCONNECT_PROBABILITY
-                    );
-                }*/todo!()
+                    if let Some(dropconnect_mask) = weight_info.dropconnect_mask
+                    {
+                        Self::set_dropout_mask(
+                            self.recorder.get_tensor_mut(dropconnect_mask),
+                            DROPCONNECT_PROBABILITY
+                        );
+                    }
+                });
             });
         }
 
