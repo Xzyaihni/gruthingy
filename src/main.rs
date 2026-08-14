@@ -30,7 +30,6 @@ use neural_network::{
     OptimizerUnit,
     GenericUnit,
     Optimizer,
-    DiffWrapper,
     DiffTensor,
     WeightInfo,
     UnitFactory,
@@ -83,8 +82,6 @@ impl From<&Config> for SizesInfo
     }
 }
 
-// this is definitely unneeded in theory, but in practice serde macros r stupid
-#[derive(Clone, Serialize, Deserialize)]
 struct NUnitFactory;
 
 impl UnitFactory for NUnitFactory
@@ -137,7 +134,7 @@ fn load_network_with<N, O, D>(
 ) -> NeuralNetwork<N, O, D>
 where
     for<'de> O: Optimizer + Deserialize<'de>,
-    for<'de> N: UnitFactory + Deserialize<'de>,
+    for<'de> N: UnitFactory,
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
     UnitState<N>: Clone,
@@ -236,7 +233,7 @@ fn train(config: Config)
 
 fn run(config: Config)
 {
-    /*let mut network = load_network(&config, None, false);
+    let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
     {
@@ -251,8 +248,7 @@ fn run(config: Config)
 
     if config.replace_invalid
     {
-        let predicted =
-            network.predict_bytes(text, config.tokens_amount, config.temperature);
+        let predicted = network.predict_bytes(text, config.tokens_amount, config.temperature);
 
         let s = String::from_utf8_lossy(&predicted);
 
@@ -271,7 +267,7 @@ fn run(config: Config)
         });
 
         network.predict_into(text, config.tokens_amount, config.temperature, &mut f);
-    };*/
+    };
 }
 
 #[derive(Clone, Copy)]
@@ -589,7 +585,7 @@ fn closest_embeddings(mut config: Config)
 
 fn accuracy_data(config: Config)
 {
-    /*if config.certainty && config.top_guesses
+    if config.certainty && config.top_guesses
     {
         eprintln!("certainty and top-guesses are contradictory, choose only one");
         return;
@@ -645,7 +641,7 @@ fn accuracy_data(config: Config)
     if let Err(err) = result
     {
         eprintln!("error saving accuracy data: {err}");
-    }*/
+    }
 }
 
 fn main()

@@ -1,15 +1,13 @@
 use std::{
     f32,
-    fmt,
     vec,
     iter,
     convert,
     cmp::Ordering,
-    borrow::Borrow,
-    ops::SubAssign
+    borrow::Borrow
 };
 
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Serialize, Deserialize};
 
 use crate::{
     EmbeddingsUnitFactory,
@@ -20,7 +18,6 @@ use crate::{
         BlockIndex,
         DiffTensor,
         DiffScalar,
-        OwnedDiffValue,
         TensorIndex,
         OneHotLayer,
         OneHotIndex,
@@ -34,7 +31,6 @@ use crate::{
         Optimizer,
         OptimizerUnit,
         UnitFactory,
-        EN,
         DROPCONNECT_PROBABILITY,
         network_unit::Embeddingsable
     }
@@ -864,8 +860,6 @@ where
 
     fn record_feedforward(&mut self, is_multistep: bool, is_input_one_hot: bool)
     {
-        let mut loss: Option<DiffScalar> = None;
-
         let dropout_masks: Vec<_> = self.weights.layers.iter().skip(1).map(|_|
         {
             self.recorder.set_new_tensor(LayerType::repeat(self.sizes.hidden, 1, 0.0)).as_value()
@@ -971,7 +965,7 @@ where
                     output: this_output
                 } = last_f(self, l_i, previous_state, input);
 
-                output = Some(this_output);;
+                output = Some(this_output);
 
                 states.push(state);
 
@@ -1282,7 +1276,7 @@ where
 
     pub fn feedforward_no_gradient(
         &mut self,
-        mut input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
         self.feedforward_with(OperationsRecorder::calculate_feedforward, |_this, _is_with_state| {}, input)

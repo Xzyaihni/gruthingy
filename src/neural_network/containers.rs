@@ -1742,14 +1742,6 @@ impl From<f32> for OwnedDiffValue
     }
 }
 
-impl OwnedDiffValue
-{
-    pub fn as_tensor(self) -> LayerType
-    {
-        if let Self::Tensor(x) = self { x } else { panic!("as_tensor must be called on a tensor") }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GradientOp
 {
@@ -1900,24 +1892,6 @@ pub enum InputType
 impl InputType
 {
     pub fn undefined() -> Self { Self::Normal(TensorIndex::undefined()) }
-
-    pub fn into_one_hot(self) -> OneHotIndex
-    {
-        match self
-        {
-            Self::OneHot(value) => value,
-            _ => panic!("expected onehot")
-        }
-    }
-
-    pub fn into_normal(self) -> TensorIndex
-    {
-        match self
-        {
-            Self::Normal(value) => value,
-            _ => panic!("expected normal")
-        }
-    }
 }
 
 impl From<TensorIndex> for InputType

@@ -14,8 +14,6 @@ use crate::neural_network::{
     network::{WeightsSize, NetworkOutput}
 };
 
-use serde::{Serialize, de::DeserializeOwned};
-
 
 pub trait UnitFactory
 {

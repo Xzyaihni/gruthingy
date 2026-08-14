@@ -2,18 +2,17 @@ use std::{
     f32,
     fmt,
     slice,
-    iter,
     marker::PhantomData,
     io::{self, Read, Write, BufReader, BufWriter},
     fs::File,
     path::Path,
     collections::VecDeque,
-    ops::{Range, DivAssign, AddAssign, SubAssign}
+    ops::Range
 };
 
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Serialize, Deserialize};
 
-use network::{NetworkOutput, Network};
+use network::Network;
 
 #[allow(unused_imports)]
 use crate::{
@@ -40,12 +39,9 @@ pub use containers::{
     OperationsRecorder,
     BlockIndex,
     LayerType,
-    DiffWrapper,
     DiffTensor,
     DiffScalar,
-    OwnedDiffValue,
     TensorIndex,
-    ValueIndex,
     OneHotIndex,
     InputType,
     DiffInputType,
@@ -641,7 +637,6 @@ struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
     words: Vec<OwnedInputType>,
-    sizes: LayerSizes,
     temperature: f32,
     predict_amount: usize
 }
@@ -651,7 +646,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     pub fn new(
         dictionary: &'a mut D,
         words: Vec<OwnedInputType>,
-        sizes: LayerSizes,
         temperature: f32,
         predict_amount: usize
     ) -> Self
@@ -659,7 +653,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         Self{
             dictionary,
             words,
-            sizes,
             temperature,
             predict_amount
         }
@@ -1344,7 +1337,6 @@ where
     )
     where
         R: Read,
-        N::Unit<DiffWrapper>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -1407,7 +1399,7 @@ where
                 self.dictionary.words_to_layer([v])
             }).collect::<Vec<_>>();
 
-            Predictor::new(&mut self.dictionary, words, self.sizes, temperature, amount)
+            Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
         let predicted = f(predictor, &mut self.network);
