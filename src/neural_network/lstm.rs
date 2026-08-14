@@ -190,9 +190,22 @@ mod tests
     #[test]
     fn lstm_works()
     {
-        let one_weight = |value: f32|
+        let mut recorder = OperationsRecorder::new();
+
+        let mut one_weight = |value: f32|
         {
-            DiffWrapper::new_diff(LayerType::from_raw([value], 1, 1).into())
+            recorder.set_new_tensor_gradientable(LayerType::from_raw([value], 1, 1).into())
+        };
+
+        let mut one_weight_info = |value: f32|
+        {
+            let weight = one_weight(value);
+
+            WeightInfo{
+                weight_dropped: weight.clone(),
+                weight_original: weight,
+                dropconnect_mask: None
+            }
         };
 
         /*
@@ -211,24 +224,24 @@ mod tests
         Output
         */
 
-        let lstm = WeightsContainer
+        let lstm: WeightsContainer<WeightInfo> = WeightsContainer
         {
             sizes: LayerSizes{hidden: 1, input: 1, output: 1, layers: 1},
 
-            input_update: one_weight(1.65),
-            input_forget: one_weight(1.63),
-            input_output: one_weight(-0.19),
-            input_memory: one_weight(0.94),
+            input_update: one_weight_info(1.65),
+            input_forget: one_weight_info(1.63),
+            input_output: one_weight_info(-0.19),
+            input_memory: one_weight_info(0.94),
 
-            hidden_update: one_weight(2.00),
-            hidden_forget: one_weight(2.70),
-            hidden_output: one_weight(4.38),
-            hidden_memory: one_weight(1.41),
+            hidden_update: one_weight_info(2.00),
+            hidden_forget: one_weight_info(2.70),
+            hidden_output: one_weight_info(4.38),
+            hidden_memory: one_weight_info(1.41),
 
-            update_bias: one_weight(0.62),
-            forget_bias: one_weight(1.62),
-            output_bias: one_weight(0.59),
-            memory_bias: one_weight(-0.32)
+            update_bias: one_weight_info(0.62),
+            forget_bias: one_weight_info(1.62),
+            output_bias: one_weight_info(0.59),
+            memory_bias: one_weight_info(-0.32)
         };
 
         let state = LSTMState{
@@ -238,13 +251,26 @@ mod tests
 
         let input = one_weight(1.0);
 
-        let output = lstm.feedforward_unit(Some(&state), &input.into());
+        let output = {
+            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input));
+
+            NetworkOutput{
+                state: output.state,
+                output: output.output
+            }
+        };
 
         let epsilon = 0.0001;
 
-        let single_value = |l: &DiffWrapper|
+        recorder.finish();
+        recorder.gradient_with_respect(vec![output.output.into()]);
+
+        let current_block = recorder.current_block();
+        recorder.calculate(current_block);
+
+        let single_value = |l: &DiffTensor|
         {
-            l.as_vec()[0]
+            recorder.get_tensor(l.as_value()).as_vec()[0]
         };
 
         assert_close_enough(single_value(&output.state.memory), 2.947, epsilon);

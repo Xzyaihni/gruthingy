@@ -1,11 +1,13 @@
 use std::{
     f32,
-    iter,
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
     ops::DivAssign
 };
+
+#[allow(unused_imports)]
+use std::iter;
 
 use serde::{Serialize, Deserialize};
 
