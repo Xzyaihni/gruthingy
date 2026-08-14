@@ -763,6 +763,7 @@ impl OperationsRecorder
 
         self.operations_blocks[block.0].gradient_operations.iter().take(steps).for_each(|gradient_op|
         {
+            //let before_instant = std::time::Instant::now();
             match gradient_op
             {
                 GradientOp::Copy{src, dst} =>
@@ -918,6 +919,7 @@ impl OperationsRecorder
                     output.outer_product_one_hot_into(lhs, &self.one_hot_layers[rhs.0]);
                 }
             }
+            //eprintln!("{}, elapsed {:.3} us", format!("{gradient_op:?}").chars().take_while(|c| *c != ' ').collect::<String>(), before_instant.elapsed().as_nanos() as f64 / 1000.0);
         });
 
         // this might give a false positive but its a very important check
