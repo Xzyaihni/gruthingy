@@ -817,15 +817,15 @@ impl StepsNum
     }
 }
 
-const fix_me_1: () = ();
-/*trait FromGuesses<N, O>
+trait FromGuesses<N, O>
 where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    UnitState<N>: Clone,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -838,9 +838,10 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    UnitState<N>: Clone,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -856,9 +857,10 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    UnitState<N>: Clone,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -874,9 +876,10 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-    for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-    for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>
+    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    UnitState<N>: Clone,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -885,7 +888,7 @@ where
     {
         network.certainty_guesses(input_outputs)
     }
-}*/
+}
 
 #[derive(Clone)]
 pub struct TrainingInfo
@@ -1076,7 +1079,7 @@ where
         &mut self.network
     }
 
-    /*fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
+    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
@@ -1087,8 +1090,6 @@ where
             &self.dictionary,
             inputs.iter()
         );
-
-        self.network.disable_gradients();
 
         // im only getting the guess info on the output, NOT the inputs, therefore skip the first one cuz it has no prediction for it
         inputs.iter().cloned().map(Some).zip(inputs.iter().skip(1).cloned()).map(|(previous_word, word)|
@@ -1129,7 +1130,7 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.with_guesses(reader)
-    }*/
+    }
 
     pub fn test_loss<R>(
         &mut self,
@@ -1419,8 +1420,6 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         F: FnOnce(Predictor<D>, &mut Network<N, O::WeightParam>) -> T
     {
-        self.network.disable_gradients();
-
         let predictor = {
             // could do this without a collect but wheres the fun in that
             let words = self.vectorized(reader).into_iter().map(|v|
@@ -1432,8 +1431,6 @@ where
         };
 
         let predicted = f(predictor, &mut self.network);
-
-        self.network.enable_gradients();
 
         predicted
     }*/

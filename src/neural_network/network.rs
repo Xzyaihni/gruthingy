@@ -625,7 +625,7 @@ struct BlockInfo<N: UnitFactory>
 where
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
 {
-    softmax: DiffTensor,
+    output: DiffTensor,
     loss: DiffScalar,
     next_state: Vec<UnitState<N>>,
     index: BlockIndex,
@@ -638,7 +638,7 @@ where
     fn undefined() -> Self
     {
         Self{
-            softmax: DiffTensor::undefined(),
+            output: DiffTensor::undefined(),
             loss: DiffScalar::undefined(),
             next_state: Vec::new(),
             index: BlockIndex::undefined()
@@ -887,11 +887,11 @@ where
 
         let set_from_output = |NetworkOutput{
             state: next_state,
-            output: (softmax, loss)
+            output: (output, loss)
         }: NetworkOutput<Vec<UnitState<N>>, _>, block: &mut BlockInfo<_>| -> Vec<UnitState<N>>
         {
             block.next_state = next_state.clone();
-            block.softmax = softmax;
+            block.output = output;
             block.loss = loss;
 
             next_state
@@ -929,7 +929,7 @@ where
                 layer_index,
                 previous_state,
                 input
-            ).map(|output| this.recorder.softmax_cross_entropy(output, targets))
+            ).map(|output| (output, this.recorder.softmax_cross_entropy(output, targets).1))
         }, previous_states, dropout_masks, input)
     }
 
@@ -1176,7 +1176,7 @@ where
 
     fn with_predict<T, F>(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>,
+        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>,
         f: F
     ) -> impl Iterator<Item=(usize, T)>
     where
@@ -1201,7 +1201,7 @@ where
     #[allow(dead_code)]
     pub fn top_guesses(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
+        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, u32)>
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
@@ -1220,7 +1220,7 @@ where
     #[allow(dead_code)]
     pub fn certainty_guesses(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
+        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, f32)>
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
@@ -1232,7 +1232,7 @@ where
     #[allow(dead_code)]
     pub fn correct_guesses(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
+        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, bool)>
     {
         self.with_predict(input, |_predicted, highest_index, target_index|
@@ -1244,7 +1244,7 @@ where
     #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
-        input: impl Iterator<Item=(InputType, OneHotLayer)>
+        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
         let mut total = 0;
@@ -1290,13 +1290,12 @@ where
 
     fn predict(
         &mut self,
-        input: impl Iterator<Item=InputType> + ExactSizeIterator
+        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
     ) -> Vec<LayerType>
     {
         let temperature = 1.0;
 
         let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
-//        let mut previous_state: Option<Vec<_>> = None;
 
         if N::Unit::<WeightInfo>::dropconnectable()
         {
@@ -1317,32 +1316,21 @@ where
             Self::set_dropout_mask(self.recorder.get_tensor_mut(*dropout_mask), 0.0);
         });
 
-        for this_input in input
-        {
-            /*self.feedforward_single_input_with_activation(|layer, previous_state, input|
+        self.feedforward_like(
+            OperationsRecorder::calculate_feedforward,
+            |_, _| {},
+            |x| (x, ()),
+            |this, is_with_state|
             {
-                let NetworkOutput{
-                    state,
-                    output
-                } = self.feedforward_unit_last(
-                    layer,
-                    previous_state,
-                    input
-                );
+                let output = if is_with_state { this.with_state.output } else { this.no_state.output };
+                let mut output = this.recorder.get_tensor(output.as_value()).clone();
 
-                let mut output = NetworkOutput{
-                    state,
-                    output: output.tensor().clone()
-                };
+                Softmaxer::softmax_temperature(&mut output, temperature);
 
-                Softmaxer::softmax_temperature(&mut output.output, temperature);
-
-                output
-            }, previous_states, this_input)
-
-            outputs.push(output);
-            previous_state = Some(state);*/todo!()
-        }
+                outputs.push(output);
+            },
+            input
+        );
 
         outputs
     }
