@@ -53,8 +53,8 @@ pub use containers::{
 #[allow(unused_imports)]
 pub use network::{WeightInfo, WeightsSize};
 
-//#[allow(unused_imports)]
-//use gru::Gru;
+#[allow(unused_imports)]
+use gru::Gru;
 
 #[allow(unused_imports)]
 use lstm::Lstm;
@@ -63,7 +63,7 @@ pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
-//mod gru;
+mod gru;
 mod lstm;
 mod embedding_unit;
 
