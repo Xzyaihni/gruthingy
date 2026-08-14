@@ -1,5 +1,6 @@
 use std::{
     f32,
+    iter,
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
@@ -170,6 +171,8 @@ pub struct OperationsRecorder
     one_hot_layers: Vec<OneHotLayer>,
     operations_blocks: Vec<OperationsBlock>,
     #[cfg(debug_assertions)]
+    checked_inputs: Vec<DiffValue>,
+    #[cfg(debug_assertions)]
     pub allow_uninitialized: Vec<DiffValue>
 }
 
@@ -200,7 +203,6 @@ macro_rules! new_tensor_index
             let id = $this.tensors.len();
 
             $this.tensors.push($value);
-            if id == 3 { panic!("3"); }
 
             TensorIndex(id)
         }
@@ -317,23 +319,46 @@ impl OperationsRecorder
             one_hot_layers: Vec::new(),
             operations_blocks: vec![OperationsBlock::default()],
             #[cfg(debug_assertions)]
+            checked_inputs: Vec::new(),
+            #[cfg(debug_assertions)]
             allow_uninitialized: Vec::new()
         }
     }
 
     pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensor
     {
-        self.new_tensor_with_source(None, true, rows, columns)
+        let input = self.new_tensor_with_source(None, true, rows, columns);
+
+        #[cfg(debug_assertions)]
+        {
+            self.checked_inputs.push(input.as_value().into());
+            self.checked_inputs.push(input.as_gradient().unwrap().into());
+        }
+
+        input
     }
 
     pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensor
     {
-        self.new_tensor_with_source(None, false, rows, columns)
+        let input = self.new_tensor_with_source(None, false, rows, columns);
+
+        #[cfg(debug_assertions)]
+        self.checked_inputs.push(input.as_value().into());
+
+        input
     }
 
     pub fn new_value(&mut self) -> DiffScalar
     {
-        self.new_value_with_source(None, true)
+        let input = self.new_value_with_source(None, true);
+
+        #[cfg(debug_assertions)]
+        {
+            self.checked_inputs.push(input.as_value().into());
+            self.checked_inputs.push(input.as_gradient().unwrap().into());
+        }
+
+        input
     }
 
     pub fn new_one_hot(&mut self) -> OneHotIndex
@@ -403,7 +428,15 @@ impl OperationsRecorder
         let rows = value.rows();
         let columns = value.columns();
 
-        new_tensor!(self, None, true, rows, columns, value)
+        let input = new_tensor!(self, None, true, rows, columns, value);
+
+        #[cfg(debug_assertions)]
+        {
+            self.checked_inputs.push(input.as_value().into());
+            self.checked_inputs.push(input.as_gradient().unwrap().into());
+        }
+
+        input
     }
 
     pub fn set_new_tensor(&mut self, value: LayerType) -> DiffTensor
@@ -411,7 +444,12 @@ impl OperationsRecorder
         let rows = value.rows();
         let columns = value.columns();
 
-        new_tensor!(self, None, false, rows, columns, value)
+        let input = new_tensor!(self, None, false, rows, columns, value);
+
+        #[cfg(debug_assertions)]
+        self.checked_inputs.push(input.as_value().into());
+
+        input
     }
 
     pub fn set_new_value(&mut self, value: f32) -> DiffScalar
@@ -684,11 +722,13 @@ impl OperationsRecorder
 
     pub fn new_block(&mut self) -> BlockIndex
     {
-        let id = self.operations_blocks.len();
+        let id = BlockIndex(self.operations_blocks.len());
 
         self.operations_blocks.push(OperationsBlock::default());
 
-        BlockIndex(id)
+        self.current_block = id;
+
+        id
     }
 
     pub fn current_block(&self) -> BlockIndex
@@ -881,13 +921,29 @@ impl OperationsRecorder
         // this might give a false positive but its a very important check
         #[cfg(debug_assertions)]
         {
-            self.values.iter().enumerate().filter(|(_, x)| **x == 0.0)
-                .filter(|(index, _)| !self.allow_uninitialized.contains(&ValueIndex(*index).into()))
-                .for_each(|(index, _)| eprintln!("value at index {index} might be uninitialized"));
+            let belongs_to_block = |value: &DiffValue| -> bool
+            {
+                self.operations_blocks[block.0].gradient_operations.iter().take(steps).any(|op| *value == op.output_of())
+            };
 
-            self.tensors.iter().enumerate().filter(|(_, x)| x.iter().all(|inner| *inner == 0.0))
-                .filter(|(index, _)| !self.allow_uninitialized.contains(&TensorIndex(*index).into()))
-                .for_each(|(index, _)| eprintln!("tensor at index {index} might be uninitialized"));
+            self.values.iter().enumerate().filter(|(_, x)| **x == 0.0)
+                .map(|(index, _)| DiffValue::Value(ValueIndex(index)))
+                .chain(self.tensors.iter().enumerate().filter(|(_, x)| x.iter().all(|inner| *inner == 0.0))
+                    .map(|(index, _)| DiffValue::Tensor(TensorIndex(index))))
+                .filter(belongs_to_block)
+                .zip(iter::repeat(false))
+                .chain(self.checked_inputs.iter().cloned().zip(iter::repeat(true)))
+                .filter(|(value, _)| !self.allow_uninitialized.contains(value))
+                .for_each(|(value, is_input)|
+                {
+                    if is_input
+                    {
+                        eprintln!("index {value:?} might be uninitialized");
+                    } else
+                    {
+                        panic!("index {value:?} is uninitialized");
+                    }
+                });
         }
     }
 
@@ -1000,47 +1056,11 @@ impl OperationsRecorder
         let mut i = 1;
         while i < this_block.gradient_operations.len()
         {
-            let output_of = |op: &GradientOp| -> DiffValue
-            {
-                match *op
-                {
-                    GradientOp::Copy{dst: output, ..}
-                    | GradientOp::AddScalar{output, ..}
-                    | GradientOp::Add{output, ..}
-                    | GradientOp::AddInplace{output, ..}
-                    | GradientOp::Sub{output, ..}
-                    | GradientOp::SubFromScalar{output, ..}
-                    | GradientOp::MulScalar{output, ..}
-                    | GradientOp::MulComponentwise{output, ..}
-                    | GradientOp::Fill{output, ..}
-                    | GradientOp::Pow{output, ..}
-                    | GradientOp::Sigmoid{output, ..}
-                    | GradientOp::SigmoidDiff{output, ..}
-                    | GradientOp::Tanh{output, ..}
-                    | GradientOp::TanhDiff{output, ..}
-                    | GradientOp::LeakyRelu{output, ..}
-                    | GradientOp::LeakyReluDiff{output, ..}
-                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
-                    | GradientOp::Matmulv{output, ..}
-                    | GradientOp::MatmulvAdd{output, ..}
-                    | GradientOp::MatmulOneHotvAdd{output, ..}
-                    | GradientOp::MatmulvTransposed{output, ..}
-                    | GradientOp::OuterProduct{output, ..}
-                    | GradientOp::OuterProductOneHot{output, ..} => output.into(),
-                    GradientOp::CopyScalar{dst: output, ..}
-                    | GradientOp::AddScalars{output, ..}
-                    | GradientOp::MulScalars{output, ..}
-                    | GradientOp::SumTensor{output, ..}
-                    | GradientOp::Dot{output, ..}
-                    | GradientOp::SoftmaxCrossEntropy{output, ..} => output.into()
-                }
-            };
-
             let this = &this_block.gradient_operations[i];
 
             if let Some(previous) = (0..i).find(|previous|
             {
-                let is_shared_output = output_of(&this_block.gradient_operations[*previous]) == output_of(this);
+                let is_shared_output = this_block.gradient_operations[*previous].output_of() == this.output_of();
 
                 is_shared_output && !handled.contains(previous)
             })
@@ -1758,6 +1778,45 @@ pub enum GradientOp
     OuterProductOneHot{lhs: TensorIndex, rhs: OneHotIndex, output: TensorIndex}
 }
 
+impl GradientOp
+{
+    fn output_of(&self) -> DiffValue
+    {
+        match *self
+        {
+            GradientOp::Copy{dst: output, ..}
+            | GradientOp::AddScalar{output, ..}
+            | GradientOp::Add{output, ..}
+            | GradientOp::AddInplace{output, ..}
+            | GradientOp::Sub{output, ..}
+            | GradientOp::SubFromScalar{output, ..}
+            | GradientOp::MulScalar{output, ..}
+            | GradientOp::MulComponentwise{output, ..}
+            | GradientOp::Fill{output, ..}
+            | GradientOp::Pow{output, ..}
+            | GradientOp::Sigmoid{output, ..}
+            | GradientOp::SigmoidDiff{output, ..}
+            | GradientOp::Tanh{output, ..}
+            | GradientOp::TanhDiff{output, ..}
+            | GradientOp::LeakyRelu{output, ..}
+            | GradientOp::LeakyReluDiff{output, ..}
+            | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
+            | GradientOp::Matmulv{output, ..}
+            | GradientOp::MatmulvAdd{output, ..}
+            | GradientOp::MatmulOneHotvAdd{output, ..}
+            | GradientOp::MatmulvTransposed{output, ..}
+            | GradientOp::OuterProduct{output, ..}
+            | GradientOp::OuterProductOneHot{output, ..} => output.into(),
+            GradientOp::CopyScalar{dst: output, ..}
+            | GradientOp::AddScalars{output, ..}
+            | GradientOp::MulScalars{output, ..}
+            | GradientOp::SumTensor{output, ..}
+            | GradientOp::Dot{output, ..}
+            | GradientOp::SoftmaxCrossEntropy{output, ..} => output.into()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op
 {
@@ -1868,6 +1927,25 @@ impl From<OneHotIndex> for InputType
     fn from(value: OneHotIndex) -> Self
     {
         Self::OneHot(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DiffInputType
+{
+    Normal(DiffTensor),
+    OneHot(OneHotIndex)
+}
+
+impl DiffInputType
+{
+    pub fn into_one_hot(self) -> OneHotIndex
+    {
+        match self
+        {
+            Self::OneHot(value) => value,
+            _ => panic!("expected onehot")
+        }
     }
 }
 

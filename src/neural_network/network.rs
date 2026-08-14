@@ -25,6 +25,7 @@ use crate::{
         OneHotLayer,
         OneHotIndex,
         InputType,
+        DiffInputType,
         OwnedInputType,
         LayerType,
         NetworkUnit,
@@ -230,7 +231,10 @@ macro_rules! create_weights_container
                                 let tensor = recorder.new_tensor(this_size, previous_size);
 
                                 #[cfg(debug_assertions)]
-                                recorder.allow_uninitialized.push(tensor.as_value().into());
+                                {
+                                    recorder.allow_uninitialized.push(tensor.as_value().into());
+                                    recorder.allow_uninitialized.push(tensor.as_gradient().unwrap().into());
+                                }
 
                                 tensor
                             },
@@ -251,9 +255,15 @@ macro_rules! create_weights_container
 
                         if $is_hidden
                         {
+                            #[cfg(debug_assertions)]
+                            recorder.allow_uninitialized.push(weight_original.as_gradient().unwrap().into());
+
                             let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
                             let new_weights = recorder.mul_componentwise(weights, dropconnect_mask);
+
+                            #[cfg(debug_assertions)]
+                            recorder.allow_uninitialized.push(new_weights.as_gradient().unwrap().into());
 
                             WeightInfo{
                                 weight_dropped: new_weights,
@@ -685,9 +695,18 @@ where
     {
         let mut recorder = OperationsRecorder::new();
 
+        // no optimizer info means im not going to train this network
+        let discard_gradients = x.optimizer_info.is_none();
+
         let weight_info_from = |recorder: &mut OperationsRecorder, value: SaveWeightType| -> WeightInfo
         {
-            let weights = recorder.set_new_tensor_gradientable(value);
+            let weights = if discard_gradients
+            {
+                recorder.set_new_tensor(value)
+            } else
+            {
+                recorder.set_new_tensor_gradientable(value)
+            };
 
             WeightInfo{
                 weight_dropped: weights,
@@ -808,6 +827,12 @@ where
 
     pub fn initialize(&mut self, is_multistep: bool, is_input_one_hot: bool)
     {
+        if self.optimizer_info.is_none()
+        {
+            // doesnt need any initialization
+            return;
+        }
+
         self.record_feedforward(is_multistep, is_input_one_hot);
 
         self.recorder.finish();
@@ -849,7 +874,7 @@ where
             self.recorder.new_one_hot().into()
         } else
         {
-            self.recorder.new_tensor(self.sizes.input, 1).as_value().into()
+            self.recorder.new_tensor_no_gradient(self.sizes.input, 1).as_value().into()
         };
 
         let this_target = self.recorder.new_one_hot();
@@ -908,17 +933,24 @@ where
         input: InputType
     ) -> NetworkOutput<Vec<UnitState<N>>, T>
     where
-        F: FnOnce(&mut Self, usize, Option<&UnitState<N>>, InputType) -> NetworkOutput<UnitState<N>, T>
+        F: FnOnce(&mut Self, usize, Option<&UnitState<N>>, DiffInputType) -> NetworkOutput<UnitState<N>, T>
     {
         let mut output: Option<T> = None;
-        let mut last_output: Option<InputType> = None;
+        let mut last_output: Option<DiffInputType> = None;
 
         let mut states = Vec::with_capacity(self.sizes.layers);
 
         #[allow(clippy::needless_range_loop)]
         for l_i in 0..self.sizes.layers
         {
-            let input = last_output.unwrap_or(input);
+            let input = last_output.unwrap_or_else(||
+            {
+                match input
+                {
+                    InputType::Normal(x) => DiffInputType::Normal(DiffTensor::no_gradient(x)),
+                    InputType::OneHot(x) => DiffInputType::OneHot(x)
+                }
+            });
 
             let layer = &self.weights.layers[l_i];
 
@@ -948,7 +980,7 @@ where
                     input
                 );
 
-                last_output = Some(this_output.as_value().into());
+                last_output = Some(DiffInputType::Normal(this_output));
 
                 states.push(state);
             }
@@ -964,7 +996,7 @@ where
         &mut self,
         layer_index: usize,
         previous_state: Option<&UnitState<N>>,
-        input: InputType
+        input: DiffInputType
     ) -> NetworkOutput<UnitState<N>, DiffTensor>
     {
         self.weights.layers[layer_index].record_feedforward_unit(&mut self.recorder, previous_state, input)

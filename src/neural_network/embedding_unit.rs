@@ -10,7 +10,7 @@ use crate::{
         OneHotIndex,
         OneHotLayer,
         LayerSizes,
-        InputType,
+        DiffInputType,
         WeightInfo,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, Embeddingsable}
@@ -54,7 +54,7 @@ impl NetworkUnit for EmbeddingUnit<WeightInfo>
         &self,
         recorder: &mut OperationsRecorder,
         _previous_state: Option<&Self::State>,
-        input: InputType
+        input: DiffInputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
         let hidden = self.embeddings(recorder, input.into_one_hot());

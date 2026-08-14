@@ -5,7 +5,7 @@ use crate::neural_network::{
     DiffTensor,
     LayerType,
     TensorIndex,
-    InputType,
+    DiffInputType,
     WeightInfo,
     OneHotLayer,
     OneHotIndex,
@@ -84,7 +84,7 @@ where
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
-        input: InputType
+        input: DiffInputType
     ) -> NetworkOutput<Self::State, DiffTensor>;
 
     fn record_feedforward_unit_nonlast(
@@ -92,7 +92,7 @@ where
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
         dropout_mask: TensorIndex,
-        input: InputType
+        input: DiffInputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
         let mut output = self.record_feedforward_unit(recorder, previous_state, input);

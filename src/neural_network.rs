@@ -48,6 +48,7 @@ pub use containers::{
     ValueIndex,
     OneHotIndex,
     InputType,
+    DiffInputType,
     OwnedInputType,
     OneHotLayer,
     Softmaxer

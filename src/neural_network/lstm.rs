@@ -7,7 +7,7 @@ use crate::{
     neural_network::{
         DiffTensor,
         TensorIndex,
-        InputType,
+        DiffInputType,
         WeightInfo,
         LayerSizes,
         OperationsRecorder,
@@ -77,7 +77,7 @@ impl NetworkUnit for Lstm<WeightInfo>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State>,
-        input: InputType
+        input: DiffInputType
     ) -> NetworkOutput<Self::State, DiffTensor>
     {
         let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
@@ -87,8 +87,8 @@ impl NetworkUnit for Lstm<WeightInfo>
 
             match input
             {
-                InputType::Normal(x) => recorder.matmulv_add(weights, DiffTensor::no_gradient(x), bias),
-                InputType::OneHot(x) => recorder.matmul_onehotv_add(weights, x, bias)
+                DiffInputType::Normal(x) => recorder.matmulv_add(weights, x, bias),
+                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights, x, bias)
             }
         };
 
@@ -96,6 +96,12 @@ impl NetworkUnit for Lstm<WeightInfo>
         let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
         let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
         let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
+
+        #[cfg(debug_assertions)]
+        {
+            recorder.allow_uninitialized.push(self.input_forget.weight_original.as_gradient().unwrap().into());
+            recorder.allow_uninitialized.push(forget_gate.as_gradient().unwrap().into());
+        }
 
         if let Some(previous_state) = previous_state
         {
@@ -138,6 +144,9 @@ impl NetworkUnit for Lstm<WeightInfo>
             hidden: hidden.clone(),
             memory: this_memory
         };
+
+        #[cfg(debug_assertions)]
+        recorder.allow_uninitialized.push(forget_gate.as_gradient().unwrap().into());
 
         NetworkOutput{
             state,
