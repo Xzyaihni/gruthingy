@@ -701,7 +701,7 @@ impl OperationsRecorder
         impl_map_tensor_op!(self, a, LeakyRelu)
     }
 
-    pub fn softmax_cross_entropy(&mut self, values: DiffTensor, targets: OneHotIndex) -> DiffScalar
+    pub fn softmax_cross_entropy(&mut self, values: DiffTensor, targets: OneHotIndex) -> (DiffTensor, DiffScalar)
     {
         let source = Some(self.current_source());
 
@@ -712,7 +712,7 @@ impl OperationsRecorder
 
         self.operations_blocks[self.current_block.0].recording_operations.push(Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output});
 
-        output
+        (softmaxed_output, output)
     }
 
     pub fn tensor_shape(&self, tensor: TensorIndex) -> (usize, usize)
@@ -2495,7 +2495,7 @@ mod tests
             let targets_index = recorder.new_one_hot();
             recorder.set_one_hot(targets_index, targets.clone());
 
-            let sm = recorder.softmax_cross_entropy(a, targets_index);
+            let sm = recorder.softmax_cross_entropy(a, targets_index).1;
             recorder.add_scalar(b, sm)
         })
     }
@@ -2512,7 +2512,7 @@ mod tests
             let two = recorder.set_new_value(2.0);
             let btwo = recorder.add_scalar(b, two);
 
-            let sm = recorder.softmax_cross_entropy(btwo, targets_index);
+            let sm = recorder.softmax_cross_entropy(btwo, targets_index).1;
 
             recorder.add_scalar(a, sm)
         })

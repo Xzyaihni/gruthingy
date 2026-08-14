@@ -3,6 +3,7 @@ use std::{
     fmt,
     vec,
     iter,
+    convert,
     cmp::Ordering,
     borrow::Borrow,
     ops::SubAssign
@@ -624,6 +625,7 @@ struct BlockInfo<N: UnitFactory>
 where
     N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
 {
+    softmax: DiffTensor,
     loss: DiffScalar,
     next_state: Vec<UnitState<N>>,
     index: BlockIndex,
@@ -636,6 +638,7 @@ where
     fn undefined() -> Self
     {
         Self{
+            softmax: DiffTensor::undefined(),
             loss: DiffScalar::undefined(),
             next_state: Vec::new(),
             index: BlockIndex::undefined()
@@ -882,25 +885,31 @@ where
 
         self.no_state.index = self.recorder.current_block();
 
-        let NetworkOutput{
-            state: no_state_next_state,
-            output: no_state_loss
-        } = self.record_feedforward_single_input(None, &dropout_masks, this_input.into(), this_target);
+        let set_from_output = |NetworkOutput{
+            state: next_state,
+            output: (softmax, loss)
+        }: NetworkOutput<Vec<UnitState<N>>, _>, block: &mut BlockInfo<_>| -> Vec<UnitState<N>>
+        {
+            block.next_state = next_state.clone();
+            block.softmax = softmax;
+            block.loss = loss;
 
-        self.no_state.next_state = no_state_next_state.clone();
-        self.no_state.loss = no_state_loss;
+            next_state
+        };
+
+        let no_state_next_state = set_from_output(
+            self.record_feedforward_single_input(None, &dropout_masks, this_input.into(), this_target),
+            &mut self.no_state
+        );
 
         if is_multistep
         {
             self.with_state.index = self.recorder.new_block();
 
-            let NetworkOutput{
-                state: with_state_next_state,
-                output: with_state_loss
-            } = self.record_feedforward_single_input(Some(no_state_next_state), &dropout_masks, this_input.into(), this_target);
-
-            self.with_state.next_state = with_state_next_state;
-            self.with_state.loss = with_state_loss;
+            set_from_output(
+                self.record_feedforward_single_input(Some(no_state_next_state), &dropout_masks, this_input.into(), this_target),
+                &mut self.with_state
+            );
         }
 
         self.dropout_masks = dropout_masks;
@@ -912,7 +921,7 @@ where
         dropout_masks: &[TensorIndex],
         input: InputType,
         targets: OneHotIndex
-    ) -> NetworkOutput<Vec<UnitState<N>>, DiffScalar>
+    ) -> NetworkOutput<Vec<UnitState<N>>, (DiffTensor, DiffScalar)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
         {
@@ -1070,20 +1079,36 @@ where
     fn feedforward_with(
         &mut self,
         calculate_method: fn(&mut OperationsRecorder, BlockIndex),
-        mut f: impl FnMut(&mut Self, bool),
+        f: impl FnMut(&mut Self, bool),
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
         self.feedforward_setup_dropout();
 
+        self.feedforward_like(calculate_method, |this, this_target|
+        {
+            this.recorder.set_one_hot(this.input_target.1, this_target);
+        }, convert::identity, f, input)
+    }
+
+    fn feedforward_like<T, U>(
+        &mut self,
+        calculate_method: fn(&mut OperationsRecorder, BlockIndex),
+        mut setup: impl FnMut(&mut Self, U),
+        get_input: impl Fn(T) -> (OwnedInputType, U),
+        mut f: impl FnMut(&mut Self, bool),
+        input: impl ExactSizeIterator<Item=T>
+    ) -> f32
+    {
         let is_multiblock = self.recorder.blocks_count() > 1;
 
         let mut total_loss = 0.0;
 
-        input.enumerate().for_each(|(index, (this_input, this_target))|
+        input.enumerate().for_each(|(index, input)|
         {
+            let (this_input, rest_input) = get_input(input);
+
             let is_with_state = index != 0 && is_multiblock;
-            let this_info = if is_with_state { &self.with_state } else { &self.no_state };
 
             match self.input_target.0
             {
@@ -1091,7 +1116,9 @@ where
                 InputType::OneHot(x) => self.recorder.set_one_hot(x, this_input.into_one_hot())
             }
 
-            self.recorder.set_one_hot(self.input_target.1, this_target);
+            setup(self, rest_input);
+
+            let this_info = if is_with_state { &self.with_state } else { &self.no_state };
 
             if is_with_state && index != 1
             {
@@ -1147,7 +1174,7 @@ where
         layers_sum + self.sizes.input as u128 * self.sizes.hidden as u128
     }
 
-    /*fn with_predict<T, F>(
+    fn with_predict<T, F>(
         &mut self,
         input: impl Iterator<Item=(InputType, OneHotLayer)>,
         f: F
@@ -1229,7 +1256,7 @@ where
         }).count();
 
         correct_amount as f32 / total as f32
-    }*/
+    }
 
     pub fn feedforward_setup_dropout(&mut self)
     {
@@ -1261,64 +1288,64 @@ where
         self.feedforward_with(OperationsRecorder::calculate_feedforward, |_this, _is_with_state| {}, input)
     }
 
-/*    pub fn predict_single_input(
-        &mut self,
-        previous_states: Option<Vec<UnitState<N>>>,
-        dropout_masks: &[DiffWrapper],
-        input: &InputType,
-        temperature: f32
-    ) -> NetworkOutput<Vec<UnitState<N>>, LayerType>
-    {
-        self.feedforward_single_input_with_activation(|layer, previous_state, input|
-        {
-            let NetworkOutput{
-                state,
-                output
-            } = self.feedforward_unit_last(
-                layer,
-                previous_state,
-                input
-            );
-
-            let mut output = NetworkOutput{
-                state,
-                output: output.tensor().clone()
-            };
-
-            Softmaxer::softmax_temperature(&mut output.output, temperature);
-
-            output
-        }, previous_states, dropout_masks, input)
-    }
-
     fn predict(
         &mut self,
         input: impl Iterator<Item=InputType> + ExactSizeIterator
     ) -> Vec<LayerType>
     {
-        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
-        let mut previous_state: Option<Vec<_>> = None;
+        let temperature = 1.0;
 
-        let dropout_masks = self.create_dropout_masks(self.sizes.hidden, 0.0);
+        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
+//        let mut previous_state: Option<Vec<_>> = None;
+
+        if N::Unit::<WeightInfo>::dropconnectable()
+        {
+            self.weights.layers.iter().for_each(|layer|
+            {
+                layer.for_each_weight_ref(|weight_info|
+                {
+                    if let Some(dropconnect_mask) = weight_info.dropconnect_mask
+                    {
+                        Self::set_dropout_mask(self.recorder.get_tensor_mut(dropconnect_mask), 0.0);
+                    }
+                });
+            });
+        }
+
+        self.dropout_masks.iter().for_each(|dropout_mask|
+        {
+            Self::set_dropout_mask(self.recorder.get_tensor_mut(*dropout_mask), 0.0);
+        });
 
         for this_input in input
         {
-            let NetworkOutput{
-                state,
+            /*self.feedforward_single_input_with_activation(|layer, previous_state, input|
+            {
+                let NetworkOutput{
+                    state,
+                    output
+                } = self.feedforward_unit_last(
+                    layer,
+                    previous_state,
+                    input
+                );
+
+                let mut output = NetworkOutput{
+                    state,
+                    output: output.tensor().clone()
+                };
+
+                Softmaxer::softmax_temperature(&mut output.output, temperature);
+
                 output
-            } = self.predict_single_input(
-                previous_state.take(),
-                &dropout_masks,
-                &this_input,
-                1.0
-            );
+            }, previous_states, this_input)
 
             outputs.push(output);
-            previous_state = Some(state);
+            previous_state = Some(state);*/todo!()
         }
 
         outputs
-    }*/
+    }
 
     fn set_dropout_mask(
         target: &mut LayerType,
