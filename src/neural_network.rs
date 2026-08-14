@@ -665,44 +665,27 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         }
     }
 
-const fix_me_0: () = ();
-/*    pub fn predict_into<N, O>(
+    pub fn predict_into<N, O>(
         mut self,
         network: &mut Network<N, O>,
         mut out: impl Write
     )
     where
+        N: UnitFactory,
         N::Unit<O>: OptimizerUnit<O>,
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-        for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-        for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
-        N: UnitFactory
+        N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        UnitState<N>: Clone,
+        for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+        for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
     {
         let input_amount = self.words.len();
-
         let mut previous_word = None;
-        let mut previous_state = None;
 
-        let dropout_masks = network.create_dropout_masks(
-            self.sizes.hidden,
-            0.0
-        );
-
-        for i in 0..(input_amount + self.predict_amount)
+        network.predict_temperature(self.temperature, (0..(input_amount + self.predict_amount)).map(|i|
         {
-            debug_assert!(i < self.words.len());
-            let this_input = unsafe{ self.words.get_unchecked(i) };
-
-            let NetworkOutput{
-                state,
-                output
-            } = network.predict_single_input(
-                previous_state.take(),
-                &dropout_masks,
-                this_input,
-                self.temperature
-            );
-
+            self.words[i].clone()
+        })).into_iter().enumerate().for_each(|(i, output)|
+        {
             if i >= (input_amount - 1)
             {
                 let word = output.pick_weighed();
@@ -716,26 +699,25 @@ const fix_me_0: () = ();
 
                 out.write_all(&bytes).unwrap();
             }
-
-            previous_state = Some(state);
-        }
+        });
 
         out.flush().unwrap();
     }
 
     pub fn predict_bytes<N, O>(self, network: &mut Network<N, O>) -> Box<[u8]>
     where
+        N: UnitFactory,
         N::Unit<O>: OptimizerUnit<O>,
-        N::Unit<DiffWrapper>: NetworkUnit<Unit<DiffWrapper>=N::Unit<DiffWrapper>>,
-        for<'b> &'b N::Unit<DiffWrapper>: IntoIterator<Item=&'b DiffWrapper>,
-        for<'b> &'b mut N::Unit<DiffWrapper>: IntoIterator<Item=&'b mut DiffWrapper>,
-        N: UnitFactory
+        N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        UnitState<N>: Clone,
+        for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+        for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
         self.predict_into(network, &mut predicted);
 
         predicted.into_boxed_slice()
-    }*/
+    }
 }
 
 type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
@@ -1161,9 +1143,9 @@ where
 
         if calculate_accuracy
         {
-            /*let accuracy = self.network.accuracy(input_outputs.clone());
+            let accuracy = self.network.accuracy(input_outputs.clone());
 
-            println!("accuracy: {}%", accuracy * 100.0);*/todo!()
+            println!("accuracy: {}%", accuracy * 100.0);
         }
 
         if calculate_loss
@@ -1353,7 +1335,7 @@ where
         output_loss(self);
     }
 
-/*    pub fn predict_into<R>(
+    pub fn predict_into<R>(
         &mut self,
         reader: R,
         amount: usize,
@@ -1380,7 +1362,6 @@ where
     ) -> String
     where
         R: Read,
-        N::Unit<DiffWrapper>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         let output = self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -1399,7 +1380,6 @@ where
     ) -> Box<[u8]>
     where
         R: Read,
-        N::Unit<DiffWrapper>: NetworkUnit,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -1433,7 +1413,7 @@ where
         let predicted = f(predictor, &mut self.network);
 
         predicted
-    }*/
+    }
 }
 
 #[cfg(test)]

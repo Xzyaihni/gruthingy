@@ -1293,8 +1293,15 @@ where
         input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
     ) -> Vec<LayerType>
     {
-        let temperature = 1.0;
+        self.predict_temperature(1.0, input)
+    }
 
+    pub fn predict_temperature(
+        &mut self,
+        temperature: f32,
+        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
+    ) -> Vec<LayerType>
+    {
         let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
 
         if N::Unit::<WeightInfo>::dropconnectable()
