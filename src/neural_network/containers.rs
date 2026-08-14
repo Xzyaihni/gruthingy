@@ -200,6 +200,7 @@ macro_rules! new_tensor_index
             let id = $this.tensors.len();
 
             $this.tensors.push($value);
+            if id == 3 { panic!("3"); }
 
             TensorIndex(id)
         }

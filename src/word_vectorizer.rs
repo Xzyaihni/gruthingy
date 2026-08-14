@@ -648,8 +648,7 @@ impl NetworkDictionary for EmbeddingsDictionary
 
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OwnedInputType
     {
-todo!()
-//        self.network.embeddings(self.words_to_onehot(words)).into()
+        self.network.embeddings(&self.words_to_onehot(words)).into()
     }
 
     fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>

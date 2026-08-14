@@ -34,7 +34,7 @@ use crate::{
 use optimizers::*;
 
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
-pub use network_unit::{NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
+pub use network_unit::{NetworkUnitStateable, NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
 pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed};
 pub use containers::{
     OperationsRecorder,

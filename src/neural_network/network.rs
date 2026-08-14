@@ -16,6 +16,7 @@ use crate::{
         OperationsRecorder,
         ExactSizeTake,
         Softmaxer,
+        NetworkUnitStateable,
         BlockIndex,
         DiffTensor,
         DiffScalar,
@@ -1006,11 +1007,14 @@ where
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
-        N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>> + fmt::Debug
+        N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>> + fmt::Debug,
+        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
+        for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
         self.feedforward_setup_dropout();
 
         let mut total_loss = 0.0;
+        let mut gradients: Option<WeightsFullContainer<N, LayerType>> = None;
 
         input.enumerate().for_each(|(index, (this_input, this_target))|
         {
@@ -1025,22 +1029,37 @@ where
 
             self.recorder.set_one_hot(self.input_target.1, this_target);
 
-            if is_with_state
+            if is_with_state && index != 1
             {
-                todo!()
+                self.no_state.next_state.iter()
+                    .zip(this_info.next_state.iter())
+                    .for_each(|(no_state, with_state)| no_state.set(&mut self.recorder, with_state));
             }
 
             self.recorder.calculate(this_info.index);
 
             total_loss += self.recorder.get_value(this_info.loss.as_value());
+
+            let this_gradients = self.weights.map_ref(|weight|
+            {
+                self.recorder.get_tensor(weight.weight_original.as_gradient().unwrap()).clone()
+            });
+
+            if !is_with_state
+            {
+                debug_assert!(gradients.is_none());
+
+                gradients = Some(this_gradients);
+            } else
+            {
+                gradients.as_mut().unwrap().iter_mut().zip(this_gradients.into_iter()).for_each(|(gradients, this_gradients)|
+                {
+                    *gradients += this_gradients;
+                });
+            }
         });
 
-        let gradients = self.weights.map_ref(|weight|
-        {
-            self.recorder.get_tensor(weight.weight_original.as_gradient().unwrap()).clone()
-        });
-
-        (total_loss, gradients)
+        (total_loss, gradients.expect("input must not be empty"))
     }
 
     pub fn weights_info<'b, 'c>(

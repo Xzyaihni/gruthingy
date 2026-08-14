@@ -62,11 +62,21 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Clone
     fn new_zeroed(sizes: LayerSizes) -> Self;
 }
 
+pub trait NetworkUnitStateable
+{
+    fn set(&self, recorder: &mut OperationsRecorder, new: &Self);
+}
+
+impl NetworkUnitStateable for ()
+{
+    fn set(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
+}
+
 pub trait NetworkUnit: GenericUnit<WeightInfo> + Clone
 where
     Self: Sized
 {
-    type State;
+    type State: NetworkUnitStateable;
 
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
 

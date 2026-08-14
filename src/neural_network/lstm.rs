@@ -6,10 +6,12 @@ use crate::{
     create_weights_container,
     neural_network::{
         DiffTensor,
+        TensorIndex,
         InputType,
         WeightInfo,
         LayerSizes,
         OperationsRecorder,
+        NetworkUnitStateable,
         network::{NetworkOutput, LayerSize},
         network_unit::NetworkUnit
     }
@@ -38,6 +40,28 @@ pub struct LSTMState
 {
     hidden: DiffTensor,
     memory: DiffTensor
+}
+
+impl NetworkUnitStateable for LSTMState
+{
+    fn set(&self, recorder: &mut OperationsRecorder, new: &Self)
+    {
+        let mut set_both = |old: &DiffTensor, new: &DiffTensor|
+        {
+            let mut set_single = |old: TensorIndex, new: TensorIndex|
+            {
+                let new_tensor = recorder.get_tensor(new).clone();
+
+                recorder.set_tensor(old, new_tensor);
+            };
+
+            set_single(old.as_value(), new.as_value());
+            set_single(old.as_gradient().unwrap(), new.as_gradient().unwrap());
+        };
+
+        set_both(&self.hidden, &new.hidden);
+        set_both(&self.memory, &new.memory);
+    }
 }
 
 impl NetworkUnit for Lstm<WeightInfo>
