@@ -398,45 +398,6 @@ impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
     }
 }
 
-pub struct ExactSizeTake<I>
-{
-    len: usize,
-    iter: I
-}
-
-impl<I: ExactSizeIterator> ExactSizeTake<iter::Take<I>>
-{
-    pub fn new(iter: I, amount: usize) -> Self
-    {
-        let len = if iter.len() < amount { iter.len() } else { amount };
-
-        Self{
-            len,
-            iter: iter.take(amount)
-        }
-    }
-}
-
-impl<T, I: Iterator<Item=T>> Iterator for ExactSizeTake<I>
-{
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        self.len = self.len.saturating_sub(1);
-
-        self.iter.next()
-    }
-}
-
-impl<I: Iterator> ExactSizeIterator for ExactSizeTake<I>
-{
-    fn len(&self) -> usize
-    {
-        self.len
-    }
-}
-
 pub trait InputOutputable
 {
     type Iter<'a>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>

@@ -14,7 +14,6 @@ use crate::{
     EmbeddingsUnitFactory,
     neural_network::{
         OperationsRecorder,
-        ExactSizeTake,
         Softmaxer,
         NetworkUnitStateable,
         BlockIndex,
@@ -1039,18 +1038,51 @@ where
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
-        N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>> + fmt::Debug,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
+        let mut gradients: Option<WeightsFullContainer<N, LayerType>> = None;
+
+        let total_loss = self.feedforward_with(OperationsRecorder::calculate, |this, is_with_state|
+        {
+            let this_gradients = this.weights.map_ref(|weight|
+            {
+                this.recorder.get_tensor(weight.weight_original.as_gradient().unwrap()).clone()
+            });
+
+            if is_with_state
+            {
+                gradients.as_mut().unwrap().iter_mut().zip(this_gradients.into_iter()).for_each(|(gradients, this_gradients)|
+                {
+                    *gradients += this_gradients;
+                });
+            } else
+            {
+                debug_assert!(gradients.is_none());
+
+                gradients = Some(this_gradients);
+            }
+        }, input);
+
+        (total_loss, gradients.expect("input must not be empty"))
+    }
+
+    fn feedforward_with(
+        &mut self,
+        calculate_method: fn(&mut OperationsRecorder, BlockIndex),
+        mut f: impl FnMut(&mut Self, bool),
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    ) -> f32
+    {
         self.feedforward_setup_dropout();
 
+        let is_multiblock = self.recorder.blocks_count() > 1;
+
         let mut total_loss = 0.0;
-        let mut gradients: Option<WeightsFullContainer<N, LayerType>> = None;
 
         input.enumerate().for_each(|(index, (this_input, this_target))|
         {
-            let is_with_state = index != 0;
+            let is_with_state = index != 0 && is_multiblock;
             let this_info = if is_with_state { &self.with_state } else { &self.no_state };
 
             match self.input_target.0
@@ -1068,30 +1100,14 @@ where
                     .for_each(|(no_state, with_state)| no_state.set(&mut self.recorder, with_state));
             }
 
-            self.recorder.calculate(this_info.index);
+            calculate_method(&mut self.recorder, this_info.index);
 
             total_loss += self.recorder.get_value(this_info.loss.as_value());
 
-            let this_gradients = self.weights.map_ref(|weight|
-            {
-                self.recorder.get_tensor(weight.weight_original.as_gradient().unwrap()).clone()
-            });
-
-            if !is_with_state
-            {
-                debug_assert!(gradients.is_none());
-
-                gradients = Some(this_gradients);
-            } else
-            {
-                gradients.as_mut().unwrap().iter_mut().zip(this_gradients.into_iter()).for_each(|(gradients, this_gradients)|
-                {
-                    *gradients += this_gradients;
-                });
-            }
+            f(self, is_with_state);
         });
 
-        (total_loss, gradients.expect("input must not be empty"))
+        total_loss
     }
 
     pub fn weights_info<'b, 'c>(
@@ -1242,21 +1258,7 @@ where
         mut input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
-/*        self.feedforward_setup_dropout();
-
-        let mut total_loss = 0.0;
-
-        let max_inputs = self.inputs_targets.len();
-
-        while input.len() > 0
-        {
-            self.feedforward_setup_input(ExactSizeTake::new(input.by_ref(), max_inputs));
-            self.recorder.calculate_feedforward();
-
-            total_loss += self.loss();
-        }
-
-        total_loss*/todo!()
+        self.feedforward_with(OperationsRecorder::calculate_feedforward, |_this, _is_with_state| {}, input)
     }
 
 /*    pub fn predict_single_input(
