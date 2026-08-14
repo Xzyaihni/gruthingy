@@ -926,13 +926,19 @@ impl OperationsRecorder
                 self.operations_blocks[block.0].gradient_operations.iter().take(steps).any(|op| *value == op.output_of())
             };
 
-            self.values.iter().enumerate().filter(|(_, x)| **x == 0.0)
-                .map(|(index, _)| DiffValue::Value(ValueIndex(index)))
-                .chain(self.tensors.iter().enumerate().filter(|(_, x)| x.iter().all(|inner| *inner == 0.0))
-                    .map(|(index, _)| DiffValue::Tensor(TensorIndex(index))))
+            self.values.iter().enumerate().map(|(index, _)| DiffValue::Value(ValueIndex(index)))
+                .chain(self.tensors.iter().enumerate().map(|(index, _)| DiffValue::Tensor(TensorIndex(index))))
                 .filter(belongs_to_block)
                 .zip(iter::repeat(false))
                 .chain(self.checked_inputs.iter().cloned().zip(iter::repeat(true)))
+                .filter(|(value, _)|
+                {
+                    match value
+                    {
+                        DiffValue::Tensor(x) => self.tensors[x.0].iter().all(|inner| *inner == 0.0),
+                        DiffValue::Value(x) => self.values[x.0] == 0.0
+                    }
+                })
                 .filter(|(value, _)| !self.allow_uninitialized.contains(value))
                 .for_each(|(value, is_input)|
                 {
