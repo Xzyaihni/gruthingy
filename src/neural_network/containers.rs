@@ -1377,8 +1377,12 @@ let put_me_back = ();
                     connected_node_color != Some(*color)
                 });
 
-                let actually_set_this = ();
-                let spot_size_matches = true;
+                let spot_size_matches = self.tensors.get(*color).map(|spot_tensor|
+                {
+                    let this_shape = self.tensors_memory[node_index].value.tensor_shape();
+
+                    (spot_tensor.rows(), spot_tensor.columns()) == this_shape
+                }).unwrap_or(true);
 
                 all_connected_unconflicted && spot_size_matches
             }).unwrap();
@@ -2796,7 +2800,7 @@ mod tests
     }
 
     #[test]
-    fn matrix_multiplication()
+    fn matrix_multiplication_easy()
     {
         check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
         {
