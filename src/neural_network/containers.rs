@@ -1010,40 +1010,6 @@ let put_me_back = ();
             }
             //eprintln!("{}, elapsed {:.3} us", format!("{gradient_op:?}").chars().take_while(|c| *c != ' ').collect::<String>(), before_instant.elapsed().as_nanos() as f64 / 1000.0);
         });
-
-        // this might give a false positive but its a very important check
-/*        #[cfg(debug_assertions)]
-        {
-            let belongs_to_block = |value: &DiffValueRaw| -> bool
-            {
-                self.operations_blocks[block.0].raw_operations.iter().take(steps).any(|op| *value == op.output_of())
-            };
-
-            self.values.iter().enumerate().map(|(index, _)| DiffValueRaw::Value(ValueIndex(index)))
-                .chain(self.tensors.iter().enumerate().map(|(index, _)| DiffValueRaw::Tensor(TensorIndex(index))))
-                .filter(belongs_to_block)
-                .zip(iter::repeat(false))
-                .chain(self.checked_inputs.iter().cloned().zip(iter::repeat(true)))
-                .filter(|(value, _)|
-                {
-                    match value
-                    {
-                        DiffValueRaw::Tensor(x) => self.tensors[x.0].iter().all(|inner| *inner == 0.0),
-                        DiffValueRaw::Value(x) => self.values[x.0] == 0.0
-                    }
-                })
-                .filter(|(value, _)| !self.allow_uninitialized.contains(value))
-                .for_each(|(value, is_input)|
-                {
-                    if is_input
-                    {
-                        eprintln!("index {value:?} might be uninitialized");
-                    } else
-                    {
-                        panic!("index {value:?} is uninitialized");
-                    }
-                });
-        }*/
     }
 
     pub fn finish(&mut self)
@@ -1267,7 +1233,9 @@ let put_me_back = ();
             let mut all_unused: Option<bool> = None;
             op.for_tensor_outputs(|tensor_ptr|
             {
-                let is_unused = block.live_ranges[tensor_ptr.0].end == None;
+                let is_unused = block.live_ranges[tensor_ptr.0].end.is_none();
+
+                debug_assert!(block.live_ranges[tensor_ptr.0].start != Some(-1), "{tensor_ptr:?} is an unused input");
 
                 if let Some(all_unused) = all_unused.as_mut()
                 {
@@ -1321,9 +1289,8 @@ let put_me_back = ();
             {
                 let this_range = &live_ranges[node_index];
 
-                if this_range.start.is_none()
+                if this_range.end.is_none()
                 {
-                    debug_assert!(this_range.end.is_none());
                     return;
                 }
             }
@@ -1338,9 +1305,8 @@ let put_me_back = ();
                 let is_overlap = {
                     let other_range = &live_ranges[check_index];
 
-                    if other_range.start.is_none()
+                    if other_range.end.is_none()
                     {
-                        debug_assert!(other_range.end.is_none());
                         return;
                     }
 
@@ -1360,10 +1326,8 @@ let put_me_back = ();
 
         connections_count_sorted.into_iter().for_each(|node_index|
         {
-            if live_ranges[node_index].start.is_none()
+            if live_ranges[node_index].end.is_none()
             {
-                debug_assert!(live_ranges[node_index].end.is_none());
-
                 return;
             }
 
@@ -1393,7 +1357,10 @@ let put_me_back = ();
                 self.tensors.push(tensor);
             } else if let TensorMemoryValue::Value(x) = &self.tensors_memory[node_index].value
             {
-                debug_assert!(self.tensors[this_color].iter().all(|x| *x == 0.0));
+                debug_assert!(
+                    self.tensors[this_color].iter().all(|x| *x == 0.0),
+                    "slot {this_color} is already taken by a value, tried to replace it (by node {node_index})"
+                );
 
                 self.tensors[this_color] = x.clone();
             }
@@ -2480,59 +2447,62 @@ mod tests
         check_tensor_inner(&mut recorder, a, b, f);
     }
 
-    fn copy_tensor(
-        old_recorder: &mut OperationsRecorder,
-        new_recorder: &mut OperationsRecorder,
-        old_tensor: DiffTensor
-    ) -> DiffTensor
-    {
-        let old_value = old_recorder.get_tensor(old_tensor.as_value()).clone();
-
-        new_recorder.set_new_tensor(old_value)
-    }
-
     fn check_tensor_inner(
         recorder: &mut OperationsRecorder,
-        a: DiffTensorPtr,
-        b: DiffTensorPtr,
+        (a_value, a): (LayerType, DiffTensorPtr),
+        (b_value, b): (LayerType, DiffTensorPtr),
         mut f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
     )
     {
         let out = f(recorder, a, b);
 
+        let a_gradient = a.as_gradient().unwrap();
+        let b_gradient = b.as_gradient().unwrap();
+
         recorder.finish();
         recorder.gradient_with_respect(vec![out.into()]);
 
+        recorder.store_tensor_until_end(a_gradient);
+        recorder.store_tensor_until_end(b_gradient);
+
         recorder.resolve_memory();
+
+        let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
+        let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
 
         let current_block = recorder.current_block();
         recorder.calculate(current_block);
 
-        let a_g = recorder.get_tensor(a.as_gradient().unwrap()).clone();
-        let b_g = recorder.get_tensor(b.as_gradient().unwrap()).clone();
+        let a_g = recorder.get_tensor(a_gradient).clone();
+        let b_g = recorder.get_tensor(b_gradient).clone();
 
-        let mut vals = |old_recorder: &mut OperationsRecorder, a: DiffTensor, b: DiffTensor|
+        let mut vals = |a: LayerType, b: LayerType|
         {
-            assert!(a.source.is_none());
-            assert!(b.source.is_none());
-
             let mut new_recorder = OperationsRecorder::new();
 
-            let new_a = copy_tensor(old_recorder, &mut new_recorder, a);
-            let new_b = copy_tensor(old_recorder, &mut new_recorder, b);
+            let new_a = new_recorder.set_new_tensor(a);
+            let new_b = new_recorder.set_new_tensor(b);
 
             let output = f(&mut new_recorder, new_a, new_b);
+
+            let output_value = output.as_value();
+
+            new_recorder.store_tensor_until_end(output_value);
 
             new_recorder.finish();
             new_recorder.gradient_with_respect(vec![output.into()]);
 
+            new_recorder.resolve_memory();
+
+            let output_value = new_recorder.resolve_tensor_ptr(output_value);
+
             let current_block = new_recorder.current_block();
             new_recorder.calculate(current_block);
 
-            new_recorder.get_tensor(output.as_value()).clone()
+            new_recorder.get_tensor(output_value).clone()
         };
 
-        let orig = vals(recorder, a, b).sum();
+        let orig = vals(a_value.clone(), b_value.clone()).sum();
 
         let epsilon: f32 = 0.009;
 
@@ -2545,47 +2515,37 @@ mod tests
 
         let mut temp_recorder = OperationsRecorder::new();
 
-        let mut a_fg = vec![0.0; recorder.get_tensor(a.as_value()).total_len()];
+        let mut a_fg = vec![0.0; a_value.total_len()];
         for index in 0..a_fg.len()
         {
-            let v = recorder.get_tensor(a.as_value());
+            let v = a_value.clone();
             let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = {
-                let a = temp_recorder.set_new_tensor(v.clone() + epsilon);
-                let b = copy_tensor(recorder, &mut temp_recorder, b);
-                fg(vals(&mut temp_recorder, a, b))
-            };
+            let this_fg = fg(vals(v.clone() + epsilon, b_value.clone()));
 
             a_fg[index] = this_fg;
         }
 
-        let mut b_fg = vec![0.0; recorder.get_tensor(b.as_value()).total_len()];
+        let mut b_fg = vec![0.0; b_value.total_len()];
         for index in 0..b_fg.len()
         {
-            let v = recorder.get_tensor(b.as_value());
+            let v = b_value.clone();
             let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = {
-                let b = temp_recorder.set_new_tensor(v.clone() + epsilon);
-                let a = copy_tensor(recorder, &mut temp_recorder, a);
-                fg(vals(&mut temp_recorder, a, b))
-            };
+            let this_fg = fg(vals(a_value.clone(), v.clone() + epsilon));
 
             b_fg[index] = this_fg;
         }
 
-        let vec_to_layer = |v, layer_match: DiffTensor|
+        let vec_to_layer = |v, mut layer: LayerType|
         {
-            let mut layer = recorder.get_tensor(layer_match.as_value()).clone();
-
             layer.swap_raw_values(v);
 
             layer
         };
 
-        let a_fg = vec_to_layer(a_fg, a);
-        let b_fg = vec_to_layer(b_fg, b);
+        let a_fg = vec_to_layer(a_fg, a_value);
+        let b_fg = vec_to_layer(b_fg, b_value);
 
         eprintln!("derivative of a");
         compare_tensor(a_fg, a_g);
@@ -2623,12 +2583,11 @@ mod tests
         fastrand::u32(1..5) as f32
     }
 
-    fn random_tensor(recorder: &mut OperationsRecorder, columns: usize, rows: usize) -> DiffTensor
+    fn random_tensor(recorder: &mut OperationsRecorder, columns: usize, rows: usize) -> (LayerType, DiffTensorPtr)
     {
-        let tensor = recorder.new_tensor(rows, columns);
-        recorder.set_tensor(tensor.as_value(), LayerType::new_with(rows, columns, random_value));
+        let value = LayerType::new_with(rows, columns, random_value);
 
-        tensor
+        (value.clone(), recorder.set_new_tensor_gradientable(value))
     }
 
     #[test]
