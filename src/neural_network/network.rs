@@ -617,7 +617,8 @@ where
     output_ptr: Option<DiffTensorPtr>,
     output: DiffTensor,
     loss: DiffScalar,
-    next_state: Vec<UnitState<N, WeightInfoPtr>>,
+    next_state_ptr: Vec<UnitState<N, DiffTensorPtr>>,
+    next_state: Vec<UnitState<N, DiffTensor>>,
     index: BlockIndex,
 }
 
@@ -631,6 +632,7 @@ where
             output_ptr: None,
             output: DiffTensor::undefined(),
             loss: DiffScalar::undefined(),
+            next_state_ptr: Vec::new(),
             next_state: Vec::new(),
             index: BlockIndex::undefined()
         }
@@ -770,7 +772,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, WeightInfoPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
@@ -895,15 +897,15 @@ where
         self.no_state.index = self.recorder.current_block();
 
         let set_from_output = |NetworkOutput{
-            state: next_state,
+            state: next_state_ptr,
             output: (output, loss)
-        }: NetworkOutput<Vec<UnitState<N, WeightInfoPtr>>, _>, block: &mut BlockInfo<_>| -> Vec<UnitState<N, WeightInfoPtr>>
+        }: NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, _>, block: &mut BlockInfo<_>| -> Vec<UnitState<N, DiffTensorPtr>>
         {
-            block.next_state = next_state.clone();
+            block.next_state_ptr = next_state_ptr.clone();
             block.output_ptr = Some(output);
             block.loss = loss;
 
-            next_state
+            next_state_ptr
         };
 
         let no_state_next_state = set_from_output(
@@ -926,11 +928,11 @@ where
 
     fn record_feedforward_single_input(
         &mut self,
-        previous_states: Option<Vec<UnitState<N, WeightInfoPtr>>>,
+        previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
         input: InputTypePtr,
         targets: OneHotIndex
-    ) -> NetworkOutput<Vec<UnitState<N, WeightInfoPtr>>, (DiffTensorPtr, DiffScalar)>
+    ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, DiffScalar)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
         {
@@ -945,12 +947,12 @@ where
     fn record_feedforward_single_input_with_activation<F, T>(
         &mut self,
         last_f: F,
-        previous_states: Option<Vec<UnitState<N, WeightInfoPtr>>>,
+        previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
         input: InputTypePtr
-    ) -> NetworkOutput<Vec<UnitState<N, WeightInfoPtr>>, T>
+    ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, T>
     where
-        F: FnOnce(&mut Self, usize, Option<&UnitState<N, WeightInfoPtr>>, DiffInputType) -> NetworkOutput<UnitState<N, WeightInfoPtr>, T>
+        F: FnOnce(&mut Self, usize, Option<&UnitState<N, DiffTensorPtr>>, DiffInputType) -> NetworkOutput<UnitState<N, DiffTensorPtr>, T>
     {
         let mut output: Option<T> = None;
         let mut last_output: Option<DiffInputType> = None;
@@ -1012,9 +1014,9 @@ where
     fn record_feedforward_unit_last(
         &mut self,
         layer_index: usize,
-        previous_state: Option<&UnitState<N, WeightInfoPtr>>,
+        previous_state: Option<&UnitState<N, DiffTensorPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<UnitState<N, WeightInfoPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<UnitState<N, DiffTensorPtr>, DiffTensorPtr>
     {
         self.weights_ptr.as_ref().unwrap().layers[layer_index].record_feedforward_unit(&mut self.recorder, previous_state, input)
             .map(|output| self.recorder.matmulv(self.weights_ptr.as_ref().unwrap().output.weight_dropped, output))

@@ -93,12 +93,11 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<WeightInfoPtr>>,
+        previous_state: Option<&Self::State<DiffTensorPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-todo!()
-/*        let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
+        let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
             let bias = bias.weight_dropped;
@@ -115,18 +114,12 @@ todo!()
         let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
         let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
 
-        #[cfg(debug_assertions)]
-        {
-            recorder.allow_uninitialized.push(self.input_forget.weight_original.as_gradient().unwrap().into());
-            recorder.allow_uninitialized.push(forget_gate.as_gradient().unwrap().into());
-        }
-
         if let Some(previous_state) = previous_state
         {
-            let mut do_gate = |gate: &mut _, hidden: WeightInfo, previous_hidden|
+            let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
                 let mm = recorder.matmulv(hidden.weight_dropped, previous_hidden);
-                *gate = recorder.add_inplace(*gate, mm);
+                *gate = recorder.add(*gate, mm);
             };
 
             do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
@@ -163,13 +156,10 @@ todo!()
             memory: this_memory
         };
 
-        #[cfg(debug_assertions)]
-        recorder.allow_uninitialized.push(forget_gate.as_gradient().unwrap().into());
-
         NetworkOutput{
             state,
             output: hidden
-        }*/
+        }
     }
 }
 
@@ -280,6 +270,8 @@ mod tests
 
         recorder.store_tensor_until_end(memory);
         recorder.store_tensor_until_end(hidden);
+
+        recorder.resolve_memory();
 
         let memory = recorder.resolve_tensor_ptr(memory);
         let hidden = recorder.resolve_tensor_ptr(hidden);

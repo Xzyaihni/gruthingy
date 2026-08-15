@@ -74,9 +74,9 @@ impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        _previous_state: Option<&Self::State<WeightInfoPtr>>,
+        _previous_state: Option<&Self::State<DiffTensorPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         let hidden = self.embeddings(recorder, input.into_one_hot());
 

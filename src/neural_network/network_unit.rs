@@ -96,17 +96,17 @@ where
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<WeightInfoPtr>>,
+        previous_state: Option<&Self::State<DiffTensorPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>;
+    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>;
 
     fn record_feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<WeightInfoPtr>>,
+        previous_state: Option<&Self::State<DiffTensorPtr>>,
         dropout_mask: TensorPtr,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         let mut output = self.record_feedforward_unit(recorder, previous_state, input);
 
