@@ -851,6 +851,8 @@ where
     }
 
     pub fn calculate_gradients(&mut self)
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         if !self.recorder.is_ready()
         {
@@ -871,6 +873,17 @@ where
             self.recorder.gradient_with_respect(respect);
 
             self.recorder.resolve_memory();
+
+            let weights = self.weights_ptr.take().unwrap().map(|weight_info|
+            {
+                WeightInfo{
+                    weight_dropped: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_dropped),
+                    weight_original: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
+                    dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
+                }
+            });
+
+            self.weights = Some(weights);
         }
     }
 

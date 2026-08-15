@@ -32,8 +32,7 @@ impl Embeddingsable for EmbeddingUnit<WeightInfoPtr>
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensorPtr
     {
-todo!()
-//        recorder.matmul_onehotv_add(self.weights.weight_dropped, input, self.bias.weight_dropped)
+        recorder.matmul_onehotv_add(self.weights.weight_dropped, input, self.bias.weight_dropped)
     }
 }
 

@@ -1345,7 +1345,6 @@ impl OperationsRecorder
                 }
             }
         });
-        dbg!(&self);
     }
 
     fn greedy_graph_color_block(&mut self, block: BlockIndex)

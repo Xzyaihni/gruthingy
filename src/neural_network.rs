@@ -1214,6 +1214,7 @@ where
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
         N::Unit<WeightInfo>: NetworkUnitParameterable,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
