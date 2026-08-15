@@ -1,5 +1,6 @@
 use std::{
     f32,
+    mem,
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
@@ -111,6 +112,7 @@ enum RecorderState
 {
     Recording,
     AwaitingGradient,
+    AwaitingResolve,
     Ready
 }
 
@@ -131,11 +133,44 @@ impl<'a, T: Debug> Debug for ForceNoPretty<'a, T>
     }
 }
 
+#[derive(Debug, Clone)]
+struct LiveRange
+{
+    start: Option<i32>,
+    end: Option<i32>
+}
+
+impl LiveRange
+{
+    fn valid_range(&self) -> bool
+    {
+        let start = if let Some(x) = self.start { x } else { return false };
+        let end = if let Some(x) = self.end { x } else { return false };
+
+        start <= end
+    }
+
+    fn overlaps(&self, other: &Self) -> bool
+    {
+        debug_assert!(self.valid_range() && other.valid_range());
+
+        let this_start = self.start.unwrap();
+        let this_end = self.end.unwrap();
+
+        let other_start = other.start.unwrap();
+        let other_end = other.end.unwrap();
+
+        this_start <= other_end && this_end >= other_start
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationsBlock
 {
+    live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
-    gradient_operations: Vec<GradientOp>,
+    gradient_operations: Vec<GradientOp<TensorPtr>>,
+    raw_operations: Vec<GradientOp<TensorIndex>>,
     feedforward_operations_count: usize
 }
 
@@ -144,8 +179,10 @@ impl Debug for OperationsBlock
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
         f.debug_struct("OperationsBlock")
+            .field("live_ranges", &self.live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("raw_operations", &self.raw_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("feedforward_operations_count", &self.feedforward_operations_count)
             .finish()
     }
@@ -156,11 +193,39 @@ impl Default for OperationsBlock
     fn default() -> Self
     {
         OperationsBlock{
+            live_ranges: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
+            raw_operations: Vec::new(),
             feedforward_operations_count: 0
         }
     }
+}
+
+#[derive(Debug, Clone)]
+enum TensorMemoryValue
+{
+    Value(LayerType),
+    Size{rows: usize, columns: usize}
+}
+
+impl TensorMemoryValue
+{
+    fn tensor_shape(&self) -> (usize, usize)
+    {
+        match self
+        {
+            Self::Value(tensor) => (tensor.rows(), tensor.columns()),
+            Self::Size{rows, columns} => (*rows, *columns)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TensorMemorySlot
+{
+    memory: Option<TensorIndex>,
+    value: TensorMemoryValue
 }
 
 #[derive(Clone)]
@@ -168,14 +233,16 @@ pub struct OperationsRecorder
 {
     state: RecorderState,
     current_block: BlockIndex,
+    global_live_ranges: Vec<LiveRange>,
+    tensors_memory: Vec<TensorMemorySlot>,
     values: Vec<f32>,
     tensors: Vec<LayerType>,
     one_hot_layers: Vec<OneHotLayer>,
     operations_blocks: Vec<OperationsBlock>,
-    #[cfg(debug_assertions)]
-    checked_inputs: Vec<DiffValue>,
-    #[cfg(debug_assertions)]
-    pub allow_uninitialized: Vec<DiffValue>
+//    #[cfg(debug_assertions)]
+//    checked_inputs: Vec<DiffValue>,
+//    #[cfg(debug_assertions)]
+//    pub allow_uninitialized: Vec<DiffValue>
 }
 
 impl Debug for OperationsRecorder
@@ -184,6 +251,8 @@ impl Debug for OperationsRecorder
     {
         f.debug_struct("OperationsRecorder")
             .field("state", &self.state)
+            .field("global_live_ranges", &self.global_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("values", &ForceNoPretty(&self.values))
             .field("tensors", &self.tensors)
             .field("one_hot_layers", &self.one_hot_layers)
@@ -197,16 +266,17 @@ macro_rules! new_tensor_index
 {
     ($this:expr, $rows:expr, $columns:expr) =>
     {
-        new_tensor_index!($this, $rows, $columns, LayerType::repeat($rows, $columns, 0.0))
+        new_tensor_index!($this, $rows, $columns, TensorMemoryValue::Size{rows: $rows, columns: $columns})
     };
     ($this:expr, $rows:expr, $columns:expr, $value:expr) =>
     {
         {
-            let id = $this.tensors.len();
+            let id = $this.tensors_memory.len();
 
-            $this.tensors.push($value);
+            $this.global_live_ranges.push(LiveRange{start: None, end: None});
+            $this.tensors_memory.push(TensorMemorySlot{value: $value, memory: None});
 
-            TensorIndex(id)
+            TensorPtr(id)
         }
     }
 }
@@ -229,12 +299,12 @@ macro_rules! new_tensor
 {
     ($this:expr, $source:expr, $gradient:expr, $rows:expr, $columns:expr) =>
     {
-        new_tensor!($this, $source, $gradient, $rows, $columns, LayerType::repeat($rows, $columns, 0.0))
+        new_tensor!($this, $source, $gradient, $rows, $columns, TensorMemoryValue::Size{rows: $rows, columns: $columns})
     };
     ($this:expr, $source:expr, $gradient:expr, $rows:expr, $columns:expr, $value:expr) =>
     {
         {
-            DiffTensor{
+            DiffTensorPtr{
                 index: new_tensor_index!($this, $rows, $columns, $value),
                 gradient: $gradient.then(|| new_tensor_index!($this, $rows, $columns)),
                 source: $source
@@ -262,9 +332,7 @@ macro_rules! tensor_shape
     ($this:expr, $tensor:expr) =>
     {
         {
-            let tensor = &$this.tensors[$tensor.0];
-
-            (tensor.rows(), tensor.columns())
+            $this.tensors_memory[$tensor.0].value.tensor_shape()
         }
     }
 }
@@ -316,36 +384,42 @@ impl OperationsRecorder
         Self{
             state: RecorderState::Recording,
             current_block: BlockIndex(0),
+            global_live_ranges: Vec::new(),
+            tensors_memory: Vec::new(),
             values: Vec::new(),
             tensors: Vec::new(),
             one_hot_layers: Vec::new(),
             operations_blocks: vec![OperationsBlock::default()],
-            #[cfg(debug_assertions)]
-            checked_inputs: Vec::new(),
-            #[cfg(debug_assertions)]
-            allow_uninitialized: Vec::new()
+//            #[cfg(debug_assertions)]
+//            checked_inputs: Vec::new(),
+//            #[cfg(debug_assertions)]
+//            allow_uninitialized: Vec::new()
         }
     }
 
-    pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensor
+    pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
         let input = self.new_tensor_with_source(None, true, rows, columns);
+        self.global_live_ranges[input.as_value().0].start = Some(-1);
 
-        #[cfg(debug_assertions)]
+let put_me_back = ();
+/*        #[cfg(debug_assertions)]
         {
             self.checked_inputs.push(input.as_value().into());
             self.checked_inputs.push(input.as_gradient().unwrap().into());
-        }
+        }*/
 
         input
     }
 
-    pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensor
+    pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
         let input = self.new_tensor_with_source(None, false, rows, columns);
+        self.global_live_ranges[input.as_value().0].start = Some(-1);
 
-        #[cfg(debug_assertions)]
-        self.checked_inputs.push(input.as_value().into());
+let put_me_back = ();
+//        #[cfg(debug_assertions)]
+//        self.checked_inputs.push(input.as_value().into());
 
         input
     }
@@ -354,11 +428,12 @@ impl OperationsRecorder
     {
         let input = self.new_value_with_source(None, true);
 
-        #[cfg(debug_assertions)]
+let put_me_back = ();
+/*        #[cfg(debug_assertions)]
         {
             self.checked_inputs.push(input.as_value().into());
             self.checked_inputs.push(input.as_gradient().unwrap().into());
-        }
+        }*/
 
         input
     }
@@ -377,7 +452,7 @@ impl OperationsRecorder
         source: Option<OperationIndex>,
         rows: usize,
         columns: usize
-    ) -> DiffTensor
+    ) -> DiffTensorPtr
     {
         self.new_tensor_with_source(source, true, rows, columns)
     }
@@ -396,7 +471,7 @@ impl OperationsRecorder
         is_gradient: bool,
         rows: usize,
         columns: usize
-    ) -> DiffTensor
+    ) -> DiffTensorPtr
     {
         new_tensor!(self, source, is_gradient, rows, columns)
     }
@@ -425,31 +500,35 @@ impl OperationsRecorder
         self.one_hot_layers[index.0] = value;
     }
 
-    pub fn set_new_tensor_gradientable(&mut self, value: LayerType) -> DiffTensor
+    pub fn set_new_tensor_gradientable(&mut self, value: LayerType) -> DiffTensorPtr
     {
         let rows = value.rows();
         let columns = value.columns();
 
-        let input = new_tensor!(self, None, true, rows, columns, value);
+        let input = new_tensor!(self, None, true, rows, columns, TensorMemoryValue::Value(value));
+        self.global_live_ranges[input.as_value().0].start = Some(-1);
 
-        #[cfg(debug_assertions)]
+let put_me_back = ();
+/*        #[cfg(debug_assertions)]
         {
             self.checked_inputs.push(input.as_value().into());
             self.checked_inputs.push(input.as_gradient().unwrap().into());
-        }
+        }*/
 
         input
     }
 
-    pub fn set_new_tensor(&mut self, value: LayerType) -> DiffTensor
+    pub fn set_new_tensor(&mut self, value: LayerType) -> DiffTensorPtr
     {
         let rows = value.rows();
         let columns = value.columns();
 
-        let input = new_tensor!(self, None, false, rows, columns, value);
+        let input = new_tensor!(self, None, false, rows, columns, TensorMemoryValue::Value(value));
+        self.global_live_ranges[input.as_value().0].start = Some(-1);
 
-        #[cfg(debug_assertions)]
-        self.checked_inputs.push(input.as_value().into());
+let put_me_back = ();
+//        #[cfg(debug_assertions)]
+//        self.checked_inputs.push(input.as_value().into());
 
         input
     }
@@ -466,10 +545,16 @@ impl OperationsRecorder
     {
         match wrapper
         {
-            DiffWrapper::Tensor(DiffTensor{index, gradient, ..}) =>
+            DiffWrapper::Tensor(DiffTensorPtr{index, gradient, ..}) =>
             {
                 let (rows, columns) = self.tensor_shape(index);
-                self.set_tensor(gradient.expect("gradient must exist"), LayerType::repeat(rows, columns, 1.0))
+
+                let new_value = TensorMemoryValue::Value(LayerType::repeat(rows, columns, 1.0));
+
+                let gradient_ptr: TensorPtr = gradient.expect("gradient must exist");
+
+                self.global_live_ranges[gradient_ptr.0].start = Some(-1);
+                self.tensors_memory[gradient_ptr.0].value = new_value;
             },
             DiffWrapper::Value(DiffScalar{gradient, ..}) => self.set_value(gradient.expect("gradient must exist"), 1.0)
         }
@@ -513,7 +598,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn add_scalar(&mut self, a: DiffTensor, b: DiffScalar) -> DiffTensor
+    pub fn add_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -526,34 +611,17 @@ impl OperationsRecorder
         output
     }
 
-    pub fn add(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    pub fn add(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_pair_tensor_op!(self, a, b, Add)
     }
 
-    #[must_use]
-    pub fn add_inplace(&mut self, output_pre: DiffTensor, value: DiffTensor) -> DiffTensor
-    {
-        let source = Some(self.current_source());
-
-        debug_assert_eq!(self.tensor_shape(output_pre.as_value()), self.tensor_shape(value.as_value()));
-
-        let output = DiffTensor{
-            source,
-            ..output_pre
-        };
-
-        self.operations_blocks[self.current_block.0].recording_operations.push(Op::AddInplace{value, output_pre, output});
-
-        output
-    }
-
-    pub fn sub(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    pub fn sub(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_pair_tensor_op!(self, a, b, Sub)
     }
 
-    pub fn sub_from_scalar(&mut self, a: DiffScalar, b: DiffTensor) -> DiffTensor
+    pub fn sub_from_scalar(&mut self, a: DiffScalar, b: DiffTensorPtr) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -577,7 +645,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn mul_scalar(&mut self, a: DiffTensor, b: DiffScalar) -> DiffTensor
+    pub fn mul_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -590,12 +658,12 @@ impl OperationsRecorder
         output
     }
 
-    pub fn mul_componentwise(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    pub fn mul_componentwise(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_pair_tensor_op!(self, a, b, MulComponentwise)
     }
 
-    pub fn matmulv(&mut self, a: DiffTensor, b: DiffTensor) -> DiffTensor
+    pub fn matmulv(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -611,7 +679,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn matmulv_add(&mut self, a: DiffTensor, b: DiffTensor, added: DiffTensor) -> DiffTensor
+    pub fn matmulv_add(&mut self, a: DiffTensorPtr, b: DiffTensorPtr, added: DiffTensorPtr) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -632,7 +700,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn matmul_onehotv_add(&mut self, a: DiffTensor, b: OneHotIndex, added: DiffTensor) -> DiffTensor
+    pub fn matmul_onehotv_add(&mut self, a: DiffTensorPtr, b: OneHotIndex, added: DiffTensorPtr) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -651,7 +719,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn sum_tensor(&mut self, a: DiffTensor) -> DiffScalar
+    pub fn sum_tensor(&mut self, a: DiffTensorPtr) -> DiffScalar
     {
         let source = Some(self.current_source());
 
@@ -662,7 +730,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn dot(&mut self, a: DiffTensor, b: DiffTensor) -> DiffScalar
+    pub fn dot(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffScalar
     {
         let source = Some(self.current_source());
 
@@ -675,7 +743,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn pow(&mut self, a: DiffTensor, power: i32) -> DiffTensor
+    pub fn pow(&mut self, a: DiffTensorPtr, power: i32) -> DiffTensorPtr
     {
         let source = Some(self.current_source());
 
@@ -688,22 +756,22 @@ impl OperationsRecorder
         output
     }
 
-    pub fn sigmoid(&mut self, a: DiffTensor) -> DiffTensor
+    pub fn sigmoid(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_map_tensor_op!(self, a, Sigmoid)
     }
 
-    pub fn tanh(&mut self, a: DiffTensor) -> DiffTensor
+    pub fn tanh(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_map_tensor_op!(self, a, Tanh)
     }
 
-    pub fn leaky_relu(&mut self, a: DiffTensor) -> DiffTensor
+    pub fn leaky_relu(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_map_tensor_op!(self, a, LeakyRelu)
     }
 
-    pub fn softmax_cross_entropy(&mut self, values: DiffTensor, targets: OneHotIndex) -> (DiffTensor, DiffScalar)
+    pub fn softmax_cross_entropy(&mut self, values: DiffTensorPtr, targets: OneHotIndex) -> (DiffTensorPtr, DiffScalar)
     {
         let source = Some(self.current_source());
 
@@ -717,9 +785,29 @@ impl OperationsRecorder
         (softmaxed_output, output)
     }
 
-    pub fn tensor_shape(&self, tensor: TensorIndex) -> (usize, usize)
+    pub fn tensor_shape(&self, tensor: TensorPtr) -> (usize, usize)
     {
         tensor_shape!(self, tensor)
+    }
+
+    pub fn resolve_tensor_ptr(&self, index_ptr: TensorPtr) -> TensorIndex
+    {
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        self.tensors_memory[index_ptr.0].memory.expect("must be resolved")
+    }
+
+    pub fn resolve_diff_tensor_ptr(&self, diff: DiffTensorPtr) -> DiffTensor
+    {
+        DiffTensor{
+            index: self.resolve_tensor_ptr(diff.index),
+            gradient: diff.gradient.map(|x| self.resolve_tensor_ptr(x))
+        }
+    }
+
+    pub fn store_tensor_until_end(&mut self, index_ptr: TensorPtr)
+    {
+        self.global_live_ranges[index_ptr.0].end = Some(i32::MAX);
     }
 
     pub fn new_block(&mut self) -> BlockIndex
@@ -752,7 +840,7 @@ impl OperationsRecorder
 
     pub fn calculate(&mut self, block: BlockIndex)
     {
-        let count = self.operations_blocks[block.0].gradient_operations.len();
+        let count = self.operations_blocks[block.0].raw_operations.len();
 
         self.calculate_steps(block, count);
     }
@@ -761,11 +849,12 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.operations_blocks[block.0].gradient_operations.iter().take(steps).for_each(|gradient_op|
+        self.operations_blocks[block.0].raw_operations.iter().take(steps).for_each(|gradient_op|
         {
             //let before_instant = std::time::Instant::now();
             match gradient_op
             {
+                GradientOp::None => (),
                 GradientOp::Copy{src, dst} =>
                 {
                     let this_should_not_even_exist = ();
@@ -923,15 +1012,15 @@ impl OperationsRecorder
         });
 
         // this might give a false positive but its a very important check
-        #[cfg(debug_assertions)]
+/*        #[cfg(debug_assertions)]
         {
-            let belongs_to_block = |value: &DiffValue| -> bool
+            let belongs_to_block = |value: &DiffValueRaw| -> bool
             {
-                self.operations_blocks[block.0].gradient_operations.iter().take(steps).any(|op| *value == op.output_of())
+                self.operations_blocks[block.0].raw_operations.iter().take(steps).any(|op| *value == op.output_of())
             };
 
-            self.values.iter().enumerate().map(|(index, _)| DiffValue::Value(ValueIndex(index)))
-                .chain(self.tensors.iter().enumerate().map(|(index, _)| DiffValue::Tensor(TensorIndex(index))))
+            self.values.iter().enumerate().map(|(index, _)| DiffValueRaw::Value(ValueIndex(index)))
+                .chain(self.tensors.iter().enumerate().map(|(index, _)| DiffValueRaw::Tensor(TensorIndex(index))))
                 .filter(belongs_to_block)
                 .zip(iter::repeat(false))
                 .chain(self.checked_inputs.iter().cloned().zip(iter::repeat(true)))
@@ -939,8 +1028,8 @@ impl OperationsRecorder
                 {
                     match value
                     {
-                        DiffValue::Tensor(x) => self.tensors[x.0].iter().all(|inner| *inner == 0.0),
-                        DiffValue::Value(x) => self.values[x.0] == 0.0
+                        DiffValueRaw::Tensor(x) => self.tensors[x.0].iter().all(|inner| *inner == 0.0),
+                        DiffValueRaw::Value(x) => self.values[x.0] == 0.0
                     }
                 })
                 .filter(|(value, _)| !self.allow_uninitialized.contains(value))
@@ -954,7 +1043,7 @@ impl OperationsRecorder
                         panic!("index {value:?} is uninitialized");
                     }
                 });
-        }
+        }*/
     }
 
     pub fn finish(&mut self)
@@ -978,10 +1067,6 @@ impl OperationsRecorder
                     Op::Add{lhs, rhs, output} =>
                     {
                         GradientOp::Add{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
-                    },
-                    Op::AddInplace{value, output_pre: _, output} =>
-                    {
-                        GradientOp::AddInplace{value: value.as_value(), output: output.as_value()}
                     },
                     Op::Sub{lhs, rhs, output} =>
                     {
@@ -1050,8 +1135,6 @@ impl OperationsRecorder
                     }
                 }
             }).collect();
-
-            block.feedforward_operations_count = block.gradient_operations.len();
         });
 
         self.state = RecorderState::AwaitingGradient;
@@ -1070,7 +1153,7 @@ impl OperationsRecorder
 
             if let Some(previous) = (0..i).find(|previous|
             {
-                let is_shared_output = this_block.gradient_operations[*previous].output_of() == this.output_of();
+                let is_shared_output = this_block.gradient_operations[*previous].diff_output_of() == this.diff_output_of();
 
                 is_shared_output && !handled.contains(previous)
             })
@@ -1080,7 +1163,6 @@ impl OperationsRecorder
                     GradientOp::Copy{dst: output, ..}
                     | GradientOp::AddScalar{output, ..}
                     | GradientOp::Add{output, ..}
-                    | GradientOp::AddInplace{output, ..}
                     | GradientOp::Sub{output, ..}
                     | GradientOp::SubFromScalar{output, ..}
                     | GradientOp::MulScalar{output, ..}
@@ -1111,7 +1193,7 @@ impl OperationsRecorder
 
                         this_block.gradient_operations.insert(
                             i + 1,
-                            GradientOp::AddInplace{value: temporary_add_index, output: final_output}
+                            GradientOp::Add{lhs: temporary_add_index, rhs: final_output, output: final_output}
                         );
                     },
                     GradientOp::CopyScalar{dst: output, ..}
@@ -1131,7 +1213,9 @@ impl OperationsRecorder
                             i + 1,
                             GradientOp::AddScalars{lhs: temporary_add_index, rhs: final_output, output: final_output}
                         );
-                    }
+                    },
+                    GradientOp::None
+                    | GradientOp::AddInplace{..} => unreachable!()
                 }
 
                 handled.push(i);
@@ -1147,6 +1231,216 @@ impl OperationsRecorder
     pub fn is_ready(&self) -> bool
     {
         self.state == RecorderState::Ready
+    }
+
+    fn calculate_live_ranges_block(&mut self, block: BlockIndex) -> bool
+    {
+        let block = &mut self.operations_blocks[block.0];
+
+        block.live_ranges = self.global_live_ranges.clone();
+
+        block.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
+        {
+            op.for_tensor_outputs(|tensor_ptr|
+            {
+                let start = &mut block.live_ranges[tensor_ptr.0].start;
+
+                debug_assert!(start.is_none());
+
+                *start = Some(op_index as i32);
+            });
+
+            op.for_tensor_args(|tensor_ptr|
+            {
+                let end = &mut block.live_ranges[tensor_ptr.0].end;
+
+                if end.is_none()
+                {
+                    *end = Some(op_index as i32);
+                }
+            });
+        });
+
+        let mut any_unused = false;
+        block.gradient_operations.iter_mut().for_each(|op|
+        {
+            let mut all_unused: Option<bool> = None;
+            op.for_tensor_outputs(|tensor_ptr|
+            {
+                let is_unused = block.live_ranges[tensor_ptr.0].end == None;
+
+                if let Some(all_unused) = all_unused.as_mut()
+                {
+                    *all_unused &= is_unused;
+                } else
+                {
+                    all_unused = Some(is_unused);
+                }
+            });
+
+            let is_unused = all_unused.unwrap_or(false);
+
+            if is_unused
+            {
+                *op = GradientOp::None;
+                any_unused = true;
+            }
+        });
+
+        any_unused
+    }
+
+    fn calculate_live_ranges(&mut self)
+    {
+        (0..self.operations_blocks.len()).map(BlockIndex).for_each(|index|
+        {
+            loop
+            {
+                let any_unused = self.calculate_live_ranges_block(index);
+
+                if !any_unused
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn greedy_graph_color_block(&mut self, block: BlockIndex)
+    {
+        let nodes_count = self.global_live_ranges.len();
+
+        let mut graph_connections: Vec<Vec<usize>> = iter::from_fn(|| Some(Vec::new()))
+            .take(nodes_count)
+            .collect();
+
+        let live_ranges = &mut self.operations_blocks[block.0].live_ranges;
+
+        (0..nodes_count).for_each(|node_index|
+        {
+            {
+                let this_range = &live_ranges[node_index];
+
+                if this_range.start.is_none()
+                {
+                    debug_assert!(this_range.end.is_none());
+                    return;
+                }
+            }
+
+            (0..nodes_count).for_each(|check_index|
+            {
+                if node_index == check_index
+                {
+                    return;
+                }
+
+                let is_overlap = {
+                    let other_range = &live_ranges[check_index];
+
+                    if other_range.start.is_none()
+                    {
+                        debug_assert!(other_range.end.is_none());
+                        return;
+                    }
+
+                    live_ranges[node_index].overlaps(other_range)
+                };
+
+                if is_overlap
+                {
+                    graph_connections[node_index].push(check_index);
+                }
+            });
+        });
+
+        let mut connections_count_sorted: Vec<usize> = (0..nodes_count).collect();
+        connections_count_sorted.sort_unstable_by_key(|node_index| graph_connections[*node_index].len());
+        connections_count_sorted.reverse();
+
+        connections_count_sorted.into_iter().for_each(|node_index|
+        {
+            if live_ranges[node_index].start.is_none()
+            {
+                debug_assert!(live_ranges[node_index].end.is_none());
+
+                return;
+            }
+
+            let this_color = (0..).find(|color|
+            {
+                let all_connected_unconflicted = graph_connections[node_index].iter().all(|connected_node_index|
+                {
+                    let connected_node_color: Option<usize> = self.tensors_memory[*connected_node_index].memory.map(|x| x.0);
+
+                    connected_node_color != Some(*color)
+                });
+
+                let actually_set_this = ();
+                let spot_size_matches = true;
+
+                all_connected_unconflicted && spot_size_matches
+            }).unwrap();
+
+            if this_color == self.tensors.len()
+            {
+                let tensor = match &self.tensors_memory[node_index].value
+                {
+                    TensorMemoryValue::Value(x) => x.clone(),
+                    TensorMemoryValue::Size{rows, columns} => LayerType::new(*rows, *columns)
+                };
+
+                self.tensors.push(tensor);
+            } else if let TensorMemoryValue::Value(x) = &self.tensors_memory[node_index].value
+            {
+                debug_assert!(self.tensors[this_color].iter().all(|x| *x == 0.0));
+
+                self.tensors[this_color] = x.clone();
+            }
+
+            self.tensors_memory[node_index].memory = Some(TensorIndex(this_color));
+        });
+    }
+
+    fn greedy_graph_color(&mut self)
+    {
+        let mut blocks_by_length: Vec<usize> = (0..self.operations_blocks.len()).collect();
+        blocks_by_length.sort_by_key(|block_index| self.operations_blocks[*block_index].gradient_operations.len());
+        blocks_by_length.reverse();
+
+        for block_index in blocks_by_length
+        {
+            self.greedy_graph_color_block(BlockIndex(block_index));
+        }
+    }
+
+    pub fn resolve_memory(&mut self)
+    {
+        debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
+
+        self.calculate_live_ranges();
+
+        self.greedy_graph_color();
+
+        self.operations_blocks.iter_mut().for_each(|block|
+        {
+            block.live_ranges.clear();
+
+            block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(|op| -> Option<GradientOp<TensorIndex>>
+            {
+                match op
+                {
+                    GradientOp::None => None,
+                    x => Some(x.map_tensors(|tensor_ptr| self.tensors_memory[tensor_ptr.0].memory.expect("must be resolved")))
+                }
+            }).collect();
+
+            block.feedforward_operations_count = block.raw_operations.len();
+        });
+
+        self.global_live_ranges.clear();
+
+        self.state = RecorderState::Ready;
     }
 
     pub fn gradient_with_respect(&mut self, respect: Vec<DiffWrapper>)
@@ -1165,14 +1459,14 @@ impl OperationsRecorder
 
         (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations.clear());
 
-        self.state = RecorderState::Ready;
+        self.state = RecorderState::AwaitingResolve;
     }
 
     fn calculate_gradient(&mut self, block: BlockIndex, respect: DiffWrapper)
     {
         let (_this_value, gradient, source): (DiffValue, DiffValue, Option<OperationIndex>) = match respect
         {
-            DiffWrapper::Tensor(DiffTensor{index, gradient, source}) =>
+            DiffWrapper::Tensor(DiffTensorPtr{index, gradient, source}) =>
             {
                 let gradient = if let Some(x) = gradient { x } else { return; };
 
@@ -1250,18 +1544,6 @@ impl OperationsRecorder
 
                     self.calculate_gradient(block, lhs.into());
                     self.calculate_gradient(block, rhs.into());
-                },
-                Op::AddInplace{value, output_pre, output: _} =>
-                {
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(value_gradient) = value.as_gradient()
-                    {
-                        this_gradient_operations.push(GradientOp::Copy{src: gradient, dst: value_gradient});
-                    }
-
-                    self.calculate_gradient(block, value.into());
-                    self.calculate_gradient(block, output_pre.into());
                 },
                 Op::Sub{rhs, ..}
                 | Op::SubFromScalar{rhs, ..} =>
@@ -1551,6 +1833,9 @@ impl OneHotIndex
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TensorPtr(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorIndex(usize);
 
 impl TensorIndex
@@ -1567,15 +1852,22 @@ impl ValueIndex
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiffValue
+pub enum DiffValueRaw
 {
     Tensor(TensorIndex),
     Value(ValueIndex)
 }
 
-impl From<TensorIndex> for DiffValue
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffValue
 {
-    fn from(index: TensorIndex) -> Self
+    Tensor(TensorPtr),
+    Value(ValueIndex)
+}
+
+impl From<TensorPtr> for DiffValue
+{
+    fn from(index: TensorPtr) -> Self
     {
         Self::Tensor(index)
     }
@@ -1595,7 +1887,7 @@ impl From<DiffWrapper> for DiffValue
     {
         match value
         {
-            DiffWrapper::Tensor(DiffTensor{index, ..}) => Self::Tensor(index),
+            DiffWrapper::Tensor(DiffTensorPtr{index, ..}) => Self::Tensor(index),
             DiffWrapper::Value(DiffScalar{index, ..}) => Self::Value(index)
         }
     }
@@ -1603,7 +1895,7 @@ impl From<DiffWrapper> for DiffValue
 
 impl DiffValue
 {
-    fn as_tensor(self) -> TensorIndex
+    fn as_tensor(self) -> TensorPtr
     {
         if let Self::Tensor(x) = self { x } else { panic!("as_tensor must be called on a tensor") }
     }
@@ -1618,16 +1910,16 @@ impl DiffValue
 struct OperationIndex(BlockIndex, usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiffTensor
+pub struct DiffTensorPtr
 {
-    index: TensorIndex,
-    gradient: Option<TensorIndex>,
+    index: TensorPtr,
+    gradient: Option<TensorPtr>,
     source: Option<OperationIndex>
 }
 
-impl DiffTensor
+impl DiffTensorPtr
 {
-    pub fn no_gradient(index: TensorIndex) -> Self
+    pub fn no_gradient(index: TensorPtr) -> Self
     {
         Self{
             index,
@@ -1636,12 +1928,39 @@ impl DiffTensor
         }
     }
 
+    pub fn as_value(&self) -> TensorPtr
+    {
+        self.index
+    }
+
+    pub fn as_gradient(&self) -> Option<TensorPtr>
+    {
+        self.gradient
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffTensor
+{
+    index: TensorIndex,
+    gradient: Option<TensorIndex>
+}
+
+impl DiffTensor
+{
+    pub fn no_gradient(index: TensorIndex) -> Self
+    {
+        Self{
+            index,
+            gradient: None
+        }
+    }
+
     pub fn undefined() -> Self
     {
         Self{
             index: TensorIndex::undefined(),
-            gradient: None,
-            source: None
+            gradient: None
         }
     }
 
@@ -1689,13 +2008,13 @@ impl DiffScalar
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum DiffWrapper
 {
-    Tensor(DiffTensor),
+    Tensor(DiffTensorPtr),
     Value(DiffScalar)
 }
 
-impl From<DiffTensor> for DiffWrapper
+impl From<DiffTensorPtr> for DiffWrapper
 {
-    fn from(value: DiffTensor) -> Self
+    fn from(value: DiffTensorPtr) -> Self
     {
         Self::Tensor(value)
     }
@@ -1706,20 +2025,6 @@ impl From<DiffScalar> for DiffWrapper
     fn from(value: DiffScalar) -> Self
     {
         Self::Value(value)
-    }
-}
-
-impl DiffWrapper
-{
-    pub fn as_tensor(&self) -> TensorIndex
-    {
-        if let Self::Tensor(DiffTensor{index, ..}) = self
-        {
-            *index
-        } else
-        {
-            panic!("as_tensor must only be called on a tensor")
-        }
     }
 }
 
@@ -1747,74 +2052,199 @@ impl From<f32> for OwnedDiffValue
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GradientOp
+pub enum GradientOp<T>
 {
-    Copy{src: TensorIndex, dst: TensorIndex},
+    None,
+    Copy{src: T, dst: T},
     CopyScalar{src: ValueIndex, dst: ValueIndex},
-    AddScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
+    AddScalar{lhs: T, rhs: ValueIndex, output: T},
     AddScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
-    Add{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
-    AddInplace{value: TensorIndex, output: TensorIndex},
-    Sub{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
-    SubFromScalar{lhs: ValueIndex, rhs: TensorIndex, output: TensorIndex},
-    MulScalar{lhs: TensorIndex, rhs: ValueIndex, output: TensorIndex},
+    Add{lhs: T, rhs: T, output: T},
+    AddInplace{value: T, output: T},
+    Sub{lhs: T, rhs: T, output: T},
+    SubFromScalar{lhs: ValueIndex, rhs: T, output: T},
+    MulScalar{lhs: T, rhs: ValueIndex, output: T},
     MulScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
-    MulComponentwise{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
-    SumTensor{value: TensorIndex, output: ValueIndex},
-    Fill{value: ValueIndex, output: TensorIndex},
-    Pow{lhs: TensorIndex, power: u32, output: TensorIndex},
-    LeakyRelu{value: TensorIndex, output: TensorIndex},
-    LeakyReluDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
-    Sigmoid{value: TensorIndex, output: TensorIndex},
-    SigmoidDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
-    Tanh{value: TensorIndex, output: TensorIndex},
-    TanhDiff{value: TensorIndex, gradient: TensorIndex, output: TensorIndex},
-    Dot{lhs: TensorIndex, rhs: TensorIndex, output: ValueIndex},
-    SoftmaxCrossEntropy{values: TensorIndex, targets: OneHotIndex, softmaxed_output: TensorIndex, output: ValueIndex},
-    SoftmaxCrossEntropyDiff{softmaxed_values: TensorIndex, gradient: ValueIndex, targets: OneHotIndex, output: TensorIndex},
-    Matmulv{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
-    MatmulvAdd{lhs: TensorIndex, rhs: TensorIndex, added: TensorIndex, output: TensorIndex},
-    MatmulOneHotvAdd{lhs: TensorIndex, rhs: OneHotIndex, added: TensorIndex, output: TensorIndex},
-    MatmulvTransposed{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
-    OuterProduct{lhs: TensorIndex, rhs: TensorIndex, output: TensorIndex},
-    OuterProductOneHot{lhs: TensorIndex, rhs: OneHotIndex, output: TensorIndex}
+    MulComponentwise{lhs: T, rhs: T, output: T},
+    SumTensor{value: T, output: ValueIndex},
+    Fill{value: ValueIndex, output: T},
+    Pow{lhs: T, power: u32, output: T},
+    LeakyRelu{value: T, output: T},
+    LeakyReluDiff{value: T, gradient: T, output: T},
+    Sigmoid{value: T, output: T},
+    SigmoidDiff{value: T, gradient: T, output: T},
+    Tanh{value: T, output: T},
+    TanhDiff{value: T, gradient: T, output: T},
+    Dot{lhs: T, rhs: T, output: ValueIndex},
+    SoftmaxCrossEntropy{values: T, targets: OneHotIndex, softmaxed_output: T, output: ValueIndex},
+    SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: ValueIndex, targets: OneHotIndex, output: T},
+    Matmulv{lhs: T, rhs: T, output: T},
+    MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
+    MatmulOneHotvAdd{lhs: T, rhs: OneHotIndex, added: T, output: T},
+    MatmulvTransposed{lhs: T, rhs: T, output: T},
+    OuterProduct{lhs: T, rhs: T, output: T},
+    OuterProductOneHot{lhs: T, rhs: OneHotIndex, output: T}
 }
 
-impl GradientOp
+impl<T> GradientOp<T>
 {
-    fn output_of(&self) -> DiffValue
+    fn map_tensors<U>(self, mut f: impl FnMut(T) -> U) -> GradientOp<U>
+    {
+        match self
+        {
+            Self::None => GradientOp::None,
+            Self::Copy{src, dst} => GradientOp::Copy{src: f(src), dst: f(dst)},
+            Self::CopyScalar{src, dst} => GradientOp::CopyScalar{src, dst},
+            Self::AddScalar{lhs, rhs, output} => GradientOp::AddScalar{lhs: f(lhs), rhs, output: f(output)},
+            Self::AddScalars{lhs, rhs, output} => GradientOp::AddScalars{lhs, rhs, output},
+            Self::Add{lhs, rhs, output} => GradientOp::Add{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::Sub{lhs, rhs, output} => GradientOp::Sub{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::SubFromScalar{lhs, rhs, output} => GradientOp::SubFromScalar{lhs, rhs: f(rhs), output: f(output)},
+            Self::MulScalar{lhs, rhs, output} => GradientOp::MulScalar{lhs: f(lhs), rhs, output: f(output)},
+            Self::MulScalars{lhs, rhs, output} => GradientOp::MulScalars{lhs, rhs, output},
+            Self::MulComponentwise{lhs, rhs, output} => GradientOp::MulComponentwise{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::SumTensor{value, output} => GradientOp::SumTensor{value: f(value), output},
+            Self::Fill{value, output} => GradientOp::Fill{value, output: f(output)},
+            Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: f(lhs), power, output: f(output)},
+            Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: f(value), output: f(output)},
+            Self::LeakyReluDiff{value, gradient, output} => GradientOp::LeakyReluDiff{value: f(value), gradient: f(gradient), output: f(output)},
+            Self::Sigmoid{value, output} => GradientOp::Sigmoid{value: f(value), output: f(output)},
+            Self::SigmoidDiff{value, gradient, output} => GradientOp::SigmoidDiff{value: f(value), gradient: f(gradient), output: f(output)},
+            Self::Tanh{value, output} => GradientOp::Tanh{value: f(value), output: f(output)},
+            Self::TanhDiff{value, gradient, output} => GradientOp::TanhDiff{value: f(value), gradient: f(gradient), output: f(output)},
+            Self::Dot{lhs, rhs, output} => GradientOp::Dot{lhs: f(lhs), rhs: f(rhs), output},
+            Self::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+            {
+                GradientOp::SoftmaxCrossEntropy{values: f(values), targets, softmaxed_output: f(softmaxed_output), output}
+            },
+            Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
+            {
+                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values: f(softmaxed_values), gradient, targets, output: f(output)}
+            },
+            Self::Matmulv{lhs, rhs, output} => GradientOp::Matmulv{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::MatmulvAdd{lhs, rhs, added, output} => GradientOp::MatmulvAdd{lhs: f(lhs), rhs: f(rhs), added: f(added), output: f(output)},
+            Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::MatmulOneHotvAdd{lhs: f(lhs), rhs, added: f(added), output: f(output)}
+            },
+            Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::OuterProduct{lhs, rhs, output} => GradientOp::OuterProduct{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: f(lhs), rhs, output: f(output)},
+            Self::AddInplace{..} => unreachable!()
+        }
+    }
+}
+
+impl GradientOp<TensorPtr>
+{
+    fn for_tensor_outputs(&self, mut f: impl FnMut(TensorPtr))
+    {
+        match self
+        {
+            Self::Copy{dst: output, ..}
+            | Self::AddScalar{output, ..}
+            | Self::Add{output, ..}
+            | Self::Sub{output, ..}
+            | Self::SubFromScalar{output, ..}
+            | Self::MulScalar{output, ..}
+            | Self::MulComponentwise{output, ..}
+            | Self::Fill{output, ..}
+            | Self::Pow{output, ..}
+            | Self::Sigmoid{output, ..}
+            | Self::SigmoidDiff{output, ..}
+            | Self::Tanh{output, ..}
+            | Self::TanhDiff{output, ..}
+            | Self::LeakyRelu{output, ..}
+            | Self::LeakyReluDiff{output, ..}
+            | Self::SoftmaxCrossEntropy{softmaxed_output: output, ..}
+            | Self::SoftmaxCrossEntropyDiff{output, ..}
+            | Self::Matmulv{output, ..}
+            | Self::MatmulvAdd{output, ..}
+            | Self::MatmulOneHotvAdd{output, ..}
+            | Self::MatmulvTransposed{output, ..}
+            | Self::OuterProduct{output, ..}
+            | Self::OuterProductOneHot{output, ..} => f(*output),
+            Self::None
+            | Self::CopyScalar{..}
+            | Self::AddScalars{..}
+            | Self::MulScalars{..}
+            | Self::SumTensor{..}
+            | Self::Dot{..} => (),
+            Self::AddInplace{..} => unreachable!()
+        }
+    }
+
+    fn for_tensor_args(&self, mut f: impl FnMut(TensorPtr))
     {
         match *self
         {
-            GradientOp::Copy{dst: output, ..}
-            | GradientOp::AddScalar{output, ..}
-            | GradientOp::Add{output, ..}
-            | GradientOp::AddInplace{output, ..}
-            | GradientOp::Sub{output, ..}
-            | GradientOp::SubFromScalar{output, ..}
-            | GradientOp::MulScalar{output, ..}
-            | GradientOp::MulComponentwise{output, ..}
-            | GradientOp::Fill{output, ..}
-            | GradientOp::Pow{output, ..}
-            | GradientOp::Sigmoid{output, ..}
-            | GradientOp::SigmoidDiff{output, ..}
-            | GradientOp::Tanh{output, ..}
-            | GradientOp::TanhDiff{output, ..}
-            | GradientOp::LeakyRelu{output, ..}
-            | GradientOp::LeakyReluDiff{output, ..}
-            | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
-            | GradientOp::Matmulv{output, ..}
-            | GradientOp::MatmulvAdd{output, ..}
-            | GradientOp::MatmulOneHotvAdd{output, ..}
-            | GradientOp::MatmulvTransposed{output, ..}
-            | GradientOp::OuterProduct{output, ..}
-            | GradientOp::OuterProductOneHot{output, ..} => output.into(),
-            GradientOp::CopyScalar{dst: output, ..}
-            | GradientOp::AddScalars{output, ..}
-            | GradientOp::MulScalars{output, ..}
-            | GradientOp::SumTensor{output, ..}
-            | GradientOp::Dot{output, ..}
-            | GradientOp::SoftmaxCrossEntropy{output, ..} => output.into()
+            Self::Copy{src, ..} => f(src),
+            Self::AddScalar{lhs, ..} => f(lhs),
+            Self::Add{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::Sub{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::SubFromScalar{rhs, ..} => f(rhs),
+            Self::MulScalar{lhs, ..} => f(lhs),
+            Self::MulComponentwise{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::SumTensor{value, ..} => f(value),
+            Self::Pow{lhs, ..} => f(lhs),
+            Self::LeakyRelu{value, ..} => f(value),
+            Self::LeakyReluDiff{value, gradient, ..} => { f(value); f(gradient) },
+            Self::Sigmoid{value, ..} => f(value),
+            Self::SigmoidDiff{value, gradient, ..} => { f(value); f(gradient) },
+            Self::Tanh{value, ..} => f(value),
+            Self::TanhDiff{value, gradient, ..} => { f(value); f(gradient) },
+            Self::Dot{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::SoftmaxCrossEntropy{values, ..} => f(values),
+            Self::SoftmaxCrossEntropyDiff{softmaxed_values, ..} => f(softmaxed_values),
+            Self::Matmulv{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::MatmulvAdd{lhs, rhs, added, ..} => { f(lhs); f(rhs); f(added) },
+            Self::MatmulOneHotvAdd{lhs, added, ..} => { f(lhs); f(added) },
+            Self::MatmulvTransposed{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::OuterProduct{lhs, rhs, ..} => { f(lhs); f(rhs) },
+            Self::OuterProductOneHot{lhs, ..} => f(lhs),
+            Self::None
+            | Self::CopyScalar{..}
+            | Self::AddScalars{..}
+            | Self::MulScalars{..}
+            | Self::Fill{..} => (),
+            Self::AddInplace{..} => unreachable!()
+        }
+    }
+
+    fn diff_output_of(&self) -> DiffValue
+    {
+        match *self
+        {
+            Self::Copy{dst: output, ..}
+            | Self::AddScalar{output, ..}
+            | Self::Add{output, ..}
+            | Self::Sub{output, ..}
+            | Self::SubFromScalar{output, ..}
+            | Self::MulScalar{output, ..}
+            | Self::MulComponentwise{output, ..}
+            | Self::Fill{output, ..}
+            | Self::Pow{output, ..}
+            | Self::Sigmoid{output, ..}
+            | Self::SigmoidDiff{output, ..}
+            | Self::Tanh{output, ..}
+            | Self::TanhDiff{output, ..}
+            | Self::LeakyRelu{output, ..}
+            | Self::LeakyReluDiff{output, ..}
+            | Self::SoftmaxCrossEntropyDiff{output, ..}
+            | Self::Matmulv{output, ..}
+            | Self::MatmulvAdd{output, ..}
+            | Self::MatmulOneHotvAdd{output, ..}
+            | Self::MatmulvTransposed{output, ..}
+            | Self::OuterProduct{output, ..}
+            | Self::OuterProductOneHot{output, ..} => output.into(),
+            Self::CopyScalar{dst: output, ..}
+            | Self::AddScalars{output, ..}
+            | Self::MulScalars{output, ..}
+            | Self::SumTensor{output, ..}
+            | Self::Dot{output, ..}
+            | Self::SoftmaxCrossEntropy{output, ..} => output.into(),
+            Self::None
+            | Self::AddInplace{..} => unreachable!()
         }
     }
 }
@@ -1822,25 +2252,24 @@ impl GradientOp
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op
 {
-    AddScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
+    AddScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     AddScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
-    Add{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
-    AddInplace{value: DiffTensor, output_pre: DiffTensor, output: DiffTensor},
-    Sub{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
-    SubFromScalar{lhs: DiffScalar, rhs: DiffTensor, output: DiffTensor},
-    MulScalar{lhs: DiffTensor, rhs: DiffScalar, output: DiffTensor},
+    Add{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    Sub{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    SubFromScalar{lhs: DiffScalar, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    MulScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     MulScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
-    MulComponentwise{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
-    SumTensor{value: DiffTensor, output: DiffScalar},
-    Pow{lhs: DiffTensor, power: i32, output: DiffTensor},
-    LeakyRelu{value: DiffTensor, output: DiffTensor},
-    Sigmoid{value: DiffTensor, output: DiffTensor},
-    Tanh{value: DiffTensor, output: DiffTensor},
-    Dot{lhs: DiffTensor, rhs: DiffTensor, output: DiffScalar},
-    SoftmaxCrossEntropy{values: DiffTensor, targets: OneHotIndex, softmaxed_output: DiffTensor, output: DiffScalar},
-    Matmulv{lhs: DiffTensor, rhs: DiffTensor, output: DiffTensor},
-    MatmulvAdd{lhs: DiffTensor, rhs: DiffTensor, added: DiffTensor, output: DiffTensor},
-    MatmulOneHotvAdd{lhs: DiffTensor, rhs: OneHotIndex, added: DiffTensor, output: DiffTensor}
+    MulComponentwise{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    SumTensor{value: DiffTensorPtr, output: DiffScalar},
+    Pow{lhs: DiffTensorPtr, power: i32, output: DiffTensorPtr},
+    LeakyRelu{value: DiffTensorPtr, output: DiffTensorPtr},
+    Sigmoid{value: DiffTensorPtr, output: DiffTensorPtr},
+    Tanh{value: DiffTensorPtr, output: DiffTensorPtr},
+    Dot{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffScalar},
+    SoftmaxCrossEntropy{values: DiffTensorPtr, targets: OneHotIndex, softmaxed_output: DiffTensorPtr, output: DiffScalar},
+    Matmulv{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    MatmulvAdd{lhs: DiffTensorPtr, rhs: DiffTensorPtr, added: DiffTensorPtr, output: DiffTensorPtr},
+    MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr}
 }
 
 // damn that sure is one hot layer
@@ -2020,7 +2449,7 @@ mod tests
     fn check_tensor_with_dims(
         a_dims: (usize, usize),
         b_dims: (usize, usize),
-        f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor
+        f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
     )
     {
         let mut recorder = OperationsRecorder::new();
@@ -2031,7 +2460,7 @@ mod tests
         check_tensor_inner(&mut recorder, a, b, f);
     }
 
-    fn check_vector(f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor)
+    fn check_vector(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
     {
         let mut recorder = OperationsRecorder::new();
 
@@ -2041,7 +2470,7 @@ mod tests
         check_tensor_inner(&mut recorder, a, b, f);
     }
 
-    fn check_tensor(f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor)
+    fn check_tensor(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
     {
         let mut recorder = OperationsRecorder::new();
 
@@ -2064,15 +2493,17 @@ mod tests
 
     fn check_tensor_inner(
         recorder: &mut OperationsRecorder,
-        a: DiffTensor,
-        b: DiffTensor,
-        mut f: impl FnMut(&mut OperationsRecorder, DiffTensor, DiffTensor) -> DiffTensor
+        a: DiffTensorPtr,
+        b: DiffTensorPtr,
+        mut f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
     )
     {
         let out = f(recorder, a, b);
 
         recorder.finish();
         recorder.gradient_with_respect(vec![out.into()]);
+
+        recorder.resolve_memory();
 
         let current_block = recorder.current_block();
         recorder.calculate(current_block);
@@ -2249,23 +2680,6 @@ mod tests
             let bb = recorder.mul_componentwise(b, b);
 
             let lefta = recorder.add(left, a);
-            let leftab = recorder.add(lefta, b);
-
-            let right = recorder.add(bb, a);
-
-            recorder.sub(leftab, right)
-        })
-    }
-
-    #[test]
-    fn complex_inplace_combined()
-    {
-        check_tensor(|recorder, a, b|
-        {
-            let left = recorder.mul_componentwise(a, b);
-            let bb = recorder.mul_componentwise(b, b);
-
-            let lefta = recorder.add_inplace(left, a);
             let leftab = recorder.add(lefta, b);
 
             let right = recorder.add(bb, a);
