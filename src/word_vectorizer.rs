@@ -632,11 +632,11 @@ impl NetworkDictionary for EmbeddingsDictionary
             false
         );
 
-        let (word_dictionary, network) = neural_network.into_embeddings_info();
+/*        let (word_dictionary, network) = neural_network.into_embeddings_info();
 
         let embeddings_size = network.sizes().hidden;
 
-        Self{word_dictionary, network, embeddings_size}
+        Self{word_dictionary, network, embeddings_size}*/todo!()
     }
 
     fn is_input_one_hot() -> bool { false }

@@ -1,12 +1,15 @@
 use crate::neural_network::{
-    LAYER_ACTIVATION,
-    AFType,
+//    LAYER_ACTIVATION,
+//    AFType,
     OperationsRecorder,
     DiffTensor,
+    DiffTensorPtr,
     LayerType,
     TensorIndex,
+    TensorPtr,
     DiffInputType,
     WeightInfo,
+    WeightInfoPtr,
     OneHotLayer,
     OneHotIndex,
     LayerSizes,
@@ -22,7 +25,11 @@ pub trait UnitFactory
 
 pub trait Embeddingsable
 {
-    fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor;
+    fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensorPtr;
+}
+
+pub trait EmbeddingsableOwned
+{
     fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType;
 }
 
@@ -70,32 +77,40 @@ impl NetworkUnitStateable for ()
     fn set(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
 }
 
-pub trait NetworkUnit: GenericUnit<WeightInfo> + Clone
+pub trait NetworkUnitNewable
+{
+    fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
+}
+
+pub trait NetworkUnitParameterable
+{
+    fn parameters_amount(&self, sizes: LayerSizes) -> u128;
+}
+
+pub trait NetworkUnit: GenericUnit<WeightInfoPtr> + Clone
 where
     Self: Sized
 {
-    type State: NetworkUnitStateable;
-
-    fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
+    type State<T>;
 
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State>,
+        previous_state: Option<&Self::State<WeightInfoPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State, DiffTensor>;
+    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>;
 
     fn record_feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State>,
-        dropout_mask: TensorIndex,
+        previous_state: Option<&Self::State<WeightInfoPtr>>,
+        dropout_mask: TensorPtr,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State, DiffTensor>
+    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>
     {
         let mut output = self.record_feedforward_unit(recorder, previous_state, input);
 
-        let new_output = match LAYER_ACTIVATION
+/*        let new_output = match LAYER_ACTIVATION
         {
             AFType::LeakyRelu =>
             {
@@ -107,10 +122,8 @@ where
             }
         };
 
-        output.output = recorder.mul_componentwise(new_output, DiffTensor::no_gradient(dropout_mask));
+        output.output = recorder.mul_componentwise(new_output, DiffTensorPtr::no_gradient(dropout_mask));*/todo!();
 
         output
     }
-
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128;
 }

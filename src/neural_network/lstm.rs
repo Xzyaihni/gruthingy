@@ -6,14 +6,17 @@ use crate::{
     create_weights_container,
     neural_network::{
         DiffTensor,
+        DiffTensorPtr,
         TensorIndex,
         DiffInputType,
         WeightInfo,
+        WeightInfoPtr,
         LayerSizes,
         OperationsRecorder,
         NetworkUnitStateable,
+        NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::NetworkUnit
+        network_unit::{NetworkUnit, NetworkUnitParameterable}
     }
 };
 
@@ -36,13 +39,13 @@ create_weights_container!{
 }
 
 #[derive(Clone)]
-pub struct LSTMState
+pub struct LSTMState<T>
 {
-    hidden: DiffTensor,
-    memory: DiffTensor
+    hidden: T,
+    memory: T
 }
 
-impl NetworkUnitStateable for LSTMState
+impl NetworkUnitStateable for LSTMState<DiffTensor>
 {
     fn set(&self, recorder: &mut OperationsRecorder, new: &Self)
     {
@@ -64,23 +67,38 @@ impl NetworkUnitStateable for LSTMState
     }
 }
 
-impl NetworkUnit for Lstm<WeightInfo>
+impl NetworkUnitNewable for Lstm<WeightInfoPtr>
 {
-    type State = LSTMState;
-
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
         WeightsContainer::new_randomized(recorder, sizes)
     }
+}
+
+impl NetworkUnitParameterable for Lstm<WeightInfo>
+{
+    fn parameters_amount(&self, sizes: LayerSizes) -> u128
+    {
+        let i = sizes.input as u128;
+        let h = sizes.hidden as u128;
+
+        (4 * i * h) + (4 * h * h) + (4 * h)
+    }
+}
+
+impl NetworkUnit for Lstm<WeightInfoPtr>
+{
+    type State<T> = LSTMState<T>;
 
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State>,
+        previous_state: Option<&Self::State<WeightInfoPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State, DiffTensor>
+    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>
     {
-        let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
+todo!()
+/*        let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
         {
             let weights = weights.weight_dropped;
             let bias = bias.weight_dropped;
@@ -151,15 +169,7 @@ impl NetworkUnit for Lstm<WeightInfo>
         NetworkOutput{
             state,
             output: hidden
-        }
-    }
-
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128
-    {
-        let i = sizes.input as u128;
-        let h = sizes.hidden as u128;
-
-        (4 * i * h) + (4 * h * h) + (4 * h)
+        }*/
     }
 }
 
@@ -201,7 +211,7 @@ mod tests
         {
             let weight = one_weight(value);
 
-            WeightInfo{
+            WeightInfoPtr{
                 weight_dropped: weight.clone(),
                 weight_original: weight,
                 dropconnect_mask: None
@@ -224,7 +234,7 @@ mod tests
         Output
         */
 
-        let lstm: WeightsContainer<WeightInfo> = WeightsContainer
+        let lstm: WeightsContainer<WeightInfoPtr> = WeightsContainer
         {
             sizes: LayerSizes{hidden: 1, input: 1, output: 1, layers: 1},
 
@@ -244,7 +254,7 @@ mod tests
             memory_bias: one_weight_info(-0.32)
         };
 
-        let state = LSTMState{
+        let state = LSTMState::<DiffTensorPtr>{
             memory: one_weight(2.0),
             hidden: one_weight(1.0)
         };
@@ -265,15 +275,24 @@ mod tests
         recorder.finish();
         recorder.gradient_with_respect(vec![output.output.into()]);
 
+        let memory = output.state.memory.as_value();
+        let hidden = output.state.hidden.as_value();
+
+        recorder.store_tensor_until_end(memory);
+        recorder.store_tensor_until_end(hidden);
+
+        let memory = recorder.resolve_tensor_ptr(memory);
+        let hidden = recorder.resolve_tensor_ptr(hidden);
+
         let current_block = recorder.current_block();
         recorder.calculate(current_block);
 
-        let single_value = |l: &DiffTensor|
+        let single_value = |l: TensorIndex|
         {
-            recorder.get_tensor(l.as_value()).as_vec()[0]
+            recorder.get_tensor(l).as_vec()[0]
         };
 
-        assert_close_enough(single_value(&output.state.memory), 2.947, epsilon);
-        assert_close_enough(single_value(&output.state.hidden), 0.986229, epsilon);
+        assert_close_enough(single_value(memory), 2.947, epsilon);
+        assert_close_enough(single_value(hidden), 0.986229, epsilon);
     }
 }

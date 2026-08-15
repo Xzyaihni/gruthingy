@@ -2387,6 +2387,14 @@ impl OneHotLayer
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+pub enum InputTypePtr
+{
+    Normal(TensorPtr),
+    OneHot(OneHotIndex)
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
 pub enum InputType
 {
     Normal(TensorIndex),
@@ -2419,7 +2427,7 @@ impl From<OneHotIndex> for InputType
 #[derive(Debug, Clone, Copy)]
 pub enum DiffInputType
 {
-    Normal(DiffTensor),
+    Normal(DiffTensorPtr),
     OneHot(OneHotIndex)
 }
 

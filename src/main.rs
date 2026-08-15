@@ -27,11 +27,13 @@ use neural_network::{
     LayerType,
     SaveWeightType,
     NetworkUnit,
+    NetworkUnitNewable,
     OptimizerUnit,
     GenericUnit,
     Optimizer,
     DiffTensor,
     WeightInfo,
+    WeightInfoPtr,
     UnitFactory,
     NUnit,
     EmbeddingUnit,
@@ -135,12 +137,14 @@ fn load_network_with<N, O, D>(
 where
     for<'de> O: Optimizer + Deserialize<'de>,
     for<'de> N: UnitFactory,
-    N::Unit<WeightInfo>: NetworkUnit<Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
-    UnitState<N>: Clone,
+    UnitState<N, WeightInfoPtr>: Clone,
     for<'de> N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam> + Deserialize<'de>,
     for<'de> O::WeightParam: NewableLayer + Serialize + Deserialize<'de>,
-    for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfo>=N::Unit<WeightInfo>> + Deserialize<'de>,
+    for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + Deserialize<'de>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     for<'de> D: NetworkDictionary + Deserialize<'de>
@@ -233,7 +237,7 @@ fn train(config: Config)
 
 fn run(config: Config)
 {
-    let mut network = load_network(&config, None, false);
+    /*let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
     {
@@ -267,7 +271,7 @@ fn run(config: Config)
         });
 
         network.predict_into(text, config.tokens_amount, config.temperature, &mut f);
-    };
+    };*/todo!()
 }
 
 #[derive(Clone, Copy)]
@@ -526,7 +530,8 @@ fn train_embeddings(mut config: Config)
 
 fn closest_embeddings(mut config: Config)
 {
-    let mut network = load_embeddings::<()>(
+todo!()
+/*    let mut network = load_embeddings::<()>(
         None,
         Some(&mut config),
         false
@@ -580,12 +585,12 @@ fn closest_embeddings(mut config: Config)
         let word = String::from_utf8_lossy(&word_bytes);
 
         println!("{}: {word}", i + 1);
-    }
+    }*/
 }
 
 fn accuracy_data(config: Config)
 {
-    if config.certainty && config.top_guesses
+/*    if config.certainty && config.top_guesses
     {
         eprintln!("certainty and top-guesses are contradictory, choose only one");
         return;
@@ -641,7 +646,7 @@ fn accuracy_data(config: Config)
     if let Err(err) = result
     {
         eprintln!("error saving accuracy data: {err}");
-    }
+    }*/todo!()
 }
 
 fn main()

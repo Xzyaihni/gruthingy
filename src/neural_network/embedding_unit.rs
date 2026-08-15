@@ -7,13 +7,16 @@ use crate::{
     neural_network::{
         OperationsRecorder,
         DiffTensor,
+        DiffTensorPtr,
         OneHotIndex,
         OneHotLayer,
         LayerSizes,
         DiffInputType,
         WeightInfo,
+        WeightInfoPtr,
+        NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::{NetworkUnit, Embeddingsable}
+        network_unit::{NetworkUnit, Embeddingsable, EmbeddingsableOwned, NetworkUnitParameterable}
     }
 };
 
@@ -25,37 +28,55 @@ create_weights_container!{
     (bias, false, LayerSize::One, LayerSize::Hidden)
 }
 
-impl Embeddingsable for EmbeddingUnit<WeightInfo>
+impl Embeddingsable for EmbeddingUnit<WeightInfoPtr>
 {
-    fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensor
+    fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensorPtr
     {
-        recorder.matmul_onehotv_add(self.weights.weight_dropped, input, self.bias.weight_dropped)
-    }
-
-    fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType
-    {
-        let weights = recorder.get_tensor(self.weights.weight_dropped.as_value());
-        let bias = recorder.get_tensor(self.bias.weight_dropped.as_value());
-
-        weights.matmul_onehotv_add(input, bias)
+todo!()
+//        recorder.matmul_onehotv_add(self.weights.weight_dropped, input, self.bias.weight_dropped)
     }
 }
 
-impl NetworkUnit for EmbeddingUnit<WeightInfo>
+impl EmbeddingsableOwned for EmbeddingUnit<WeightInfo>
 {
-    type State = ();
+    fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType
+    {
+/*        let weights = recorder.get_tensor(self.weights.weight_dropped.as_value());
+        let bias = recorder.get_tensor(self.bias.weight_dropped.as_value());
 
+        weights.matmul_onehotv_add(input, bias)*/todo!()
+    }
+}
+
+impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>
+{
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
         WeightsContainer::new_randomized(recorder, sizes)
     }
+}
+
+impl NetworkUnitParameterable for EmbeddingUnit<WeightInfo>
+{
+    fn parameters_amount(&self, sizes: LayerSizes) -> u128
+    {
+        let i = sizes.input as u128;
+        let h = sizes.hidden as u128;
+
+        i * h + h
+    }
+}
+
+impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
+{
+    type State<T> = ();
 
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        _previous_state: Option<&Self::State>,
+        _previous_state: Option<&Self::State<WeightInfoPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State, DiffTensor>
+    ) -> NetworkOutput<Self::State<WeightInfoPtr>, DiffTensorPtr>
     {
         let hidden = self.embeddings(recorder, input.into_one_hot());
 
@@ -63,13 +84,5 @@ impl NetworkUnit for EmbeddingUnit<WeightInfo>
             state: (),
             output: hidden
         }
-    }
-
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128
-    {
-        let i = sizes.input as u128;
-        let h = sizes.hidden as u128;
-
-        i * h + h
     }
 }
