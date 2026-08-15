@@ -343,6 +343,11 @@ impl MatrixWrapper
         self.0.ncols()
     }
 
+    pub fn shape(&self) -> (usize, usize)
+    {
+        self.0.shape()
+    }
+
     pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
     {
         self.0.copy_from_slice(&values.into());

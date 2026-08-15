@@ -125,8 +125,8 @@ impl BlockIndex
     pub fn undefined() -> Self { Self(usize::MAX) }
 }
 
-struct ForceNoPretty<'a, T>(&'a T);
-impl<'a, T: Debug> Debug for ForceNoPretty<'a, T>
+struct ForceNoPretty<T>(T);
+impl<T: Debug> Debug for ForceNoPretty<T>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
@@ -206,6 +206,22 @@ impl Default for OperationsBlock
     }
 }
 
+struct LayerNoLong<'a>(usize, &'a LayerType);
+
+impl Debug for LayerNoLong<'_>
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        if self.1.total_len() > self.0
+        {
+            write!(f, "{{rows: {}, columns: {}, values: (has {} values)}}", self.1.rows(), self.1.columns(), self.1.total_len())
+        } else
+        {
+            LayerType::fmt(self.1, f)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum TensorMemoryValue
 {
@@ -219,7 +235,7 @@ impl TensorMemoryValue
     {
         match self
         {
-            Self::Value(tensor) => (tensor.rows(), tensor.columns()),
+            Self::Value(tensor) => tensor.shape(),
             Self::Size{rows, columns} => (*rows, *columns)
         }
     }
@@ -230,6 +246,24 @@ struct TensorMemorySlot
 {
     memory: Option<TensorIndex>,
     value: TensorMemoryValue
+}
+
+struct SlotNoLong<'a>(usize, &'a TensorMemorySlot);
+
+impl Debug for SlotNoLong<'_>
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        let mut head = f.debug_struct("TensorMemorySlot");
+
+        let head = head.field("memory", &self.1.memory);
+
+        match &self.1.value
+        {
+            TensorMemoryValue::Value(x) => head.field("value", &LayerNoLong(self.0, x)).finish(),
+            x => head.field("value", x).finish()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -243,20 +277,24 @@ pub struct OperationsRecorder
     values: Vec<f32>,
     tensors: Vec<LayerType>,
     one_hot_layers: Vec<OneHotLayer>,
-    operations_blocks: Vec<OperationsBlock>
+    operations_blocks: Vec<OperationsBlock>,
+    #[cfg(debug_assertions)]
+    used_values: Vec<ValueIndex>
 }
 
 impl Debug for OperationsRecorder
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
+        let max_length = 50;
+
         f.debug_struct("OperationsRecorder")
             .field("state", &self.state)
             .field("global_value_live_ranges", &self.global_value_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("global_tensor_live_ranges", &self.global_tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
-            .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(SlotNoLong(max_length, x))).collect::<Vec<_>>())
             .field("values", &ForceNoPretty(&self.values))
-            .field("tensors", &self.tensors)
+            .field("tensors", &self.tensors.iter().map(|x| LayerNoLong(max_length, x)).collect::<Vec<_>>())
             .field("one_hot_layers", &self.one_hot_layers)
             .field("operations_blocks", &self.operations_blocks)
             .finish()
@@ -335,6 +373,7 @@ macro_rules! tensor_shape
     ($this:expr, $tensor:expr) =>
     {
         {
+            debug_assert!(matches!($tensor, TensorPtr(_)));
             $this.tensors_memory[$tensor.0].value.tensor_shape()
         }
     }
@@ -393,7 +432,9 @@ impl OperationsRecorder
             values: Vec::new(),
             tensors: Vec::new(),
             one_hot_layers: Vec::new(),
-            operations_blocks: vec![OperationsBlock::default()]
+            operations_blocks: vec![OperationsBlock::default()],
+            #[cfg(debug_assertions)]
+            used_values: Vec::new()
         }
     }
 
@@ -553,6 +594,9 @@ impl OperationsRecorder
 
     pub fn get_value(&self, index: ValueIndex) -> f32
     {
+        #[cfg(debug_assertions)]
+        debug_assert!(self.used_values.contains(&index), "store_value_until_end must be called on {index:?}");
+
         self.values[index.0]
     }
 
@@ -794,6 +838,9 @@ impl OperationsRecorder
     pub fn store_value_until_end(&mut self, index: ValueIndex)
     {
         self.global_value_live_ranges[index.0].end = Some(i32::MAX);
+
+        #[cfg(debug_assertions)]
+        self.used_values.push(index);
     }
 
     pub fn new_block(&mut self) -> BlockIndex
@@ -957,7 +1004,7 @@ impl OperationsRecorder
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
                     debug_assert_eq!(
-                        tensor_shape!(self, *softmaxed_values), (self.one_hot_layers[targets.0].size, 1),
+                        self.tensors[softmaxed_values.0].shape(), (self.one_hot_layers[targets.0].size, 1),
                         "softmaxed: {softmaxed_values:?}, targets: {targets:?}"
                     );
 
@@ -1417,7 +1464,7 @@ impl OperationsRecorder
                 {
                     let this_shape = self.tensors_memory[node_index].value.tensor_shape();
 
-                    (spot_tensor.rows(), spot_tensor.columns()) == this_shape
+                    spot_tensor.shape() == this_shape
                 }).unwrap_or(true);
 
                 all_connected_unconflicted && spot_size_matches
@@ -2029,6 +2076,8 @@ impl DiffTensor
 
     pub fn as_value(&self) -> TensorIndex
     {
+        debug_assert!(self.index != TensorIndex::undefined());
+
         self.index
     }
 
@@ -2060,6 +2109,8 @@ impl DiffScalar
 
     pub fn as_value(&self) -> ValueIndex
     {
+        debug_assert!(self.index != ValueIndex::undefined());
+
         self.index
     }
 

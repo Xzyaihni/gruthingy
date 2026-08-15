@@ -577,7 +577,13 @@ pub struct WeightInfoGeneric<D, I>
 }
 
 pub type WeightInfoPtr = WeightInfoGeneric<DiffTensorPtr, TensorPtr>;
-pub type WeightInfo = WeightInfoGeneric<DiffTensor, TensorIndex>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct WeightInfo
+{
+    pub weight: DiffTensor,
+    pub dropconnect_mask: Option<TensorIndex>
+}
 
 pub type SaveWeightType = LayerType;
 
@@ -604,7 +610,7 @@ where
             optimizer_info: x.optimizer_info,
             weights: x.weights.unwrap().map(|weight_info|
             {
-                x.recorder.get_tensor(weight_info.weight_original.as_value()).clone()
+                x.recorder.get_tensor(weight_info.weight.as_value()).clone()
             })
         }
     }
@@ -852,15 +858,16 @@ where
 
     pub fn calculate_gradients(&mut self)
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         if !self.recorder.is_ready()
         {
             debug_assert_ne!(self.no_state.loss, DiffScalar::undefined());
 
-            let blocks_count = self.recorder.blocks_count();
+            let is_multiblock = self.recorder.blocks_count() > 1;
 
-            let respect = if blocks_count == 1
+            let respect = if !is_multiblock
             {
                 vec![self.no_state.loss.into()]
             } else
@@ -872,18 +879,42 @@ where
 
             self.recorder.gradient_with_respect(respect);
 
+            self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
+            {
+                // dont overwrite the value ever, it stays in the same slot the whole time
+                self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
+                self.recorder.store_tensor_until_end(weight_info.weight_original.as_gradient().unwrap());
+            });
+
+            let mut prepare_state_block = |state_block: &mut BlockInfo<_>|
+            {
+                self.recorder.store_value_until_end(state_block.loss.as_value());
+            };
+
+            prepare_state_block(&mut self.no_state);
+
+            if is_multiblock
+            {
+                prepare_state_block(&mut self.with_state);
+            }
+
             self.recorder.resolve_memory();
 
             let weights = self.weights_ptr.take().unwrap().map(|weight_info|
             {
                 WeightInfo{
-                    weight_dropped: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_dropped),
-                    weight_original: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
+                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
                     dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
                 }
             });
 
             self.weights = Some(weights);
+
+            self.input_target.0 = match self.input_ptr.unwrap()
+            {
+                InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
+                InputTypePtr::OneHot(x) => InputType::OneHot(x)
+            };
         }
     }
 
@@ -1059,7 +1090,7 @@ where
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
                 let maybe_optimize_this = ();
-                *self.recorder.get_tensor_mut(network_weights.weight_original.as_value()) -= change;
+                *self.recorder.get_tensor_mut(network_weights.weight.as_value()) -= change;
             });
 
         optimizer.advance_time();
@@ -1081,7 +1112,7 @@ where
         {
             let this_gradients = this.weights.as_ref().unwrap().map_ref(|weight|
             {
-                this.recorder.get_tensor(weight.weight_original.as_gradient().unwrap()).clone()
+                this.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone()
             });
 
             if is_with_state
@@ -1151,9 +1182,9 @@ where
 
             if is_with_state && index != 1
             {
-/*                self.no_state.next_state.iter()
+                self.no_state.next_state.iter()
                     .zip(this_info.next_state.iter())
-                    .for_each(|(no_state, with_state)| no_state.set(&mut self.recorder, with_state));*/todo!()
+                    .for_each(|(no_state, with_state)| no_state.set(&mut self.recorder, with_state));
             }
 
             calculate_method(&mut self.recorder, this_info.index);
@@ -1188,7 +1219,7 @@ where
                     is_hidden: false
                 }
             }))
-            .map(|x| x.map(|x| self.recorder.get_tensor(x.weight_original.as_value())))
+            .map(|x| x.map(|x| self.recorder.get_tensor(x.weight.as_value())))
             .collect::<Vec<_>>()
     }
 
