@@ -1210,6 +1210,9 @@ let put_me_back = ();
 
                     *output = temporary_add_index;
 
+                    handled.push(i);
+                    handled.push(i + 1);
+
                     Box::new(move |this_block|
                     {
                         this_block.gradient_operations.insert(
@@ -1220,9 +1223,6 @@ let put_me_back = ();
                 });
 
                 (late_call)(this_block);
-
-                handled.push(i);
-                handled.push(i + 1);
 
                 i += 1;
             }
