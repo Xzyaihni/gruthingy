@@ -1124,65 +1124,102 @@ let put_me_back = ();
                 is_shared_output && !handled.contains(previous)
             })
             {
-                match &mut this_block.gradient_operations[i]
+                fn match_operation<T>(
+                    op: &mut GradientOp<TensorPtr>,
+                    on_tensor: impl FnOnce(&mut TensorPtr) -> T,
+                    on_scalar: impl FnOnce(&mut ValueIndex) -> T
+                ) -> T
                 {
-                    GradientOp::Copy{dst: output, ..}
-                    | GradientOp::AddScalar{output, ..}
-                    | GradientOp::Add{output, ..}
-                    | GradientOp::Sub{output, ..}
-                    | GradientOp::SubFromScalar{output, ..}
-                    | GradientOp::MulScalar{output, ..}
-                    | GradientOp::MulComponentwise{output, ..}
-                    | GradientOp::Fill{output, ..}
-                    | GradientOp::Pow{output, ..}
-                    | GradientOp::Sigmoid{output, ..}
-                    | GradientOp::SigmoidDiff{output, ..}
-                    | GradientOp::Tanh{output, ..}
-                    | GradientOp::TanhDiff{output, ..}
-                    | GradientOp::LeakyRelu{output, ..}
-                    | GradientOp::LeakyReluDiff{output, ..}
-                    | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
-                    | GradientOp::Matmulv{output, ..}
-                    | GradientOp::MatmulvAdd{output, ..}
-                    | GradientOp::MatmulOneHotvAdd{output, ..}
-                    | GradientOp::MatmulvTransposed{output, ..}
-                    | GradientOp::OuterProduct{output, ..}
-                    | GradientOp::OuterProductOneHot{output, ..} =>
+                    match op
                     {
-                        let (rows, columns) = tensor_shape!(self, output);
+                        GradientOp::Copy{dst: output, ..}
+                        | GradientOp::AddScalar{output, ..}
+                        | GradientOp::Add{output, ..}
+                        | GradientOp::Sub{output, ..}
+                        | GradientOp::SubFromScalar{output, ..}
+                        | GradientOp::MulScalar{output, ..}
+                        | GradientOp::MulComponentwise{output, ..}
+                        | GradientOp::Fill{output, ..}
+                        | GradientOp::Pow{output, ..}
+                        | GradientOp::Sigmoid{output, ..}
+                        | GradientOp::SigmoidDiff{output, ..}
+                        | GradientOp::Tanh{output, ..}
+                        | GradientOp::TanhDiff{output, ..}
+                        | GradientOp::LeakyRelu{output, ..}
+                        | GradientOp::LeakyReluDiff{output, ..}
+                        | GradientOp::SoftmaxCrossEntropyDiff{output, ..}
+                        | GradientOp::Matmulv{output, ..}
+                        | GradientOp::MatmulvAdd{output, ..}
+                        | GradientOp::MatmulOneHotvAdd{output, ..}
+                        | GradientOp::MatmulvTransposed{output, ..}
+                        | GradientOp::OuterProduct{output, ..}
+                        | GradientOp::OuterProductOneHot{output, ..} =>
+                        {
+                            on_tensor(output)
+                        },
+                        GradientOp::CopyScalar{dst: output, ..}
+                        | GradientOp::AddScalars{output, ..}
+                        | GradientOp::MulScalars{output, ..}
+                        | GradientOp::SumTensor{output, ..}
+                        | GradientOp::Dot{output, ..}
+                        | GradientOp::SoftmaxCrossEntropy{output, ..} =>
+                        {
+                            on_scalar(output)
+                        },
+                        GradientOp::None
+                        | GradientOp::AddInplace{..} => unreachable!()
+                    }
+                }
 
-                        let final_output = *output;
+                let mut late_call = match_operation(&mut this_block.gradient_operations[i], |this_output| -> Box<dyn FnOnce(&mut OperationsBlock)>
+                {
+                    let (rows, columns) = tensor_shape!(self, this_output);
 
-                        let temporary_add_index = new_tensor_index!(self, rows, columns);
+                    let final_output = *this_output;
 
-                        *output = temporary_add_index;
+                    let temporary_lhs_index = new_tensor_index!(self, rows, columns);
+                    let temporary_rhs_index = new_tensor_index!(self, rows, columns);
 
-                        this_block.gradient_operations.insert(
-                            i + 1,
-                            GradientOp::Add{lhs: temporary_add_index, rhs: final_output, output: final_output}
-                        );
-                    },
-                    GradientOp::CopyScalar{dst: output, ..}
-                    | GradientOp::AddScalars{output, ..}
-                    | GradientOp::MulScalars{output, ..}
-                    | GradientOp::SumTensor{output, ..}
-                    | GradientOp::Dot{output, ..}
-                    | GradientOp::SoftmaxCrossEntropy{output, ..} =>
+                    *this_output = temporary_rhs_index;
+
+                    Box::new(move |this_block|
                     {
-                        let final_output = *output;
+                        let tail = match_operation(&mut this_block.gradient_operations[previous], |previous_output|
+                        {
+                            *previous_output = temporary_lhs_index;
 
-                        let temporary_add_index = new_value_index!(self);
+                            move |this_block: &mut OperationsBlock|
+                            {
+                                this_block.gradient_operations.insert(
+                                    i + 1,
+                                    GradientOp::Add{lhs: temporary_lhs_index, rhs: temporary_rhs_index, output: final_output}
+                                );
+                            }
+                        }, |_output|
+                        {
+                            unreachable!()
+                        });
 
-                        *output = temporary_add_index;
+                        (tail)(this_block);
+                    })
+                }, |output|
+                {
+                    let final_output = *output;
 
+                    let temporary_add_index = new_value_index!(self);
+
+                    *output = temporary_add_index;
+
+                    Box::new(move |this_block|
+                    {
                         this_block.gradient_operations.insert(
                             i + 1,
                             GradientOp::AddScalars{lhs: temporary_add_index, rhs: final_output, output: final_output}
                         );
-                    },
-                    GradientOp::None
-                    | GradientOp::AddInplace{..} => unreachable!()
-                }
+                    })
+                });
+
+                (late_call)(this_block);
 
                 handled.push(i);
                 handled.push(i + 1);
@@ -1211,7 +1248,7 @@ let put_me_back = ();
             {
                 let start = &mut block.live_ranges[tensor_ptr.0].start;
 
-                debug_assert!(start.is_none());
+                debug_assert!(start.is_none(), "{tensor_ptr:?} was reused at operation {} and {op_index}", start.unwrap());
 
                 *start = Some(op_index as i32);
             });
