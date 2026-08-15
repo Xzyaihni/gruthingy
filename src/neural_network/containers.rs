@@ -119,6 +119,7 @@ enum RecorderState
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockIndex(usize);
 
+#[allow(dead_code)]
 impl BlockIndex
 {
     pub fn undefined() -> Self { Self(usize::MAX) }
@@ -167,6 +168,7 @@ impl LiveRange
 #[derive(Clone)]
 pub struct OperationsBlock
 {
+    value_live_ranges: Vec<LiveRange>,
     tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp<TensorPtr>>,
@@ -179,6 +181,7 @@ impl Debug for OperationsBlock
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
         f.debug_struct("OperationsBlock")
+            .field("value_live_ranges", &self.value_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("tensor_live_ranges", &self.tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
@@ -193,6 +196,7 @@ impl Default for OperationsBlock
     fn default() -> Self
     {
         OperationsBlock{
+            value_live_ranges: Vec::new(),
             tensor_live_ranges: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
@@ -233,6 +237,7 @@ pub struct OperationsRecorder
 {
     state: RecorderState,
     current_block: BlockIndex,
+    global_value_live_ranges: Vec<LiveRange>,
     global_tensor_live_ranges: Vec<LiveRange>,
     tensors_memory: Vec<TensorMemorySlot>,
     values: Vec<f32>,
@@ -247,6 +252,7 @@ impl Debug for OperationsRecorder
     {
         f.debug_struct("OperationsRecorder")
             .field("state", &self.state)
+            .field("global_value_live_ranges", &self.global_value_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("global_tensor_live_ranges", &self.global_tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("values", &ForceNoPretty(&self.values))
@@ -284,6 +290,7 @@ macro_rules! new_value_index
         {
             let id = $this.values.len();
 
+            $this.global_value_live_ranges.push(LiveRange{start: None, end: None});
             $this.values.push(0.0);
 
             ValueIndex(id)
@@ -380,6 +387,7 @@ impl OperationsRecorder
         Self{
             state: RecorderState::Recording,
             current_block: BlockIndex(0),
+            global_value_live_ranges: Vec::new(),
             global_tensor_live_ranges: Vec::new(),
             tensors_memory: Vec::new(),
             values: Vec::new(),
@@ -408,6 +416,7 @@ impl OperationsRecorder
     pub fn new_value(&mut self) -> DiffScalar
     {
         let input = self.new_value_with_source(None, true);
+        self.global_value_live_ranges[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -501,6 +510,8 @@ impl OperationsRecorder
         let scalar = self.new_value_with_source(None, false);
         self.set_value(scalar.as_value(), value);
 
+        self.global_value_live_ranges[scalar.as_value().0].start = Some(-1);
+
         scalar
     }
 
@@ -519,7 +530,14 @@ impl OperationsRecorder
                 self.global_tensor_live_ranges[gradient_ptr.0].start = Some(-1);
                 self.tensors_memory[gradient_ptr.0].value = new_value;
             },
-            DiffWrapper::Value(DiffScalar{gradient, ..}) => self.set_value(gradient.expect("gradient must exist"), 1.0)
+            DiffWrapper::Value(DiffScalar{gradient, ..}) =>
+            {
+                let gradient = gradient.expect("gradient must exist");
+
+                self.global_value_live_ranges[gradient.0].start = Some(-1);
+
+                self.set_value(gradient, 1.0)
+            }
         }
     }
 
@@ -773,6 +791,11 @@ impl OperationsRecorder
         self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
     }
 
+    pub fn store_value_until_end(&mut self, index: ValueIndex)
+    {
+        self.global_value_live_ranges[index.0].end = Some(i32::MAX);
+    }
+
     pub fn new_block(&mut self) -> BlockIndex
     {
         let id = BlockIndex(self.operations_blocks.len());
@@ -926,6 +949,10 @@ impl OperationsRecorder
                     let optimize_this = ();
                     (self.tensors[softmaxed_output.0], self.values[output.0]) = self.tensors[values.0].clone()
                         .softmax_cross_entropy(&self.one_hot_layers[targets.0]);
+                },
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
+                {
+                    self.values[output.0] = self.tensors[values.0].clone().softmax_cross_entropy(&self.one_hot_layers[targets.0]).1;
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
@@ -1126,11 +1153,12 @@ impl OperationsRecorder
                             on_scalar(output)
                         },
                         GradientOp::None
-                        | GradientOp::AddInplace{..} => unreachable!()
+                        | GradientOp::AddInplace{..}
+                        | GradientOp::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
                     }
                 }
 
-                let mut late_call = match_operation(&mut this_block.gradient_operations[i], |this_output| -> Box<dyn FnOnce(&mut OperationsBlock)>
+                let late_call = match_operation(&mut this_block.gradient_operations[i], |this_output| -> Box<dyn FnOnce(&mut OperationsBlock)>
                 {
                     let (rows, columns) = tensor_shape!(self, this_output);
 
@@ -1210,27 +1238,50 @@ impl OperationsRecorder
     {
         let block = &mut self.operations_blocks[block_index.0];
 
+        block.value_live_ranges = self.global_value_live_ranges.clone();
         block.tensor_live_ranges = self.global_tensor_live_ranges.clone();
 
         block.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
-            op.for_tensor_outputs(|tensor_ptr|
+            let handle_output = |live_range: &mut LiveRange, err_name: String|
             {
-                let start = &mut block.tensor_live_ranges[tensor_ptr.0].start;
+                let start = &mut live_range.start;
 
-                debug_assert!(start.is_none(), "{tensor_ptr:?} was reused at operation {} and {op_index}", start.unwrap());
+                debug_assert!(start.is_none(), "{err_name} was reused at operation {} and {op_index}", start.unwrap());
 
                 *start = Some(op_index as i32);
+            };
+
+            let mut tensor_ptrs = Vec::new();
+            op.for_outputs(|tensor_ptr|
+            {
+                tensor_ptrs.push(tensor_ptr);
+            }, |value_index|
+            {
+                handle_output(&mut block.value_live_ranges[value_index.0], format!("{value_index:?}"));
             });
 
-            op.for_tensor_args(|tensor_ptr|
+            tensor_ptrs.into_iter().for_each(|tensor_ptr|
             {
-                let end = &mut block.tensor_live_ranges[tensor_ptr.0].end;
+                handle_output(&mut block.tensor_live_ranges[tensor_ptr.0], format!("{tensor_ptr:?}"));
+            });
+
+            let handle_arg = |live_range: &mut LiveRange|
+            {
+                let end = &mut live_range.end;
 
                 if end.is_none()
                 {
                     *end = Some(op_index as i32);
                 }
+            };
+
+            op.for_args(|tensor_ptr|
+            {
+                handle_arg(&mut block.tensor_live_ranges[tensor_ptr.0]);
+            }, |value_index|
+            {
+                handle_arg(&mut block.value_live_ranges[value_index.0]);
             });
         });
 
@@ -1238,11 +1289,12 @@ impl OperationsRecorder
         block.gradient_operations.iter_mut().for_each(|op|
         {
             let mut all_unused: Option<bool> = None;
-            op.for_tensor_outputs(|tensor_ptr|
-            {
-                let is_unused = block.tensor_live_ranges[tensor_ptr.0].end.is_none();
 
-                debug_assert!(block.tensor_live_ranges[tensor_ptr.0].start != Some(-1), "{tensor_ptr:?} is an unused input");
+            let mut handle_output = |live_range: &mut LiveRange, err_name: String|
+            {
+                let is_unused = live_range.end.is_none();
+
+                debug_assert!(live_range.start != Some(-1), "{err_name} is an unused input");
 
                 if let Some(all_unused) = all_unused.as_mut()
                 {
@@ -1251,6 +1303,20 @@ impl OperationsRecorder
                 {
                     all_unused = Some(is_unused);
                 }
+            };
+
+            let mut tensor_ptrs = Vec::new();
+            op.for_outputs(|tensor_ptr|
+            {
+                tensor_ptrs.push(tensor_ptr);
+            }, |value_index|
+            {
+                handle_output(&mut block.value_live_ranges[value_index.0], format!("{value_index:?}"));
+            });
+
+            tensor_ptrs.into_iter().for_each(|tensor_ptr|
+            {
+                handle_output(&mut block.tensor_live_ranges[tensor_ptr.0], format!("{tensor_ptr:?}"));
             });
 
             let is_unused = all_unused.unwrap_or(false);
@@ -1279,6 +1345,7 @@ impl OperationsRecorder
                 }
             }
         });
+        dbg!(&self);
     }
 
     fn greedy_graph_color_block(&mut self, block: BlockIndex)
@@ -1402,6 +1469,7 @@ impl OperationsRecorder
 
         self.operations_blocks.iter_mut().for_each(|block|
         {
+            block.value_live_ranges.clear();
             block.tensor_live_ranges.clear();
 
             block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(|op| -> Option<GradientOp<TensorIndex>>
@@ -1409,6 +1477,19 @@ impl OperationsRecorder
                 match op
                 {
                     GradientOp::None => None,
+                    GradientOp::SoftmaxCrossEntropy{
+                        values,
+                        targets,
+                        softmaxed_output,
+                        output
+                    } if self.tensors_memory[softmaxed_output.0].memory.is_none() =>
+                    {
+                        Some(GradientOp::SoftmaxCrossEntropyNoSoftmaxed{
+                            values: self.tensors_memory[values.0].memory.expect("must be resolved"),
+                            targets,
+                            output
+                        })
+                    },
                     x => Some(x.map_tensors(|tensor_ptr| self.tensors_memory[tensor_ptr.0].memory.expect("must be resolved")))
                 }
             }).collect();
@@ -1416,6 +1497,7 @@ impl OperationsRecorder
             block.feedforward_operations_count = block.raw_operations.len();
         });
 
+        self.global_value_live_ranges.clear();
         self.global_tensor_live_ranges.clear();
 
         self.state = RecorderState::Ready;
@@ -1805,6 +1887,7 @@ impl OperationsRecorder
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OneHotIndex(usize);
 
+#[allow(dead_code)]
 impl OneHotIndex
 {
     pub fn undefined() -> Self { Self(usize::MAX) }
@@ -1824,6 +1907,7 @@ impl TensorIndex
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueIndex(usize);
 
+#[allow(dead_code)]
 impl ValueIndex
 {
     pub fn undefined() -> Self { Self(usize::MAX) }
@@ -1895,6 +1979,7 @@ pub struct DiffTensorPtr
     source: Option<OperationIndex>
 }
 
+#[allow(dead_code)]
 impl DiffTensorPtr
 {
     pub fn no_gradient(index: TensorPtr) -> Self
@@ -1924,6 +2009,7 @@ pub struct DiffTensor
     gradient: Option<TensorIndex>
 }
 
+#[allow(dead_code)]
 impl DiffTensor
 {
     pub fn no_gradient(index: TensorIndex) -> Self
@@ -1961,6 +2047,7 @@ pub struct DiffScalar
     source: Option<OperationIndex>
 }
 
+#[allow(dead_code)]
 impl DiffScalar
 {
     pub fn undefined() -> Self
@@ -2055,6 +2142,7 @@ pub enum GradientOp<T>
     TanhDiff{value: T, gradient: T, output: T},
     Dot{lhs: T, rhs: T, output: ValueIndex},
     SoftmaxCrossEntropy{values: T, targets: OneHotIndex, softmaxed_output: T, output: ValueIndex},
+    SoftmaxCrossEntropyNoSoftmaxed{values: T, targets: OneHotIndex, output: ValueIndex},
     SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: ValueIndex, targets: OneHotIndex, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
     MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
@@ -2108,14 +2196,15 @@ impl<T> GradientOp<T>
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: f(lhs), rhs: f(rhs), output: f(output)},
             Self::OuterProduct{lhs, rhs, output} => GradientOp::OuterProduct{lhs: f(lhs), rhs: f(rhs), output: f(output)},
             Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: f(lhs), rhs, output: f(output)},
-            Self::AddInplace{..} => unreachable!()
+            Self::AddInplace{..}
+            | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
     }
 }
 
 impl GradientOp<TensorPtr>
 {
-    fn for_tensor_outputs(&self, mut f: impl FnMut(TensorPtr))
+    fn for_outputs(&self, mut tf: impl FnMut(TensorPtr), mut vf: impl FnMut(ValueIndex))
     {
         match self
         {
@@ -2134,58 +2223,60 @@ impl GradientOp<TensorPtr>
             | Self::TanhDiff{output, ..}
             | Self::LeakyRelu{output, ..}
             | Self::LeakyReluDiff{output, ..}
-            | Self::SoftmaxCrossEntropy{softmaxed_output: output, ..}
             | Self::SoftmaxCrossEntropyDiff{output, ..}
             | Self::Matmulv{output, ..}
             | Self::MatmulvAdd{output, ..}
             | Self::MatmulOneHotvAdd{output, ..}
             | Self::MatmulvTransposed{output, ..}
             | Self::OuterProduct{output, ..}
-            | Self::OuterProductOneHot{output, ..} => f(*output),
-            Self::None
-            | Self::CopyScalar{..}
-            | Self::AddScalars{..}
-            | Self::MulScalars{..}
-            | Self::SumTensor{..}
-            | Self::Dot{..} => (),
-            Self::AddInplace{..} => unreachable!()
+            | Self::OuterProductOneHot{output, ..} => tf(*output),
+            Self::CopyScalar{dst: output, ..}
+            | Self::AddScalars{output, ..}
+            | Self::MulScalars{output, ..}
+            | Self::SumTensor{output, ..}
+            | Self::Dot{output, ..} => vf(*output),
+            Self::SoftmaxCrossEntropy{softmaxed_output, output, ..} => { tf(*softmaxed_output); vf(*output) },
+            Self::None => (),
+            Self::AddInplace{..}
+            | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
     }
 
-    fn for_tensor_args(&self, mut f: impl FnMut(TensorPtr))
+    fn for_args(&self, mut tf: impl FnMut(TensorPtr), mut vf: impl FnMut(ValueIndex))
     {
         match *self
         {
-            Self::Copy{src, ..} => f(src),
-            Self::AddScalar{lhs, ..} => f(lhs),
-            Self::Add{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::Sub{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::SubFromScalar{rhs, ..} => f(rhs),
-            Self::MulScalar{lhs, ..} => f(lhs),
-            Self::MulComponentwise{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::SumTensor{value, ..} => f(value),
-            Self::Pow{lhs, ..} => f(lhs),
-            Self::LeakyRelu{value, ..} => f(value),
-            Self::LeakyReluDiff{value, gradient, ..} => { f(value); f(gradient) },
-            Self::Sigmoid{value, ..} => f(value),
-            Self::SigmoidDiff{value, gradient, ..} => { f(value); f(gradient) },
-            Self::Tanh{value, ..} => f(value),
-            Self::TanhDiff{value, gradient, ..} => { f(value); f(gradient) },
-            Self::Dot{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::SoftmaxCrossEntropy{values, ..} => f(values),
-            Self::SoftmaxCrossEntropyDiff{softmaxed_values, ..} => f(softmaxed_values),
-            Self::Matmulv{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::MatmulvAdd{lhs, rhs, added, ..} => { f(lhs); f(rhs); f(added) },
-            Self::MatmulOneHotvAdd{lhs, added, ..} => { f(lhs); f(added) },
-            Self::MatmulvTransposed{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::OuterProduct{lhs, rhs, ..} => { f(lhs); f(rhs) },
-            Self::OuterProductOneHot{lhs, ..} => f(lhs),
-            Self::None
-            | Self::CopyScalar{..}
-            | Self::AddScalars{..}
-            | Self::MulScalars{..}
-            | Self::Fill{..} => (),
-            Self::AddInplace{..} => unreachable!()
+            Self::Copy{src, dst: _} => tf(src),
+            Self::AddScalar{lhs, rhs, output: _} => { tf(lhs); vf(rhs) },
+            Self::Add{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::Sub{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::SubFromScalar{lhs, rhs, output: _} => { tf(rhs); vf(lhs) },
+            Self::MulScalar{lhs, rhs, output: _} => { tf(lhs); vf(rhs) },
+            Self::MulComponentwise{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::SumTensor{value, output: _} => tf(value),
+            Self::Pow{lhs, power: _, output: _} => tf(lhs),
+            Self::LeakyRelu{value, output: _} => tf(value),
+            Self::LeakyReluDiff{value, gradient, output: _} => { tf(value); tf(gradient) },
+            Self::Sigmoid{value, output: _} => tf(value),
+            Self::SigmoidDiff{value, gradient, output: _} => { tf(value); tf(gradient) },
+            Self::Tanh{value, output: _} => tf(value),
+            Self::TanhDiff{value, gradient, output: _} => { tf(value); tf(gradient) },
+            Self::Dot{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::SoftmaxCrossEntropy{values, targets: _, softmaxed_output: _, output: _} => tf(values),
+            Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets: _, output: _} => { tf(softmaxed_values); vf(gradient) },
+            Self::Matmulv{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::MatmulvAdd{lhs, rhs, added, output: _} => { tf(lhs); tf(rhs); tf(added) },
+            Self::MatmulOneHotvAdd{lhs, rhs: _, added, output: _} => { tf(lhs); tf(added) },
+            Self::MatmulvTransposed{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::OuterProduct{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
+            Self::OuterProductOneHot{lhs, rhs: _, output: _} => tf(lhs),
+            Self::CopyScalar{src, dst: _} => vf(src),
+            Self::AddScalars{lhs, rhs, output: _} => { vf(lhs); vf(rhs) },
+            Self::MulScalars{lhs, rhs, output: _} => { vf(lhs); vf(rhs) },
+            Self::Fill{value, output: _} => vf(value),
+            Self::None => (),
+            Self::AddInplace{..}
+            | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
     }
 
@@ -2222,7 +2313,8 @@ impl GradientOp<TensorPtr>
             | Self::Dot{output, ..}
             | Self::SoftmaxCrossEntropy{output, ..} => output.into(),
             Self::None
-            | Self::AddInplace{..} => unreachable!()
+            | Self::AddInplace{..}
+            | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
     }
 }
@@ -2293,6 +2385,7 @@ impl OneHotLayer
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum InputType
 {
@@ -2300,6 +2393,7 @@ pub enum InputType
     OneHot(OneHotIndex)
 }
 
+#[allow(dead_code)]
 impl InputType
 {
     pub fn undefined() -> Self { Self::Normal(TensorIndex::undefined()) }
@@ -2321,6 +2415,7 @@ impl From<OneHotIndex> for InputType
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum DiffInputType
 {
@@ -2328,6 +2423,7 @@ pub enum DiffInputType
     OneHot(OneHotIndex)
 }
 
+#[allow(dead_code)]
 impl DiffInputType
 {
     pub fn into_one_hot(self) -> OneHotIndex
@@ -2347,6 +2443,7 @@ pub enum OwnedInputType
     OneHot(OneHotLayer)
 }
 
+#[allow(dead_code)]
 impl OwnedInputType
 {
     pub fn into_one_hot(self) -> OneHotLayer
