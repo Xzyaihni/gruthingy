@@ -167,7 +167,7 @@ impl LiveRange
 #[derive(Clone)]
 pub struct OperationsBlock
 {
-    live_ranges: Vec<LiveRange>,
+    tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp<TensorPtr>>,
     raw_operations: Vec<GradientOp<TensorIndex>>,
@@ -179,7 +179,7 @@ impl Debug for OperationsBlock
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
         f.debug_struct("OperationsBlock")
-            .field("live_ranges", &self.live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("tensor_live_ranges", &self.tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("raw_operations", &self.raw_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
@@ -193,7 +193,7 @@ impl Default for OperationsBlock
     fn default() -> Self
     {
         OperationsBlock{
-            live_ranges: Vec::new(),
+            tensor_live_ranges: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
             raw_operations: Vec::new(),
@@ -233,16 +233,12 @@ pub struct OperationsRecorder
 {
     state: RecorderState,
     current_block: BlockIndex,
-    global_live_ranges: Vec<LiveRange>,
+    global_tensor_live_ranges: Vec<LiveRange>,
     tensors_memory: Vec<TensorMemorySlot>,
     values: Vec<f32>,
     tensors: Vec<LayerType>,
     one_hot_layers: Vec<OneHotLayer>,
-    operations_blocks: Vec<OperationsBlock>,
-//    #[cfg(debug_assertions)]
-//    checked_inputs: Vec<DiffValue>,
-//    #[cfg(debug_assertions)]
-//    pub allow_uninitialized: Vec<DiffValue>
+    operations_blocks: Vec<OperationsBlock>
 }
 
 impl Debug for OperationsRecorder
@@ -251,7 +247,7 @@ impl Debug for OperationsRecorder
     {
         f.debug_struct("OperationsRecorder")
             .field("state", &self.state)
-            .field("global_live_ranges", &self.global_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("global_tensor_live_ranges", &self.global_tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("values", &ForceNoPretty(&self.values))
             .field("tensors", &self.tensors)
@@ -273,7 +269,7 @@ macro_rules! new_tensor_index
         {
             let id = $this.tensors_memory.len();
 
-            $this.global_live_ranges.push(LiveRange{start: None, end: None});
+            $this.global_tensor_live_ranges.push(LiveRange{start: None, end: None});
             $this.tensors_memory.push(TensorMemorySlot{value: $value, memory: None});
 
             TensorPtr(id)
@@ -384,30 +380,19 @@ impl OperationsRecorder
         Self{
             state: RecorderState::Recording,
             current_block: BlockIndex(0),
-            global_live_ranges: Vec::new(),
+            global_tensor_live_ranges: Vec::new(),
             tensors_memory: Vec::new(),
             values: Vec::new(),
             tensors: Vec::new(),
             one_hot_layers: Vec::new(),
-            operations_blocks: vec![OperationsBlock::default()],
-//            #[cfg(debug_assertions)]
-//            checked_inputs: Vec::new(),
-//            #[cfg(debug_assertions)]
-//            allow_uninitialized: Vec::new()
+            operations_blocks: vec![OperationsBlock::default()]
         }
     }
 
     pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
         let input = self.new_tensor_with_source(None, true, rows, columns);
-        self.global_live_ranges[input.as_value().0].start = Some(-1);
-
-let put_me_back = ();
-/*        #[cfg(debug_assertions)]
-        {
-            self.checked_inputs.push(input.as_value().into());
-            self.checked_inputs.push(input.as_gradient().unwrap().into());
-        }*/
+        self.global_tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -415,11 +400,7 @@ let put_me_back = ();
     pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
         let input = self.new_tensor_with_source(None, false, rows, columns);
-        self.global_live_ranges[input.as_value().0].start = Some(-1);
-
-let put_me_back = ();
-//        #[cfg(debug_assertions)]
-//        self.checked_inputs.push(input.as_value().into());
+        self.global_tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -427,13 +408,6 @@ let put_me_back = ();
     pub fn new_value(&mut self) -> DiffScalar
     {
         let input = self.new_value_with_source(None, true);
-
-let put_me_back = ();
-/*        #[cfg(debug_assertions)]
-        {
-            self.checked_inputs.push(input.as_value().into());
-            self.checked_inputs.push(input.as_gradient().unwrap().into());
-        }*/
 
         input
     }
@@ -506,14 +480,7 @@ let put_me_back = ();
         let columns = value.columns();
 
         let input = new_tensor!(self, None, true, rows, columns, TensorMemoryValue::Value(value));
-        self.global_live_ranges[input.as_value().0].start = Some(-1);
-
-let put_me_back = ();
-/*        #[cfg(debug_assertions)]
-        {
-            self.checked_inputs.push(input.as_value().into());
-            self.checked_inputs.push(input.as_gradient().unwrap().into());
-        }*/
+        self.global_tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -524,11 +491,7 @@ let put_me_back = ();
         let columns = value.columns();
 
         let input = new_tensor!(self, None, false, rows, columns, TensorMemoryValue::Value(value));
-        self.global_live_ranges[input.as_value().0].start = Some(-1);
-
-let put_me_back = ();
-//        #[cfg(debug_assertions)]
-//        self.checked_inputs.push(input.as_value().into());
+        self.global_tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -553,7 +516,7 @@ let put_me_back = ();
 
                 let gradient_ptr: TensorPtr = gradient.expect("gradient must exist");
 
-                self.global_live_ranges[gradient_ptr.0].start = Some(-1);
+                self.global_tensor_live_ranges[gradient_ptr.0].start = Some(-1);
                 self.tensors_memory[gradient_ptr.0].value = new_value;
             },
             DiffWrapper::Value(DiffScalar{gradient, ..}) => self.set_value(gradient.expect("gradient must exist"), 1.0)
@@ -807,7 +770,7 @@ let put_me_back = ();
 
     pub fn store_tensor_until_end(&mut self, index_ptr: TensorPtr)
     {
-        self.global_live_ranges[index_ptr.0].end = Some(i32::MAX);
+        self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
     }
 
     pub fn new_block(&mut self) -> BlockIndex
@@ -1110,8 +1073,6 @@ let put_me_back = ();
     {
         let this_block = &mut self.operations_blocks[block.0];
 
-        let mut handled = Vec::new();
-
         let mut i = 1;
         while i < this_block.gradient_operations.len()
         {
@@ -1119,9 +1080,7 @@ let put_me_back = ();
 
             if let Some(previous) = (0..i).find(|previous|
             {
-                let is_shared_output = this_block.gradient_operations[*previous].diff_output_of() == this.diff_output_of();
-
-                is_shared_output && !handled.contains(previous)
+                this_block.gradient_operations[*previous].diff_output_of() == this.diff_output_of()
             })
             {
                 fn match_operation<T>(
@@ -1206,19 +1165,30 @@ let put_me_back = ();
                 {
                     let final_output = *output;
 
-                    let temporary_add_index = new_value_index!(self);
+                    let temporary_lhs_index = new_value_index!(self);
+                    let temporary_rhs_index = new_value_index!(self);
 
-                    *output = temporary_add_index;
-
-                    handled.push(i);
-                    handled.push(i + 1);
+                    *output = temporary_rhs_index;
 
                     Box::new(move |this_block|
                     {
-                        this_block.gradient_operations.insert(
-                            i + 1,
-                            GradientOp::AddScalars{lhs: temporary_add_index, rhs: final_output, output: final_output}
-                        );
+                        let tail = match_operation(&mut this_block.gradient_operations[previous], |_output|
+                        {
+                            unreachable!()
+                        }, |previous_output|
+                        {
+                            *previous_output = temporary_lhs_index;
+
+                            move |this_block: &mut OperationsBlock|
+                            {
+                                this_block.gradient_operations.insert(
+                                    i + 1,
+                                    GradientOp::AddScalars{lhs: temporary_lhs_index, rhs: temporary_rhs_index, output: final_output}
+                                );
+                            }
+                        });
+
+                        (tail)(this_block);
                     })
                 });
 
@@ -1236,17 +1206,17 @@ let put_me_back = ();
         self.state == RecorderState::Ready
     }
 
-    fn calculate_live_ranges_block(&mut self, block: BlockIndex) -> bool
+    fn calculate_live_ranges_block(&mut self, block_index: BlockIndex) -> bool
     {
-        let block = &mut self.operations_blocks[block.0];
+        let block = &mut self.operations_blocks[block_index.0];
 
-        block.live_ranges = self.global_live_ranges.clone();
+        block.tensor_live_ranges = self.global_tensor_live_ranges.clone();
 
         block.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
             op.for_tensor_outputs(|tensor_ptr|
             {
-                let start = &mut block.live_ranges[tensor_ptr.0].start;
+                let start = &mut block.tensor_live_ranges[tensor_ptr.0].start;
 
                 debug_assert!(start.is_none(), "{tensor_ptr:?} was reused at operation {} and {op_index}", start.unwrap());
 
@@ -1255,7 +1225,7 @@ let put_me_back = ();
 
             op.for_tensor_args(|tensor_ptr|
             {
-                let end = &mut block.live_ranges[tensor_ptr.0].end;
+                let end = &mut block.tensor_live_ranges[tensor_ptr.0].end;
 
                 if end.is_none()
                 {
@@ -1270,9 +1240,9 @@ let put_me_back = ();
             let mut all_unused: Option<bool> = None;
             op.for_tensor_outputs(|tensor_ptr|
             {
-                let is_unused = block.live_ranges[tensor_ptr.0].end.is_none();
+                let is_unused = block.tensor_live_ranges[tensor_ptr.0].end.is_none();
 
-                debug_assert!(block.live_ranges[tensor_ptr.0].start != Some(-1), "{tensor_ptr:?} is an unused input");
+                debug_assert!(block.tensor_live_ranges[tensor_ptr.0].start != Some(-1), "{tensor_ptr:?} is an unused input");
 
                 if let Some(all_unused) = all_unused.as_mut()
                 {
@@ -1313,18 +1283,18 @@ let put_me_back = ();
 
     fn greedy_graph_color_block(&mut self, block: BlockIndex)
     {
-        let nodes_count = self.global_live_ranges.len();
+        let nodes_count = self.global_tensor_live_ranges.len();
 
         let mut graph_connections: Vec<Vec<usize>> = iter::from_fn(|| Some(Vec::new()))
             .take(nodes_count)
             .collect();
 
-        let live_ranges = &mut self.operations_blocks[block.0].live_ranges;
+        let tensor_live_ranges = &mut self.operations_blocks[block.0].tensor_live_ranges;
 
         (0..nodes_count).for_each(|node_index|
         {
             {
-                let this_range = &live_ranges[node_index];
+                let this_range = &tensor_live_ranges[node_index];
 
                 if this_range.end.is_none()
                 {
@@ -1340,14 +1310,14 @@ let put_me_back = ();
                 }
 
                 let is_overlap = {
-                    let other_range = &live_ranges[check_index];
+                    let other_range = &tensor_live_ranges[check_index];
 
                     if other_range.end.is_none()
                     {
                         return;
                     }
 
-                    live_ranges[node_index].overlaps(other_range)
+                    tensor_live_ranges[node_index].overlaps(other_range)
                 };
 
                 if is_overlap
@@ -1363,7 +1333,7 @@ let put_me_back = ();
 
         connections_count_sorted.into_iter().for_each(|node_index|
         {
-            if live_ranges[node_index].end.is_none()
+            if tensor_live_ranges[node_index].end.is_none()
             {
                 return;
             }
@@ -1432,7 +1402,7 @@ let put_me_back = ();
 
         self.operations_blocks.iter_mut().for_each(|block|
         {
-            block.live_ranges.clear();
+            block.tensor_live_ranges.clear();
 
             block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(|op| -> Option<GradientOp<TensorIndex>>
             {
@@ -1446,7 +1416,7 @@ let put_me_back = ();
             block.feedforward_operations_count = block.raw_operations.len();
         });
 
-        self.global_live_ranges.clear();
+        self.global_tensor_live_ranges.clear();
 
         self.state = RecorderState::Ready;
     }
@@ -2879,7 +2849,7 @@ mod tests
     }
 
     #[test]
-    fn softmax_cross_entropy()
+    fn softmax_cross_entropy_easy()
     {
         let targets = create_targets();
         check_vector(|recorder, a, b|
