@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::{DMatrix, Dyn};
+use nalgebra::DMatrix;
 
 use super::{
     Softmaxer,
@@ -368,25 +368,15 @@ impl MatrixWrapper
         lhs.0.add_to(&rhs.0, &mut self.0);
     }
 
-    pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
+    pub fn matmulv_into(&mut self, lhs: &Self, rhs: &Self)
     {
-        debug_assert!(rhs.borrow().0.shape().1 == 1);
-
-        let this = (&self.0).mul(&rhs.borrow().0.column(0));
-
-        let rows = this.shape_generic().0;
-        Self(this.reshape_generic(rows, Dyn(1)))
+        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 0.0);
     }
 
-    pub fn matmulv_add(&self, rhs: impl Borrow<Self>, added: impl Borrow<Self>) -> Self
+    pub fn matmulv_add_into(&mut self, lhs: &Self, rhs: &Self, added: &Self)
     {
-        debug_assert!(rhs.borrow().0.shape().1 == 1);
-        debug_assert!(added.borrow().0.shape().1 == 1);
-
-        let mut this = added.borrow().0.clone();
-        this.column_mut(0).gemv(1.0, &self.0, &rhs.borrow().0.column(0), 1.0);
-
-        Self(this)
+        self.0 = added.0.clone();
+        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 1.0);
     }
 
     pub fn matmul_onehotv_add(&self, rhs: &OneHotLayer, added: impl Borrow<Self>) -> Self

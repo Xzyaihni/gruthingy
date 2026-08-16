@@ -945,8 +945,8 @@ impl OperationsRecorder
             //let before_instant = std::time::Instant::now();
             match gradient_op
             {
-                GradientOp::None
-                | GradientOp::Copy{..} => unreachable!(),
+                GradientOp::None => unreachable!(),
+                GradientOp::Copy{src, dst} => self.tensors[dst.0] = self.tensors[src.0].clone(),
                 GradientOp::CopyScalar{src, dst} =>
                 {
                     self.values[dst.0] = self.values[src.0].clone();
@@ -1069,13 +1069,15 @@ impl OperationsRecorder
                 },
                 GradientOp::Matmulv{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[lhs.0].matmulv(&self.tensors[rhs.0]);
+                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+
+                    output.matmulv_into(lhs, rhs);
                 },
                 GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[lhs.0].matmulv(&self.tensors[rhs.0]) + &self.tensors[added.0];
+                    let [output, lhs, rhs, added] = get_disjoint_mut!(output, lhs, rhs, added);
+
+                    output.matmulv_add_into(lhs, rhs, added);
                 },
                 GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
@@ -1360,25 +1362,29 @@ impl OperationsRecorder
 
             if let GradientOp::Copy{src, dst} = *this
             {
+                let mut changed = false;
                 for check_op in this_block.gradient_operations[..i].iter_mut().rev()
                 {
-                    let mut changed = false;
                     *check_op = check_op.clone().map_outputs(|output| if output == src { changed = true; dst } else { output }, convert::identity);
 
                     if changed
                     {
                         break;
                     }
-
-                    *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
                 }
 
-                this_block.gradient_operations[(i + 1)..].iter_mut().for_each(|check_op|
+                if changed
                 {
-                    *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
-                });
+                    this_block.gradient_operations.iter_mut().for_each(|check_op|
+                    {
+                        *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
+                    });
 
-                this_block.gradient_operations.remove(i);
+                    this_block.gradient_operations.remove(i);
+                } else
+                {
+                    i += 1;
+                }
             } else
             {
                 i += 1;
@@ -2896,8 +2902,6 @@ mod tests
 
             (value - orig) / epsilon
         };
-
-        let mut temp_recorder = OperationsRecorder::new();
 
         let mut a_fg = vec![0.0; a_value.total_len()];
         for index in 0..a_fg.len()
