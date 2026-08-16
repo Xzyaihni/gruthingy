@@ -1543,11 +1543,6 @@ impl OperationsRecorder
                 self.tensors.push(tensor);
             } else if let TensorMemoryValue::Value(x) = &self.tensors_memory[node_index].value
             {
-                debug_assert!(
-                    self.tensors[this_color].iter().all(|x| *x == 0.0),
-                    "slot {this_color} is already taken by a value, tried to replace it (by node {node_index})"
-                );
-
                 self.tensors[this_color] = x.clone();
             }
 
@@ -1609,6 +1604,16 @@ impl OperationsRecorder
         self.global_tensor_live_ranges.clear();
 
         self.state = RecorderState::Ready;
+    }
+
+    pub fn no_gradient(&mut self)
+    {
+        debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
+
+        let blocks_count = self.operations_blocks.len();
+        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations.clear());
+
+        self.state = RecorderState::AwaitingResolve;
     }
 
     pub fn gradient_with_respect(&mut self, respect: Vec<DiffWrapper>)

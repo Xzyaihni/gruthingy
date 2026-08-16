@@ -253,7 +253,7 @@ mod tests
             let weight = one_weight(value);
 
             WeightInfoPtr{
-                weight_dropped: weight.clone(),
+                weight_dropped: [weight.clone(), weight.clone()],
                 weight_original: weight,
                 dropconnect_mask: None
             }

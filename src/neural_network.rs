@@ -1003,7 +1003,9 @@ where
         gradient_clip: Option<f32>
     ) -> Self
     where
-        O::WeightParam: NewableLayer
+        O::WeightParam: NewableLayer,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let network = Network::new(sizes, dropout_probability, is_multistep, D::is_input_one_hot());
 
@@ -1040,6 +1042,8 @@ where
         for<'de> O::WeightParam: Deserialize<'de>,
         for<'de> N::Unit<O::WeightParam>: Deserialize<'de>,
         for<'de> N::Unit<SaveWeightType>: Deserialize<'de>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
     {
         let reader = File::open(path)?;

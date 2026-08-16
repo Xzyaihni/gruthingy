@@ -148,6 +148,8 @@ where
     for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + Deserialize<'de>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+    for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
     for<'de> D: NetworkDictionary + Deserialize<'de>
 {
     if path.exists()

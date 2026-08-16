@@ -827,6 +827,8 @@ where
         is_input_one_hot: bool
     ) -> Self
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         O: NewableLayer
     {
         let mut recorder = OperationsRecorder::new();
@@ -882,10 +884,33 @@ where
     }
 
     pub fn initialize(&mut self, is_multistep: bool, is_input_one_hot: bool)
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         if self.optimizer_info.is_none()
         {
-            // doesnt need any initialization
+            self.recorder.finish();
+
+            self.recorder.no_gradient();
+
+            self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
+            {
+                self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
+            });
+
+            self.recorder.resolve_memory();
+
+            let weights = self.weights_ptr.take().unwrap().map(|weight_info|
+            {
+                WeightInfo{
+                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_dropped[0]),
+                    dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
+                }
+            });
+
+            self.weights = Some(weights);
+
             return;
         }
 
@@ -905,20 +930,23 @@ where
 
     pub fn initialize_dropped_weights(&mut self)
     {
-        self.weights_ptr.as_mut().unwrap().layers.iter_mut().for_each(|layer|
+        if let Some(weights_ptr) = self.weights_ptr.as_mut()
         {
-            layer.map_inplace_with_info(|WeightsSize{weights: value, is_hidden, ..}|
+            weights_ptr.layers.iter_mut().for_each(|layer|
             {
-                if is_hidden
+                layer.map_inplace_with_info(|WeightsSize{weights: value, is_hidden, ..}|
                 {
-                    value.weight_dropped = dropconnected_weights(
-                        &mut self.recorder,
-                        value.weight_original,
-                        DiffTensorPtr::no_gradient(value.dropconnect_mask.unwrap())
-                    );
-                }
+                    if is_hidden
+                    {
+                        value.weight_dropped = dropconnected_weights(
+                            &mut self.recorder,
+                            value.weight_original,
+                            DiffTensorPtr::no_gradient(value.dropconnect_mask.unwrap())
+                        );
+                    }
+                });
             });
-        });
+        }
     }
 
     pub fn calculate_gradients(&mut self)
@@ -964,6 +992,12 @@ where
 
             self.recorder.resolve_memory();
 
+            self.input_target.0 = match self.input_ptr.unwrap()
+            {
+                InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
+                InputTypePtr::OneHot(x) => InputType::OneHot(x)
+            };
+
             let weights = self.weights_ptr.take().unwrap().map(|weight_info|
             {
                 WeightInfo{
@@ -973,12 +1007,6 @@ where
             });
 
             self.weights = Some(weights);
-
-            self.input_target.0 = match self.input_ptr.unwrap()
-            {
-                InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
-                InputTypePtr::OneHot(x) => InputType::OneHot(x)
-            };
         }
     }
 
