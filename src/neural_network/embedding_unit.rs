@@ -6,13 +6,11 @@ use crate::{
     create_weights_container,
     neural_network::{
         OperationsRecorder,
-        DiffTensor,
         DiffTensorPtr,
         OneHotIndex,
         OneHotLayer,
         LayerSizes,
         DiffInputType,
-        BlockIndex,
         WeightInfo,
         WeightInfoPtr,
         NetworkUnitNewable,

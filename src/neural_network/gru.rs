@@ -9,11 +9,14 @@ use crate::{
         NetworkUnitStateable,
         TensorIndex,
         DiffTensor,
+        DiffTensorPtr,
         DiffInputType,
         LayerSizes,
         WeightInfo,
+        WeightInfoPtr,
+        NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::NetworkUnit
+        network_unit::{NetworkUnit, NetworkUnitParameterable}
     }
 };
 
@@ -48,26 +51,76 @@ impl NetworkUnitStateable for DiffTensor
     }
 }
 
-impl NetworkUnit for Gru<WeightInfo>
+impl NetworkUnitNewable for Gru<WeightInfoPtr>
 {
-    type State = DiffTensor;
-
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
         WeightsContainer::new_randomized(recorder, sizes)
     }
+}
+
+impl NetworkUnitParameterable for Gru<WeightInfo>
+{
+    fn parameters_amount(&self, sizes: LayerSizes) -> u128
+    {
+        let i = sizes.input as u128;
+        let h = sizes.hidden as u128;
+
+        // i hope i calculated this right
+        (3 * i * h) + (3 * h * h) + (3 * h)
+    }
+}
+
+impl NetworkUnit for Gru<WeightInfoPtr>
+{
+    type State<T> = T;
 
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State>,
+        previous_state: Option<&Self::State<DiffTensorPtr>>,
         input: DiffInputType
-    ) -> NetworkOutput<Self::State, DiffTensor>
+    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let mut matmul_inputv_add = |weights: WeightInfo, input, bias: WeightInfo|
+        let block = recorder.current_block();
+
+        if previous_state.is_some()
         {
-            let weights = weights.weight_dropped;
-            let bias = bias.weight_dropped;
+            let mut store_both = |weight: DiffTensorPtr|
+            {
+                recorder.store_tensor_until_end_in_block(block, weight.as_value());
+                recorder.store_tensor_until_end_in_block(block, weight.as_gradient().unwrap());
+            };
+
+            store_both(self.hidden_update.weight_original);
+            store_both(self.hidden_reset.weight_original);
+            store_both(self.hidden_activation.weight_original);
+
+            store_both(self.reset_bias.weight_original);
+
+            store_both(self.input_reset.weight_original);
+        }
+
+        {
+            let mut always_store = |weight: DiffTensorPtr|
+            {
+                recorder.store_tensor_until_end(weight.as_value());
+                recorder.store_tensor_until_end(weight.as_gradient().unwrap());
+            };
+
+            always_store(self.update_bias.weight_original);
+            always_store(self.activation_bias.weight_original);
+
+            always_store(self.input_update.weight_original);
+            always_store(self.input_activation.weight_original);
+        }
+
+        let block_index = block.into_index();
+
+        let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        {
+            let weights = weights.weight_dropped[block_index];
+            let bias = bias.weight_dropped[block_index];
 
             match input
             {
@@ -82,10 +135,10 @@ impl NetworkUnit for Gru<WeightInfo>
 
         if let Some(previous_state) = previous_state
         {
-            let mut do_gate = |gate: &mut _, hidden: WeightInfo|
+            let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
             {
-                let mm = recorder.matmulv(hidden.weight_dropped, *previous_state);
-                *gate = recorder.add_inplace(*gate, mm);
+                let mm = recorder.matmulv(hidden.weight_dropped[block_index], *previous_state);
+                *gate = recorder.add(*gate, mm);
             };
 
             do_gate(&mut update_gate, self.hidden_update);
@@ -99,9 +152,9 @@ impl NetworkUnit for Gru<WeightInfo>
         if let Some(previous_state) = previous_state
         {
             let activation_v = recorder.mul_componentwise(reset_gate, *previous_state);
-            let mm = recorder.matmulv(self.hidden_activation.weight_dropped, activation_v);
+            let mm = recorder.matmulv(self.hidden_activation.weight_dropped[block_index], activation_v);
 
-            activation_gate = recorder.add_inplace(activation_gate, mm);
+            activation_gate = recorder.add(activation_gate, mm);
         }
 
         activation_gate = recorder.tanh(activation_gate);
@@ -126,15 +179,6 @@ impl NetworkUnit for Gru<WeightInfo>
             state: state.clone(),
             output: state
         }
-    }
-
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128
-    {
-        let i = sizes.input as u128;
-        let h = sizes.hidden as u128;
-
-        // i hope i calculated this right
-        (3 * i * h) + (3 * h * h) + (3 * h)
     }
 }
 

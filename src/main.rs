@@ -240,7 +240,7 @@ fn train(config: Config)
 
 fn run(config: Config)
 {
-    /*let mut network = load_network(&config, None, false);
+    let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
     {
@@ -274,7 +274,7 @@ fn run(config: Config)
         });
 
         network.predict_into(text, config.tokens_amount, config.temperature, &mut f);
-    };*/todo!()
+    };
 }
 
 #[derive(Clone, Copy)]
@@ -533,8 +533,7 @@ fn train_embeddings(mut config: Config)
 
 fn closest_embeddings(mut config: Config)
 {
-todo!()
-/*    let mut network = load_embeddings::<()>(
+    let mut network = load_embeddings::<()>(
         None,
         Some(&mut config),
         false
@@ -588,12 +587,12 @@ todo!()
         let word = String::from_utf8_lossy(&word_bytes);
 
         println!("{}: {word}", i + 1);
-    }*/
+    }
 }
 
 fn accuracy_data(config: Config)
 {
-/*    if config.certainty && config.top_guesses
+    if config.certainty && config.top_guesses
     {
         eprintln!("certainty and top-guesses are contradictory, choose only one");
         return;
@@ -649,7 +648,7 @@ fn accuracy_data(config: Config)
     if let Err(err) = result
     {
         eprintln!("error saving accuracy data: {err}");
-    }*/todo!()
+    }
 }
 
 fn main()

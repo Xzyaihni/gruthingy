@@ -56,8 +56,8 @@ pub use containers::{
 #[allow(unused_imports)]
 pub use network::{WeightInfo, WeightInfoPtr, WeightsSize};
 
-// #[allow(unused_imports)]
-// use gru::Gru;
+#[allow(unused_imports)]
+use gru::Gru;
 
 #[allow(unused_imports)]
 use lstm::Lstm;
@@ -66,8 +66,7 @@ pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
-const uncomment_me: () = ();
-// mod gru;
+mod gru;
 mod lstm;
 mod embedding_unit;
 
@@ -802,16 +801,9 @@ impl StepsNum
     }
 }
 
-/*trait FromGuesses<N, O>
+trait FromGuesses<N: UnitFactory, O: Optimizer>
 where
-    N: UnitFactory,
-    O: Optimizer,
-    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N>: Clone,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -824,11 +816,13 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N>: Clone,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensor>: NetworkUnitStateable,
+    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
+    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -844,11 +838,13 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N>: Clone,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensor>: NetworkUnitStateable,
+    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
+    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -864,11 +860,13 @@ where
     N: UnitFactory,
     O: Optimizer,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N>: Clone,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensor>: NetworkUnitStateable,
+    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
+    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam>,
@@ -877,7 +875,7 @@ where
     {
         network.certainty_guesses(input_outputs)
     }
-}*/
+}
 
 #[derive(Clone)]
 pub struct TrainingInfo
@@ -1072,9 +1070,10 @@ where
         &mut self.network
     }
 
-/*    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
+    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
     where
         R: Read,
+        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         let inputs = self.vectorized(reader);
@@ -1104,6 +1103,7 @@ where
     pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool, Box<[u8]>)>
     where
         R: Read,
+        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.with_guesses(reader)
@@ -1112,6 +1112,7 @@ where
     pub fn top_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, u32, Box<[u8]>)>
     where
         R: Read,
+        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.with_guesses(reader)
@@ -1120,10 +1121,11 @@ where
     pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32, Box<[u8]>)>
     where
         R: Read,
+        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.with_guesses(reader)
-    }*/
+    }
 
     pub fn test_loss<R>(
         &mut self,
@@ -1352,7 +1354,7 @@ where
         output_loss(self);
     }
 
-/*    pub fn predict_into<R>(
+    pub fn predict_into<R>(
         &mut self,
         reader: R,
         amount: usize,
@@ -1361,6 +1363,7 @@ where
     )
     where
         R: Read,
+        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -1378,6 +1381,7 @@ where
     ) -> String
     where
         R: Read,
+        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         let output = self.predict_inner(reader, amount, temperature, |predictor, network|
@@ -1386,7 +1390,7 @@ where
         }).iter().copied().filter(|&c| c != b'\0').collect::<Vec<_>>();
 
         String::from_utf8_lossy(&output).to_string()
-    }*/
+    }
 
     pub fn predict_bytes<R>(
         &mut self,

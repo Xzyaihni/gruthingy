@@ -36,7 +36,7 @@ use crate::{
         OptimizerUnit,
         UnitFactory,
         DROPCONNECT_PROBABILITY,
-        network_unit::{Embeddingsable, EmbeddingsableOwned, NetworkUnitParameterable}
+        network_unit::{EmbeddingsableOwned, NetworkUnitParameterable}
     }
 };
 

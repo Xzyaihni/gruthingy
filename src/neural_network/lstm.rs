@@ -12,7 +12,6 @@ use crate::{
         WeightInfo,
         WeightInfoPtr,
         LayerSizes,
-        BlockIndex,
         OperationsRecorder,
         NetworkUnitStateable,
         NetworkUnitNewable,
