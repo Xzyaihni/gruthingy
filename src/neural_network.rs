@@ -1220,7 +1220,6 @@ where
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
         for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
     {
         self.network.calculate_gradients();

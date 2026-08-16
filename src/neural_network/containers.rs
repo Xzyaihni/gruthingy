@@ -172,6 +172,7 @@ impl LiveRange
 pub struct OperationsBlock
 {
     block_inputs: Vec<TensorPtr>,
+    block_outputs: Vec<TensorPtr>,
     value_live_ranges: Vec<LiveRange>,
     tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
@@ -186,6 +187,7 @@ impl Debug for OperationsBlock
     {
         f.debug_struct("OperationsBlock")
             .field("block_inputs", &self.block_inputs.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("block_outputs", &self.block_outputs.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("value_live_ranges", &self.value_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("tensor_live_ranges", &self.tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
@@ -202,6 +204,7 @@ impl Default for OperationsBlock
     {
         OperationsBlock{
             block_inputs: Vec::new(),
+            block_outputs: Vec::new(),
             value_live_ranges: Vec::new(),
             tensor_live_ranges: Vec::new(),
             recording_operations: Vec::new(),
@@ -838,12 +841,27 @@ impl OperationsRecorder
 
     pub fn set_block_input(&mut self, block: BlockIndex, index_ptr: TensorPtr)
     {
-        self.operations_blocks[block.0].block_inputs.push(index_ptr);
+        let inputs = &mut self.operations_blocks[block.0].block_inputs;
+
+        if !inputs.contains(&index_ptr)
+        {
+            inputs.push(index_ptr);
+        }
     }
 
     pub fn store_tensor_until_end(&mut self, index_ptr: TensorPtr)
     {
         self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
+    }
+
+    pub fn store_tensor_until_end_in_block(&mut self, block: BlockIndex, index_ptr: TensorPtr)
+    {
+        let outputs = &mut self.operations_blocks[block.0].block_outputs;
+
+        if !outputs.contains(&index_ptr)
+        {
+            outputs.push(index_ptr);
+        }
     }
 
     pub fn store_value_until_end(&mut self, index: ValueIndex)
@@ -1310,6 +1328,11 @@ impl OperationsRecorder
         block.block_inputs.iter().for_each(|block_input|
         {
             block.tensor_live_ranges[block_input.0].start = Some(-1);
+        });
+
+        block.block_outputs.iter().for_each(|block_output|
+        {
+            block.tensor_live_ranges[block_output.0].end = Some(i32::MAX);
         });
 
         block.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|

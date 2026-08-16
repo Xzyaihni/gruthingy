@@ -923,8 +923,7 @@ where
 
     pub fn calculate_gradients(&mut self)
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         if !self.recorder.is_ready()
         {
@@ -944,12 +943,12 @@ where
 
             self.recorder.gradient_with_respect(respect);
 
-            self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
             {
-                // dont overwrite the value ever, it stays in the same slot the whole time
-                self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
-                self.recorder.store_tensor_until_end(weight_info.weight_original.as_gradient().unwrap());
-            });
+                let weight = self.weights_ptr.as_ref().unwrap().output.weight_original;
+
+                self.recorder.store_tensor_until_end(weight.as_value());
+                self.recorder.store_tensor_until_end(weight.as_gradient().unwrap());
+            }
 
             let mut prepare_state_block = |state_block: &mut BlockInfo<_>|
             {

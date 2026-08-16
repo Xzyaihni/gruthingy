@@ -99,6 +99,41 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         let block = recorder.current_block();
+
+        if previous_state.is_some()
+        {
+            let mut store_both = |weight: DiffTensorPtr|
+            {
+                recorder.store_tensor_until_end_in_block(block, weight.as_value());
+                recorder.store_tensor_until_end_in_block(block, weight.as_gradient().unwrap());
+            };
+
+            store_both(self.hidden_update.weight_original);
+            store_both(self.hidden_forget.weight_original);
+            store_both(self.hidden_output.weight_original);
+            store_both(self.hidden_memory.weight_original);
+
+            store_both(self.forget_bias.weight_original);
+
+            store_both(self.input_forget.weight_original);
+        }
+
+        {
+            let mut always_store = |weight: DiffTensorPtr|
+            {
+                recorder.store_tensor_until_end(weight.as_value());
+                recorder.store_tensor_until_end(weight.as_gradient().unwrap());
+            };
+
+            always_store(self.update_bias.weight_original);
+            always_store(self.output_bias.weight_original);
+            always_store(self.memory_bias.weight_original);
+
+            always_store(self.input_update.weight_original);
+            always_store(self.input_output.weight_original);
+            always_store(self.input_memory.weight_original);
+        }
+
         let block_index = block.into_index();
 
         let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
@@ -169,8 +204,8 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             memory: this_memory
         };
 
-        recorder.store_tensor_until_end(state.hidden.as_value());
-        recorder.store_tensor_until_end(state.memory.as_value());
+        recorder.store_tensor_until_end_in_block(block, state.hidden.as_value());
+        recorder.store_tensor_until_end_in_block(block, state.memory.as_value());
 
         NetworkOutput{
             state,
