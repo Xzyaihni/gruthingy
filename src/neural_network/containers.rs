@@ -1362,33 +1362,46 @@ impl OperationsRecorder
 
             if let GradientOp::Copy{src, dst} = *this
             {
-                let mut changed = false;
-                for check_op in this_block.gradient_operations[..i].iter_mut().rev()
-                {
-                    *check_op = check_op.clone().map_outputs(|output| if output == src { changed = true; dst } else { output }, convert::identity);
+                let mut src_used_after = false;
 
-                    if changed
+                for check_op in this_block.gradient_operations.iter()
+                {
+                    check_op.for_args(|arg| if arg == src { src_used_after = true }, |_| {});
+
+                    if src_used_after
                     {
                         break;
                     }
                 }
 
-                if changed
+                if !src_used_after
                 {
-                    this_block.gradient_operations.iter_mut().for_each(|check_op|
+                    let mut changed = false;
+                    for check_op in this_block.gradient_operations[..i].iter_mut().rev()
                     {
-                        *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
-                    });
+                        *check_op = check_op.clone()
+                            .map_outputs(|output| if output == src { changed = true; dst } else { output }, convert::identity);
 
-                    this_block.gradient_operations.remove(i);
-                } else
-                {
-                    i += 1;
+                        if changed
+                        {
+                            break;
+                        }
+                    }
+
+                    if changed
+                    {
+                        this_block.gradient_operations.iter_mut().for_each(|check_op|
+                        {
+                            *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
+                        });
+
+                        this_block.gradient_operations.remove(i);
+                        continue;
+                    }
                 }
-            } else
-            {
-                i += 1;
             }
+
+            i += 1;
         }
     }
 
