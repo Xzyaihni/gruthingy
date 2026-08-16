@@ -1017,7 +1017,6 @@ impl OperationsRecorder
                 },
                 GradientOp::TanhDiff{value, gradient, output} =>
                 {
-                    dbg!(output, value, gradient, block);
                     let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
 
                     output.tanh_gradient_inplace(value, gradient);
@@ -1477,8 +1476,6 @@ impl OperationsRecorder
             .take(nodes_count)
             .collect();
 
-        let tensor_live_ranges = &mut self.operations_blocks[block.0].tensor_live_ranges;
-
         let verify_range = |range: &LiveRange, index|
         {
             if let Some(end) = range.end
@@ -1490,39 +1487,45 @@ impl OperationsRecorder
             }
         };
 
-        (0..nodes_count).for_each(|node_index|
+        (0..self.operations_blocks.len()).for_each(|check_block_index|
         {
+            let this_block = &self.operations_blocks[check_block_index];
+
+            (0..nodes_count).for_each(|node_index|
             {
-                let this_range = &tensor_live_ranges[node_index];
+                let this_range = &this_block.tensor_live_ranges[node_index];
 
-                verify_range(&this_range, node_index);
-
-                if this_range.end.is_none()
                 {
-                    return;
-                }
-            }
+                    verify_range(&this_range, node_index);
 
-            ((node_index + 1)..nodes_count).for_each(|check_index|
-            {
-                let is_overlap = {
-                    let other_range = &tensor_live_ranges[check_index];
-
-                    verify_range(&other_range, check_index);
-
-                    if other_range.end.is_none()
+                    if this_range.end.is_none()
                     {
                         return;
                     }
-
-                    tensor_live_ranges[node_index].overlaps(other_range)
-                };
-
-                if is_overlap
-                {
-                    graph_connections[node_index].push(check_index);
-                    graph_connections[check_index].push(node_index);
                 }
+
+                ((node_index + 1)..nodes_count).for_each(|check_index|
+                {
+                    let is_overlap = {
+                        let this_is_broken = ();
+                        let other_range = &this_block.tensor_live_ranges[check_index];
+
+                        verify_range(&other_range, check_index);
+
+                        if other_range.end.is_none()
+                        {
+                            return;
+                        }
+
+                        this_range.overlaps(other_range)
+                    };
+
+                    if is_overlap
+                    {
+                        graph_connections[node_index].push(check_index);
+                        graph_connections[check_index].push(node_index);
+                    }
+                });
             });
         });
 
@@ -1537,7 +1540,7 @@ impl OperationsRecorder
                 return;
             }
 
-            if tensor_live_ranges[node_index].end.is_none()
+            if self.operations_blocks[block.0].tensor_live_ranges[node_index].end.is_none()
             {
                 return;
             }
@@ -1605,7 +1608,7 @@ impl OperationsRecorder
             eprintln!("using {} memory spots", self.tensors.len());
         }
 
-        self.operations_blocks.iter_mut().for_each(|block|
+        self.operations_blocks.iter_mut().enumerate().for_each(|(_block_index, block)|
         {
             block.value_live_ranges.clear();
             block.tensor_live_ranges.clear();
@@ -1631,6 +1634,25 @@ impl OperationsRecorder
                     x => Some(x.map_tensors(|tensor_ptr| self.tensors_memory[tensor_ptr.0].memory.expect("must be resolved")))
                 }
             }).collect();
+
+            #[cfg(debug_assertions)]
+            {
+                block.raw_operations.iter().for_each(|op|
+                {
+                    let mut tensor_args = Vec::new();
+                    let mut value_args = Vec::new();
+
+                    op.for_args(|t_arg| tensor_args.push(t_arg), |v_arg| value_args.push(v_arg));
+
+                    op.for_outputs(|t_out|
+                    {
+                        debug_assert!(!tensor_args.contains(&t_out), "in BlockIndex({_block_index}): {op:?} has overlap between args and outputs")
+                    }, |v_out|
+                    {
+                        debug_assert!(!value_args.contains(&v_out), "in BlockIndex({_block_index}): {op:?} has overlap between args and outputs")
+                    });
+                });
+            }
 
             block.feedforward_operations_count = block.raw_operations.len();
         });
@@ -2370,9 +2392,9 @@ impl<T> GradientOp<T>
     }
 }
 
-impl GradientOp<TensorPtr>
+impl<T: Clone> GradientOp<T>
 {
-    fn for_outputs(&self, mut tf: impl FnMut(TensorPtr), mut vf: impl FnMut(ValueIndex))
+    fn for_outputs(&self, mut tf: impl FnMut(T), mut vf: impl FnMut(ValueIndex))
     {
         match self
         {
@@ -2397,25 +2419,25 @@ impl GradientOp<TensorPtr>
             | Self::MatmulOneHotvAdd{output, ..}
             | Self::MatmulvTransposed{output, ..}
             | Self::OuterProduct{output, ..}
-            | Self::OuterProductOneHot{output, ..} => tf(*output),
+            | Self::OuterProductOneHot{output, ..} => tf(output.clone()),
             Self::CopyScalar{dst: output, ..}
             | Self::AddScalars{output, ..}
             | Self::MulScalars{output, ..}
             | Self::SumTensor{output, ..}
             | Self::Dot{output, ..} => vf(*output),
-            Self::SoftmaxCrossEntropy{softmaxed_output, output, ..} => { tf(*softmaxed_output); vf(*output) },
+            Self::SoftmaxCrossEntropy{softmaxed_output, output, ..} => { tf(softmaxed_output.clone()); vf(*output) },
             Self::None => (),
             Self::AddInplace{..}
             | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
     }
 
-    fn for_args(&self, mut tf: impl FnMut(TensorPtr), mut vf: impl FnMut(ValueIndex))
+    fn for_args(&self, mut tf: impl FnMut(T), mut vf: impl FnMut(ValueIndex))
     {
-        self.clone().map_args(|x| { tf(x); x }, |x| { vf(x); x });
+        self.clone().map_args(|x| { tf(x.clone()); x }, |x| { vf(x.clone()); x });
     }
 
-    fn map_args(self, mut tf: impl FnMut(TensorPtr) -> TensorPtr, mut vf: impl FnMut(ValueIndex) -> ValueIndex) -> Self
+    fn map_args(self, mut tf: impl FnMut(T) -> T, mut vf: impl FnMut(ValueIndex) -> ValueIndex) -> Self
     {
         match self
         {
@@ -2458,7 +2480,10 @@ impl GradientOp<TensorPtr>
             | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
     }
+}
 
+impl GradientOp<TensorPtr>
+{
     fn diff_output_of(&self) -> DiffValue
     {
         match *self
