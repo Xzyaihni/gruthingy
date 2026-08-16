@@ -688,7 +688,7 @@ where
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
-#[serde(bound(serialize = "O: Serialize + Clone, N::Unit<O>: Serialize + Clone, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>"))]
+#[serde(bound(serialize = "O: Serialize + Clone, N::Unit<O>: Serialize + Clone, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
 pub struct Network<N: UnitFactory, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -736,8 +736,10 @@ where
 
 impl<N: UnitFactory, O> From<SaveNetwork<N, O>> for Network<N, O>
 where
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
+    N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+    for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
 {
     fn from(x: SaveNetwork<N, O>) -> Self
     {
@@ -763,7 +765,7 @@ where
             }
         };
 
-        Self{
+        let mut this = Self{
             sizes: x.sizes,
             dropout_probability: x.dropout_probability,
             optimizer_info: x.optimizer_info,
@@ -796,7 +798,14 @@ where
             no_state: BlockInfo::undefined(),
             with_state: BlockInfo::undefined(),
             recorder
+        };
+
+        if discard_gradients
+        {
+            this.initialize_no_gradient();
         }
+
+        this
     }
 }
 
@@ -804,6 +813,33 @@ impl<N: UnitFactory, O> Network<N, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
 {
+    fn initialize_no_gradient(&mut self)
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    {
+        self.recorder.finish();
+
+        self.recorder.no_gradient();
+
+        self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
+        {
+            self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
+        });
+
+        self.recorder.resolve_memory();
+
+        let weights = self.weights_ptr.take().unwrap().map(|weight_info|
+        {
+            WeightInfo{
+                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_dropped[0]),
+                dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
+            }
+        });
+
+        self.weights = Some(weights);
+    }
+
     pub fn sizes(&self) -> &LayerSizes
     {
         &self.sizes
@@ -890,27 +926,6 @@ where
     {
         if self.optimizer_info.is_none()
         {
-            self.recorder.finish();
-
-            self.recorder.no_gradient();
-
-            self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
-            {
-                self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
-            });
-
-            self.recorder.resolve_memory();
-
-            let weights = self.weights_ptr.take().unwrap().map(|weight_info|
-            {
-                WeightInfo{
-                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_dropped[0]),
-                    dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
-                }
-            });
-
-            self.weights = Some(weights);
-
             return;
         }
 
