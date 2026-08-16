@@ -1,6 +1,7 @@
 use std::{
     f32,
     mem,
+    convert,
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
@@ -151,7 +152,7 @@ impl LiveRange
 
         let end = if let Some(x) = self.end { x } else { return false };
 
-        start <= end
+        start < end
     }
 
     fn overlaps(&self, other: &Self) -> bool
@@ -1261,6 +1262,14 @@ impl OperationsRecorder
 
                             move |this_block: &mut OperationsBlock|
                             {
+                                this_block.gradient_operations[(previous + 1)..i].iter_mut().for_each(|between_op|
+                                {
+                                    *between_op = between_op.clone().map_args(
+                                        |arg| if arg == final_output { temporary_lhs_index } else { arg },
+                                        convert::identity
+                                    );
+                                });
+
                                 this_block.gradient_operations.insert(
                                     i + 1,
                                     GradientOp::Add{lhs: temporary_lhs_index, rhs: temporary_rhs_index, output: final_output}
@@ -1293,6 +1302,14 @@ impl OperationsRecorder
 
                             move |this_block: &mut OperationsBlock|
                             {
+                                this_block.gradient_operations[(previous + 1)..i].iter_mut().for_each(|between_op|
+                                {
+                                    *between_op = between_op.clone().map_args(
+                                        convert::identity,
+                                        |arg| if arg == final_output { temporary_lhs_index } else { arg }
+                                    );
+                                });
+
                                 this_block.gradient_operations.insert(
                                     i + 1,
                                     GradientOp::AddScalars{lhs: temporary_lhs_index, rhs: temporary_rhs_index, output: final_output}
@@ -1360,22 +1377,28 @@ impl OperationsRecorder
                 handle_output(&mut block.tensor_live_ranges[tensor_ptr.0], format!("{tensor_ptr:?}"));
             });
 
-            let handle_arg = |live_range: &mut LiveRange|
+            let handle_arg = |live_range: &mut LiveRange, err_name: String|
             {
-                let end = &mut live_range.end;
-
-                if end.is_none()
+                if let Some(start) = live_range.start
                 {
-                    *end = Some(op_index as i32);
+                    if start >= op_index as i32
+                    {
+                        panic!("in {block_index:?}: {err_name} was defined at {start} after being used at {op_index}");
+                    }
+                }
+
+                if live_range.end.is_none()
+                {
+                    live_range.end = Some(op_index as i32);
                 }
             };
 
             op.for_args(|tensor_ptr|
             {
-                handle_arg(&mut block.tensor_live_ranges[tensor_ptr.0]);
+                handle_arg(&mut block.tensor_live_ranges[tensor_ptr.0], format!("{tensor_ptr:?}"));
             }, |value_index|
             {
-                handle_arg(&mut block.value_live_ranges[value_index.0]);
+                handle_arg(&mut block.value_live_ranges[value_index.0], format!("{value_index:?}"));
             });
         });
 
@@ -2377,37 +2400,48 @@ impl GradientOp<TensorPtr>
 
     fn for_args(&self, mut tf: impl FnMut(TensorPtr), mut vf: impl FnMut(ValueIndex))
     {
-        match *self
+        self.clone().map_args(|x| { tf(x); x }, |x| { vf(x); x });
+    }
+
+    fn map_args(self, mut tf: impl FnMut(TensorPtr) -> TensorPtr, mut vf: impl FnMut(ValueIndex) -> ValueIndex) -> Self
+    {
+        match self
         {
-            Self::Copy{src, dst: _} => tf(src),
-            Self::AddScalar{lhs, rhs, output: _} => { tf(lhs); vf(rhs) },
-            Self::Add{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::Sub{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::SubFromScalar{lhs, rhs, output: _} => { tf(rhs); vf(lhs) },
-            Self::MulScalar{lhs, rhs, output: _} => { tf(lhs); vf(rhs) },
-            Self::MulComponentwise{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::SumTensor{value, output: _} => tf(value),
-            Self::Pow{lhs, power: _, output: _} => tf(lhs),
-            Self::LeakyRelu{value, output: _} => tf(value),
-            Self::LeakyReluDiff{value, gradient, output: _} => { tf(value); tf(gradient) },
-            Self::Sigmoid{value, output: _} => tf(value),
-            Self::SigmoidDiff{value, gradient, output: _} => { tf(value); tf(gradient) },
-            Self::Tanh{value, output: _} => tf(value),
-            Self::TanhDiff{value, gradient, output: _} => { tf(value); tf(gradient) },
-            Self::Dot{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::SoftmaxCrossEntropy{values, targets: _, softmaxed_output: _, output: _} => tf(values),
-            Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets: _, output: _} => { tf(softmaxed_values); vf(gradient) },
-            Self::Matmulv{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::MatmulvAdd{lhs, rhs, added, output: _} => { tf(lhs); tf(rhs); tf(added) },
-            Self::MatmulOneHotvAdd{lhs, rhs: _, added, output: _} => { tf(lhs); tf(added) },
-            Self::MatmulvTransposed{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::OuterProduct{lhs, rhs, output: _} => { tf(lhs); tf(rhs) },
-            Self::OuterProductOneHot{lhs, rhs: _, output: _} => tf(lhs),
-            Self::CopyScalar{src, dst: _} => vf(src),
-            Self::AddScalars{lhs, rhs, output: _} => { vf(lhs); vf(rhs) },
-            Self::MulScalars{lhs, rhs, output: _} => { vf(lhs); vf(rhs) },
-            Self::Fill{value, output: _} => vf(value),
-            Self::None => (),
+            Self::Copy{src, dst} => Self::Copy{src: tf(src), dst},
+            Self::AddScalar{lhs, rhs, output} => Self::AddScalar{lhs: tf(lhs), rhs: vf(rhs), output},
+            Self::Add{lhs, rhs, output} => Self::Add{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::Sub{lhs, rhs, output} => Self::Sub{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::SubFromScalar{lhs, rhs, output} => Self::SubFromScalar{rhs: tf(rhs), lhs: vf(lhs), output},
+            Self::MulScalar{lhs, rhs, output} => Self::MulScalar{lhs: tf(lhs), rhs: vf(rhs), output},
+            Self::MulComponentwise{lhs, rhs, output} => Self::MulComponentwise{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::SumTensor{value, output} => Self::SumTensor{value: tf(value), output},
+            Self::Pow{lhs, power, output} => Self::Pow{lhs: tf(lhs), power, output},
+            Self::LeakyRelu{value, output} => Self::LeakyRelu{value: tf(value), output},
+            Self::LeakyReluDiff{value, gradient, output} => Self::LeakyReluDiff{value: tf(value), gradient: tf(gradient), output},
+            Self::Sigmoid{value, output} => Self::Sigmoid{value: tf(value), output},
+            Self::SigmoidDiff{value, gradient, output} => Self::SigmoidDiff{value: tf(value), gradient: tf(gradient), output},
+            Self::Tanh{value, output} => Self::Tanh{value: tf(value), output},
+            Self::TanhDiff{value, gradient, output} => Self::TanhDiff{value: tf(value), gradient: tf(gradient), output},
+            Self::Dot{lhs, rhs, output} => Self::Dot{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+            {
+                Self::SoftmaxCrossEntropy{values: tf(values), targets, softmaxed_output, output}
+            },
+            Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
+            {
+                Self::SoftmaxCrossEntropyDiff{softmaxed_values: tf(softmaxed_values), gradient: vf(gradient), targets, output}
+            },
+            Self::Matmulv{lhs, rhs, output} => Self::Matmulv{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::MatmulvAdd{lhs, rhs, added, output} => Self::MatmulvAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output},
+            Self::MatmulOneHotvAdd{lhs, rhs, added, output} => Self::MatmulOneHotvAdd{lhs: tf(lhs), rhs, added: tf(added), output},
+            Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::OuterProduct{lhs, rhs, output} => Self::OuterProduct{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::OuterProductOneHot{lhs, rhs, output} => Self::OuterProductOneHot{lhs: tf(lhs), rhs, output},
+            Self::CopyScalar{src, dst} => Self::CopyScalar{src: vf(src), dst},
+            Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(lhs), rhs: vf(rhs), output},
+            Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(lhs), rhs: vf(rhs), output},
+            Self::Fill{value, output} => Self::Fill{value: vf(value), output},
+            Self::None => Self::None,
             Self::AddInplace{..}
             | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
