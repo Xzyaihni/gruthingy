@@ -403,6 +403,11 @@ impl MatrixWrapper
         Self(this)
     }
 
+    pub fn component_mul_into(&mut self, lhs: &Self, rhs: &Self)
+    {
+        self.0.cmpy(1.0, &lhs.0, &rhs.0, 0.0);
+    }
+
     pub fn matmulv_transposed_into(&mut self, lhs: &Self, rhs: &Self)
     {
         self.0.column_mut(0).gemv_tr(1.0, &lhs.0, &rhs.0.column(0), 0.0);

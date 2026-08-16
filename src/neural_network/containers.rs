@@ -924,6 +924,24 @@ impl OperationsRecorder
 
         self.operations_blocks[block.0].raw_operations.iter().take(steps).for_each(|gradient_op|
         {
+            macro_rules! get_disjoint_mut
+            {
+                ($($name:ident),+) =>
+                {
+                    {
+                        #[cfg(debug_assertions)]
+                        {
+                            self.tensors.get_disjoint_mut([$($name.0,)+]).unwrap()
+                        }
+
+                        #[cfg(not(debug_assertions))]
+                        {
+                            unsafe{ self.tensors.get_disjoint_unchecked_mut([$($name.0,)+]) }
+                        }
+                    }
+                }
+            }
+
             //let before_instant = std::time::Instant::now();
             match gradient_op
             {
@@ -944,13 +962,13 @@ impl OperationsRecorder
                 },
                 GradientOp::Add{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
+                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
 
                     output.add_to(lhs, rhs);
                 },
                 GradientOp::AddInplace{value, output} =>
                 {
-                    let [output, value] = self.tensors.get_disjoint_mut([output.0, value.0]).unwrap();
+                    let [output, value] = get_disjoint_mut!(output, value);
 
                     *output += value;
                 },
@@ -975,8 +993,9 @@ impl OperationsRecorder
                 },
                 GradientOp::MulComponentwise{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = &self.tensors[lhs.0] * &self.tensors[rhs.0];
+                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+
+                    output.component_mul_into(lhs, rhs);
                 },
                 GradientOp::SumTensor{value, output} =>
                 {
@@ -1002,7 +1021,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SigmoidDiff{value, gradient, output} =>
                 {
-                    let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
+                    let [output, value, gradient] = get_disjoint_mut!(output, value, gradient);
 
                     output.sigmoid_gradient_inplace(value, gradient);
                 },
@@ -1013,7 +1032,7 @@ impl OperationsRecorder
                 },
                 GradientOp::TanhDiff{value, gradient, output} =>
                 {
-                    let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
+                    let [output, value, gradient] = get_disjoint_mut!(output, value, gradient);
 
                     output.tanh_gradient_inplace(value, gradient);
                 },
@@ -1024,7 +1043,7 @@ impl OperationsRecorder
                 },
                 GradientOp::LeakyReluDiff{value, gradient, output} =>
                 {
-                    let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
+                    let [output, value, gradient] = get_disjoint_mut!(output, value, gradient);
 
                     output.leaky_relu_gradient_inplace(value, gradient);
                 },
@@ -1065,19 +1084,19 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulvTransposed{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
+                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
 
                     output.matmulv_transposed_into(lhs, rhs);
                 },
                 GradientOp::OuterProduct{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
+                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
 
                     output.outer_product_into(lhs, rhs);
                 },
                 GradientOp::OuterProductOneHot{lhs, rhs, output} =>
                 {
-                    let [output, lhs] = self.tensors.get_disjoint_mut([output.0, lhs.0]).unwrap();
+                    let [output, lhs] = get_disjoint_mut!(output, lhs);
 
                     output.outer_product_one_hot_into(lhs, &self.one_hot_layers[rhs.0]);
                 }
@@ -1540,7 +1559,6 @@ impl OperationsRecorder
                 ((node_index + 1)..nodes_count).for_each(|check_index|
                 {
                     let is_overlap = {
-                        let this_is_broken = ();
                         let other_range = &this_block.tensor_live_ranges[check_index];
 
                         verify_range(&other_range, check_index);
