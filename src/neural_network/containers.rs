@@ -2496,9 +2496,12 @@ impl<T: Clone> GradientOp<T>
             {
                 Self::SoftmaxCrossEntropy{softmaxed_output: tf(softmaxed_output), output: vf(output), targets, values}
             },
+            Self::SoftmaxCrossEntropyNoSoftmaxed{output, targets, values} =>
+            {
+                Self::SoftmaxCrossEntropyNoSoftmaxed{output: vf(output), targets, values}
+            },
             Self::None => Self::None,
-            Self::AddInplace{..}
-            | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
+            Self::AddInplace{..} => unreachable!()
         }
     }
 
@@ -2545,9 +2548,12 @@ impl<T: Clone> GradientOp<T>
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(lhs), rhs: vf(rhs), output},
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(lhs), rhs: vf(rhs), output},
             Self::Fill{value, output} => Self::Fill{value: vf(value), output},
+            Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
+            {
+                Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(values), targets, output}
+            },
             Self::None => Self::None,
-            Self::AddInplace{..}
-            | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
+            Self::AddInplace{..} => unreachable!()
         }
     }
 }
