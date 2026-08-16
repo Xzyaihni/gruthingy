@@ -22,6 +22,8 @@ pub type LayerType = MatrixWrapper;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
+const OPT_INFO: bool = false;
+
 // i have no clue where else to put this
 pub fn leaky_relu_d(value: f32) -> f32
 {
@@ -137,7 +139,7 @@ impl<T: Debug> Debug for ForceNoPretty<T>
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct LiveRange
 {
     start: Option<i32>,
@@ -946,8 +948,9 @@ impl OperationsRecorder
                 },
                 GradientOp::Add{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = &self.tensors[lhs.0] + &self.tensors[rhs.0];
+                    let [output, lhs, rhs] = self.tensors.get_disjoint_mut([output.0, lhs.0, rhs.0]).unwrap();
+
+                    output.add_to(lhs, rhs);
                 },
                 GradientOp::AddInplace{value, output} =>
                 {
@@ -1014,6 +1017,7 @@ impl OperationsRecorder
                 },
                 GradientOp::TanhDiff{value, gradient, output} =>
                 {
+                    dbg!(output, value, gradient, block);
                     let [output, value, gradient] = self.tensors.get_disjoint_mut([output.0, value.0, gradient.0]).unwrap();
 
                     output.tanh_gradient_inplace(value, gradient);
@@ -1083,7 +1087,8 @@ impl OperationsRecorder
                     output.outer_product_one_hot_into(lhs, &self.one_hot_layers[rhs.0]);
                 }
             }
-            //eprintln!("{}, elapsed {:.3} us", format!("{gradient_op:?}").chars().take_while(|c| *c != ' ').collect::<String>(), before_instant.elapsed().as_nanos() as f64 / 1000.0);
+
+            //eprintln!("{}, elapsed {:.3} us",format!("{gradient_op:?}").split(' ').next().unwrap(),before_instant.elapsed().as_nanos()as f64/1000.0);
         });
     }
 
@@ -1498,13 +1503,8 @@ impl OperationsRecorder
                 }
             }
 
-            (0..nodes_count).for_each(|check_index|
+            ((node_index + 1)..nodes_count).for_each(|check_index|
             {
-                if node_index == check_index
-                {
-                    return;
-                }
-
                 let is_overlap = {
                     let other_range = &tensor_live_ranges[check_index];
 
@@ -1521,6 +1521,7 @@ impl OperationsRecorder
                 if is_overlap
                 {
                     graph_connections[node_index].push(check_index);
+                    graph_connections[check_index].push(node_index);
                 }
             });
         });
@@ -1531,6 +1532,11 @@ impl OperationsRecorder
 
         connections_count_sorted.into_iter().for_each(|node_index|
         {
+            if self.tensors_memory[node_index].memory.is_some()
+            {
+                return;
+            }
+
             if tensor_live_ranges[node_index].end.is_none()
             {
                 return;
@@ -1569,6 +1575,7 @@ impl OperationsRecorder
                 self.tensors[this_color] = x.clone();
             }
 
+            debug_assert!(self.tensors_memory[node_index].memory.is_none(), "in {block:?}: tried to replace slot of TensorPtr({node_index})");
             self.tensors_memory[node_index].memory = Some(TensorIndex(this_color));
         });
     }
@@ -1592,6 +1599,11 @@ impl OperationsRecorder
         self.calculate_live_ranges();
 
         self.greedy_graph_color();
+
+        if OPT_INFO
+        {
+            eprintln!("using {} memory spots", self.tensors.len());
+        }
 
         self.operations_blocks.iter_mut().for_each(|block|
         {

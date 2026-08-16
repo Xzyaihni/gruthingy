@@ -363,6 +363,11 @@ impl MatrixWrapper
         self.0.fill_with(f);
     }
 
+    pub fn add_to(&mut self, lhs: &Self, rhs: &Self)
+    {
+        lhs.0.add_to(&rhs.0, &mut self.0);
+    }
+
     pub fn matmulv(&self, rhs: impl Borrow<Self>) -> Self
     {
         debug_assert!(rhs.borrow().0.shape().1 == 1);
