@@ -927,12 +927,8 @@ impl OperationsRecorder
             //let before_instant = std::time::Instant::now();
             match gradient_op
             {
-                GradientOp::None => (),
-                GradientOp::Copy{src, dst} =>
-                {
-                    let this_should_not_even_exist = ();
-                    self.tensors[dst.0] = self.tensors[src.0].clone();
-                },
+                GradientOp::None
+                | GradientOp::Copy{..} => unreachable!(),
                 GradientOp::CopyScalar{src, dst} =>
                 {
                     self.values[dst.0] = self.values[src.0].clone();
@@ -1334,6 +1330,43 @@ impl OperationsRecorder
         }
     }
 
+    fn copy_coalesce(&mut self, block: BlockIndex)
+    {
+        let this_block = &mut self.operations_blocks[block.0];
+
+        let mut i = 1;
+        while i < this_block.gradient_operations.len()
+        {
+            let this = &this_block.gradient_operations[i];
+
+            if let GradientOp::Copy{src, dst} = *this
+            {
+                for check_op in this_block.gradient_operations[..i].iter_mut().rev()
+                {
+                    let mut changed = false;
+                    *check_op = check_op.clone().map_outputs(|output| if output == src { changed = true; dst } else { output }, convert::identity);
+
+                    if changed
+                    {
+                        break;
+                    }
+
+                    *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
+                }
+
+                this_block.gradient_operations[(i + 1)..].iter_mut().for_each(|check_op|
+                {
+                    *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
+                });
+
+                this_block.gradient_operations.remove(i);
+            } else
+            {
+                i += 1;
+            }
+        }
+    }
+
     pub fn is_ready(&self) -> bool
     {
         self.state == RecorderState::Ready
@@ -1685,6 +1718,8 @@ impl OperationsRecorder
             self.calculate_gradient(block, respect[block.0]);
 
             self.combine_same_outputs(block);
+
+            self.copy_coalesce(block);
         });
 
         (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations.clear());
@@ -2396,37 +2431,48 @@ impl<T: Clone> GradientOp<T>
 {
     fn for_outputs(&self, mut tf: impl FnMut(T), mut vf: impl FnMut(ValueIndex))
     {
+        self.clone().map_outputs(|x| { tf(x.clone()); x }, |x| { vf(x.clone()); x });
+    }
+
+    fn map_outputs(self, mut tf: impl FnMut(T) -> T, mut vf: impl FnMut(ValueIndex) -> ValueIndex) -> Self
+    {
         match self
         {
-            Self::Copy{dst: output, ..}
-            | Self::AddScalar{output, ..}
-            | Self::Add{output, ..}
-            | Self::Sub{output, ..}
-            | Self::SubFromScalar{output, ..}
-            | Self::MulScalar{output, ..}
-            | Self::MulComponentwise{output, ..}
-            | Self::Fill{output, ..}
-            | Self::Pow{output, ..}
-            | Self::Sigmoid{output, ..}
-            | Self::SigmoidDiff{output, ..}
-            | Self::Tanh{output, ..}
-            | Self::TanhDiff{output, ..}
-            | Self::LeakyRelu{output, ..}
-            | Self::LeakyReluDiff{output, ..}
-            | Self::SoftmaxCrossEntropyDiff{output, ..}
-            | Self::Matmulv{output, ..}
-            | Self::MatmulvAdd{output, ..}
-            | Self::MatmulOneHotvAdd{output, ..}
-            | Self::MatmulvTransposed{output, ..}
-            | Self::OuterProduct{output, ..}
-            | Self::OuterProductOneHot{output, ..} => tf(output.clone()),
-            Self::CopyScalar{dst: output, ..}
-            | Self::AddScalars{output, ..}
-            | Self::MulScalars{output, ..}
-            | Self::SumTensor{output, ..}
-            | Self::Dot{output, ..} => vf(*output),
-            Self::SoftmaxCrossEntropy{softmaxed_output, output, ..} => { tf(softmaxed_output.clone()); vf(*output) },
-            Self::None => (),
+            Self::Copy{dst, src} => Self::Copy{dst: tf(dst), src},
+            Self::AddScalar{output, lhs, rhs} => Self::AddScalar{output: tf(output), lhs, rhs},
+            Self::Add{output, lhs, rhs} => Self::Add{output: tf(output), lhs, rhs},
+            Self::Sub{output, lhs, rhs} => Self::Sub{output: tf(output), lhs, rhs},
+            Self::SubFromScalar{output, lhs, rhs} => Self::SubFromScalar{output: tf(output), lhs, rhs},
+            Self::MulScalar{output, lhs, rhs} => Self::MulScalar{output: tf(output), lhs, rhs},
+            Self::MulComponentwise{output, lhs, rhs} => Self::MulComponentwise{output: tf(output), lhs, rhs},
+            Self::Fill{output, value} => Self::Fill{output: tf(output), value},
+            Self::Pow{output, power, lhs} => Self::Pow{output: tf(output), power, lhs},
+            Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(output), value},
+            Self::SigmoidDiff{output, gradient, value} => Self::SigmoidDiff{output: tf(output), gradient, value},
+            Self::Tanh{output, value} => Self::Tanh{output: tf(output), value},
+            Self::TanhDiff{output, gradient, value} => Self::TanhDiff{output: tf(output), gradient, value},
+            Self::LeakyRelu{output, value} => Self::LeakyRelu{output: tf(output), value},
+            Self::LeakyReluDiff{output, gradient, value} => Self::LeakyReluDiff{output: tf(output), gradient, value},
+            Self::SoftmaxCrossEntropyDiff{output, softmaxed_values, gradient, targets} =>
+            {
+                Self::SoftmaxCrossEntropyDiff{output: tf(output), softmaxed_values, gradient, targets}
+            },
+            Self::Matmulv{output, lhs, rhs} => Self::Matmulv{output: tf(output), lhs, rhs},
+            Self::MatmulvAdd{output, lhs, rhs, added} => Self::MatmulvAdd{output: tf(output), lhs, rhs, added},
+            Self::MatmulOneHotvAdd{output, lhs, rhs, added} => Self::MatmulOneHotvAdd{output: tf(output), lhs, rhs, added},
+            Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(output), lhs, rhs},
+            Self::OuterProduct{output, lhs, rhs} => Self::OuterProduct{output: tf(output), lhs, rhs},
+            Self::OuterProductOneHot{output, lhs, rhs} => Self::OuterProductOneHot{output: tf(output), lhs, rhs},
+            Self::CopyScalar{dst, src} => Self::CopyScalar{dst: vf(dst), src},
+            Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(output), lhs, rhs},
+            Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(output), lhs, rhs},
+            Self::SumTensor{output, value} => Self::SumTensor{output: vf(output), value},
+            Self::Dot{output, lhs, rhs} => Self::Dot{output: vf(output), lhs, rhs},
+            Self::SoftmaxCrossEntropy{softmaxed_output, output, targets, values} =>
+            {
+                Self::SoftmaxCrossEntropy{softmaxed_output: tf(softmaxed_output), output: vf(output), targets, values}
+            },
+            Self::None => Self::None,
             Self::AddInplace{..}
             | Self::SoftmaxCrossEntropyNoSoftmaxed{..} => unreachable!()
         }
