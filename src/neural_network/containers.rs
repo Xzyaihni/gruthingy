@@ -123,6 +123,8 @@ pub struct BlockIndex(usize);
 impl BlockIndex
 {
     pub fn undefined() -> Self { Self(usize::MAX) }
+
+    pub fn into_index(self) -> usize { self.0 }
 }
 
 struct ForceNoPretty<T>(T);
@@ -146,6 +148,7 @@ impl LiveRange
     fn valid_range(&self) -> bool
     {
         let start = if let Some(x) = self.start { x } else { return false };
+
         let end = if let Some(x) = self.end { x } else { return false };
 
         start <= end
@@ -168,6 +171,7 @@ impl LiveRange
 #[derive(Clone)]
 pub struct OperationsBlock
 {
+    block_inputs: Vec<TensorPtr>,
     value_live_ranges: Vec<LiveRange>,
     tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
@@ -181,6 +185,7 @@ impl Debug for OperationsBlock
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
         f.debug_struct("OperationsBlock")
+            .field("block_inputs", &self.block_inputs.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("value_live_ranges", &self.value_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("tensor_live_ranges", &self.tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
@@ -196,6 +201,7 @@ impl Default for OperationsBlock
     fn default() -> Self
     {
         OperationsBlock{
+            block_inputs: Vec::new(),
             value_live_ranges: Vec::new(),
             tensor_live_ranges: Vec::new(),
             recording_operations: Vec::new(),
@@ -830,6 +836,11 @@ impl OperationsRecorder
         }
     }
 
+    pub fn set_block_input(&mut self, block: BlockIndex, index_ptr: TensorPtr)
+    {
+        self.operations_blocks[block.0].block_inputs.push(index_ptr);
+    }
+
     pub fn store_tensor_until_end(&mut self, index_ptr: TensorPtr)
     {
         self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
@@ -849,14 +860,22 @@ impl OperationsRecorder
 
         self.operations_blocks.push(OperationsBlock::default());
 
-        self.current_block = id;
-
         id
+    }
+
+    pub fn set_current_block(&mut self, index: BlockIndex)
+    {
+        self.current_block = index;
     }
 
     pub fn current_block(&self) -> BlockIndex
     {
         self.current_block
+    }
+
+    pub fn blocks_iter(&self) -> impl Iterator<Item=BlockIndex> + use<>
+    {
+        (0..self.blocks_count()).map(BlockIndex)
     }
 
     pub fn blocks_count(&self) -> usize
@@ -1288,13 +1307,18 @@ impl OperationsRecorder
         block.value_live_ranges = self.global_value_live_ranges.clone();
         block.tensor_live_ranges = self.global_tensor_live_ranges.clone();
 
+        block.block_inputs.iter().for_each(|block_input|
+        {
+            block.tensor_live_ranges[block_input.0].start = Some(-1);
+        });
+
         block.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
             let handle_output = |live_range: &mut LiveRange, err_name: String|
             {
                 let start = &mut live_range.start;
 
-                debug_assert!(start.is_none(), "{err_name} was reused at operation {} and {op_index}", start.unwrap());
+                debug_assert!(start.is_none(), "in {block_index:?}: {err_name} was reused at operation {} and {op_index}", start.unwrap());
 
                 *start = Some(op_index as i32);
             };
@@ -1404,10 +1428,23 @@ impl OperationsRecorder
 
         let tensor_live_ranges = &mut self.operations_blocks[block.0].tensor_live_ranges;
 
+        let verify_range = |range: &LiveRange, index|
+        {
+            if let Some(end) = range.end
+            {
+                if range.start.is_none()
+                {
+                    panic!("in {block:?}: TensorPtr({index}) was used at OperationIndex({end}) but never set");
+                }
+            }
+        };
+
         (0..nodes_count).for_each(|node_index|
         {
             {
                 let this_range = &tensor_live_ranges[node_index];
+
+                verify_range(&this_range, node_index);
 
                 if this_range.end.is_none()
                 {
@@ -1424,6 +1461,8 @@ impl OperationsRecorder
 
                 let is_overlap = {
                     let other_range = &tensor_live_ranges[check_index];
+
+                    verify_range(&other_range, check_index);
 
                     if other_range.end.is_none()
                     {
@@ -1942,6 +1981,11 @@ impl OneHotIndex
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorPtr(usize);
 
+impl TensorPtr
+{
+    pub fn undefined() -> Self { Self(usize::MAX) }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorIndex(usize);
 
@@ -2037,8 +2081,19 @@ impl DiffTensorPtr
         }
     }
 
+    pub fn undefined() -> Self
+    {
+        Self{
+            index: TensorPtr::undefined(),
+            gradient: None,
+            source: None
+        }
+    }
+
     pub fn as_value(&self) -> TensorPtr
     {
+        debug_assert_ne!(self.index, TensorPtr::undefined());
+
         self.index
     }
 
@@ -2076,7 +2131,7 @@ impl DiffTensor
 
     pub fn as_value(&self) -> TensorIndex
     {
-        debug_assert!(self.index != TensorIndex::undefined());
+        debug_assert_ne!(self.index, TensorIndex::undefined());
 
         self.index
     }
@@ -2109,7 +2164,7 @@ impl DiffScalar
 
     pub fn as_value(&self) -> ValueIndex
     {
-        debug_assert!(self.index != ValueIndex::undefined());
+        debug_assert_ne!(self.index, ValueIndex::undefined());
 
         self.index
     }

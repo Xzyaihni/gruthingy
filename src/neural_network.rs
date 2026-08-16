@@ -1047,6 +1047,7 @@ where
         let mut this: Self = SaveFormat::deserialize(BufReader::new(reader))?;
 
         this.network.initialize(is_multistep, D::is_input_one_hot());
+        this.network.initialize_dropped_weights();
 
         Ok(this)
     }

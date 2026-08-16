@@ -1,6 +1,6 @@
 use crate::neural_network::{
-//    LAYER_ACTIVATION,
-//    AFType,
+    LAYER_ACTIVATION,
+    AFType,
     OperationsRecorder,
     DiffTensor,
     DiffTensorPtr,
@@ -9,6 +9,7 @@ use crate::neural_network::{
     TensorPtr,
     DiffInputType,
     WeightInfo,
+    BlockIndex,
     WeightInfoPtr,
     OneHotLayer,
     OneHotIndex,
@@ -42,6 +43,10 @@ pub trait GenericUnit<T>
     fn map<U, F>(self, f: F) -> Self::Unit<U>
     where
         F: FnMut(T) -> U;
+
+    fn map_inplace_with_info<F>(&mut self, f: F)
+    where
+        F: FnMut(WeightsSize<&mut T>);
 
     fn map_with_info<U, F>(self, f: F) -> Self::Unit<U>
     where
@@ -110,7 +115,7 @@ where
     {
         let mut output = self.record_feedforward_unit(recorder, previous_state, input);
 
-/*        let new_output = match LAYER_ACTIVATION
+        let new_output = match LAYER_ACTIVATION
         {
             AFType::LeakyRelu =>
             {
@@ -122,8 +127,22 @@ where
             }
         };
 
-        output.output = recorder.mul_componentwise(new_output, DiffTensorPtr::no_gradient(dropout_mask));*/todo!();
+        output.output = recorder.mul_componentwise(new_output, DiffTensorPtr::no_gradient(dropout_mask));
+
+        Self::reuse_for_next_block(recorder, output.output.as_value());
 
         output
+    }
+
+    fn reuse_for_next_block(recorder: &mut OperationsRecorder, value: TensorPtr)
+    {
+        let block_index = recorder.current_block().into_index();
+        let next_block = recorder.blocks_iter().nth(block_index + 1);
+
+        if let Some(next_block) = next_block
+        {
+            recorder.set_block_input(next_block, value);
+            recorder.store_tensor_until_end(value);
+        }
     }
 }

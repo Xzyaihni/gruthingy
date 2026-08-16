@@ -12,6 +12,7 @@ use crate::{
         OneHotLayer,
         LayerSizes,
         DiffInputType,
+        BlockIndex,
         WeightInfo,
         WeightInfoPtr,
         NetworkUnitNewable,
@@ -32,7 +33,9 @@ impl Embeddingsable for EmbeddingUnit<WeightInfoPtr>
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensorPtr
     {
-        recorder.matmul_onehotv_add(self.weights.weight_dropped, input, self.bias.weight_dropped)
+        let block_index = recorder.current_block().into_index();
+
+        recorder.matmul_onehotv_add(self.weights.weight_dropped[block_index], input, self.bias.weight_dropped[block_index])
     }
 }
 

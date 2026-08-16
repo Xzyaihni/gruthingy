@@ -12,6 +12,7 @@ use crate::{
         WeightInfo,
         WeightInfoPtr,
         LayerSizes,
+        BlockIndex,
         OperationsRecorder,
         NetworkUnitStateable,
         NetworkUnitNewable,
@@ -97,10 +98,13 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
+        let block = recorder.current_block();
+        let block_index = block.into_index();
+
         let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped;
-            let bias = bias.weight_dropped;
+            let weights = weights.weight_dropped[block_index];
+            let bias = bias.weight_dropped[block_index];
 
             match input
             {
@@ -116,9 +120,12 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
+            recorder.set_block_input(block, previous_state.hidden.as_value());
+            recorder.set_block_input(block, previous_state.memory.as_value());
+
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
-                let mm = recorder.matmulv(hidden.weight_dropped, previous_hidden);
+                let mm = recorder.matmulv(hidden.weight_dropped[block_index], previous_hidden);
                 *gate = recorder.add(*gate, mm);
             };
 
@@ -134,6 +141,10 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         output_gate = recorder.sigmoid(output_gate);
         memory_gate = recorder.tanh(memory_gate);
 
+        Self::reuse_for_next_block(recorder, update_gate.as_value());
+        Self::reuse_for_next_block(recorder, output_gate.as_value());
+        Self::reuse_for_next_block(recorder, memory_gate.as_value());
+
         let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
         let this_memory = if let Some(previous_state) = previous_state
@@ -148,6 +159,8 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         let hidden = {
             let memory = recorder.tanh(this_memory);
 
+            Self::reuse_for_next_block(recorder, memory.as_value());
+
             recorder.mul_componentwise(output_gate, memory)
         };
 
@@ -155,6 +168,9 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             hidden: hidden.clone(),
             memory: this_memory
         };
+
+        recorder.store_tensor_until_end(state.hidden.as_value());
+        recorder.store_tensor_until_end(state.memory.as_value());
 
         NetworkOutput{
             state,

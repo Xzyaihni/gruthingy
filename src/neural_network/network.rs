@@ -114,6 +114,34 @@ impl LayerSize
     }
 }
 
+pub fn dropconnected_weights(
+    recorder: &mut OperationsRecorder,
+    weights: DiffTensorPtr,
+    dropconnect_mask: DiffTensorPtr
+) -> [DiffTensorPtr; 2]
+{
+    let initial_block = recorder.current_block();
+
+    let new_weights = if recorder.blocks_count() == 1
+    {
+        let new_weights = recorder.mul_componentwise(weights, dropconnect_mask);
+
+        [new_weights, new_weights]
+    } else
+    {
+        recorder.blocks_iter().map(|block|
+        {
+            recorder.set_current_block(block);
+
+            recorder.mul_componentwise(weights, dropconnect_mask)
+        }).collect::<Vec<_>>().try_into().unwrap()
+    };
+
+    recorder.set_current_block(initial_block);
+
+    new_weights
+}
+
 #[macro_export]
 macro_rules! create_weights_container
 {
@@ -249,17 +277,15 @@ macro_rules! create_weights_container
                         {
                             let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
-                            let new_weights = recorder.mul_componentwise(weights, dropconnect_mask);
-
                             WeightInfoPtr{
-                                weight_dropped: new_weights,
+                                weight_dropped: [DiffTensorPtr::undefined(), DiffTensorPtr::undefined()],
                                 weight_original,
                                 dropconnect_mask: Some(dropconnect_mask.as_value())
                             }
                         } else
                         {
                             WeightInfoPtr{
-                                weight_dropped: weight_original,
+                                weight_dropped: [weight_original, weight_original],
                                 weight_original,
                                 dropconnect_mask: None
                             }
@@ -306,6 +332,20 @@ macro_rules! create_weights_container
                         $name: f(self.$name),
                     )+
                 }
+            }
+
+            fn map_inplace_with_info<F>(&mut self, mut f: F)
+            where
+                F: FnMut(WeightsSize<&mut T>)
+            {
+                $(
+                    f(WeightsSize{
+                        weights: &mut self.$name,
+                        this_size: $this_size.into_number(self.sizes),
+                        previous_size: $previous_size.into_number(self.sizes),
+                        is_hidden: $is_hidden
+                    });
+                )+
             }
 
             fn map_with_info<U, F>(self, mut f: F) -> WeightsContainer<U>
@@ -571,7 +611,7 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 #[derive(Debug, Clone, Copy)]
 pub struct WeightInfoGeneric<D, I>
 {
-    pub weight_dropped: D,
+    pub weight_dropped: [D; 2],
     pub weight_original: D,
     pub dropconnect_mask: Option<I>
 }
@@ -717,7 +757,7 @@ where
             };
 
             WeightInfoPtr{
-                weight_dropped: weights,
+                weight_dropped: [weights, weights],
                 weight_original: weights,
                 dropconnect_mask: None
             }
@@ -737,10 +777,8 @@ where
                     {
                         let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
-                        let new_weights = recorder.mul_componentwise(info.weight_original, dropconnect_mask);
-
                         WeightInfoPtr{
-                            weight_dropped: new_weights,
+                            weight_dropped: [DiffTensorPtr::undefined(), DiffTensorPtr::undefined()],
                             weight_original: info.weight_original,
                             dropconnect_mask: Some(dropconnect_mask.as_value())
                         }
@@ -810,7 +848,7 @@ where
             }));
 
             WeightInfoPtr{
-                weight_dropped: weights,
+                weight_dropped: [weights, weights],
                 weight_original: weights,
                 dropconnect_mask: None
             }
@@ -851,9 +889,36 @@ where
             return;
         }
 
+        self.no_state.index = self.recorder.current_block();
+
+        if is_multistep
+        {
+            self.with_state.index = self.recorder.new_block();
+        }
+
+        self.initialize_dropped_weights();
+
         self.record_feedforward(is_multistep, is_input_one_hot);
 
         self.recorder.finish();
+    }
+
+    pub fn initialize_dropped_weights(&mut self)
+    {
+        self.weights_ptr.as_mut().unwrap().layers.iter_mut().for_each(|layer|
+        {
+            layer.map_inplace_with_info(|WeightsSize{weights: value, is_hidden, ..}|
+            {
+                if is_hidden
+                {
+                    value.weight_dropped = dropconnected_weights(
+                        &mut self.recorder,
+                        value.weight_original,
+                        DiffTensorPtr::no_gradient(value.dropconnect_mask.unwrap())
+                    );
+                }
+            });
+        });
     }
 
     pub fn calculate_gradients(&mut self)
@@ -938,8 +1003,6 @@ where
         self.input_ptr = Some(this_input);
         self.input_target.1 = this_target;
 
-        self.no_state.index = self.recorder.current_block();
-
         let set_from_output = |NetworkOutput{
             state: next_state_ptr,
             output: (output, loss)
@@ -959,7 +1022,7 @@ where
 
         if is_multistep
         {
-            self.with_state.index = self.recorder.new_block();
+            self.recorder.set_current_block(self.with_state.index);
 
             set_from_output(
                 self.record_feedforward_single_input(Some(no_state_next_state), &dropout_masks_ptrs, this_input, this_target),
@@ -1062,8 +1125,15 @@ where
         input: DiffInputType
     ) -> NetworkOutput<UnitState<N, DiffTensorPtr>, DiffTensorPtr>
     {
-        self.weights_ptr.as_ref().unwrap().layers[layer_index].record_feedforward_unit(&mut self.recorder, previous_state, input)
-            .map(|output| self.recorder.matmulv(self.weights_ptr.as_ref().unwrap().output.weight_dropped, output))
+        self.weights_ptr.as_ref().unwrap().layers[layer_index]
+            .record_feedforward_unit(&mut self.recorder, previous_state, input)
+            .map(|output|
+            {
+                self.recorder.matmulv(
+                    self.weights_ptr.as_ref().unwrap().output.weight_dropped[self.recorder.current_block().into_index()],
+                    output
+                )
+            })
     }
 
     pub fn apply_gradients<OP>(
