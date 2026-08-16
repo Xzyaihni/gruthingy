@@ -820,12 +820,12 @@ where
     {
         self.recorder.finish();
 
-        self.recorder.no_gradient();
-
         self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
         {
             self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
         });
+
+        self.recorder.no_gradient();
 
         self.recorder.resolve_memory();
 
@@ -984,8 +984,6 @@ where
                 vec![self.no_state.loss.into(), self.with_state.loss.into()]
             };
 
-            self.recorder.gradient_with_respect(respect);
-
             {
                 let weight = self.weights_ptr.as_ref().unwrap().output.weight_original;
 
@@ -1004,6 +1002,8 @@ where
             {
                 prepare_state_block(&mut self.with_state);
             }
+
+            self.recorder.gradient_with_respect(respect);
 
             self.recorder.resolve_memory();
 

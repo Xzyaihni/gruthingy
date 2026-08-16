@@ -145,7 +145,6 @@ impl NetworkUnit for Gru<WeightInfoPtr>
             do_gate(&mut reset_gate, self.hidden_reset);
         }
 
-        let sigmoid_inplace_use_that_here = ();
         update_gate = recorder.sigmoid(update_gate);
         reset_gate = recorder.sigmoid(reset_gate);
 

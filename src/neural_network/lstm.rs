@@ -169,7 +169,6 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
         }
 
-        let sigmoid_inplace_use_that_here = ();
         forget_gate = recorder.sigmoid(forget_gate);
         update_gate = recorder.sigmoid(update_gate);
         output_gate = recorder.sigmoid(output_gate);
@@ -313,13 +312,14 @@ mod tests
         let epsilon = 0.0001;
 
         recorder.finish();
-        recorder.gradient_with_respect(vec![output.output.into()]);
 
         let memory = output.state.memory.as_value();
         let hidden = output.state.hidden.as_value();
 
         recorder.store_tensor_until_end(memory);
         recorder.store_tensor_until_end(hidden);
+
+        recorder.gradient_with_respect(vec![output.output.into()]);
 
         recorder.resolve_memory();
 

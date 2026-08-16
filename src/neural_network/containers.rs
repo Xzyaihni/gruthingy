@@ -110,13 +110,32 @@ impl LayerType
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecorderState
 {
     Recording,
     AwaitingGradient,
     AwaitingResolve,
     Ready
+}
+
+impl RecorderState
+{
+    fn before_or_at(self, other: Self) -> bool
+    {
+        let as_id = |s|
+        {
+            match s
+            {
+                Self::Recording => 0,
+                Self::AwaitingGradient => 1,
+                Self::AwaitingResolve => 2,
+                Self::Ready => 3
+            }
+        };
+
+        as_id(self) <= as_id(other)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -844,6 +863,8 @@ impl OperationsRecorder
 
     pub fn set_block_input(&mut self, block: BlockIndex, index_ptr: TensorPtr)
     {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+
         let inputs = &mut self.operations_blocks[block.0].block_inputs;
 
         if !inputs.contains(&index_ptr)
@@ -854,11 +875,15 @@ impl OperationsRecorder
 
     pub fn store_tensor_until_end(&mut self, index_ptr: TensorPtr)
     {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+
         self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
     }
 
     pub fn store_tensor_until_end_in_block(&mut self, block: BlockIndex, index_ptr: TensorPtr)
     {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+
         let outputs = &mut self.operations_blocks[block.0].block_outputs;
 
         if !outputs.contains(&index_ptr)
@@ -869,6 +894,8 @@ impl OperationsRecorder
 
     pub fn store_value_until_end(&mut self, index: ValueIndex)
     {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+
         self.global_value_live_ranges[index.0].end = Some(i32::MAX);
 
         #[cfg(debug_assertions)]
@@ -1362,38 +1389,42 @@ impl OperationsRecorder
 
             if let GradientOp::Copy{src, dst} = *this
             {
-                let mut src_used_after = false;
+                let dst_is_output = this_block.block_outputs.contains(&dst)
+                    || self.global_tensor_live_ranges[dst.0].end == Some(i32::MAX);
 
-                for check_op in this_block.gradient_operations.iter()
+                if !dst_is_output
                 {
-                    check_op.for_args(|arg| if arg == src { src_used_after = true }, |_| {});
+                    let mut overlaps_args = false;
 
-                    if src_used_after
+                    // dst can only appear starting from this clone so no need to check before it
+                    for check_op in &this_block.gradient_operations[(i + 1)..]
                     {
-                        break;
-                    }
-                }
+                        let mut any_is_src = false;
+                        let mut any_is_dst = false;
 
-                if !src_used_after
-                {
-                    let mut changed = false;
-                    for check_op in this_block.gradient_operations[..i].iter_mut().rev()
-                    {
-                        *check_op = check_op.clone()
-                            .map_outputs(|output| if output == src { changed = true; dst } else { output }, convert::identity);
+                        let mut f = |v|
+                        {
+                            if v == src { any_is_src = true }
+                            if v == dst { any_is_dst = true }
+                        };
 
-                        if changed
+                        check_op.for_args(&mut f, |_| {});
+                        check_op.for_outputs(f, |_| {});
+
+                        overlaps_args = any_is_src && any_is_dst;
+
+                        if overlaps_args
                         {
                             break;
                         }
                     }
 
-                    if changed
+                    if !overlaps_args
                     {
-                        this_block.gradient_operations.iter_mut().for_each(|check_op|
+                        for check_op in this_block.gradient_operations[(i + 1)..].iter_mut()
                         {
-                            *check_op = check_op.clone().map_args(|arg| if arg == src { dst } else { arg }, convert::identity);
-                        });
+                            *check_op = check_op.clone().map_args(|arg| if arg == dst { src } else { arg }, convert::identity);
+                        }
 
                         this_block.gradient_operations.remove(i);
                         continue;
@@ -2869,10 +2900,11 @@ mod tests
         let b_gradient = b.as_gradient().unwrap();
 
         recorder.finish();
-        recorder.gradient_with_respect(vec![out.into()]);
 
         recorder.store_tensor_until_end(a_gradient);
         recorder.store_tensor_until_end(b_gradient);
+
+        recorder.gradient_with_respect(vec![out.into()]);
 
         recorder.resolve_memory();
 
@@ -3043,7 +3075,7 @@ mod tests
         check_tensor(|recorder, a, b|
         {
             let left = recorder.mul_componentwise(a, b);
-            let bb = recorder.mul_componentwise(b, b);
+            let bb = recorder.pow(b, 2);
 
             let lefta = recorder.add(left, a);
             let leftab = recorder.add(lefta, b);
