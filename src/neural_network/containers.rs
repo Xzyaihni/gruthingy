@@ -28,7 +28,7 @@ pub type LayerTypeMut<'a> = MatrixWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const OPT_INFO: bool = false;
+const OPT_INFO: bool = true;
 const NO_COLORING: bool = false;
 
 
@@ -2088,8 +2088,8 @@ impl OperationsRecorder
 
         self.operations_blocks.iter_mut().enumerate().for_each(|(_block_index, block)|
         {
-            block.value_live_ranges.clear();
-            block.tensor_live_ranges.clear();
+            block.value_live_ranges = Vec::new();
+            block.tensor_live_ranges = Vec::new();
 
             let mut create_tensor = |ptr: TensorPtr| -> TensorRawDataPointer
             {
@@ -2128,7 +2128,7 @@ impl OperationsRecorder
                 data_ptr
             };
 
-            block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(|op| -> Option<GradientOp<TensorRawDataPointer>>
+            let map_to_raw = |op| -> Option<GradientOp<TensorRawDataPointer>>
             {
                 match op
                 {
@@ -2148,7 +2148,9 @@ impl OperationsRecorder
                     },
                     x => Some(x.map_tensors(&mut create_tensor))
                 }
-            }).collect();
+            };
+
+            block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(map_to_raw).collect();
 
             #[cfg(debug_assertions)]
             {
@@ -2172,8 +2174,8 @@ impl OperationsRecorder
             block.feedforward_operations_count = block.raw_operations.len();
         });
 
-        self.global_value_live_ranges.clear();
-        self.global_tensor_live_ranges.clear();
+        self.global_value_live_ranges = Vec::new();
+        self.global_tensor_live_ranges = Vec::new();
 
         self.state = RecorderState::Ready;
     }
@@ -2183,7 +2185,7 @@ impl OperationsRecorder
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
         let blocks_count = self.operations_blocks.len();
-        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations.clear());
+        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations = Vec::new());
 
         self.state = RecorderState::AwaitingResolve;
     }
@@ -2204,7 +2206,7 @@ impl OperationsRecorder
             self.copy_coalesce(block);
         });
 
-        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations.clear());
+        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations = Vec::new());
 
         self.state = RecorderState::AwaitingResolve;
     }
