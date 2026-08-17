@@ -653,6 +653,11 @@ fn accuracy_data(config: Config)
 
 fn main()
 {
+    #[cfg(debug_assertions)]
+    {
+        fastrand::seed(7777);
+    }
+
     let config = Config::parse(env::args().skip(1));
 
     match config.mode

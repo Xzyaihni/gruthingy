@@ -152,7 +152,7 @@ impl RecorderState
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockIndex(usize);
 
 #[allow(dead_code)]
@@ -321,6 +321,7 @@ impl Debug for DebugStringRaw
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum StoreCheckKey<P, R>
 {
@@ -328,11 +329,12 @@ enum StoreCheckKey<P, R>
     Resolved(R)
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum StoreType
 {
     AllBlocks,
-    Block(BlockIndex)
+    Block(HashSet<BlockIndex>)
 }
 
 #[cfg(debug_assertions)]
@@ -348,7 +350,7 @@ fn verify_store_check<T: Eq + Hash, K: Eq + Hash + Debug + Copy>(
         {
             if let StoreType::Block(check) = store_type
             {
-                *check == block
+                check.contains(&block)
             } else
             {
                 true
@@ -413,8 +415,9 @@ impl Debug for OperationsRecorder
     {
         let max_length = 50;
 
-        f.debug_struct("OperationsRecorder")
-            .field("state", &self.state)
+        let mut s = f.debug_struct("OperationsRecorder");
+
+        s.field("state", &self.state)
             .field("global_value_live_ranges", &self.global_value_live_ranges.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("global_tensor_live_ranges", &self.global_tensor_live_ranges.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(SlotNoLong(max_length, x))).collect::<Vec<_>>())
@@ -422,8 +425,52 @@ impl Debug for OperationsRecorder
             .field("tensors", &self.tensors.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("tensors_raw_data", &DebugStringRaw(format!("{} values", self.tensors_raw_data.len())))
             .field("one_hot_layers", &self.one_hot_layers)
-            .field("operations_blocks", &self.operations_blocks)
-            .finish()
+            .field("operations_blocks", &self.operations_blocks);
+
+        #[cfg(debug_assertions)]
+        {
+            fn predictable_display<K1: Debug + Clone, K2: Debug + Clone>(
+                k1_get: impl Fn(&K1) -> usize,
+                k2_get: impl Fn(&K2) -> usize,
+                values: &HashMap<StoreCheckKey<K1, K2>, StoreType>
+            ) -> String
+            {
+                let mut values: Vec<(StoreCheckKey<K1, K2>, StoreType)> = values.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+                values.sort_by_key(|x|
+                {
+                    match &x.0
+                    {
+                        StoreCheckKey::PreResolve(x) => -100000 + k1_get(x) as i32,
+                        StoreCheckKey::Resolved(x) => k2_get(x) as i32
+                    }
+                });
+
+                let v = values.into_iter().map(|(k, s)|
+                {
+                    let s = match s
+                    {
+                        StoreType::AllBlocks => "all blocks".to_owned(),
+                        StoreType::Block(set) =>
+                        {
+                            let mut vs: Vec<BlockIndex> = set.into_iter().collect();
+                            vs.sort_by_key(|x| x.0);
+
+                            format!("{vs:?}")
+                        }
+                    };
+
+                    DebugStringRaw(format!("{:?}: {s}", ForceNoPretty(k)))
+                }).collect::<Vec<_>>();
+
+                format!("{v:#?}")
+            }
+
+            s.field("store_tensors_check", &DebugStringRaw(predictable_display(|x| x.0, |x| x.0, &self.store_tensors_check)))
+                .field("store_values_check", &DebugStringRaw(predictable_display(|x| x.0, |x| x.0, &self.store_values_check)));
+        }
+
+        s.finish()
     }
 }
 
@@ -1028,7 +1075,16 @@ impl OperationsRecorder
 
         #[cfg(debug_assertions)]
         {
-            self.store_tensors_check.insert(StoreCheckKey::PreResolve(index_ptr), StoreType::AllBlocks);
+            let key = StoreCheckKey::PreResolve(index_ptr);
+            let value = StoreType::AllBlocks;
+
+            if self.store_tensors_check.contains_key(&key)
+            {
+                *self.store_tensors_check.get_mut(&key).unwrap() = value;
+            } else
+            {
+                self.store_tensors_check.insert(key, value);
+            }
         }
 
         self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
@@ -1040,7 +1096,19 @@ impl OperationsRecorder
 
         #[cfg(debug_assertions)]
         {
-            self.store_tensors_check.insert(StoreCheckKey::PreResolve(index_ptr), StoreType::Block(block));
+            let key = StoreCheckKey::PreResolve(index_ptr);
+            let value = StoreType::Block(HashSet::from([block]));
+
+            if self.store_tensors_check.contains_key(&key)
+            {
+                if let StoreType::Block(blocks) = self.store_tensors_check.get_mut(&key).unwrap()
+                {
+                    blocks.insert(block);
+                }
+            } else
+            {
+                self.store_tensors_check.insert(key, value);
+            }
         }
 
         let outputs = &mut self.operations_blocks[block.0].block_outputs;
@@ -1057,7 +1125,16 @@ impl OperationsRecorder
 
         #[cfg(debug_assertions)]
         {
-            self.store_values_check.insert(StoreCheckKey::PreResolve(index), StoreType::AllBlocks);
+            let key = StoreCheckKey::PreResolve(index);
+            let value = StoreType::AllBlocks;
+
+            if self.store_values_check.contains_key(&key)
+            {
+                *self.store_values_check.get_mut(&key).unwrap() = value;
+            } else
+            {
+                self.store_values_check.insert(key, value);
+            }
         }
 
         self.global_value_live_ranges[index.0].end = Some(i32::MAX);
@@ -1955,7 +2032,9 @@ impl OperationsRecorder
 
         #[cfg(debug_assertions)]
         {
-            self.store_tensors_check = self.store_tensors_check.iter().map(|(k, v)|
+            let mut new_store_tensors_check = HashMap::new();
+
+            self.store_tensors_check.iter().for_each(|(k, v)|
             {
                 let this_index: TensorIndex = match *k
                 {
@@ -1963,8 +2042,30 @@ impl OperationsRecorder
                     StoreCheckKey::Resolved(_) => unreachable!()
                 };
 
-                (StoreCheckKey::Resolved(this_index), v.clone())
-            }).collect();
+                let new_k = StoreCheckKey::Resolved(this_index);
+
+                // new_k has overlap with other ptrs so this check will give some false negatives
+                // disable graph coloring for an exact check
+
+                if new_store_tensors_check.contains_key(&new_k)
+                {
+                    let this_store_value = new_store_tensors_check.get_mut(&new_k).unwrap();
+                    match (&mut *this_store_value, v)
+                    {
+                        (StoreType::AllBlocks, _) => (),
+                        (_, StoreType::AllBlocks) => *this_store_value = StoreType::AllBlocks,
+                        (StoreType::Block(set), StoreType::Block(previous_set)) =>
+                        {
+                            previous_set.iter().for_each(|p| { set.insert(*p); });
+                        }
+                    }
+                } else
+                {
+                    new_store_tensors_check.insert(new_k, v.clone());
+                }
+            });
+
+            self.store_tensors_check = new_store_tensors_check;
 
             self.store_values_check = self.store_values_check.iter().map(|(k, v)|
             {
