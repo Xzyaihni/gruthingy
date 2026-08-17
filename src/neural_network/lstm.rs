@@ -209,7 +209,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::{LayerType, LayerSizes};
+    use crate::neural_network::{TensorIndex, LayerType, LayerSizes};
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {

@@ -37,12 +37,12 @@ impl Embeddingsable for EmbeddingUnit<WeightInfoPtr>
     }
 }
 
-impl EmbeddingsableOwned for EmbeddingUnit<WeightInfo>
+impl EmbeddingsableOwned for EmbeddingUnit<WeightInfoPtr>
 {
     fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType
     {
-        let weights = recorder.get_tensor(self.weights.weight.as_value());
-        let bias = recorder.get_tensor(self.bias.weight.as_value());
+        let weights = recorder.get_tensor_memory_value(self.weights.weight_original.as_value());
+        let bias = recorder.get_tensor_memory_value(self.bias.weight_original.as_value());
 
         weights.matmul_onehotv_add(input, bias)
     }

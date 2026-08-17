@@ -642,18 +642,30 @@ pub struct SaveNetwork<N: UnitFactory, O>
 impl<N: UnitFactory, O> From<Network<N, O>> for SaveNetwork<N, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
 {
     fn from(x: Network<N, O>) -> Self
     {
+        let weights = if let Some(w) = x.weights
+        {
+            w.map(|weight_info|
+            {
+                x.recorder.get_tensor(weight_info.weight.as_value()).clone_owned()
+            })
+        } else
+        {
+            x.weights_ptr.unwrap().map(|weight_info|
+            {
+                x.recorder.get_tensor_memory_value(weight_info.weight_original.as_value()).clone_owned()
+            })
+        };
+
         Self{
             sizes: x.sizes,
             dropout_probability: x.dropout_probability,
             optimizer_info: x.optimizer_info,
-            weights: x.weights.unwrap().map(|weight_info|
-            {
-                x.recorder.get_tensor(weight_info.weight.as_value()).clone_owned()
-            })
+            weights
         }
     }
 }
@@ -690,7 +702,7 @@ where
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
-#[serde(bound(serialize = "O: Serialize + Clone, N::Unit<O>: Serialize + Clone, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
+#[serde(bound(serialize = "O: Serialize + Clone, N::Unit<O>: Serialize + Clone, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
 pub struct Network<N: UnitFactory, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -730,7 +742,7 @@ where
             no_state: BlockInfo::undefined(),
             with_state: BlockInfo::undefined(),
             optimizer_info: self.optimizer_info.clone(),
-            weights_ptr: None,
+            weights_ptr: self.weights_ptr.clone(),
             weights: self.weights.clone()
         }
     }
@@ -830,16 +842,6 @@ where
         self.recorder.no_gradient();
 
         self.recorder.resolve_memory();
-
-        let weights = self.weights_ptr.take().unwrap().map(|weight_info|
-        {
-            WeightInfo{
-                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_dropped[0]),
-                dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
-            }
-        });
-
-        self.weights = Some(weights);
     }
 
     pub fn sizes(&self) -> &LayerSizes
@@ -1204,7 +1206,7 @@ where
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
                 let maybe_optimize_this = ();
-                self.recorder.get_tensor_mut(network_weights.weight.as_value()).sub_inplace(LayerTypeRef::from(&change));
+                self.recorder.get_tensor_mut::<true>(network_weights.weight.as_value()).sub_inplace(LayerTypeRef::from(&change));
             });
 
         optimizer.advance_time();
@@ -1456,7 +1458,7 @@ where
                 {
                     if let Some(dropconnect_mask) = weight_info.dropconnect_mask
                     {
-                        Self::set_dropout_mask(self.recorder.get_tensor_mut(dropconnect_mask), DROPCONNECT_PROBABILITY);
+                        Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(dropconnect_mask), DROPCONNECT_PROBABILITY);
                     }
                 });
             });
@@ -1464,7 +1466,7 @@ where
 
         self.dropout_masks.iter().for_each(|dropout_mask|
         {
-            Self::set_dropout_mask(self.recorder.get_tensor_mut(*dropout_mask), self.dropout_probability);
+            Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), self.dropout_probability);
         });
     }
 
@@ -1507,7 +1509,7 @@ where
                 {
                     if let Some(dropconnect_mask) = weight_info.dropconnect_mask
                     {
-                        Self::set_dropout_mask(self.recorder.get_tensor_mut(dropconnect_mask), 0.0);
+                        Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(dropconnect_mask), 0.0);
                     }
                 });
             });
@@ -1515,7 +1517,7 @@ where
 
         self.dropout_masks.iter().for_each(|dropout_mask|
         {
-            Self::set_dropout_mask(self.recorder.get_tensor_mut(*dropout_mask), 0.0);
+            Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), 0.0);
         });
 
         self.feedforward_like(
@@ -1591,7 +1593,7 @@ where
 
     pub fn embeddings(&self, input: &OneHotLayer) -> LayerType
     {
-        let weights = self.weights.as_ref().unwrap();
+        let weights = self.weights_ptr.as_ref().unwrap();
         debug_assert_eq!(weights.layers.len(), 1);
 
         weights.layers[0].embeddings_calculate(&self.recorder, input)

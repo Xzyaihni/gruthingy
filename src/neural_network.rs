@@ -926,7 +926,7 @@ impl Default for ExtraInfo
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize + Clone, D: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<O::WeightParam>: Serialize + Clone", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
+#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize + Clone, D: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<O::WeightParam>: Serialize + Clone, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
 pub struct NeuralNetwork<N, O, D>
 where
     N: UnitFactory,
@@ -1027,6 +1027,7 @@ where
         D: Serialize,
         O::WeightParam: Serialize + Clone,
         N::Unit<SaveWeightType>: Serialize,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<O::WeightParam>: Serialize + Clone
     {

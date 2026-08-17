@@ -728,6 +728,19 @@ impl OperationsRecorder
         }
     }
 
+    pub fn get_tensor_memory_value(&self, index: TensorPtr) -> LayerTypeRef<'_>
+    {
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        if let TensorMemoryValue::Value(x) = &self.tensors_memory[index.0].value
+        {
+            LayerTypeRef::from(x)
+        } else
+        {
+            panic!("{index:?} has no memory value");
+        }
+    }
+
     pub fn get_tensor(&self, index: TensorIndex) -> LayerTypeRef<'_>
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
@@ -740,13 +753,16 @@ impl OperationsRecorder
         LayerTypeRef::from_data_with_start(&self.tensors_raw_data, self.tensors[index.0])
     }
 
-    pub fn get_tensor_mut(&mut self, index: TensorIndex) -> LayerTypeMut<'_>
+    pub fn get_tensor_mut<const USES_VALUE: bool>(&mut self, index: TensorIndex) -> LayerTypeMut<'_>
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
         #[cfg(debug_assertions)]
         {
-            verify_store_check(self.current_block, &self.store_tensors_check, index, "tensor");
+            if USES_VALUE
+            {
+                verify_store_check(self.current_block, &self.store_tensors_check, index, "tensor");
+            }
         }
 
         LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, self.tensors[index.0])
@@ -1852,7 +1868,19 @@ impl OperationsRecorder
         });
 
         let mut connections_count_sorted: Vec<usize> = (0..nodes_count).collect();
-        connections_count_sorted.sort_unstable_by_key(|node_index| graph_connections[*node_index].len());
+
+        let kf = |node_index: &usize| graph_connections[*node_index].len();
+
+        #[cfg(debug_assertions)]
+        {
+            connections_count_sorted.sort_by_key(kf);
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            connections_count_sorted.sort_unstable_by_key(kf);
+        }
+
         connections_count_sorted.reverse();
 
         connections_count_sorted.into_iter().for_each(|node_index|
