@@ -7,7 +7,6 @@ use crate::{
     neural_network::{
         DiffTensor,
         DiffTensorPtr,
-        TensorIndex,
         DiffInputType,
         WeightInfo,
         WeightInfoPtr,
@@ -51,15 +50,8 @@ impl NetworkUnitStateable for LSTMState<DiffTensor>
     {
         let mut set_both = |old: &DiffTensor, new: &DiffTensor|
         {
-            let mut set_single = |old: TensorIndex, new: TensorIndex|
-            {
-                let new_tensor = recorder.get_tensor(new).clone();
-
-                recorder.set_tensor(old, new_tensor);
-            };
-
-            set_single(old.as_value(), new.as_value());
-            set_single(old.as_gradient().unwrap(), new.as_gradient().unwrap());
+            recorder.set_tensor_from(old.as_value(), new.as_value());
+            recorder.set_tensor_from(old.as_gradient().unwrap(), new.as_gradient().unwrap());
         };
 
         set_both(&self.hidden, &new.hidden);

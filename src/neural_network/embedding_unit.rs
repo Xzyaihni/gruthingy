@@ -78,6 +78,15 @@ impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
         input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
+        let mut store_both = |weight: DiffTensorPtr|
+        {
+            recorder.store_tensor_until_end(weight.as_value());
+            recorder.store_tensor_until_end(weight.as_gradient().unwrap());
+        };
+
+        store_both(self.weights.weight_original);
+        store_both(self.bias.weight_original);
+
         let hidden = self.embeddings(recorder, input.into_one_hot());
 
         NetworkOutput{

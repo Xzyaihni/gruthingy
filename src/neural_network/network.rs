@@ -29,6 +29,8 @@ use crate::{
         DiffInputType,
         OwnedInputType,
         LayerType,
+        LayerTypeRef,
+        LayerTypeMut,
         NetworkUnit,
         NewableLayer,
         GenericUnit,
@@ -650,7 +652,7 @@ where
             optimizer_info: x.optimizer_info,
             weights: x.weights.unwrap().map(|weight_info|
             {
-                x.recorder.get_tensor(weight_info.weight.as_value()).clone()
+                x.recorder.get_tensor(weight_info.weight.as_value()).clone_owned()
             })
         }
     }
@@ -1202,7 +1204,7 @@ where
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
                 let maybe_optimize_this = ();
-                *self.recorder.get_tensor_mut(network_weights.weight.as_value()) -= change;
+                self.recorder.get_tensor_mut(network_weights.weight.as_value()).sub_inplace(LayerTypeRef::from(&change));
             });
 
         optimizer.advance_time();
@@ -1224,7 +1226,8 @@ where
         {
             let this_gradients = this.weights.as_ref().unwrap().map_ref(|weight|
             {
-                this.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone()
+                let avoid_a_clone = ();
+                this.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone_owned()
             });
 
             if is_with_state
@@ -1311,7 +1314,7 @@ where
 
     pub fn weights_info<'b, 'c>(
         &'b self
-    ) -> Vec<WeightsNamed<&'b LayerType>>
+    ) -> Vec<WeightsNamed<LayerTypeRef<'b>>>
     where
         for<'a> N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<WeightsNamed<&'a WeightInfo>>=N::Unit<WeightsNamed<&'a WeightInfo>>>,
         N::Unit<WeightsNamed<&'b WeightInfo>>: IntoIterator<Item=WeightsNamed<&'b WeightInfo>>
@@ -1522,7 +1525,9 @@ where
             |this, is_with_state|
             {
                 let output = if is_with_state { this.with_state.output } else { this.no_state.output };
-                let mut output = this.recorder.get_tensor(output.as_value()).clone();
+
+                let fix_this = ();
+                let mut output = this.recorder.get_tensor(output.as_value()).clone_owned();
 
                 Softmaxer::softmax_temperature(&mut output, temperature);
 
@@ -1535,7 +1540,7 @@ where
     }
 
     fn set_dropout_mask(
-        target: &mut LayerType,
+        target: LayerTypeMut,
         probability: f32
     )
     {

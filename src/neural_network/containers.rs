@@ -9,7 +9,11 @@ use std::{
 };
 
 #[allow(unused_imports)]
-use std::iter;
+use std::{
+    iter,
+    hash::Hash,
+    collections::HashMap
+};
 
 use serde::{Serialize, Deserialize};
 
@@ -25,6 +29,31 @@ pub type LayerTypeMut<'a> = MatrixWrapperMut<'a>;
 pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = false;
+
+
+macro_rules! get_disjoint_mut_with
+{
+    ($this:expr, $(($target_type:ident, $name:expr, $tmp_name:ident)),+$(,)?) =>
+    {
+        {
+            let indices = [$($name.range(),)+];
+
+            let [$($tmp_name,)+] = {
+                #[cfg(debug_assertions)]
+                {
+                    $this.tensors_raw_data.get_disjoint_mut(indices).unwrap()
+                }
+
+                #[cfg(not(debug_assertions))]
+                {
+                    unsafe{ $this.tensors_raw_data.get_disjoint_unchecked_mut(indices) }
+                }
+            };
+
+            ($($target_type::from_data($tmp_name, $name),)+)
+        }
+    }
+}
 
 // i have no clue where else to put this
 pub fn leaky_relu_d(value: f32) -> f32
@@ -292,6 +321,43 @@ impl Debug for DebugStringRaw
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum StoreCheckKey<P, R>
+{
+    PreResolve(P),
+    Resolved(R)
+}
+
+#[derive(Debug, Clone)]
+enum StoreType
+{
+    AllBlocks,
+    Block(BlockIndex)
+}
+
+#[cfg(debug_assertions)]
+fn verify_store_check<T: Eq + Hash, K: Eq + Hash + Debug + Copy>(
+    block: BlockIndex,
+    store_checks: &HashMap<StoreCheckKey<T, K>, StoreType>,
+    index: K,
+    name: &str
+)
+{
+    debug_assert!(
+        store_checks.get(&StoreCheckKey::Resolved(index)).map(|store_type|
+        {
+            if let StoreType::Block(check) = store_type
+            {
+                *check == block
+            } else
+            {
+                true
+            }
+        }).unwrap_or(false),
+        "store_{name}_until_end must be called on {index:?}"
+    );
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TensorRawDataPointer
 {
@@ -334,7 +400,11 @@ pub struct OperationsRecorder
     tensors: Vec<TensorRawDataPointer>,
     tensors_raw_data: Vec<f32>,
     one_hot_layers: Vec<OneHotLayer>,
-    operations_blocks: Vec<OperationsBlock>
+    operations_blocks: Vec<OperationsBlock>,
+    #[cfg(debug_assertions)]
+    store_tensors_check: HashMap<StoreCheckKey<TensorPtr, TensorIndex>, StoreType>,
+    #[cfg(debug_assertions)]
+    store_values_check: HashMap<StoreCheckKey<ValueIndex, ValueIndex>, StoreType>
 }
 
 impl Debug for OperationsRecorder
@@ -489,7 +559,11 @@ impl OperationsRecorder
             tensors: Vec::new(),
             tensors_raw_data: Vec::new(),
             one_hot_layers: Vec::new(),
-            operations_blocks: vec![OperationsBlock::default()]
+            operations_blocks: vec![OperationsBlock::default()],
+            #[cfg(debug_assertions)]
+            store_tensors_check: HashMap::new(),
+            #[cfg(debug_assertions)]
+            store_values_check: HashMap::new()
         }
     }
 
@@ -568,8 +642,22 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        todo!()
-        //self.tensors[index.0] = value;
+        let dst = LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, self.tensors[index.0]);
+        let src = LayerTypeRef::from(&value);
+
+        dst.copy_from(src);
+    }
+
+    pub fn set_tensor_from(&mut self, index: TensorIndex, src: TensorIndex)
+    {
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        let dst = self.tensors[index.0];
+        let src = self.tensors[src.0];
+
+        let (dst, src) = get_disjoint_mut_with!(self, (LayerTypeMut, dst, x0), (LayerTypeRef, src, x1));
+
+        dst.copy_from(src);
     }
 
     pub fn set_value(&mut self, index: ValueIndex, value: f32)
@@ -644,21 +732,34 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
+        #[cfg(debug_assertions)]
+        {
+            verify_store_check(self.current_block, &self.store_tensors_check, index, "tensor");
+        }
+
         LayerTypeRef::from_data_with_start(&self.tensors_raw_data, self.tensors[index.0])
     }
 
-    pub fn get_tensor_mut(&mut self, index: TensorIndex) -> &mut LayerType
+    pub fn get_tensor_mut(&mut self, index: TensorIndex) -> LayerTypeMut<'_>
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        let who_uses_me = ();
-        todo!()
-        //&mut self.tensors[index.0]
+        #[cfg(debug_assertions)]
+        {
+            verify_store_check(self.current_block, &self.store_tensors_check, index, "tensor");
+        }
+
+        LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, self.tensors[index.0])
     }
 
     pub fn get_value(&self, index: ValueIndex) -> f32
     {
-        debug_assert_eq!(self.global_value_live_ranges[index.0].end, Some(i32::MAX), "store_value_until_end must be called on {index:?}");
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        #[cfg(debug_assertions)]
+        {
+            verify_store_check(self.current_block, &self.store_values_check, index, "value");
+        }
 
         self.values[index.0]
     }
@@ -909,12 +1010,22 @@ impl OperationsRecorder
     {
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
 
+        #[cfg(debug_assertions)]
+        {
+            self.store_tensors_check.insert(StoreCheckKey::PreResolve(index_ptr), StoreType::AllBlocks);
+        }
+
         self.global_tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
     }
 
     pub fn store_tensor_until_end_in_block(&mut self, block: BlockIndex, index_ptr: TensorPtr)
     {
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+
+        #[cfg(debug_assertions)]
+        {
+            self.store_tensors_check.insert(StoreCheckKey::PreResolve(index_ptr), StoreType::Block(block));
+        }
 
         let outputs = &mut self.operations_blocks[block.0].block_outputs;
 
@@ -928,11 +1039,18 @@ impl OperationsRecorder
     {
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
 
+        #[cfg(debug_assertions)]
+        {
+            self.store_values_check.insert(StoreCheckKey::PreResolve(index), StoreType::AllBlocks);
+        }
+
         self.global_value_live_ranges[index.0].end = Some(i32::MAX);
     }
 
     pub fn new_block(&mut self) -> BlockIndex
     {
+        debug_assert_eq!(self.state, RecorderState::Recording);
+
         let id = BlockIndex(self.operations_blocks.len());
 
         self.operations_blocks.push(OperationsBlock::default());
@@ -992,27 +1110,10 @@ impl OperationsRecorder
             {
                 ($(($target_type:ident, $name:ident, $tmp_name:ident)),+) =>
                 {
-                    {
-                        let indices = [$($name.range(),)+];
-
-                        let [$($tmp_name,)+] = {
-                            #[cfg(debug_assertions)]
-                            {
-                                self.tensors_raw_data.get_disjoint_mut(indices).unwrap()
-                            }
-
-                            #[cfg(not(debug_assertions))]
-                            {
-                                unsafe{ self.tensors_raw_data.get_disjoint_unchecked_mut(indices) }
-                            }
-                        };
-
-                        ($($target_type::from_data($tmp_name, *$name),)+)
-                    }
+                    get_disjoint_mut_with!(self, $(($target_type, *$name, $tmp_name),)+)
                 }
             }
 
-            let remove_me = ();//dbg!(&self.tensors_raw_data);
             //let before_instant = std::time::Instant::now();
             match gradient_op
             {
@@ -1045,7 +1146,7 @@ impl OperationsRecorder
 
                     output.add_to(lhs, rhs);
                 },
-                GradientOp::AddInplace{value, output} =>
+                GradientOp::AddInplace{value: _, output: _} =>
                 {
                     unimplemented!()
                 },
@@ -1252,7 +1353,6 @@ impl OperationsRecorder
             }
 
             //eprintln!("{}, elapsed {:.3} us",format!("{gradient_op:?}").split(' ').next().unwrap(),before_instant.elapsed().as_nanos()as f64/1000.0);
-            let remove_me = ();//dbg!(&self.tensors_raw_data);
         });
     }
 
@@ -1825,6 +1925,31 @@ impl OperationsRecorder
             eprintln!("using {} memory spots", self.tensors.len());
         }
 
+        #[cfg(debug_assertions)]
+        {
+            self.store_tensors_check = self.store_tensors_check.iter().map(|(k, v)|
+            {
+                let this_index: TensorIndex = match *k
+                {
+                    StoreCheckKey::PreResolve(ptr) => self.tensors_memory[ptr.0].memory.expect("must be resolved"),
+                    StoreCheckKey::Resolved(_) => unreachable!()
+                };
+
+                (StoreCheckKey::Resolved(this_index), v.clone())
+            }).collect();
+
+            self.store_values_check = self.store_values_check.iter().map(|(k, v)|
+            {
+                let this_index: ValueIndex = match *k
+                {
+                    StoreCheckKey::PreResolve(x) => x,
+                    StoreCheckKey::Resolved(_) => unreachable!()
+                };
+
+                (StoreCheckKey::Resolved(this_index), v.clone())
+            }).collect();
+        }
+
         self.operations_blocks.iter_mut().enumerate().for_each(|(_block_index, block)|
         {
             block.value_live_ranges.clear();
@@ -2319,7 +2444,7 @@ impl OneHotIndex
     pub fn undefined() -> Self { Self(usize::MAX) }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TensorPtr(usize);
 
 impl TensorPtr
@@ -2327,7 +2452,7 @@ impl TensorPtr
     pub fn undefined() -> Self { Self(usize::MAX) }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TensorIndex(usize);
 
 impl TensorIndex
@@ -2338,7 +2463,7 @@ impl TensorIndex
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct TensorIndexRaw(usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ValueIndex(usize);
 
 #[allow(dead_code)]

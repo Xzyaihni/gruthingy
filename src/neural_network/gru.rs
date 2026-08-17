@@ -7,7 +7,6 @@ use crate::{
     neural_network::{
         OperationsRecorder,
         NetworkUnitStateable,
-        TensorIndex,
         DiffTensor,
         DiffTensorPtr,
         DiffInputType,
@@ -39,15 +38,8 @@ impl NetworkUnitStateable for DiffTensor
 {
     fn set(&self, recorder: &mut OperationsRecorder, new: &Self)
     {
-        let mut set_single = |old: TensorIndex, new: TensorIndex|
-        {
-            let new_tensor = recorder.get_tensor(new).clone();
-
-            recorder.set_tensor(old, new_tensor);
-        };
-
-        set_single(self.as_value(), new.as_value());
-        set_single(self.as_gradient().unwrap(), new.as_gradient().unwrap());
+        recorder.set_tensor_from(self.as_value(), new.as_value());
+        recorder.set_tensor_from(self.as_gradient().unwrap(), new.as_gradient().unwrap());
     }
 }
 

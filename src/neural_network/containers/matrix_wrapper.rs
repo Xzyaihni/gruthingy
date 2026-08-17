@@ -355,16 +355,6 @@ impl MatrixWrapper
         self.0.copy_from_slice(&values.into());
     }
 
-    pub fn fill(&mut self, value: f32)
-    {
-        self.0.fill(value);
-    }
-
-    pub fn fill_with(&mut self, f: impl Fn() -> f32)
-    {
-        self.0.fill_with(f);
-    }
-
     pub fn max(&mut self, rhs: &Self)
     {
         self.0.zip_apply(&rhs.0, |lhs, rhs|
@@ -523,6 +513,20 @@ impl<'a> MatrixWrapperRef<'a>
         MatrixWrapperMut(DMatrixViewMut::from(&mut cloned)).softmax_cross_entropy_inplace(targets)
     }
 
+    pub fn matmul_onehotv_add(self, rhs: &OneHotLayer, added: MatrixWrapperRef) -> MatrixWrapper
+    {
+        debug_assert!(added.0.shape().1 == 1);
+
+        let mut output = added.0.clone_owned();
+
+        for position in rhs.positions.iter()
+        {
+            output += self.0.column(*position);
+        }
+
+        MatrixWrapper(output)
+    }
+
     pub fn clone_owned(self) -> MatrixWrapper
     {
         MatrixWrapper(self.0.clone_owned())
@@ -556,6 +560,21 @@ impl<'a> MatrixWrapperMut<'a>
         Self(DMatrixViewMut::from_slice(&mut data[info.raw_index.0..], info.rows, info.columns))
     }
 
+    pub fn fill(mut self, value: f32)
+    {
+        self.0.fill(value);
+    }
+
+    pub fn fill_with(mut self, f: impl Fn() -> f32)
+    {
+        self.0.fill_with(f);
+    }
+
+    pub fn copy_from(mut self, value: MatrixWrapperRef)
+    {
+        self.0.copy_from(&value.0);
+    }
+
     pub fn add_to(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
     {
         lhs.0.add_to(&rhs.0, &mut self.0);
@@ -569,6 +588,11 @@ impl<'a> MatrixWrapperMut<'a>
     pub fn sub_from_scalar(mut self, lhs: f32, rhs: MatrixWrapperRef)
     {
         self.0.zip_apply(&rhs.0, |out, rhs| *out = lhs - rhs);
+    }
+
+    pub fn sub_inplace(&mut self, rhs: MatrixWrapperRef)
+    {
+        self.0 -= rhs.0;
     }
 
     pub fn add_scalar(mut self, rhs: f32)

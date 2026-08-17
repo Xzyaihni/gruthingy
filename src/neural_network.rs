@@ -39,6 +39,8 @@ pub use containers::{
     OperationsRecorder,
     BlockIndex,
     LayerType,
+    LayerTypeRef,
+    LayerTypeMut,
     DiffTensorPtr,
     DiffTensor,
     DiffScalar,
