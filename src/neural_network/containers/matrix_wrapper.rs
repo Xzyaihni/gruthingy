@@ -489,7 +489,21 @@ impl<'a> MatrixWrapperRef<'a>
 
     pub fn from_data_with_start(data: &'a [f32], info: TensorRawDataPointer) -> Self
     {
-        Self(DMatrixView::from_slice(&data[info.raw_index.0..], info.rows, info.columns))
+        let view;
+
+        #[cfg(debug_assertions)]
+        {
+            view = DMatrixView::from_slice(&data[info.raw_index.0..], info.rows, info.columns);
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe{
+                view = DMatrixView::from_slice_unchecked(data, info.raw_index.0, info.rows, info.columns);
+            }
+        }
+
+        Self(view)
     }
 
     pub fn dot(self, rhs: Self) -> f32
@@ -557,7 +571,21 @@ impl<'a> MatrixWrapperMut<'a>
 
     pub fn from_data_with_start(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
     {
-        Self(DMatrixViewMut::from_slice(&mut data[info.raw_index.0..], info.rows, info.columns))
+        let view;
+
+        #[cfg(debug_assertions)]
+        {
+            view = DMatrixViewMut::from_slice(&mut data[info.raw_index.0..], info.rows, info.columns);
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe{
+                view = DMatrixViewMut::from_slice_unchecked(data, info.raw_index.0, info.rows, info.columns);
+            }
+        }
+
+        Self(view)
     }
 
     pub fn fill(mut self, value: f32)
