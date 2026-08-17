@@ -7,12 +7,14 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, DMatrixView, DMatrixViewMut};
 
 use super::{
     Softmaxer,
     Softmaxable,
     OneHotLayer,
+    TensorRawDataPointer,
+    TensorIndexRaw,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -363,67 +365,6 @@ impl MatrixWrapper
         self.0.fill_with(f);
     }
 
-    pub fn add_to(&mut self, lhs: &Self, rhs: &Self)
-    {
-        lhs.0.add_to(&rhs.0, &mut self.0);
-    }
-
-    pub fn matmulv_into(&mut self, lhs: &Self, rhs: &Self)
-    {
-        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 0.0);
-    }
-
-    pub fn matmulv_add_into(&mut self, lhs: &Self, rhs: &Self, added: &Self)
-    {
-        self.0 = added.0.clone();
-        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 1.0);
-    }
-
-    pub fn matmul_onehotv_add(&self, rhs: &OneHotLayer, added: impl Borrow<Self>) -> Self
-    {
-        debug_assert!(added.borrow().0.shape().1 == 1);
-
-        let mut this = added.borrow().0.clone();
-
-        for position in rhs.positions.iter()
-        {
-            this += self.0.column(*position);
-        }
-
-        Self(this)
-    }
-
-    pub fn component_mul_into(&mut self, lhs: &Self, rhs: &Self)
-    {
-        self.0.cmpy(1.0, &lhs.0, &rhs.0, 0.0);
-    }
-
-    pub fn matmulv_transposed_into(&mut self, lhs: &Self, rhs: &Self)
-    {
-        self.0.column_mut(0).gemv_tr(1.0, &lhs.0, &rhs.0.column(0), 0.0);
-    }
-
-    pub fn outer_product_into(&mut self, lhs: &Self, rhs: &Self)
-    {
-        self.0.ger(1.0, &lhs.0.column(0), &rhs.0.column(0), 0.0);
-    }
-
-    pub fn outer_product_one_hot_into(&mut self, lhs: &Self, rhs: &OneHotLayer)
-    {
-        let a = &lhs.0;
-
-        debug_assert!(a.shape().1 == 1);
-
-        self.0 = DMatrix::zeros(a.nrows(), rhs.size);
-
-        let a = &a.column(0);
-
-        for position in rhs.positions.iter().copied()
-        {
-            self.0.set_column(position, a);
-        }
-    }
-
     pub fn max(&mut self, rhs: &Self)
     {
         self.0.zip_apply(&rhs.0, |lhs, rhs|
@@ -432,32 +373,9 @@ impl MatrixWrapper
         });
     }
 
-    pub fn dot_onehot(self, rhs: &OneHotLayer) -> f32
-    {
-        debug_assert!(self.0.shape().1 == 1);
-
-        let this = self.0.column(0);
-
-        rhs.positions.iter().map(|position| this.index(*position)).sum()
-    }
-
     pub fn dot(&self, rhs: &Self) -> f32
     {
         self.0.dot(&rhs.0)
-    }
-
-    pub fn ln_onehot(&mut self, onehot: &OneHotLayer)
-    {
-        debug_assert!(self.0.shape().1 == 1);
-
-        let mut this = self.0.column_mut(0);
-
-        onehot.positions.iter().for_each(|position|
-        {
-            let value = this.index_mut(*position);
-
-            *value = value.ln();
-        });
     }
 
     #[must_use]
@@ -473,47 +391,14 @@ impl MatrixWrapper
         Self(self.0.map(|x| x.powi(power)))
     }
 
-    #[must_use]
-    pub fn sigmoid(&self) -> Self
-    {
-        Self(self.0.map(|x| 1.0 / (1.0 + (-x).exp())))
-    }
-
-    pub fn sigmoid_gradient_inplace(&mut self, value: &Self, gradient: &Self)
-    {
-        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a) * a * b);
-    }
-
-    #[must_use]
-    pub fn tanh(&self) -> Self
-    {
-        Self(self.0.map(|x| x.tanh()))
-    }
-
     pub fn tanh_mul(&self, rhs: &Self) -> Self
     {
         Self(self.0.zip_map(&rhs.0, |x, rhs| x.tanh() * rhs))
     }
 
-    pub fn tanh_gradient_inplace(&mut self, value: &Self, gradient: &Self)
-    {
-        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a * a) * b);
-    }
-
-    #[must_use]
-    pub fn leaky_relu(&self) -> Self
-    {
-        Self(self.0.map(|x| x.max(LEAKY_SLOPE * x)))
-    }
-
     pub fn leaky_relu_mul(&self, rhs: &Self) -> Self
     {
         Self(self.0.zip_map(&rhs.0, |x, rhs| x.max(LEAKY_SLOPE * x) * rhs))
-    }
-
-    pub fn leaky_relu_gradient_inplace(&mut self, value: &Self, gradient: &Self)
-    {
-        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = leaky_relu_d(a) * b);
     }
 
     pub fn exp_inplace(&mut self)
@@ -555,6 +440,11 @@ impl MatrixWrapper
         self.0.magnitude()
     }
 
+    pub fn as_slice(&self) -> &[f32]
+    {
+        self.0.as_slice()
+    }
+
     pub fn total_len(&self) -> usize
     {
         self.0.as_slice().len()
@@ -578,5 +468,244 @@ impl MatrixWrapper
     pub fn highest_index(&self) -> usize
     {
         Softmaxer::highest_index(self.iter())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct MatrixWrapperRef<'a>(DMatrixView<'a, f32>);
+
+impl Debug for MatrixWrapperRef<'_>
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        write!(f, "{{rows: {}, columns: {}, data: {:?}}}", self.0.nrows(), self.0.ncols(), self.as_vec())
+    }
+}
+
+impl<'a> From<&'a MatrixWrapper> for MatrixWrapperRef<'a>
+{
+    fn from(value: &'a MatrixWrapper) -> Self
+    {
+        Self(DMatrixView::from(&value.0))
+    }
+}
+
+impl<'a> MatrixWrapperRef<'a>
+{
+    pub fn from_data(data: &'a [f32], info: TensorRawDataPointer) -> Self
+    {
+        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+    }
+
+    pub fn from_data_with_start(data: &'a [f32], info: TensorRawDataPointer) -> Self
+    {
+        Self(DMatrixView::from_slice(&data[info.raw_index.0..], info.rows, info.columns))
+    }
+
+    pub fn dot(self, rhs: Self) -> f32
+    {
+        self.0.dot(&rhs.0)
+    }
+
+    pub fn dot_onehot(self, rhs: &OneHotLayer) -> f32
+    {
+        debug_assert!(self.0.shape().1 == 1);
+
+        let this = self.0.column(0);
+
+        rhs.positions.iter().map(|position| this.index(*position)).sum()
+    }
+
+    pub fn softmax_cross_entropy(self, targets: &OneHotLayer) -> f32
+    {
+        let mut cloned = self.0.clone_owned();
+
+        MatrixWrapperMut(DMatrixViewMut::from(&mut cloned)).softmax_cross_entropy_inplace(targets)
+    }
+
+    pub fn clone_owned(self) -> MatrixWrapper
+    {
+        MatrixWrapper(self.0.clone_owned())
+    }
+
+    pub fn as_vec(self) -> Vec<f32>
+    {
+        self.clone_owned().as_vec()
+    }
+}
+
+pub struct MatrixWrapperMut<'a>(DMatrixViewMut<'a, f32>);
+
+impl Debug for MatrixWrapperMut<'_>
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        write!(f, "{{rows: {}, columns: {}, data: {:?}}}", self.0.nrows(), self.0.ncols(), self.as_vec())
+    }
+}
+
+impl<'a> MatrixWrapperMut<'a>
+{
+    pub fn from_data(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
+    {
+        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+    }
+
+    pub fn from_data_with_start(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
+    {
+        Self(DMatrixViewMut::from_slice(&mut data[info.raw_index.0..], info.rows, info.columns))
+    }
+
+    pub fn add_to(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
+    {
+        lhs.0.add_to(&rhs.0, &mut self.0);
+    }
+
+    pub fn sub_to(&mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
+    {
+        lhs.0.sub_to(&rhs.0, &mut self.0);
+    }
+
+    pub fn sub_from_scalar(mut self, lhs: f32, rhs: MatrixWrapperRef)
+    {
+        self.0.zip_apply(&rhs.0, |out, rhs| *out = lhs - rhs);
+    }
+
+    pub fn add_scalar(mut self, rhs: f32)
+    {
+        self.0.add_scalar_mut(rhs);
+    }
+
+    pub fn scale(mut self, rhs: f32)
+    {
+        self.0.scale_mut(rhs);
+    }
+
+    pub fn pow_inplace(mut self, power: u32)
+    {
+        let power = power as i32;
+
+        self.0.apply(|x| *x = x.powi(power));
+    }
+
+    pub fn tanh_inplace(mut self)
+    {
+        self.0.apply(|x| *x = x.tanh());
+    }
+
+    pub fn tanh_gradient_inplace(mut self, value: MatrixWrapperRef, gradient: MatrixWrapperRef)
+    {
+        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a * a) * b);
+    }
+
+    pub fn sigmoid_inplace(mut self)
+    {
+        self.0.apply(|x| *x = 1.0 / (1.0 + (-*x).exp()));
+    }
+
+    pub fn sigmoid_gradient_inplace(mut self, value: MatrixWrapperRef, gradient: MatrixWrapperRef)
+    {
+        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = (1.0 - a) * a * b);
+    }
+
+    pub fn leaky_relu_inplace(mut self)
+    {
+        self.0.apply(|x| *x = x.max(LEAKY_SLOPE * *x));
+    }
+
+    pub fn leaky_relu_gradient_inplace(mut self, value: MatrixWrapperRef, gradient: MatrixWrapperRef)
+    {
+        self.0.zip_zip_apply(&value.0, &gradient.0, |output, a, b| *output = leaky_relu_d(a) * b);
+    }
+
+    pub fn component_mul_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
+    {
+        self.0.cmpy(1.0, &lhs.0, &rhs.0, 0.0);
+    }
+
+    pub fn matmulv_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
+    {
+        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 0.0);
+    }
+
+    pub fn matmulv_add_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef, added: MatrixWrapperRef)
+    {
+        self.0.copy_from(&added.0);
+        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 1.0);
+    }
+
+    pub fn matmul_onehotv_add_into(mut self, lhs: MatrixWrapperRef, rhs: &OneHotLayer, added: MatrixWrapperRef)
+    {
+        debug_assert!(added.0.shape().1 == 1);
+
+        self.0.copy_from(&added.0);
+
+        for position in rhs.positions.iter()
+        {
+            self.0 += lhs.0.column(*position);
+        }
+    }
+
+    pub fn matmulv_transposed_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
+    {
+        self.0.column_mut(0).gemv_tr(1.0, &lhs.0, &rhs.0.column(0), 0.0);
+    }
+
+    pub fn outer_product_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
+    {
+        self.0.ger(1.0, &lhs.0.column(0), &rhs.0.column(0), 0.0);
+    }
+
+    pub fn outer_product_one_hot_into(mut self, lhs: MatrixWrapperRef, rhs: &OneHotLayer)
+    {
+        let a = &lhs.0;
+
+        debug_assert!(a.shape().1 == 1);
+
+        self.0.fill(0.0);
+
+        let a = &a.column(0);
+
+        for position in rhs.positions.iter().copied()
+        {
+            self.0.set_column(position, a);
+        }
+    }
+
+    fn ln_onehot(&mut self, onehot: &OneHotLayer)
+    {
+        debug_assert!(self.0.shape().1 == 1);
+
+        let mut this = self.0.column_mut(0);
+
+        onehot.positions.iter().for_each(|position|
+        {
+            let value = this.index_mut(*position);
+
+            *value = value.ln();
+        });
+    }
+
+    pub fn softmax_cross_entropy_inplace(mut self, targets: &OneHotLayer) -> f32
+    {
+        self.0.apply(|x| *x = x.exp());
+        let s = self.0.sum();
+
+        self.0 /= s;
+
+        let mut new = self.0.clone_owned();
+        MatrixWrapperMut(DMatrixViewMut::from(&mut new)).ln_onehot(targets);
+
+        -MatrixWrapperRef(DMatrixView::from(&new)).dot_onehot(targets)
+    }
+
+    pub fn clone_owned(&self) -> MatrixWrapper
+    {
+        MatrixWrapper(self.0.clone_owned())
+    }
+
+    pub fn as_vec(&self) -> Vec<f32>
+    {
+        self.clone_owned().as_vec()
     }
 }

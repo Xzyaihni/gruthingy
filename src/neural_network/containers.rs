@@ -5,7 +5,7 @@ use std::{
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
-    ops::DivAssign
+    ops::{DivAssign, Range}
 };
 
 #[allow(unused_imports)]
@@ -13,12 +13,14 @@ use std::iter;
 
 use serde::{Serialize, Deserialize};
 
-use matrix_wrapper::MatrixWrapper;
+use matrix_wrapper::{MatrixWrapper, MatrixWrapperRef, MatrixWrapperMut};
 
 mod matrix_wrapper;
 
 
 pub type LayerType = MatrixWrapper;
+pub type LayerTypeRef<'a> = MatrixWrapperRef<'a>;
+pub type LayerTypeMut<'a> = MatrixWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
@@ -90,23 +92,6 @@ impl Softmaxer
         {
             a.1.partial_cmp(b.1).unwrap()
         }).unwrap().0
-    }
-}
-
-impl LayerType
-{
-    pub fn softmax_cross_entropy(mut self, targets: &OneHotLayer) -> (Self, f32)
-    {
-        let this_is_horrible = ();
-        Softmaxer::softmax(&mut self);
-        let softmaxed = self.clone();
-
-        // assumes that targets r either 0 or 1
-        self.ln_onehot(targets);
-
-        let s = self.dot_onehot(targets);
-
-        (softmaxed, -s)
     }
 }
 
@@ -199,7 +184,7 @@ pub struct OperationsBlock
     tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp<TensorPtr>>,
-    raw_operations: Vec<GradientOp<TensorIndex>>,
+    raw_operations: Vec<GradientOp<TensorRawDataPointer>>,
     feedforward_operations_count: usize
 }
 
@@ -297,6 +282,46 @@ impl Debug for SlotNoLong<'_>
     }
 }
 
+struct DebugStringRaw(String);
+
+impl Debug for DebugStringRaw
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        write!(f, "{}", &self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TensorRawDataPointer
+{
+    raw_index: TensorIndexRaw,
+    rows: usize,
+    columns: usize
+}
+
+impl TensorRawDataPointer
+{
+    fn undefined() -> Self
+    {
+        Self{
+            raw_index: TensorIndexRaw(usize::MAX),
+            rows: 0,
+            columns: 0
+        }
+    }
+
+    pub fn range(&self) -> Range<usize>
+    {
+        self.raw_index.0..(self.raw_index.0 + self.size())
+    }
+
+    pub fn size(&self) -> usize
+    {
+        self.rows * self.columns
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationsRecorder
 {
@@ -306,11 +331,10 @@ pub struct OperationsRecorder
     global_tensor_live_ranges: Vec<LiveRange>,
     tensors_memory: Vec<TensorMemorySlot>,
     values: Vec<f32>,
-    tensors: Vec<LayerType>,
+    tensors: Vec<TensorRawDataPointer>,
+    tensors_raw_data: Vec<f32>,
     one_hot_layers: Vec<OneHotLayer>,
-    operations_blocks: Vec<OperationsBlock>,
-    #[cfg(debug_assertions)]
-    used_values: Vec<ValueIndex>
+    operations_blocks: Vec<OperationsBlock>
 }
 
 impl Debug for OperationsRecorder
@@ -321,11 +345,12 @@ impl Debug for OperationsRecorder
 
         f.debug_struct("OperationsRecorder")
             .field("state", &self.state)
-            .field("global_value_live_ranges", &self.global_value_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
-            .field("global_tensor_live_ranges", &self.global_tensor_live_ranges.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("global_value_live_ranges", &self.global_value_live_ranges.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            .field("global_tensor_live_ranges", &self.global_tensor_live_ranges.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(SlotNoLong(max_length, x))).collect::<Vec<_>>())
             .field("values", &ForceNoPretty(&self.values))
-            .field("tensors", &self.tensors.iter().map(|x| LayerNoLong(max_length, x)).collect::<Vec<_>>())
+            .field("tensors", &self.tensors.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            .field("tensors_raw_data", &DebugStringRaw(format!("{} values", self.tensors_raw_data.len())))
             .field("one_hot_layers", &self.one_hot_layers)
             .field("operations_blocks", &self.operations_blocks)
             .finish()
@@ -462,10 +487,9 @@ impl OperationsRecorder
             tensors_memory: Vec::new(),
             values: Vec::new(),
             tensors: Vec::new(),
+            tensors_raw_data: Vec::new(),
             one_hot_layers: Vec::new(),
-            operations_blocks: vec![OperationsBlock::default()],
-            #[cfg(debug_assertions)]
-            used_values: Vec::new()
+            operations_blocks: vec![OperationsBlock::default()]
         }
     }
 
@@ -542,7 +566,10 @@ impl OperationsRecorder
 
     pub fn set_tensor(&mut self, index: TensorIndex, value: LayerType)
     {
-        self.tensors[index.0] = value;
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        todo!()
+        //self.tensors[index.0] = value;
     }
 
     pub fn set_value(&mut self, index: ValueIndex, value: f32)
@@ -613,20 +640,25 @@ impl OperationsRecorder
         }
     }
 
-    pub fn get_tensor(&self, index: TensorIndex) -> &LayerType
+    pub fn get_tensor(&self, index: TensorIndex) -> LayerTypeRef<'_>
     {
-        &self.tensors[index.0]
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        LayerTypeRef::from_data_with_start(&self.tensors_raw_data, self.tensors[index.0])
     }
 
     pub fn get_tensor_mut(&mut self, index: TensorIndex) -> &mut LayerType
     {
-        &mut self.tensors[index.0]
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        let who_uses_me = ();
+        todo!()
+        //&mut self.tensors[index.0]
     }
 
     pub fn get_value(&self, index: ValueIndex) -> f32
     {
-        #[cfg(debug_assertions)]
-        debug_assert!(self.used_values.contains(&index), "store_value_until_end must be called on {index:?}");
+        debug_assert_eq!(self.global_value_live_ranges[index.0].end, Some(i32::MAX), "store_value_until_end must be called on {index:?}");
 
         self.values[index.0]
     }
@@ -897,9 +929,6 @@ impl OperationsRecorder
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
 
         self.global_value_live_ranges[index.0].end = Some(i32::MAX);
-
-        #[cfg(debug_assertions)]
-        self.used_values.push(index);
     }
 
     pub fn new_block(&mut self) -> BlockIndex
@@ -951,32 +980,50 @@ impl OperationsRecorder
 
         self.operations_blocks[block.0].raw_operations.iter().take(steps).for_each(|gradient_op|
         {
+            macro_rules! copy_tensor
+            {
+                ($src:expr, $dst:expr) =>
+                {
+                    self.tensors_raw_data.copy_within($src.range(), $dst.raw_index.0)
+                }
+            }
+
             macro_rules! get_disjoint_mut
             {
-                ($($name:ident),+) =>
+                ($(($target_type:ident, $name:ident, $tmp_name:ident)),+) =>
                 {
                     {
-                        #[cfg(debug_assertions)]
-                        {
-                            self.tensors.get_disjoint_mut([$($name.0,)+]).unwrap()
-                        }
+                        let indices = [$($name.range(),)+];
 
-                        #[cfg(not(debug_assertions))]
-                        {
-                            unsafe{ self.tensors.get_disjoint_unchecked_mut([$($name.0,)+]) }
-                        }
+                        let [$($tmp_name,)+] = {
+                            #[cfg(debug_assertions)]
+                            {
+                                self.tensors_raw_data.get_disjoint_mut(indices).unwrap()
+                            }
+
+                            #[cfg(not(debug_assertions))]
+                            {
+                                unsafe{ self.tensors_raw_data.get_disjoint_unchecked_mut(indices) }
+                            }
+                        };
+
+                        ($($target_type::from_data($tmp_name, *$name),)+)
                     }
                 }
             }
 
+            let remove_me = ();//dbg!(&self.tensors_raw_data);
             //let before_instant = std::time::Instant::now();
             match gradient_op
             {
                 GradientOp::None => unreachable!(),
-                GradientOp::Copy{src, dst} => self.tensors[dst.0] = self.tensors[src.0].clone(),
+                GradientOp::Copy{src, dst} =>
+                {
+                    copy_tensor!(src, dst);
+                },
                 GradientOp::CopyScalar{src, dst} =>
                 {
-                    self.values[dst.0] = self.values[src.0].clone();
+                    self.values[dst.0] = self.values[src.0];
                 },
                 GradientOp::AddScalars{lhs, rhs, output} =>
                 {
@@ -984,35 +1031,48 @@ impl OperationsRecorder
                 },
                 GradientOp::AddScalar{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = &self.tensors[lhs.0] + self.values[rhs.0];
+                    copy_tensor!(lhs, output);
+
+                    LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).add_scalar(self.values[rhs.0]);
                 },
                 GradientOp::Add{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+                    let (output, lhs, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2)
+                    );
 
                     output.add_to(lhs, rhs);
                 },
                 GradientOp::AddInplace{value, output} =>
                 {
-                    let [output, value] = get_disjoint_mut!(output, value);
-
-                    *output += value;
+                    unimplemented!()
                 },
                 GradientOp::Sub{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = &self.tensors[lhs.0] - &self.tensors[rhs.0];
+                    let (mut output, lhs, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2)
+                    );
+
+                    output.sub_to(lhs, rhs);
                 },
                 GradientOp::SubFromScalar{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = -&self.tensors[rhs.0] + self.values[lhs.0];
+                    let (output, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, rhs, x1)
+                    );
+
+                    output.sub_from_scalar(self.values[lhs.0], rhs);
                 },
                 GradientOp::MulScalar{lhs, rhs, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = &self.tensors[lhs.0] * &self.values[rhs.0];
+                    copy_tensor!(lhs, output);
+
+                    LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).scale(self.values[rhs.0]);
                 },
                 GradientOp::MulScalars{lhs, rhs, output} =>
                 {
@@ -1020,118 +1080,179 @@ impl OperationsRecorder
                 },
                 GradientOp::MulComponentwise{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+                    let (output, lhs, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2)
+                    );
 
                     output.component_mul_into(lhs, rhs);
                 },
                 GradientOp::SumTensor{value, output} =>
                 {
-                    self.values[output.0] = self.tensors[value.0].sum();
+                    self.values[output.0] = self.tensors_raw_data[value.range()].iter().sum();
                 },
                 GradientOp::Dot{lhs, rhs, output} =>
                 {
-                    self.values[output.0] = self.tensors[lhs.0].dot(&self.tensors[rhs.0]);
+                    let lhs = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *lhs);
+                    let rhs = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *rhs);
+
+                    self.values[output.0] = lhs.dot(rhs);
                 },
                 GradientOp::Fill{value, output} =>
                 {
-                    self.tensors[output.0].fill(self.values[value.0]);
+                    self.tensors_raw_data[output.range()].fill(self.values[value.0]);
                 },
                 GradientOp::Pow{lhs, power, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[lhs.0].pow(*power);
+                    copy_tensor!(lhs, output);
+
+                    LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).pow_inplace(*power);
                 },
                 GradientOp::Sigmoid{value, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[value.0].sigmoid();
+                    copy_tensor!(value, output);
+
+                    LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).sigmoid_inplace();
                 },
                 GradientOp::SigmoidDiff{value, gradient, output} =>
                 {
-                    let [output, value, gradient] = get_disjoint_mut!(output, value, gradient);
+                    let (output, value, gradient) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, value, x1),
+                        (LayerTypeRef, gradient, x2)
+                    );
 
                     output.sigmoid_gradient_inplace(value, gradient);
                 },
                 GradientOp::Tanh{value, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[value.0].tanh();
+                    copy_tensor!(value, output);
+
+                    LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).tanh_inplace();
                 },
                 GradientOp::TanhDiff{value, gradient, output} =>
                 {
-                    let [output, value, gradient] = get_disjoint_mut!(output, value, gradient);
+                    let (output, value, gradient) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, value, x1),
+                        (LayerTypeRef, gradient, x2)
+                    );
 
                     output.tanh_gradient_inplace(value, gradient);
                 },
                 GradientOp::LeakyRelu{value, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[value.0].leaky_relu();
+                    copy_tensor!(value, output);
+
+                    LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).leaky_relu_inplace();
                 },
                 GradientOp::LeakyReluDiff{value, gradient, output} =>
                 {
-                    let [output, value, gradient] = get_disjoint_mut!(output, value, gradient);
+                    let (output, value, gradient) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, value, x1),
+                        (LayerTypeRef, gradient, x2)
+                    );
 
                     output.leaky_relu_gradient_inplace(value, gradient);
                 },
                 GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
-                    let optimize_this = ();
-                    (self.tensors[softmaxed_output.0], self.values[output.0]) = self.tensors[values.0].clone()
-                        .softmax_cross_entropy(&self.one_hot_layers[targets.0]);
+                    copy_tensor!(values, softmaxed_output);
+
+                    let softmaxed_output = LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *softmaxed_output);
+
+                    self.values[output.0] = softmaxed_output.softmax_cross_entropy_inplace(&self.one_hot_layers[targets.0]);
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
-                    self.values[output.0] = self.tensors[values.0].clone().softmax_cross_entropy(&self.one_hot_layers[targets.0]).1;
+                    let values = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *values);
+
+                    self.values[output.0] = values.softmax_cross_entropy(&self.one_hot_layers[targets.0]);
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
                     debug_assert_eq!(
-                        self.tensors[softmaxed_values.0].shape(), (self.one_hot_layers[targets.0].size, 1),
+                        (softmaxed_values.rows, softmaxed_values.columns), (self.one_hot_layers[targets.0].size, 1),
                         "softmaxed: {softmaxed_values:?}, targets: {targets:?}"
                     );
 
                     let optimize_this = ();
-                    self.tensors[output.0] = (&self.tensors[softmaxed_values.0] - self.one_hot_layers[targets.0].clone().into_layer()) * self.values[gradient.0];
+
+                    let (mut output, softmaxed_values) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, softmaxed_values, x1)
+                    );
+
+                    output.sub_to(softmaxed_values, MatrixWrapperRef::from(&self.one_hot_layers[targets.0].clone().into_layer()));
+
+                    output.scale(self.values[gradient.0]);
                 },
                 GradientOp::Matmulv{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+                    let (output, lhs, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2)
+                    );
 
                     output.matmulv_into(lhs, rhs);
                 },
                 GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
                 {
-                    let [output, lhs, rhs, added] = get_disjoint_mut!(output, lhs, rhs, added);
+                    let (output, lhs, rhs, added) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2),
+                        (LayerTypeRef, added, x3)
+                    );
 
                     output.matmulv_add_into(lhs, rhs, added);
                 },
                 GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
-                    let optimize_this = ();
-                    self.tensors[output.0] = self.tensors[lhs.0].matmul_onehotv_add(&self.one_hot_layers[rhs.0], &self.tensors[added.0]);
+                    let (output, lhs, added) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, added, x2)
+                    );
+
+                    output.matmul_onehotv_add_into(lhs, &self.one_hot_layers[rhs.0], added);
                 },
                 GradientOp::MatmulvTransposed{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+                    let (output, lhs, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2)
+                    );
 
                     output.matmulv_transposed_into(lhs, rhs);
                 },
                 GradientOp::OuterProduct{lhs, rhs, output} =>
                 {
-                    let [output, lhs, rhs] = get_disjoint_mut!(output, lhs, rhs);
+                    let (output, lhs, rhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2)
+                    );
 
                     output.outer_product_into(lhs, rhs);
                 },
                 GradientOp::OuterProductOneHot{lhs, rhs, output} =>
                 {
-                    let [output, lhs] = get_disjoint_mut!(output, lhs);
+                    let (output, lhs) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1)
+                    );
 
                     output.outer_product_one_hot_into(lhs, &self.one_hot_layers[rhs.0]);
                 }
             }
 
             //eprintln!("{}, elapsed {:.3} us",format!("{gradient_op:?}").split(' ').next().unwrap(),before_instant.elapsed().as_nanos()as f64/1000.0);
+            let remove_me = ();//dbg!(&self.tensors_raw_data);
         });
     }
 
@@ -1570,7 +1691,7 @@ impl OperationsRecorder
         });
     }
 
-    fn greedy_graph_color_block(&mut self, block: BlockIndex)
+    fn greedy_graph_color_block(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>, block: BlockIndex)
     {
         let nodes_count = self.global_tensor_live_ranges.len();
 
@@ -1655,28 +1776,20 @@ impl OperationsRecorder
                     connected_node_color != Some(*color)
                 });
 
-                let spot_size_matches = self.tensors.get(*color).map(|spot_tensor|
+                let spot_size_matches = memory_assignments.get(*color).map(|spot_tensor|
                 {
-                    let this_shape = self.tensors_memory[node_index].value.tensor_shape();
-
-                    spot_tensor.shape() == this_shape
+                    spot_tensor.tensor_shape() == self.tensors_memory[node_index].value.tensor_shape()
                 }).unwrap_or(true);
 
                 all_connected_unconflicted && spot_size_matches
             }).unwrap();
 
-            if this_color == self.tensors.len()
+            if this_color == memory_assignments.len()
             {
-                let tensor = match &self.tensors_memory[node_index].value
-                {
-                    TensorMemoryValue::Value(x) => x.clone(),
-                    TensorMemoryValue::Size{rows, columns} => LayerType::new(*rows, *columns)
-                };
-
-                self.tensors.push(tensor);
+                memory_assignments.push(self.tensors_memory[node_index].value.clone());
             } else if let TensorMemoryValue::Value(x) = &self.tensors_memory[node_index].value
             {
-                self.tensors[this_color] = x.clone();
+                memory_assignments[this_color] = TensorMemoryValue::Value(x.clone());
             }
 
             debug_assert!(self.tensors_memory[node_index].memory.is_none(), "in {block:?}: tried to replace slot of TensorPtr({node_index})");
@@ -1684,7 +1797,7 @@ impl OperationsRecorder
         });
     }
 
-    fn greedy_graph_color(&mut self)
+    fn greedy_graph_color(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
     {
         let mut blocks_by_length: Vec<usize> = (0..self.operations_blocks.len()).collect();
         blocks_by_length.sort_by_key(|block_index| self.operations_blocks[*block_index].gradient_operations.len());
@@ -1692,7 +1805,7 @@ impl OperationsRecorder
 
         for block_index in blocks_by_length
         {
-            self.greedy_graph_color_block(BlockIndex(block_index));
+            self.greedy_graph_color_block(memory_assignments, BlockIndex(block_index));
         }
     }
 
@@ -1702,7 +1815,10 @@ impl OperationsRecorder
 
         self.calculate_live_ranges();
 
-        self.greedy_graph_color();
+        let mut memory_assignments = Vec::new();
+        self.greedy_graph_color(&mut memory_assignments);
+
+        self.tensors.resize(memory_assignments.len(), TensorRawDataPointer::undefined());
 
         if OPT_INFO
         {
@@ -1714,7 +1830,44 @@ impl OperationsRecorder
             block.value_live_ranges.clear();
             block.tensor_live_ranges.clear();
 
-            block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(|op| -> Option<GradientOp<TensorIndex>>
+            let mut create_tensor = |ptr: TensorPtr| -> TensorRawDataPointer
+            {
+                let this_index: TensorIndex = self.tensors_memory[ptr.0].memory.expect("must be resolved");
+
+                {
+                    let current_value = self.tensors[this_index.0];
+                    if current_value != TensorRawDataPointer::undefined()
+                    {
+                        return current_value;
+                    }
+                }
+
+                let this_tensor: &TensorMemoryValue = &memory_assignments[this_index.0];
+
+                let (rows, columns) = this_tensor.tensor_shape();
+                let size = rows * columns;
+
+                let id = TensorIndexRaw(self.tensors_raw_data.len());
+
+                match this_tensor
+                {
+                    TensorMemoryValue::Value(x) => self.tensors_raw_data.extend(x.as_slice()),
+                    TensorMemoryValue::Size{..} => self.tensors_raw_data.resize(self.tensors_raw_data.len() + size, 0.0)
+                }
+
+                let data_ptr = TensorRawDataPointer{
+                    raw_index: id,
+                    rows,
+                    columns
+                };
+
+                debug_assert_eq!(self.tensors[this_index.0], TensorRawDataPointer::undefined());
+                self.tensors[this_index.0] = data_ptr;
+
+                data_ptr
+            };
+
+            block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(|op| -> Option<GradientOp<TensorRawDataPointer>>
             {
                 match op
                 {
@@ -1727,12 +1880,12 @@ impl OperationsRecorder
                     } if self.tensors_memory[softmaxed_output.0].memory.is_none() =>
                     {
                         Some(GradientOp::SoftmaxCrossEntropyNoSoftmaxed{
-                            values: self.tensors_memory[values.0].memory.expect("must be resolved"),
+                            values: create_tensor(values),
                             targets,
                             output
                         })
                     },
-                    x => Some(x.map_tensors(|tensor_ptr| self.tensors_memory[tensor_ptr.0].memory.expect("must be resolved")))
+                    x => Some(x.map_tensors(&mut create_tensor))
                 }
             }).collect();
 
@@ -2181,6 +2334,9 @@ impl TensorIndex
 {
     pub fn undefined() -> Self { Self(usize::MAX) }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct TensorIndexRaw(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueIndex(usize);
@@ -2914,8 +3070,8 @@ mod tests
         let current_block = recorder.current_block();
         recorder.calculate(current_block);
 
-        let a_g = recorder.get_tensor(a_gradient).clone();
-        let b_g = recorder.get_tensor(b_gradient).clone();
+        let a_g = recorder.get_tensor(a_gradient).clone_owned();
+        let b_g = recorder.get_tensor(b_gradient).clone_owned();
 
         let mut vals = |a: LayerType, b: LayerType|
         {
@@ -2940,7 +3096,7 @@ mod tests
             let current_block = new_recorder.current_block();
             new_recorder.calculate(current_block);
 
-            new_recorder.get_tensor(output_value).clone()
+            new_recorder.get_tensor(output_value).clone_owned()
         };
 
         let orig = vals(a_value.clone(), b_value.clone()).sum();
