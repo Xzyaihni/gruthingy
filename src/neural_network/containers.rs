@@ -29,6 +29,7 @@ pub type LayerTypeMut<'a> = MatrixWrapperMut<'a>;
 pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = false;
+const NO_COLORING: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -1972,22 +1973,28 @@ impl OperationsRecorder
                 return;
             }
 
-            let this_color = (0..).find(|color|
+            let this_color = if NO_COLORING
             {
-                let all_connected_unconflicted = graph_connections[node_index].iter().all(|connected_node_index|
+                memory_assignments.len()
+            } else
+            {
+                (0..).find(|color|
                 {
-                    let connected_node_color: Option<usize> = self.tensors_memory[*connected_node_index].memory.map(|x| x.0);
+                    let all_connected_unconflicted = graph_connections[node_index].iter().all(|connected_node_index|
+                    {
+                        let connected_node_color: Option<usize> = self.tensors_memory[*connected_node_index].memory.map(|x| x.0);
 
-                    connected_node_color != Some(*color)
-                });
+                        connected_node_color != Some(*color)
+                    });
 
-                let spot_size_matches = memory_assignments.get(*color).map(|spot_tensor|
-                {
-                    spot_tensor.tensor_shape() == self.tensors_memory[node_index].value.tensor_shape()
-                }).unwrap_or(true);
+                    let spot_size_matches = memory_assignments.get(*color).map(|spot_tensor|
+                    {
+                        spot_tensor.tensor_shape() == self.tensors_memory[node_index].value.tensor_shape()
+                    }).unwrap_or(true);
 
-                all_connected_unconflicted && spot_size_matches
-            }).unwrap();
+                    all_connected_unconflicted && spot_size_matches
+                }).unwrap()
+            };
 
             if this_color == memory_assignments.len()
             {
