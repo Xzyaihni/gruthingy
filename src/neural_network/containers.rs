@@ -2128,7 +2128,7 @@ impl OperationsRecorder
                 data_ptr
             };
 
-            let map_to_raw = |op| -> Option<GradientOp<TensorRawDataPointer>>
+            let map_to_raw = |op: GradientOp<TensorPtr>| -> Option<GradientOp<TensorRawDataPointer>>
             {
                 match op
                 {
