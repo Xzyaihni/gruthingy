@@ -709,6 +709,8 @@ where
 {
     recorder: OperationsRecorder,
     sizes: LayerSizes,
+    is_multistep: Option<bool>,
+    is_input_one_hot: Option<bool>,
     dropout_probability: f32,
     dropout_masks_ptrs: Vec<TensorPtr>,
     dropout_masks: Vec<TensorIndex>,
@@ -734,6 +736,8 @@ where
         Self{
             recorder: self.recorder.clone(),
             sizes: self.sizes,
+            is_multistep: self.is_multistep,
+            is_input_one_hot: self.is_input_one_hot,
             dropout_probability: self.dropout_probability,
             dropout_masks_ptrs: Vec::new(),
             dropout_masks: Vec::new(),
@@ -781,6 +785,8 @@ where
 
         let mut this = Self{
             sizes: x.sizes,
+            is_multistep: None,
+            is_input_one_hot: None,
             dropout_probability: x.dropout_probability,
             optimizer_info: x.optimizer_info,
             weights_ptr: Some(WeightsFullContainer{
@@ -915,15 +921,28 @@ where
             optimizer_info,
             weights_ptr: Some(weights_ptr),
             weights,
+            is_multistep: Some(is_multistep),
+            is_input_one_hot: Some(is_input_one_hot),
             dropout_probability
         };
 
-        this.initialize(is_multistep, is_input_one_hot);
+        this.initialize();
 
         this
     }
 
-    pub fn initialize(&mut self, is_multistep: bool, is_input_one_hot: bool)
+    pub fn initialize_with_params(&mut self, is_multistep: bool, is_input_one_hot: bool)
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    {
+        self.is_multistep = Some(is_multistep);
+        self.is_input_one_hot = Some(is_input_one_hot);
+
+        self.initialize();
+    }
+
+    pub fn initialize(&mut self)
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
@@ -935,16 +954,12 @@ where
 
         self.no_state.index = self.recorder.current_block();
 
-        if is_multistep
+        if self.is_multistep.unwrap()
         {
             self.with_state.index = self.recorder.new_block();
         }
 
         self.initialize_dropped_weights();
-
-        self.record_feedforward(is_multistep, is_input_one_hot);
-
-        self.recorder.finish();
     }
 
     pub fn initialize_dropped_weights(&mut self)
@@ -974,7 +989,11 @@ where
     {
         if !self.recorder.is_ready()
         {
-            debug_assert_ne!(self.no_state.loss, DiffScalar::undefined());
+            self.record_feedforward(true);
+
+            self.prepare_setup_shared();
+
+            self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_gradient().unwrap());
 
             let is_multiblock = self.recorder.blocks_count() > 1;
 
@@ -988,55 +1007,113 @@ where
                 vec![self.no_state.loss.into(), self.with_state.loss.into()]
             };
 
-            {
-                let weight = self.weights_ptr.as_ref().unwrap().output.weight_original;
-
-                self.recorder.store_tensor_until_end(weight.as_value());
-                self.recorder.store_tensor_until_end(weight.as_gradient().unwrap());
-            }
-
-            let mut prepare_state_block = |state_block: &mut BlockInfo<_>|
-            {
-                self.recorder.store_value_until_end(state_block.loss.as_value());
-            };
-
-            prepare_state_block(&mut self.no_state);
-
-            if is_multiblock
-            {
-                prepare_state_block(&mut self.with_state);
-            }
-
             self.recorder.gradient_with_respect(respect);
 
-            self.recorder.resolve_memory();
-
-            self.input_target.0 = match self.input_ptr.unwrap()
-            {
-                InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
-                InputTypePtr::OneHot(x) => InputType::OneHot(x)
-            };
-
-            let weights = self.weights_ptr.take().unwrap().map(|weight_info|
-            {
-                WeightInfo{
-                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
-                    dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
-                }
-            });
-
-            self.weights = Some(weights);
+            self.prepare_shared(true);
         }
     }
 
-    fn record_feedforward(&mut self, is_multistep: bool, is_input_one_hot: bool)
+    fn prepare_predict(&mut self)
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+    {
+        if !self.recorder.is_ready()
+        {
+            let is_multiblock = self.recorder.blocks_count() > 1;
+
+            self.record_feedforward(false);
+
+            self.prepare_setup_shared();
+
+            {
+                let mut prepare_block = |block: &mut BlockInfo<_>|
+                {
+                    self.recorder.store_tensor_until_end_in_block(block.index, block.output_ptr.unwrap().as_value());
+                };
+
+                prepare_block(&mut self.no_state);
+
+                if is_multiblock
+                {
+                    debug_assert_ne!(self.with_state.loss, DiffScalar::undefined());
+                    prepare_block(&mut self.with_state);
+                }
+            }
+
+            self.recorder.no_gradient();
+
+            self.prepare_shared(false);
+
+            let prepare_block = |block: &mut BlockInfo<_>|
+            {
+                block.output = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(block.output_ptr.unwrap().as_value()));
+            };
+
+            prepare_block(&mut self.no_state);
+
+            if is_multiblock
+            {
+                prepare_block(&mut self.with_state);
+            }
+        }
+    }
+
+    fn prepare_setup_shared(&mut self)
+    {
+        let is_multiblock = self.recorder.blocks_count() > 1;
+
+        self.recorder.finish();
+
+        debug_assert_ne!(self.no_state.loss, DiffScalar::undefined());
+
+        self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_value());
+
+        let mut prepare_state_block = |state_block: &mut BlockInfo<_>|
+        {
+            self.recorder.store_value_until_end(state_block.loss.as_value());
+        };
+
+        prepare_state_block(&mut self.no_state);
+
+        if is_multiblock
+        {
+            prepare_state_block(&mut self.with_state);
+        }
+    }
+
+    fn prepare_shared(&mut self, store_gradient: bool)
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+    {
+        self.recorder.resolve_memory();
+
+        self.input_target.0 = match self.input_ptr.unwrap()
+        {
+            InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
+            InputTypePtr::OneHot(x) => InputType::OneHot(x)
+        };
+
+        let weights = self.weights_ptr.take().unwrap().map(|mut weight_info|
+        {
+            if !store_gradient { weight_info.weight_original.clear_gradient(); }
+
+            WeightInfo{
+                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
+                dropconnect_mask: weight_info.dropconnect_mask.map(|x| self.recorder.resolve_tensor_ptr(x))
+            }
+        });
+
+        self.weights = Some(weights);
+    }
+
+    fn record_feedforward(&mut self, store_gradient: bool)
     {
         let dropout_masks_ptrs: Vec<_> = self.weights_ptr.as_ref().unwrap().layers.iter().skip(1).map(|_|
         {
             self.recorder.set_new_tensor(LayerType::repeat(self.sizes.hidden, 1, 0.0)).as_value()
         }).collect();
 
-        let this_input: InputTypePtr = if is_input_one_hot
+        let this_input: InputTypePtr = if self.is_input_one_hot.unwrap()
         {
             InputTypePtr::OneHot(self.recorder.new_one_hot())
         } else
@@ -1062,16 +1139,16 @@ where
         };
 
         let no_state_next_state = set_from_output(
-            self.record_feedforward_single_input(None, &dropout_masks_ptrs, this_input, this_target),
+            self.record_feedforward_single_input(None, &dropout_masks_ptrs, this_input, this_target, store_gradient),
             &mut self.no_state
         );
 
-        if is_multistep
+        if self.recorder.blocks_count() > 1
         {
             self.recorder.set_current_block(self.with_state.index);
 
             set_from_output(
-                self.record_feedforward_single_input(Some(no_state_next_state), &dropout_masks_ptrs, this_input, this_target),
+                self.record_feedforward_single_input(Some(no_state_next_state), &dropout_masks_ptrs, this_input, this_target, store_gradient),
                 &mut self.with_state
             );
         }
@@ -1084,7 +1161,8 @@ where
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
         input: InputTypePtr,
-        targets: OneHotIndex
+        targets: OneHotIndex,
+        store_gradient: bool
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, DiffScalar)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
@@ -1092,9 +1170,10 @@ where
             this.record_feedforward_unit_last(
                 layer_index,
                 previous_state,
-                input
+                input,
+                store_gradient
             ).map(|output| (output, this.recorder.softmax_cross_entropy(output, targets).1))
-        }, previous_states, dropout_masks, input)
+        }, previous_states, dropout_masks, input, store_gradient)
     }
 
     fn record_feedforward_single_input_with_activation<F, T>(
@@ -1102,7 +1181,8 @@ where
         last_f: F,
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
-        input: InputTypePtr
+        input: InputTypePtr,
+        store_gradient: bool
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, T>
     where
         F: FnOnce(&mut Self, usize, Option<&UnitState<N, DiffTensorPtr>>, DiffInputType) -> NetworkOutput<UnitState<N, DiffTensorPtr>, T>
@@ -1149,7 +1229,8 @@ where
                     &mut self.recorder,
                     previous_state,
                     dropout_masks[l_i],
-                    input
+                    input,
+                    store_gradient
                 );
 
                 last_output = Some(DiffInputType::Normal(this_output));
@@ -1168,11 +1249,12 @@ where
         &mut self,
         layer_index: usize,
         previous_state: Option<&UnitState<N, DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        store_gradient: bool
     ) -> NetworkOutput<UnitState<N, DiffTensorPtr>, DiffTensorPtr>
     {
         self.weights_ptr.as_ref().unwrap().layers[layer_index]
-            .record_feedforward_unit(&mut self.recorder, previous_state, input)
+            .record_feedforward_unit(&mut self.recorder, previous_state, input, store_gradient)
             .map(|output|
             {
                 self.recorder.matmulv(
@@ -1224,7 +1306,7 @@ where
     {
         let mut gradients: Option<WeightsFullContainer<N, LayerType>> = None;
 
-        let total_loss = self.feedforward_with(OperationsRecorder::calculate, |this, is_with_state|
+        let total_loss = self.feedforward_with(|this, is_with_state|
         {
             let this_gradients = this.weights.as_ref().unwrap().map_ref(|weight|
             {
@@ -1251,7 +1333,6 @@ where
 
     fn feedforward_with(
         &mut self,
-        calculate_method: fn(&mut OperationsRecorder, BlockIndex),
         f: impl FnMut(&mut Self, bool),
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
@@ -1260,7 +1341,7 @@ where
     {
         self.feedforward_setup_dropout();
 
-        self.feedforward_like(calculate_method, |this, this_target|
+        self.feedforward_like(|this, this_target|
         {
             this.recorder.set_one_hot(this.input_target.1, this_target);
         }, convert::identity, f, input)
@@ -1268,7 +1349,6 @@ where
 
     fn feedforward_like<T, U>(
         &mut self,
-        calculate_method: fn(&mut OperationsRecorder, BlockIndex),
         mut setup: impl FnMut(&mut Self, U),
         get_input: impl Fn(T) -> (OwnedInputType, U),
         mut f: impl FnMut(&mut Self, bool),
@@ -1304,7 +1384,7 @@ where
                     .for_each(|(no_state, with_state)| no_state.set(&mut self.recorder, with_state));
             }
 
-            calculate_method(&mut self.recorder, this_info.index);
+            self.recorder.calculate(this_info.index);
 
             total_loss += self.recorder.get_value(this_info.loss.as_value());
 
@@ -1359,6 +1439,7 @@ where
         f: F
     ) -> impl Iterator<Item=(usize, T)>
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         F: Fn(&LayerType, usize, usize) -> T
     {
@@ -1384,6 +1465,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, u32)>
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
@@ -1405,6 +1487,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, f32)>
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
@@ -1419,6 +1502,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, bool)>
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
         self.with_predict(input, |_predicted, highest_index, target_index|
@@ -1433,6 +1517,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
         let mut total = 0;
@@ -1475,9 +1560,12 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        self.feedforward_with(OperationsRecorder::calculate_feedforward, |_this, _is_with_state| {}, input)
+        self.prepare_predict();
+
+        self.feedforward_with(|_this, _is_with_state| {}, input)
     }
 
     fn predict(
@@ -1485,21 +1573,29 @@ where
         input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
     ) -> Vec<LayerType>
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        self.predict_temperature(1.0, input)
+        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
+
+        self.predict_temperature(1.0, input, |output| outputs.push(output));
+
+        outputs
     }
 
     pub fn predict_temperature(
         &mut self,
         temperature: f32,
-        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
-    ) -> Vec<LayerType>
+        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator,
+        mut f_output: impl FnMut(LayerType)
+    )
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
+        self.prepare_predict();
+
         let weights = self.weights.as_mut().unwrap();
-        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
 
         if N::Unit::<WeightInfo>::dropconnectable()
         {
@@ -1521,7 +1617,6 @@ where
         });
 
         self.feedforward_like(
-            OperationsRecorder::calculate_feedforward,
             |_, _| {},
             |x| (x, ()),
             |this, is_with_state|
@@ -1533,12 +1628,10 @@ where
 
                 Softmaxer::softmax_temperature(&mut output, temperature);
 
-                outputs.push(output);
+                f_output(output);
             },
             input
         );
-
-        outputs
     }
 
     fn set_dropout_mask(
@@ -1578,6 +1671,8 @@ where
         Network{
             recorder: self.recorder,
             sizes: self.sizes,
+            is_multistep: self.is_multistep,
+            is_input_one_hot: self.is_input_one_hot,
             dropout_probability: self.dropout_probability,
             optimizer_info: None,
             weights_ptr: self.weights_ptr,

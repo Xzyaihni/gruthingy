@@ -2,6 +2,7 @@ use std::{
     f32,
     fmt,
     slice,
+    cell::RefCell,
     marker::PhantomData,
     io::{self, Read, Write, BufReader, BufWriter},
     fs::File,
@@ -641,7 +642,7 @@ where
 struct Predictor<'a, D>
 {
     dictionary: &'a mut D,
-    words: Vec<OwnedInputType>,
+    words: RefCell<Vec<OwnedInputType>>,
     temperature: f32,
     predict_amount: usize
 }
@@ -657,14 +658,14 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     {
         Self{
             dictionary,
-            words,
+            words: RefCell::new(words),
             temperature,
             predict_amount
         }
     }
 
     pub fn predict_into<N, O>(
-        mut self,
+        self,
         network: &mut Network<N, O>,
         mut out: impl Write
     )
@@ -674,32 +675,37 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensorPtr>: Clone,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
         for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
     {
-        let input_amount = self.words.len();
+        let input_amount = self.words.borrow().len();
         let mut previous_word = None;
+
+        let mut current_input = 0;
 
         network.predict_temperature(self.temperature, (0..(input_amount + self.predict_amount)).map(|i|
         {
-            self.words[i].clone()
-        })).into_iter().enumerate().for_each(|(i, output)|
+            self.words.borrow()[i].clone()
+        }), |output|
         {
-            if i >= (input_amount - 1)
+            if current_input >= (input_amount - 1)
             {
                 let word = output.pick_weighed();
                 let word = VectorWord::from_raw(word);
 
                 let layer = self.dictionary.words_to_layer([word]);
-                self.words.push(layer);
+                self.words.borrow_mut().push(layer);
 
                 let bytes = self.dictionary.word_to_bytes(previous_word, word);
                 previous_word = Some(word);
 
                 out.write_all(&bytes).unwrap();
             }
+
+            current_input += 1;
         });
 
         out.flush().unwrap();
@@ -712,6 +718,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensorPtr>: Clone,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
@@ -821,6 +828,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     UnitState<N, DiffTensorPtr>: Clone,
     UnitState<N, DiffTensor>: NetworkUnitStateable,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
@@ -843,6 +851,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     UnitState<N, DiffTensorPtr>: Clone,
     UnitState<N, DiffTensor>: NetworkUnitStateable,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
@@ -865,6 +874,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     UnitState<N, DiffTensorPtr>: Clone,
     UnitState<N, DiffTensor>: NetworkUnitStateable,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
@@ -1051,7 +1061,7 @@ where
 
         let mut this: Self = SaveFormat::deserialize(BufReader::new(reader))?;
 
-        this.network.initialize(is_multistep, D::is_input_one_hot());
+        this.network.initialize_with_params(is_multistep, D::is_input_one_hot());
 
         Ok(this)
     }
@@ -1076,6 +1086,7 @@ where
     fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1106,6 +1117,7 @@ where
     pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool, Box<[u8]>)>
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1115,6 +1127,7 @@ where
     pub fn top_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, u32, Box<[u8]>)>
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1124,6 +1137,7 @@ where
     pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32, Box<[u8]>)>
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1138,6 +1152,7 @@ where
     )
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1153,6 +1168,7 @@ where
         calculate_accuracy: bool
     )
     where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
         let input_outputs = InputOutputIter::new(
@@ -1366,6 +1382,7 @@ where
     )
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1384,6 +1401,7 @@ where
     ) -> String
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
@@ -1403,6 +1421,7 @@ where
     ) -> Box<[u8]>
     where
         R: Read,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {

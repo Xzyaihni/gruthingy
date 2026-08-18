@@ -86,7 +86,8 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        store_gradient: bool
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         let block = recorder.current_block();
@@ -96,7 +97,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             let mut store_both = |weight: DiffTensorPtr|
             {
                 recorder.store_tensor_until_end_in_block(block, weight.as_value());
-                recorder.store_tensor_until_end_in_block(block, weight.as_gradient().unwrap());
+                if store_gradient { recorder.store_tensor_until_end_in_block(block, weight.as_gradient().unwrap()); }
             };
 
             store_both(self.hidden_update.weight_original);
@@ -113,7 +114,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             let mut always_store = |weight: DiffTensorPtr|
             {
                 recorder.store_tensor_until_end(weight.as_value());
-                recorder.store_tensor_until_end(weight.as_gradient().unwrap());
+                if store_gradient { recorder.store_tensor_until_end(weight.as_gradient().unwrap()); }
             };
 
             always_store(self.update_bias.weight_original);

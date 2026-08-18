@@ -217,8 +217,7 @@ pub struct OperationsBlock
     tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp<TensorPtr>>,
-    raw_operations: Vec<GradientOp<TensorRawDataPointer>>,
-    feedforward_operations_count: usize
+    raw_operations: Vec<GradientOp<TensorRawDataPointer>>
 }
 
 impl Debug for OperationsBlock
@@ -233,7 +232,6 @@ impl Debug for OperationsBlock
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("raw_operations", &self.raw_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
-            .field("feedforward_operations_count", &self.feedforward_operations_count)
             .finish()
     }
 }
@@ -249,8 +247,7 @@ impl Default for OperationsBlock
             tensor_live_ranges: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
-            raw_operations: Vec::new(),
-            feedforward_operations_count: 0
+            raw_operations: Vec::new()
         }
     }
 }
@@ -1175,25 +1172,11 @@ impl OperationsRecorder
         self.operations_blocks.len()
     }
 
-    pub fn calculate_feedforward(&mut self, block: BlockIndex)
-    {
-        let count = self.operations_blocks[block.0].feedforward_operations_count;
-
-        self.calculate_steps(block, count);
-    }
-
     pub fn calculate(&mut self, block: BlockIndex)
-    {
-        let count = self.operations_blocks[block.0].raw_operations.len();
-
-        self.calculate_steps(block, count);
-    }
-
-    fn calculate_steps(&mut self, block: BlockIndex, steps: usize)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.operations_blocks[block.0].raw_operations.iter().take(steps).for_each(|gradient_op|
+        self.operations_blocks[block.0].raw_operations.iter().for_each(|gradient_op|
         {
             macro_rules! copy_tensor
             {
@@ -2318,8 +2301,6 @@ impl OperationsRecorder
 
             block.value_live_ranges = Vec::new();
             block.tensor_live_ranges = Vec::new();
-
-            block.feedforward_operations_count = block.raw_operations.len();
         });
 
         self.global_value_live_ranges = Vec::new();
@@ -2333,7 +2314,15 @@ impl OperationsRecorder
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
         let blocks_count = self.operations_blocks.len();
-        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations = Vec::new());
+
+        (0..blocks_count).map(BlockIndex).for_each(|block|
+        {
+            self.copy_coalesce(block);
+
+            self.combine_ops(block);
+
+            self.operations_blocks[block.0].recording_operations = Vec::new()
+        });
 
         self.state = RecorderState::AwaitingResolve;
     }
@@ -2356,7 +2345,10 @@ impl OperationsRecorder
             self.combine_ops(block);
         });
 
-        (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations = Vec::new());
+        (0..blocks_count).map(BlockIndex).for_each(|block|
+        {
+            self.operations_blocks[block.0].recording_operations = Vec::new();
+        });
 
         self.state = RecorderState::AwaitingResolve;
     }
@@ -2845,6 +2837,11 @@ impl DiffTensorPtr
             gradient: None,
             source: None
         }
+    }
+
+    pub fn clear_gradient(&mut self)
+    {
+        self.gradient = None;
     }
 
     pub fn as_value(&self) -> TensorPtr

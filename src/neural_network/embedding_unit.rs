@@ -75,13 +75,14 @@ impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         _previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        store_gradient: bool
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         let mut store_both = |weight: DiffTensorPtr|
         {
             recorder.store_tensor_until_end(weight.as_value());
-            recorder.store_tensor_until_end(weight.as_gradient().unwrap());
+            if store_gradient { recorder.store_tensor_until_end(weight.as_gradient().unwrap()); }
         };
 
         store_both(self.weights.weight_original);
