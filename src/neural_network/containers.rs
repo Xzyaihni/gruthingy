@@ -1283,6 +1283,17 @@ impl OperationsRecorder
 
                     output.component_mul_into(lhs, rhs);
                 },
+                GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} =>
+                {
+                    let (output, lhs, rhs, added) = get_disjoint_mut!(
+                        (LayerTypeMut, output, x0),
+                        (LayerTypeRef, lhs, x1),
+                        (LayerTypeRef, rhs, x2),
+                        (LayerTypeRef, added, x3)
+                    );
+
+                    output.component_mul_add_into(lhs, rhs, added);
+                },
                 GradientOp::SumTensor{value, output} =>
                 {
                     self.values[output.0] = self.tensors_raw_data[value.range()].iter().sum();
@@ -1573,6 +1584,7 @@ impl OperationsRecorder
                         | GradientOp::SubFromScalar{output, ..}
                         | GradientOp::MulScalar{output, ..}
                         | GradientOp::MulComponentwise{output, ..}
+                        | GradientOp::MulComponentwiseAdd{output, ..}
                         | GradientOp::Fill{output, ..}
                         | GradientOp::Pow{output, ..}
                         | GradientOp::Sigmoid{output, ..}
@@ -1693,19 +1705,24 @@ impl OperationsRecorder
         }
     }
 
+    fn is_ptr_output(&self, block: BlockIndex, ptr: TensorPtr) -> bool
+    {
+        self.operations_blocks[block.0].block_outputs.contains(&ptr)
+            || self.global_tensor_live_ranges[ptr.0].end == Some(i32::MAX)
+    }
+
     fn copy_coalesce(&mut self, block: BlockIndex)
     {
-        let this_block = &mut self.operations_blocks[block.0];
-
-        let mut i = 1;
-        while i < this_block.gradient_operations.len()
+        let mut i = 0;
+        while i < self.operations_blocks[block.0].gradient_operations.len()
         {
-            let this = &this_block.gradient_operations[i];
+            let this_block = &self.operations_blocks[block.0];
 
-            if let GradientOp::Copy{src, dst} = *this
+            if let GradientOp::Copy{src, dst} = this_block.gradient_operations[i]
             {
-                let dst_is_output = this_block.block_outputs.contains(&dst)
-                    || self.global_tensor_live_ranges[dst.0].end == Some(i32::MAX);
+                let dst_is_output = self.is_ptr_output(block, dst);
+
+                let this_block = &mut self.operations_blocks[block.0];
 
                 if !dst_is_output
                 {
@@ -1745,6 +1762,70 @@ impl OperationsRecorder
                         continue;
                     }
                 }
+            }
+
+            i += 1;
+        }
+    }
+
+    fn combine_ops(&mut self, block: BlockIndex)
+    {
+        let mut i = 1;
+        while i < self.operations_blocks[block.0].gradient_operations.len()
+        {
+            let previous_i = i - 1;
+
+            let this_block = &self.operations_blocks[block.0];
+            let previous = this_block.gradient_operations[previous_i].clone();
+            let this = this_block.gradient_operations[i].clone();
+            match (previous, this)
+            {
+                (
+                    GradientOp::MulComponentwise{output, lhs: mul_lhs, rhs: mul_rhs},
+                    GradientOp::Add{lhs, rhs, output: add_output}
+                ) if ((output == lhs && mul_lhs != rhs && mul_rhs != rhs) || (output == rhs && mul_lhs != lhs && mul_rhs != lhs))
+                    && !self.is_ptr_output(block, output) =>
+                {
+                    let mut used_after = false;
+
+                    for check_op in &this_block.gradient_operations[(i + 1)..]
+                    {
+                        check_op.for_args(|v| if v == output { used_after = true }, |_| {});
+
+                        if used_after
+                        {
+                            break;
+                        }
+                    }
+
+                    if !used_after
+                    {
+                        let added = if output == lhs
+                        {
+                            rhs
+                        } else if output == rhs
+                        {
+                            lhs
+                        } else
+                        {
+                            unreachable!()
+                        };
+
+                        let this_block = &mut self.operations_blocks[block.0];
+
+                        this_block.gradient_operations[previous_i] = GradientOp::MulComponentwiseAdd{
+                            lhs: mul_lhs,
+                            rhs: mul_rhs,
+                            added,
+                            output: add_output
+                        };
+
+                        this_block.gradient_operations.remove(i);
+
+                        continue;
+                    }
+                },
+                _ => ()
             }
 
             i += 1;
@@ -2204,6 +2285,8 @@ impl OperationsRecorder
             self.combine_same_outputs(block);
 
             self.copy_coalesce(block);
+
+            self.combine_ops(block);
         });
 
         (0..blocks_count).for_each(|block| self.operations_blocks[block].recording_operations = Vec::new());
@@ -2843,6 +2926,7 @@ pub enum GradientOp<T>
     MulScalar{lhs: T, rhs: ValueIndex, output: T},
     MulScalars{lhs: ValueIndex, rhs: ValueIndex, output: ValueIndex},
     MulComponentwise{lhs: T, rhs: T, output: T},
+    MulComponentwiseAdd{lhs: T, rhs: T, added: T, output: T},
     SumTensor{value: T, output: ValueIndex},
     Fill{value: ValueIndex, output: T},
     Pow{lhs: T, power: u32, output: T},
@@ -2881,6 +2965,10 @@ impl<T> GradientOp<T>
             Self::MulScalar{lhs, rhs, output} => GradientOp::MulScalar{lhs: f(lhs), rhs, output: f(output)},
             Self::MulScalars{lhs, rhs, output} => GradientOp::MulScalars{lhs, rhs, output},
             Self::MulComponentwise{lhs, rhs, output} => GradientOp::MulComponentwise{lhs: f(lhs), rhs: f(rhs), output: f(output)},
+            Self::MulComponentwiseAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::MulComponentwiseAdd{lhs: f(lhs), rhs: f(rhs), added: f(added), output: f(output)}
+            },
             Self::SumTensor{value, output} => GradientOp::SumTensor{value: f(value), output},
             Self::Fill{value, output} => GradientOp::Fill{value, output: f(output)},
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: f(lhs), power, output: f(output)},
@@ -2932,6 +3020,7 @@ impl<T: Clone> GradientOp<T>
             Self::SubFromScalar{output, lhs, rhs} => Self::SubFromScalar{output: tf(output), lhs, rhs},
             Self::MulScalar{output, lhs, rhs} => Self::MulScalar{output: tf(output), lhs, rhs},
             Self::MulComponentwise{output, lhs, rhs} => Self::MulComponentwise{output: tf(output), lhs, rhs},
+            Self::MulComponentwiseAdd{output, lhs, rhs, added} => Self::MulComponentwiseAdd{output: tf(output), lhs, rhs, added},
             Self::Fill{output, value} => Self::Fill{output: tf(output), value},
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(output), value},
@@ -2984,6 +3073,7 @@ impl<T: Clone> GradientOp<T>
             Self::SubFromScalar{lhs, rhs, output} => Self::SubFromScalar{rhs: tf(rhs), lhs: vf(lhs), output},
             Self::MulScalar{lhs, rhs, output} => Self::MulScalar{lhs: tf(lhs), rhs: vf(rhs), output},
             Self::MulComponentwise{lhs, rhs, output} => Self::MulComponentwise{lhs: tf(lhs), rhs: tf(rhs), output},
+            Self::MulComponentwiseAdd{lhs, rhs, added, output} => Self::MulComponentwiseAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output},
             Self::SumTensor{value, output} => Self::SumTensor{value: tf(value), output},
             Self::Pow{lhs, power, output} => Self::Pow{lhs: tf(lhs), power, output},
             Self::LeakyRelu{value, output} => Self::LeakyRelu{value: tf(value), output},
@@ -3034,6 +3124,7 @@ impl GradientOp<TensorPtr>
             | Self::SubFromScalar{output, ..}
             | Self::MulScalar{output, ..}
             | Self::MulComponentwise{output, ..}
+            | Self::MulComponentwiseAdd{output, ..}
             | Self::Fill{output, ..}
             | Self::Pow{output, ..}
             | Self::Sigmoid{output, ..}

@@ -675,6 +675,13 @@ impl<'a> MatrixWrapperMut<'a>
         self.0.cmpy(1.0, &lhs.0, &rhs.0, 0.0);
     }
 
+    pub fn component_mul_add_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef, added: MatrixWrapperRef)
+    {
+        self.0.copy_from(&added.0);
+
+        self.0.cmpy(1.0, &lhs.0, &rhs.0, 1.0);
+    }
+
     pub fn matmulv_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
     {
         self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 0.0);
