@@ -17,7 +17,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use matrix_wrapper::{MatrixWrapper, MatrixWrapperRef, MatrixWrapperMut};
+use matrix_wrapper::{MatrixWrapper, MatrixWrapperRef, MatrixWrapperMut, VectorWrapper, VectorWrapperMut};
 
 mod matrix_wrapper;
 
@@ -25,6 +25,9 @@ mod matrix_wrapper;
 pub type LayerType = MatrixWrapper;
 pub type LayerTypeRef<'a> = MatrixWrapperRef<'a>;
 pub type LayerTypeMut<'a> = MatrixWrapperMut<'a>;
+
+pub type LayerTypeVector<'a> = VectorWrapper<'a>;
+pub type LayerTypeVectorMut<'a> = VectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
@@ -1079,9 +1082,9 @@ impl OperationsRecorder
             let key = StoreCheckKey::PreResolve(index_ptr);
             let value = StoreType::AllBlocks;
 
-            if self.store_tensors_check.contains_key(&key)
+            if let Some(this_value) = self.store_tensors_check.get_mut(&key)
             {
-                *self.store_tensors_check.get_mut(&key).unwrap() = value;
+                *this_value = value;
             } else
             {
                 self.store_tensors_check.insert(key, value);
@@ -1100,9 +1103,9 @@ impl OperationsRecorder
             let key = StoreCheckKey::PreResolve(index_ptr);
             let value = StoreType::Block(HashSet::from([block]));
 
-            if self.store_tensors_check.contains_key(&key)
+            if let Some(this_value) = self.store_tensors_check.get_mut(&key)
             {
-                if let StoreType::Block(blocks) = self.store_tensors_check.get_mut(&key).unwrap()
+                if let StoreType::Block(blocks) = this_value
                 {
                     blocks.insert(block);
                 }
@@ -1129,9 +1132,9 @@ impl OperationsRecorder
             let key = StoreCheckKey::PreResolve(index);
             let value = StoreType::AllBlocks;
 
-            if self.store_values_check.contains_key(&key)
+            if let Some(this_value) = self.store_values_check.get_mut(&key)
             {
-                *self.store_values_check.get_mut(&key).unwrap() = value;
+                *this_value = value;
             } else
             {
                 self.store_values_check.insert(key, value);
@@ -1398,9 +1401,9 @@ impl OperationsRecorder
                 GradientOp::Matmulv{lhs, rhs, output} =>
                 {
                     let (output, lhs, rhs) = get_disjoint_mut!(
-                        (LayerTypeMut, output, x0),
+                        (LayerTypeVectorMut, output, x0),
                         (LayerTypeRef, lhs, x1),
-                        (LayerTypeRef, rhs, x2)
+                        (LayerTypeVector, rhs, x2)
                     );
 
                     output.matmulv_into(lhs, rhs);
@@ -2102,6 +2105,127 @@ impl OperationsRecorder
         }
     }
 
+    fn block_operations_to_raw(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>, block: BlockIndex)
+    {
+        let mut usage_counts: Vec<(TensorIndex, usize, HashMap<TensorIndex, usize>)> = (0..self.tensors.len())
+            .map(|x| (TensorIndex(x), 0, HashMap::new()))
+            .collect();
+
+        self.operations_blocks[block.0].gradient_operations.iter().for_each(|op|
+        {
+            let mut local = Vec::new();
+
+            let mut f_local = |ptr: TensorPtr|
+            {
+                if let Some(this_index) = self.tensors_memory[ptr.0].memory
+                {
+                    local.push(this_index);
+                }
+            };
+
+            op.for_args(&mut f_local, |_| {});
+            op.for_outputs(f_local, |_| {});
+
+            let mut f = |ptr: TensorPtr|
+            {
+                if let Some(this_index) = self.tensors_memory[ptr.0].memory
+                {
+                    usage_counts[this_index.0].1 += 1;
+                    let this_local = &mut usage_counts[this_index.0].2;
+
+                    local.iter().for_each(|local|
+                    {
+                        if let Some(local_total) = this_local.get_mut(local)
+                        {
+                            *local_total += 1;
+                        } else
+                        {
+                            this_local.insert(*local, 1);
+                        }
+                    });
+                }
+            };
+
+            op.for_args(&mut f, |_| {});
+            op.for_outputs(f, |_| {});
+        });
+
+        usage_counts.sort_by_key(|x| x.1);
+
+        let mut create_tensor = |this_index: TensorIndex|
+        {
+            if self.tensors[this_index.0] != TensorRawDataPointer::undefined()
+            {
+                return;
+            }
+
+            let this_tensor: &TensorMemoryValue = &memory_assignments[this_index.0];
+
+            let (rows, columns) = this_tensor.tensor_shape();
+            let size = rows * columns;
+
+            let id = TensorIndexRaw(self.tensors_raw_data.len());
+
+            match this_tensor
+            {
+                TensorMemoryValue::Value(x) => self.tensors_raw_data.extend(x.as_slice()),
+                TensorMemoryValue::Size{..} => self.tensors_raw_data.resize(self.tensors_raw_data.len() + size, 0.0)
+            }
+
+            debug_assert_eq!(self.tensors[this_index.0], TensorRawDataPointer::undefined());
+            self.tensors[this_index.0] = TensorRawDataPointer{
+                raw_index: id,
+                rows,
+                columns
+            };
+        };
+
+        usage_counts.into_iter().rev().for_each(|(_, _, local)|
+        {
+            let mut local_sorted: Vec<(TensorIndex, usize)> = local.iter().map(|(a, b)| (*a, *b)).collect();
+            local_sorted.sort_by_key(|x| x.1);
+
+            local_sorted.into_iter().rev().map(|(x, _)| x).for_each(&mut create_tensor)
+        });
+
+        let access_tensor = |ptr: TensorPtr| -> TensorRawDataPointer
+        {
+            let this_index: TensorIndex = self.tensors_memory[ptr.0].memory.expect("must be resolved");
+
+            let current_value = self.tensors[this_index.0];
+
+            debug_assert_ne!(current_value, TensorRawDataPointer::undefined());
+
+            current_value
+        };
+
+        let map_to_raw = |op: GradientOp<TensorPtr>| -> Option<GradientOp<TensorRawDataPointer>>
+        {
+            match op
+            {
+                GradientOp::None => None,
+                GradientOp::SoftmaxCrossEntropy{
+                    values,
+                    targets,
+                    softmaxed_output,
+                    output
+                } if self.tensors_memory[softmaxed_output.0].memory.is_none() =>
+                {
+                    Some(GradientOp::SoftmaxCrossEntropyNoSoftmaxed{
+                        values: access_tensor(values),
+                        targets,
+                        output
+                    })
+                },
+                x => Some(x.map_tensors(&access_tensor))
+            }
+        };
+
+        let this_block = &mut self.operations_blocks[block.0];
+
+        this_block.raw_operations = mem::take(&mut this_block.gradient_operations).into_iter().filter_map(map_to_raw).collect();
+    }
+
     pub fn resolve_memory(&mut self)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
@@ -2135,9 +2259,8 @@ impl OperationsRecorder
                 // new_k has overlap with other ptrs so this check will give some false negatives
                 // disable graph coloring for an exact check
 
-                if new_store_tensors_check.contains_key(&new_k)
+                if let Some(this_store_value) = new_store_tensors_check.get_mut(&new_k)
                 {
-                    let this_store_value = new_store_tensors_check.get_mut(&new_k).unwrap();
                     match (&mut *this_store_value, v)
                     {
                         (StoreType::AllBlocks, _) => (),
@@ -2167,72 +2290,13 @@ impl OperationsRecorder
             }).collect();
         }
 
+        (0..self.operations_blocks.len()).map(BlockIndex).for_each(|block|
+        {
+            self.block_operations_to_raw(&mut memory_assignments, block);
+        });
+
         self.operations_blocks.iter_mut().enumerate().for_each(|(_block_index, block)|
         {
-            block.value_live_ranges = Vec::new();
-            block.tensor_live_ranges = Vec::new();
-
-            let mut create_tensor = |ptr: TensorPtr| -> TensorRawDataPointer
-            {
-                let this_index: TensorIndex = self.tensors_memory[ptr.0].memory.expect("must be resolved");
-
-                {
-                    let current_value = self.tensors[this_index.0];
-                    if current_value != TensorRawDataPointer::undefined()
-                    {
-                        return current_value;
-                    }
-                }
-
-                let this_tensor: &TensorMemoryValue = &memory_assignments[this_index.0];
-
-                let (rows, columns) = this_tensor.tensor_shape();
-                let size = rows * columns;
-
-                let id = TensorIndexRaw(self.tensors_raw_data.len());
-
-                match this_tensor
-                {
-                    TensorMemoryValue::Value(x) => self.tensors_raw_data.extend(x.as_slice()),
-                    TensorMemoryValue::Size{..} => self.tensors_raw_data.resize(self.tensors_raw_data.len() + size, 0.0)
-                }
-
-                let data_ptr = TensorRawDataPointer{
-                    raw_index: id,
-                    rows,
-                    columns
-                };
-
-                debug_assert_eq!(self.tensors[this_index.0], TensorRawDataPointer::undefined());
-                self.tensors[this_index.0] = data_ptr;
-
-                data_ptr
-            };
-
-            let map_to_raw = |op: GradientOp<TensorPtr>| -> Option<GradientOp<TensorRawDataPointer>>
-            {
-                match op
-                {
-                    GradientOp::None => None,
-                    GradientOp::SoftmaxCrossEntropy{
-                        values,
-                        targets,
-                        softmaxed_output,
-                        output
-                    } if self.tensors_memory[softmaxed_output.0].memory.is_none() =>
-                    {
-                        Some(GradientOp::SoftmaxCrossEntropyNoSoftmaxed{
-                            values: create_tensor(values),
-                            targets,
-                            output
-                        })
-                    },
-                    x => Some(x.map_tensors(&mut create_tensor))
-                }
-            };
-
-            block.raw_operations = mem::take(&mut block.gradient_operations).into_iter().filter_map(map_to_raw).collect();
-
             #[cfg(debug_assertions)]
             {
                 block.raw_operations.iter().for_each(|op|
@@ -2251,6 +2315,9 @@ impl OperationsRecorder
                     });
                 });
             }
+
+            block.value_live_ranges = Vec::new();
+            block.tensor_live_ranges = Vec::new();
 
             block.feedforward_operations_count = block.raw_operations.len();
         });

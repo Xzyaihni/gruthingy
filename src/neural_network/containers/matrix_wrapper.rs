@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use nalgebra::{DMatrix, DMatrixView, DMatrixViewMut};
+use nalgebra::{DMatrix, DMatrixView, DMatrixViewMut, DVectorView, DVectorViewMut};
 
 use super::{
     Softmaxer,
@@ -682,11 +682,6 @@ impl<'a> MatrixWrapperMut<'a>
         self.0.cmpy(1.0, &lhs.0, &rhs.0, 1.0);
     }
 
-    pub fn matmulv_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef)
-    {
-        self.0.column_mut(0).gemv(1.0, &lhs.0, &rhs.0.column(0), 0.0);
-    }
-
     pub fn matmulv_add_into(mut self, lhs: MatrixWrapperRef, rhs: MatrixWrapperRef, added: MatrixWrapperRef)
     {
         self.0.copy_from(&added.0);
@@ -766,5 +761,72 @@ impl<'a> MatrixWrapperMut<'a>
     pub fn as_vec(&self) -> Vec<f32>
     {
         self.clone_owned().as_vec()
+    }
+}
+
+pub struct VectorWrapper<'a>(DVectorView<'a, f32>);
+
+impl<'a> VectorWrapper<'a>
+{
+    pub fn from_data(data: &'a [f32], info: TensorRawDataPointer) -> Self
+    {
+        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+    }
+
+    pub fn from_data_with_start(data: &'a [f32], info: TensorRawDataPointer) -> Self
+    {
+        let view;
+
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(info.columns, 1);
+
+            view = DVectorView::from_slice(&data[info.raw_index.0..], info.rows);
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe{
+                view = DVectorView::from_slice_unchecked(data, info.raw_index.0, info.rows);
+            }
+        }
+
+        Self(view)
+    }
+}
+
+pub struct VectorWrapperMut<'a>(DVectorViewMut<'a, f32>);
+
+impl<'a> VectorWrapperMut<'a>
+{
+    pub fn from_data(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
+    {
+        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+    }
+
+    pub fn from_data_with_start(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
+    {
+        let view;
+
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(info.columns, 1);
+
+            view = DVectorViewMut::from_slice(&mut data[info.raw_index.0..], info.rows);
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            unsafe{
+                view = DVectorViewMut::from_slice_unchecked(data, info.raw_index.0, info.rows);
+            }
+        }
+
+        Self(view)
+    }
+
+    pub fn matmulv_into(mut self, lhs: MatrixWrapperRef, rhs: VectorWrapper)
+    {
+        self.0.gemv(1.0, &lhs.0, &rhs.0, 0.0);
     }
 }
