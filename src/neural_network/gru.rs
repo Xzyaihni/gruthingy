@@ -36,9 +36,13 @@ create_weights_container!{
 
 impl NetworkUnitStateable for DiffTensor
 {
-    fn set(&self, recorder: &mut OperationsRecorder, new: &Self)
+    fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self)
     {
         recorder.set_tensor_from(self.as_value(), new.as_value());
+    }
+
+    fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self)
+    {
         recorder.set_tensor_from(self.as_gradient().unwrap(), new.as_gradient().unwrap());
     }
 }

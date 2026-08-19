@@ -46,16 +46,16 @@ pub struct LSTMState<T>
 
 impl NetworkUnitStateable for LSTMState<DiffTensor>
 {
-    fn set(&self, recorder: &mut OperationsRecorder, new: &Self)
+    fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self)
     {
-        let mut set_both = |old: &DiffTensor, new: &DiffTensor|
-        {
-            recorder.set_tensor_from(old.as_value(), new.as_value());
-            recorder.set_tensor_from(old.as_gradient().unwrap(), new.as_gradient().unwrap());
-        };
+        recorder.set_tensor_from(self.hidden.as_value(), new.hidden.as_value());
+        recorder.set_tensor_from(self.memory.as_value(), new.memory.as_value());
+    }
 
-        set_both(&self.hidden, &new.hidden);
-        set_both(&self.memory, &new.memory);
+    fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self)
+    {
+        recorder.set_tensor_from(self.hidden.as_gradient().unwrap(), new.hidden.as_gradient().unwrap());
+        recorder.set_tensor_from(self.memory.as_gradient().unwrap(), new.memory.as_gradient().unwrap());
     }
 }
 
@@ -195,8 +195,15 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             memory: this_memory
         };
 
-        recorder.store_tensor_until_end_in_block(block, state.hidden.as_value());
-        recorder.store_tensor_until_end_in_block(block, state.memory.as_value());
+        if store_gradient
+        {
+            recorder.store_tensor_until_end_in_block(block, state.hidden.as_gradient().unwrap());
+            recorder.store_tensor_until_end_in_block(block, state.memory.as_gradient().unwrap());
+        } else
+        {
+            recorder.store_tensor_until_end_in_block(block, state.hidden.as_value());
+            recorder.store_tensor_until_end_in_block(block, state.memory.as_value());
+        }
 
         NetworkOutput{
             state,

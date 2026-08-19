@@ -679,7 +679,7 @@ where
     loss: DiffScalar,
     next_state_ptr: Vec<UnitState<N, DiffTensorPtr>>,
     next_state: Vec<UnitState<N, DiffTensor>>,
-    index: BlockIndex,
+    index: BlockIndex
 }
 
 impl<N: UnitFactory> BlockInfo<N>
@@ -840,11 +840,6 @@ where
     {
         self.recorder.finish();
 
-        self.weights_ptr.as_ref().unwrap().iter().for_each(|weight_info|
-        {
-            self.recorder.store_tensor_until_end(weight_info.weight_original.as_value());
-        });
-
         self.recorder.no_gradient();
 
         self.recorder.resolve_memory();
@@ -983,48 +978,24 @@ where
         }
     }
 
-    pub fn calculate_gradients(&mut self)
+    pub fn prepare(&mut self, store_gradient: bool)
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         if !self.recorder.is_ready()
         {
-            self.record_feedforward(true);
+            self.record_feedforward(store_gradient);
 
             self.prepare_setup_shared();
 
-            self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_gradient().unwrap());
+            if store_gradient
+            {
+                self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_gradient().unwrap());
+            }
 
             let is_multiblock = self.recorder.blocks_count() > 1;
 
-            let respect = if !is_multiblock
-            {
-                vec![self.no_state.loss.into()]
-            } else
-            {
-                debug_assert_ne!(self.with_state.loss, DiffScalar::undefined());
-
-                vec![self.no_state.loss.into(), self.with_state.loss.into()]
-            };
-
-            self.recorder.gradient_with_respect(respect);
-
-            self.prepare_shared(true);
-        }
-    }
-
-    fn prepare_predict(&mut self)
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
-    {
-        if !self.recorder.is_ready()
-        {
-            let is_multiblock = self.recorder.blocks_count() > 1;
-
-            self.record_feedforward(false);
-
-            self.prepare_setup_shared();
-
+            if !store_gradient
             {
                 let mut prepare_block = |block: &mut BlockInfo<_>|
                 {
@@ -1040,20 +1011,39 @@ where
                 }
             }
 
-            self.recorder.no_gradient();
-
-            self.prepare_shared(false);
-
-            let prepare_block = |block: &mut BlockInfo<_>|
+            if store_gradient
             {
-                block.output = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(block.output_ptr.unwrap().as_value()));
-            };
+                let respect = if !is_multiblock
+                {
+                    vec![self.no_state.loss.into()]
+                } else
+                {
+                    debug_assert_ne!(self.with_state.loss, DiffScalar::undefined());
 
-            prepare_block(&mut self.no_state);
+                    vec![self.no_state.loss.into(), self.with_state.loss.into()]
+                };
 
-            if is_multiblock
+                self.recorder.gradient_with_respect(respect);
+            } else
             {
-                prepare_block(&mut self.with_state);
+                self.recorder.no_gradient();
+            }
+
+            self.prepare_shared(store_gradient);
+
+            if !store_gradient
+            {
+                let prepare_block = |block: &mut BlockInfo<_>|
+                {
+                    block.output = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(block.output_ptr.unwrap().as_value()));
+                };
+
+                prepare_block(&mut self.no_state);
+
+                if is_multiblock
+                {
+                    prepare_block(&mut self.with_state);
+                }
             }
         }
     }
@@ -1287,7 +1277,6 @@ where
 
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
-                let maybe_optimize_this = ();
                 self.recorder.get_tensor_mut::<true>(network_weights.weight.as_value()).sub_inplace(LayerTypeRef::from(&change));
             });
 
@@ -1304,31 +1293,32 @@ where
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
-        let mut gradients: Option<WeightsFullContainer<N, LayerType>> = None;
+        let inputs_count = input.len();
 
-        let total_loss = self.feedforward_with(|this, is_with_state|
+        let total_loss = self.feedforward_with(|_, _| {}, input);
+
+        (0..inputs_count).rev().for_each(|index|
         {
-            let this_gradients = this.weights.as_ref().unwrap().map_ref(|weight|
-            {
-                let avoid_a_clone = ();
-                this.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone_owned()
-            });
+            let is_with_state = index != 0;
 
-            if is_with_state
-            {
-                gradients.as_mut().unwrap().iter_mut().zip(this_gradients.into_iter()).for_each(|(gradients, this_gradients)|
-                {
-                    *gradients += this_gradients;
-                });
-            } else
-            {
-                debug_assert!(gradients.is_none());
+            let this_info = if is_with_state { &self.with_state } else { &self.no_state };
 
-                gradients = Some(this_gradients);
+            if (index + 1) != inputs_count
+            {
+                self.no_state.next_state.iter()
+                    .zip(this_info.next_state.iter())
+                    .for_each(|(no_state, with_state)| with_state.set_gradient(&mut self.recorder, no_state));
             }
-        }, input);
 
-        (total_loss, gradients.expect("input must not be empty"))
+            self.recorder.calculate_backpropagate(this_info.index);
+        });
+
+        let gradients = self.weights.as_ref().unwrap().map_ref(|weight|
+        {
+            self.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone_owned()
+        });
+
+        (total_loss, gradients)
     }
 
     fn feedforward_with(
@@ -1381,10 +1371,10 @@ where
             {
                 self.no_state.next_state.iter()
                     .zip(this_info.next_state.iter())
-                    .for_each(|(no_state, with_state)| no_state.set(&mut self.recorder, with_state));
+                    .for_each(|(no_state, with_state)| no_state.set_value(&mut self.recorder, with_state));
             }
 
-            self.recorder.calculate(this_info.index);
+            self.recorder.calculate_feedforward(this_info.index);
 
             total_loss += self.recorder.get_value(this_info.loss.as_value());
 
@@ -1563,7 +1553,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        self.prepare_predict();
+        self.prepare(false);
 
         self.feedforward_with(|_this, _is_with_state| {}, input)
     }
@@ -1593,7 +1583,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        self.prepare_predict();
+        self.prepare(false);
 
         let weights = self.weights.as_mut().unwrap();
 

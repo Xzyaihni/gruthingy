@@ -70,12 +70,14 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Clone
 
 pub trait NetworkUnitStateable
 {
-    fn set(&self, recorder: &mut OperationsRecorder, new: &Self);
+    fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self);
+    fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self);
 }
 
 impl NetworkUnitStateable for ()
 {
-    fn set(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
+    fn set_value(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
+    fn set_gradient(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
 }
 
 pub trait NetworkUnitNewable

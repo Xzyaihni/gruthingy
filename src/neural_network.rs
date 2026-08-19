@@ -1246,7 +1246,7 @@ where
         for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
         for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
     {
-        self.network.calculate_gradients();
+        self.network.prepare(true);
 
         if let Some(learning_rate) = info.learning_rate
         {

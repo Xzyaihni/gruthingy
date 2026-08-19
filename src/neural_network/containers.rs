@@ -217,7 +217,8 @@ pub struct OperationsBlock
     tensor_live_ranges: Vec<LiveRange>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp<TensorPtr>>,
-    raw_operations: Vec<GradientOp<TensorRawDataPointer>>
+    raw_operations: Vec<GradientOp<TensorRawDataPointer>>,
+    feedforward_operations_count: usize
 }
 
 impl Debug for OperationsBlock
@@ -232,6 +233,7 @@ impl Debug for OperationsBlock
             .field("recording_operations", &self.recording_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("gradient_operations", &self.gradient_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
             .field("raw_operations", &self.raw_operations.iter().map(|x| ForceNoPretty(x)).collect::<Vec<_>>())
+            .field("feedforward_operations_count", &self.feedforward_operations_count)
             .finish()
     }
 }
@@ -247,7 +249,20 @@ impl Default for OperationsBlock
             tensor_live_ranges: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
-            raw_operations: Vec::new()
+            raw_operations: Vec::new(),
+            feedforward_operations_count: 0
+        }
+    }
+}
+
+impl OperationsBlock
+{
+    fn remove_gradient_operation(&mut self, i: usize)
+    {
+        self.gradient_operations.remove(i);
+        if i < self.feedforward_operations_count
+        {
+            self.feedforward_operations_count -= 1;
         }
     }
 }
@@ -1172,11 +1187,33 @@ impl OperationsRecorder
         self.operations_blocks.len()
     }
 
+    pub fn calculate_feedforward(&mut self, block: BlockIndex)
+    {
+        let count = self.operations_blocks[block.0].feedforward_operations_count;
+
+        self.calculate_steps(block, 0, count);
+    }
+
+    pub fn calculate_backpropagate(&mut self, block: BlockIndex)
+    {
+        let total = self.operations_blocks[block.0].raw_operations.len();
+        let count = self.operations_blocks[block.0].feedforward_operations_count;
+
+        self.calculate_steps(block, count, total);
+    }
+
     pub fn calculate(&mut self, block: BlockIndex)
+    {
+        let total = self.operations_blocks[block.0].raw_operations.len();
+
+        self.calculate_steps(block, 0, total);
+    }
+
+    fn calculate_steps(&mut self, block: BlockIndex, start: usize, end: usize)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.operations_blocks[block.0].raw_operations.iter().for_each(|gradient_op|
+        self.operations_blocks[block.0].raw_operations[start..end].iter().for_each(|gradient_op|
         {
             macro_rules! copy_tensor
             {
@@ -1536,6 +1573,8 @@ impl OperationsRecorder
                     }
                 }
             }).collect();
+
+            block.feedforward_operations_count = block.gradient_operations.len();
         });
 
         self.state = RecorderState::AwaitingGradient;
@@ -1744,7 +1783,8 @@ impl OperationsRecorder
                             *check_op = check_op.clone().map_args(|arg| if arg == dst { src } else { arg }, convert::identity);
                         }
 
-                        this_block.gradient_operations.remove(i);
+                        this_block.remove_gradient_operation(i);
+
                         continue;
                     }
                 }
@@ -1806,7 +1846,7 @@ impl OperationsRecorder
                             output: add_output
                         };
 
-                        this_block.gradient_operations.remove(i);
+                        this_block.remove_gradient_operation(i);
 
                         continue;
                     }
@@ -2206,7 +2246,20 @@ impl OperationsRecorder
 
         let this_block = &mut self.operations_blocks[block.0];
 
-        this_block.raw_operations = mem::take(&mut this_block.gradient_operations).into_iter().filter_map(map_to_raw).collect();
+        this_block.raw_operations.reserve_exact(this_block.gradient_operations.len());
+
+        for (index, gradient_op) in mem::take(&mut this_block.gradient_operations).into_iter().enumerate()
+        {
+            if let Some(raw_op) = map_to_raw(gradient_op)
+            {
+                this_block.raw_operations.push(raw_op);
+            }
+
+            if (index + 1) == this_block.feedforward_operations_count
+            {
+                this_block.feedforward_operations_count = this_block.raw_operations.len();
+            }
+        }
     }
 
     pub fn resolve_memory(&mut self)
