@@ -4,7 +4,7 @@ use std::{
     convert,
     fmt::{self, Debug},
     borrow::Borrow,
-    collections::HashSet,
+    collections::{VecDeque, HashSet},
     ops::{DivAssign, Range}
 };
 
@@ -327,7 +327,15 @@ impl TensorRawDataPointer
 struct LoopInfo
 {
     times: usize,
-    inputs: Vec<InputTypePtr>
+    input_values: Vec<LayerType>,
+    inputs: Vec<InputType>
+}
+
+#[derive(Debug, Clone)]
+struct RawJumpInfo
+{
+    loop_index: LoopIndex,
+    operation_index: GradientOperationIndex
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,7 +345,30 @@ pub struct LoopIndex(usize);
 enum OperationsTarget
 {
     Normal,
-    Loop(OperationIndex)
+    Loop(LoopOperationIndex)
+}
+
+#[derive(Debug, Clone)]
+enum InputCheckType
+{
+    Ptr(TensorPtr),
+    Index(TensorIndex)
+}
+
+impl From<TensorPtr> for InputCheckType
+{
+    fn from(x: TensorPtr) -> Self
+    {
+        Self::Ptr(x)
+    }
+}
+
+impl From<TensorIndex> for InputCheckType
+{
+    fn from(x: TensorIndex) -> Self
+    {
+        Self::Index(x)
+    }
 }
 
 #[derive(Clone)]
@@ -355,8 +386,12 @@ pub struct OperationsRecorder
     loops: Vec<LoopInfo>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<GradientOp<TensorPtr, JumpInfo>>,
-    raw_operations: Vec<GradientOp<TensorRawDataPointer, usize>>,
+    raw_operations: Vec<GradientOp<TensorRawDataPointer, RawJumpInfo>>,
     feedforward_operations_count: usize,
+    #[cfg(debug_assertions)]
+    tensor_inputs: Vec<TensorPtr>,
+    #[cfg(debug_assertions)]
+    set_tensors_check: Vec<InputCheckType>,
     #[cfg(debug_assertions)]
     store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     #[cfg(debug_assertions)]
@@ -388,7 +423,9 @@ impl Debug for OperationsRecorder
 
         #[cfg(debug_assertions)]
         {
-            s.field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            s.field("tensor_inputs", &self.tensor_inputs.iter().map(ForceNoPretty).collect::<Vec<_>>())
+                .field("set_tensors_check", &self.set_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
+                .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("store_values_check", &self.store_values_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
         }
 
@@ -534,6 +571,10 @@ impl OperationsRecorder
             raw_operations: Vec::new(),
             feedforward_operations_count: 0,
             #[cfg(debug_assertions)]
+            tensor_inputs: Vec::new(),
+            #[cfg(debug_assertions)]
+            set_tensors_check: Vec::new(),
+            #[cfg(debug_assertions)]
             store_tensors_check: Vec::new(),
             #[cfg(debug_assertions)]
             store_values_check: Vec::new()
@@ -615,6 +656,11 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
+        #[cfg(debug_assertions)]
+        {
+            self.set_tensors_check.push(index.into());
+        }
+
         let dst = LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, self.tensors[index.0]);
         let src = LayerTypeRef::from(&value);
 
@@ -624,6 +670,11 @@ impl OperationsRecorder
     pub fn set_tensor_from(&mut self, index: TensorIndex, src: TensorIndex)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
+
+        #[cfg(debug_assertions)]
+        {
+            self.set_tensors_check.push(index.into());
+        }
 
         let dst = self.tensors[index.0];
         let src = self.tensors[src.0];
@@ -649,6 +700,12 @@ impl OperationsRecorder
         let columns = value.columns();
 
         let input = new_tensor!(self, None, true, rows, columns, TensorMemoryValue::Value(value));
+
+        #[cfg(debug_assertions)]
+        {
+            self.set_tensors_check.push(input.as_value().into());
+        }
+
         self.tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
@@ -660,6 +717,12 @@ impl OperationsRecorder
         let columns = value.columns();
 
         let input = new_tensor!(self, None, false, rows, columns, TensorMemoryValue::Value(value));
+
+        #[cfg(debug_assertions)]
+        {
+            self.set_tensors_check.push(input.as_value().into());
+        }
+
         self.tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
@@ -686,6 +749,11 @@ impl OperationsRecorder
                 let new_value = TensorMemoryValue::Value(LayerType::repeat(rows, columns, 1.0));
 
                 let gradient_ptr: TensorPtr = gradient.expect("gradient must exist");
+
+                #[cfg(debug_assertions)]
+                {
+                    self.set_tensors_check.push(gradient_ptr.into());
+                }
 
                 self.tensor_live_ranges[gradient_ptr.0].start = Some(-1);
                 self.tensors_memory[gradient_ptr.0].value = new_value;
@@ -748,6 +816,14 @@ impl OperationsRecorder
             }
         }
 
+        #[cfg(debug_assertions)]
+        {
+            if !USES_VALUE
+            {
+                self.set_tensors_check.push(index.into());
+            }
+        }
+
         let info = self.tensors[index.0];
         debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
 
@@ -779,12 +855,20 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Recording);
 
-        if let OperationsTarget::Loop(_) = self.operations_target
+        if let OperationsTarget::Loop(operation_index) = self.operations_target
         {
-            OperationIndex(self.recording_operations.len() - 1)
+            let inside_index = if let Op::Loop{ops, ..} = &self.recording_operations[operation_index.0]
+            {
+                ops.len()
+            } else
+            {
+                unreachable!()
+            };
+
+            OperationIndex(self.recording_operations.len() - 1, Some(inside_index))
         } else
         {
-            OperationIndex(self.recording_operations.len())
+            OperationIndex(self.recording_operations.len(), None)
         }
     }
 
@@ -1075,14 +1159,15 @@ impl OperationsRecorder
         debug_assert!(matches!(self.operations_target, OperationsTarget::Normal));
 
         let id = LoopIndex(self.loops.len());
-        let operation_index = OperationIndex(self.recording_operations.len());
+        let operation_index = LoopOperationIndex(self.recording_operations.len());
 
         self.loops.push(LoopInfo{
             times: 0,
-            inputs
+            input_values: Vec::new(),
+            inputs: Vec::new()
         });
 
-        self.recording_operations.push(Op::Loop{index: id, ops: Vec::new()});
+        self.recording_operations.push(Op::Loop{index: id, inputs, ops: Vec::new()});
 
         self.operations_target = OperationsTarget::Loop(operation_index);
 
@@ -1094,6 +1179,16 @@ impl OperationsRecorder
         debug_assert_eq!(self.state, RecorderState::Recording);
 
         self.operations_target = OperationsTarget::Normal;
+    }
+
+    pub fn set_loop_times(&mut self, index: LoopIndex, times: usize)
+    {
+        self.loops[index.0].times = times;
+    }
+
+    pub fn set_loop_inputs(&mut self, index: LoopIndex, inputs: Vec<LayerType>)
+    {
+        self.loops[index.0].input_values = inputs;
     }
 
     pub fn calculate_feedforward(&mut self)
@@ -1121,6 +1216,67 @@ impl OperationsRecorder
     fn calculate_steps(&mut self, start: usize, end: usize)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
+
+        for loop_index in 0..self.loops.len()
+        {
+            let total_count;
+            let current_index;
+            let inputs_count;
+
+            {
+                let loop_info = &self.loops[loop_index];
+
+                debug_assert!(loop_info.times > 0);
+                debug_assert_eq!(loop_info.times * loop_info.inputs.len(), loop_info.input_values.len());
+
+                inputs_count = loop_info.inputs.len();
+
+                total_count = loop_info.input_values.len() / loop_info.inputs.len();
+                current_index = total_count - loop_info.times;
+            }
+
+            for input_index in 0..inputs_count
+            {
+                match self.loops[loop_index].inputs[input_index]
+                {
+                    InputType::Normal(input) =>
+                    {
+                        let value = self.loops[loop_index].input_values[current_index + input_index].clone();
+
+                        self.set_tensor(input, value)
+                    },
+                    InputType::OneHot(input) => todo!()
+                }
+            }
+        }
+
+        dbg!(&self);
+        #[cfg(debug_assertions)]
+        {
+            self.tensor_inputs.iter().for_each(|input_tensor_ptr|
+            {
+                let contains_ptr = self.set_tensors_check.iter()
+                    .filter_map(|x| if let InputCheckType::Ptr(x) = x { Some(x) } else { None })
+                    .any(|x| x == input_tensor_ptr);
+
+                if contains_ptr
+                {
+                    return;
+                }
+
+                if let Some(input_memory_index) = self.tensors_memory[input_tensor_ptr.0].memory
+                {
+                    let contains_index = self.set_tensors_check.iter()
+                        .filter_map(|x| if let InputCheckType::Index(x) = x { Some(x) } else { None })
+                        .any(|x| *x == input_memory_index);
+
+                    assert!(contains_index, "{input_tensor_ptr:?} ({input_memory_index:?}) wasnt set");
+                } else
+                {
+                    panic!("input {input_tensor_ptr:?} wasnt allocated");
+                }
+            });
+        }
 
         let mut current_index = start;
         while current_index < end
@@ -1217,10 +1373,16 @@ impl OperationsRecorder
             match gradient_op
             {
                 GradientOp::None => unreachable!(),
-                GradientOp::Jump(target_index) =>
+                GradientOp::Jump(RawJumpInfo{loop_index, operation_index}) =>
                 {
-                    current_index = *target_index;
-                    continue;
+                    if self.loops[loop_index.0].times > 1
+                    {
+                        current_index = operation_index.0;
+
+                        self.loops[loop_index.0].times -= 1;
+
+                        continue;
+                    }
                 },
                 GradientOp::Copy{src, dst} =>
                 {
@@ -1684,9 +1846,9 @@ impl OperationsRecorder
                 {
                     GradientOp::MatmulOneHotvAdd{lhs: lhs.as_value(), rhs: *rhs, added: added.as_value(), output: output.as_value()}
                 },
-                Op::Loop{index, ops} =>
+                Op::Loop{index, inputs, ops} =>
                 {
-                    target.push(GradientOp::Jump(JumpInfo::Target(*index)));
+                    target.push(GradientOp::Jump(JumpInfo::Target{inputs: inputs.clone(), index: *index}));
 
                     ops.iter().for_each(|inner_op|
                     {
@@ -2171,9 +2333,15 @@ impl OperationsRecorder
             current_value
         };
 
-        let map_to_raw = |op: GradientOp<TensorPtr, JumpInfo>| -> Option<GradientOp<TensorRawDataPointer, usize>>
+        let mut loops_labels: Vec<(LoopIndex, GradientOperationIndex)> = Vec::new();
+
+        self.raw_operations.reserve_exact(self.gradient_operations.len());
+
+        for (index, gradient_op) in mem::take(&mut self.gradient_operations).into_iter().enumerate()
         {
-            match op
+            let operation_index = GradientOperationIndex(self.raw_operations.len());
+
+            let new_op = match gradient_op
             {
                 GradientOp::None => None,
                 GradientOp::SoftmaxCrossEntropy{
@@ -2189,18 +2357,48 @@ impl OperationsRecorder
                         output
                     })
                 },
-                x => Some(x.map_tensors(&access_tensor, |jump_info|
+                x =>
                 {
-                    todo!()
-                }))
-            }
-        };
+                    let mut ignore_output = false;
 
-        self.raw_operations.reserve_exact(self.gradient_operations.len());
+                    let loops = &mut self.loops;
+                    let output = x.map_tensors(&access_tensor, |jump_info|
+                    {
+                        match jump_info
+                        {
+                            JumpInfo::Target{inputs, index} =>
+                            {
+                                loops[index.0].inputs = inputs.into_iter().map(|x|
+                                {
+                                    match x
+                                    {
+                                        InputTypePtr::Normal(x) => InputType::Normal(self.tensors_memory[x.0].memory.expect("must be resolved")),
+                                        InputTypePtr::OneHot(x) => InputType::OneHot(x)
+                                    }
+                                }).collect();
 
-        for (index, gradient_op) in mem::take(&mut self.gradient_operations).into_iter().enumerate()
-        {
-            if let Some(raw_op) = map_to_raw(gradient_op)
+                                loops_labels.push((index, GradientOperationIndex(operation_index.0 + 1)));
+
+                                ignore_output = true;
+
+                                RawJumpInfo{loop_index: LoopIndex(usize::MAX), operation_index: GradientOperationIndex(usize::MAX)}
+                            },
+                            JumpInfo::Source(index) =>
+                            {
+                                let target_index: GradientOperationIndex = loops_labels.iter().find(|(loop_index, _)| index == *loop_index)
+                                    .expect("loop must be defined before being used")
+                                    .1;
+
+                                RawJumpInfo{loop_index: index, operation_index: target_index}
+                            }
+                        }
+                    });
+
+                    (!ignore_output).then_some(output)
+                }
+            };
+
+            if let Some(raw_op) = new_op
             {
                 self.raw_operations.push(raw_op);
             }
@@ -2282,6 +2480,11 @@ impl OperationsRecorder
                     debug_assert!(!value_args.contains(&v_out), "{op:?} has overlap between args and outputs")
                 });
             });
+
+            self.tensor_inputs = self.tensor_live_ranges.iter().enumerate()
+                .filter(|(_, x)| x.start == Some(-1))
+                .map(|(index, _)| TensorPtr(index))
+                .collect();
         }
 
         self.value_live_ranges = Vec::new();
@@ -2311,7 +2514,12 @@ impl OperationsRecorder
 
         {
             let mut assigned_gradients = Vec::new();
-            self.calculate_gradient(&mut assigned_gradients, respect);
+            let mut next_nodes: VecDeque<DiffWrapper> = VecDeque::from(vec![respect]);
+
+            while let Some(current_node) = next_nodes.pop_front()
+            {
+                self.calculate_gradient(&mut assigned_gradients, &mut next_nodes, current_node);
+            }
         }
 
         self.copy_coalesce();
@@ -2323,7 +2531,29 @@ impl OperationsRecorder
         self.state = RecorderState::AwaitingResolve;
     }
 
-    fn calculate_gradient(&mut self, assigned_gradients: &mut Vec<(DiffValue, OperationIndex)>, respect: DiffWrapper)
+    fn calculate_gradient(
+        &mut self,
+        assigned_gradients: &mut Vec<(DiffValue, GradientOperationIndex)>,
+        next_nodes: &mut VecDeque<DiffWrapper>,
+        respect: DiffWrapper
+    )
+    {
+        let (gradient, source) = if let Some(x) = respect.destructure() { x } else { return; };
+
+        if let Some(source) = source
+        {
+            self.calculate_gradient_op(assigned_gradients, next_nodes, gradient, source, false)
+        }
+    }
+
+    fn calculate_gradient_op(
+        &mut self,
+        assigned_gradients: &mut Vec<(DiffValue, GradientOperationIndex)>,
+        next_nodes: &mut VecDeque<DiffWrapper>,
+        gradient: DiffValue,
+        source: OperationIndex,
+        is_nested: bool
+    )
     {
         let mut add_gradient_operation = |this: &mut Self, output: DiffValue, gradient_op: GradientOp<TensorPtr, JumpInfo>|
         {
@@ -2366,378 +2596,430 @@ impl OperationsRecorder
                     },
                     DiffValue::Value(output) =>
                     {
-                        todo!()
+                        let mut handle_scalar = |new_value_out: &mut Option<ValueIndex>, x: ValueIndex| -> ValueIndex
+                        {
+                            let new_value = new_value_index!(this);
+
+                            *new_value_out = Some(new_value);
+
+                            new_value
+                        };
+
+                        let mut lhs = None;
+                        this.gradient_operations[previous_operation_index.0] = previous_op.map_outputs(convert::identity, |x|
+                        {
+                            handle_scalar(&mut lhs, x)
+                        });
+
+                        let mut rhs = None;
+                        this.gradient_operations.push(gradient_op.map_outputs(convert::identity, |x|
+                        {
+                            handle_scalar(&mut rhs, x)
+                        }));
+
+                        let new_id = this.gradient_operations.len();
+
+                        this.gradient_operations.push(GradientOp::AddScalars{lhs: lhs.unwrap(), rhs: rhs.unwrap(), output});
+
+                        new_id
                     }
                 };
 
-                *previous_operation_index = OperationIndex(new_id);
+                *previous_operation_index = GradientOperationIndex(new_id);
             } else
             {
-                let this_op_index = OperationIndex(this.gradient_operations.len());
+                let this_op_index = GradientOperationIndex(this.gradient_operations.len());
                 this.gradient_operations.push(gradient_op);
 
                 assigned_gradients.push((output, this_op_index));
             }
         };
 
-        let (gradient, source): (DiffValue, Option<OperationIndex>) = match respect
+        let this_operation = &self.recording_operations[source.0];
+
+        let this_operation = if is_nested
         {
-            DiffWrapper::Tensor(DiffTensorPtr{index: _, gradient, source}) =>
+            if let Op::Loop{ops, ..} = this_operation
             {
-                let gradient = if let Some(x) = gradient { x } else { return; };
-
-                (gradient.into(), source)
-            },
-            DiffWrapper::Value(DiffScalar{index: _, gradient, source}) =>
+                ops[source.1.unwrap()].clone()
+            } else
             {
-                let gradient = if let Some(x) = gradient { x } else { return; };
-
-                (gradient.into(), source)
+                unreachable!()
             }
+        } else
+        {
+            this_operation.clone()
         };
 
-        if let Some(source) = source
+        match this_operation
         {
-            let this_operation = self.recording_operations[source.0].clone();
-
-            match this_operation
+            Op::Add{lhs, ..}
+            | Op::AddScalar{lhs, ..} =>
             {
-                Op::Add{lhs, ..}
-                | Op::AddScalar{lhs, ..} =>
-                {
-                    let gradient = gradient.as_tensor();
+                let gradient = gradient.as_tensor();
 
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::Copy{src: gradient, dst: lhs_gradient});
+                }
+
+                if let Op::Add{rhs, ..} = this_operation
+                {
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::Copy{src: gradient, dst: rhs_gradient});
+                    }
+                } else if let Op::AddScalar{rhs, ..} = this_operation
+                {
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::SumTensor{value: gradient, output: rhs_gradient});
+                    }
+                } else
+                {
+                    unreachable!()
+                }
+
+                let rhs = if let Op::Add{rhs, ..} = this_operation
+                {
+                    rhs.into()
+                } else if let Op::AddScalar{rhs, ..} = this_operation
+                {
+                    rhs.into()
+                } else
+                {
+                    unreachable!()
+                };
+
+                next_nodes.push_back(rhs);
+                next_nodes.push_back(lhs.into());
+            },
+            Op::AddScalars{lhs, rhs, output: _} =>
+            {
+                let gradient = gradient.as_value();
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::CopyScalar{src: gradient, dst: lhs_gradient});
+                }
+
+                if let Some(rhs_gradient) = rhs.as_gradient()
+                {
+                    add_gradient_operation(self, rhs_gradient.into(), GradientOp::CopyScalar{src: gradient, dst: rhs_gradient});
+                }
+
+                next_nodes.push_back(lhs.into());
+                next_nodes.push_back(rhs.into());
+            },
+            Op::Sub{rhs, ..}
+            | Op::SubFromScalar{rhs, ..} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                if let Op::Sub{lhs, ..} = this_operation
+                {
                     if let Some(lhs_gradient) = lhs.as_gradient()
                     {
                         add_gradient_operation(self, lhs_gradient.into(), GradientOp::Copy{src: gradient, dst: lhs_gradient});
                     }
-
-                    if let Op::Add{rhs, ..} = this_operation
-                    {
-                        if let Some(rhs_gradient) = rhs.as_gradient()
-                        {
-                            add_gradient_operation(self, rhs_gradient.into(), GradientOp::Copy{src: gradient, dst: rhs_gradient});
-                        }
-                    } else if let Op::AddScalar{rhs, ..} = this_operation
-                    {
-                        if let Some(rhs_gradient) = rhs.as_gradient()
-                        {
-                            add_gradient_operation(self, rhs_gradient.into(), GradientOp::SumTensor{value: gradient, output: rhs_gradient});
-                        }
-                    } else
-                    {
-                        unreachable!()
-                    }
-
-                    let rhs = if let Op::Add{rhs, ..} = this_operation
-                    {
-                        rhs.into()
-                    } else if let Op::AddScalar{rhs, ..} = this_operation
-                    {
-                        rhs.into()
-                    } else
-                    {
-                        unreachable!()
-                    };
-
-                    self.calculate_gradient(assigned_gradients, rhs);
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                },
-                Op::AddScalars{lhs, rhs, output: _} =>
+                } else if let Op::SubFromScalar{lhs, ..} = this_operation
                 {
-                    let gradient = gradient.as_value();
-
                     if let Some(lhs_gradient) = lhs.as_gradient()
                     {
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::CopyScalar{src: gradient, dst: lhs_gradient});
+                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::SumTensor{value: gradient, output: lhs_gradient});
                     }
-
-                    if let Some(rhs_gradient) = rhs.as_gradient()
-                    {
-                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::CopyScalar{src: gradient, dst: rhs_gradient});
-                    }
-
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                    self.calculate_gradient(assigned_gradients, rhs.into());
-                },
-                Op::Sub{rhs, ..}
-                | Op::SubFromScalar{rhs, ..} =>
+                } else
                 {
-                    let gradient = gradient.as_tensor();
+                    unreachable!()
+                }
 
-                    if let Op::Sub{lhs, ..} = this_operation
-                    {
-                        if let Some(lhs_gradient) = lhs.as_gradient()
-                        {
-                            add_gradient_operation(self, lhs_gradient.into(), GradientOp::Copy{src: gradient, dst: lhs_gradient});
-                        }
-                    } else if let Op::SubFromScalar{lhs, ..} = this_operation
-                    {
-                        if let Some(lhs_gradient) = lhs.as_gradient()
-                        {
-                            add_gradient_operation(self, lhs_gradient.into(), GradientOp::SumTensor{value: gradient, output: lhs_gradient});
-                        }
-                    } else
-                    {
-                        unreachable!()
-                    }
-
-                    if let Some(rhs_gradient) = rhs.as_gradient()
-                    {
-                        let m1_index = new_value_index!(self);
-                        self.values[m1_index.0] = -1.0;
-
-                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulScalar{lhs: gradient, rhs: m1_index, output: rhs_gradient});
-                    }
-
-                    let lhs = if let Op::Sub{lhs, ..} = this_operation
-                    {
-                        lhs.into()
-                    } else if let Op::SubFromScalar{lhs, ..} = this_operation
-                    {
-                        lhs.into()
-                    } else
-                    {
-                        unreachable!()
-                    };
-
-                    self.calculate_gradient(assigned_gradients, lhs);
-                    self.calculate_gradient(assigned_gradients, rhs.into());
-                },
-                Op::MulScalars{lhs, rhs, output: _} =>
+                if let Some(rhs_gradient) = rhs.as_gradient()
                 {
-                    let gradient = gradient.as_value();
+                    let m1_index = new_value_index!(self);
+                    self.values[m1_index.0] = -1.0;
 
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulScalars{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
-                    }
+                    add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulScalar{lhs: gradient, rhs: m1_index, output: rhs_gradient});
+                }
 
-                    if let Some(rhs_gradient) = rhs.as_gradient()
-                    {
-                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulScalars{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
-                    }
-
-                    self.calculate_gradient(assigned_gradients, rhs.into());
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                },
-                Op::MulComponentwise{lhs, ..}
-                | Op::MulScalar{lhs, ..} =>
+                let lhs = if let Op::Sub{lhs, ..} = this_operation
                 {
-                    let gradient = gradient.as_tensor();
+                    lhs.into()
+                } else if let Op::SubFromScalar{lhs, ..} = this_operation
+                {
+                    lhs.into()
+                } else
+                {
+                    unreachable!()
+                };
 
-                    let (rows, columns) = tensor_shape!(self, gradient);
+                next_nodes.push_back(lhs);
+                next_nodes.push_back(rhs.into());
+            },
+            Op::MulScalars{lhs, rhs, output: _} =>
+            {
+                let gradient = gradient.as_value();
 
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        if let Op::MulComponentwise{rhs, ..} = this_operation
-                        {
-                            add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
-                        } else if let Op::MulScalar{rhs, ..} = this_operation
-                        {
-                            add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulScalar{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
-                        } else
-                        {
-                            unreachable!()
-                        }
-                    }
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulScalars{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                }
 
+                if let Some(rhs_gradient) = rhs.as_gradient()
+                {
+                    add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulScalars{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                }
+
+                next_nodes.push_back(rhs.into());
+                next_nodes.push_back(lhs.into());
+            },
+            Op::MulComponentwise{lhs, ..}
+            | Op::MulScalar{lhs, ..} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                let (rows, columns) = tensor_shape!(self, gradient);
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
                     if let Op::MulComponentwise{rhs, ..} = this_operation
                     {
-                        if let Some(rhs_gradient) = rhs.as_gradient()
-                        {
-                            add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
-                        }
+                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
                     } else if let Op::MulScalar{rhs, ..} = this_operation
                     {
-                        if let Some(rhs_gradient) = rhs.as_gradient()
-                        {
-                            let pre_fold = new_tensor_index!(self, rows, columns);
-                            self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: pre_fold});
-
-                            add_gradient_operation(self, rhs_gradient.into(), GradientOp::SumTensor{value: pre_fold, output: rhs_gradient});
-                        }
+                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulScalar{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
                     } else
                     {
                         unreachable!()
                     }
-
-                    let rhs = if let Op::MulComponentwise{rhs, ..} = this_operation
-                    {
-                        rhs.into()
-                    } else if let Op::MulScalar{rhs, ..} = this_operation
-                    {
-                        rhs.into()
-                    } else
-                    {
-                        unreachable!()
-                    };
-
-                    self.calculate_gradient(assigned_gradients, rhs);
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                },
-                Op::SumTensor{value, output: _} =>
-                {
-                    let gradient = gradient.as_value();
-
-                    if let Some(value_gradient) = value.as_gradient()
-                    {
-                        add_gradient_operation(self, value_gradient.into(), GradientOp::Fill{value: gradient, output: value_gradient});
-
-                        self.calculate_gradient(assigned_gradients, value.into());
-                    }
-                },
-                Op::Dot{lhs, rhs, output: _} =>
-                {
-                    let gradient = gradient.as_value();
-
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulScalar{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
-                    }
-
-                    if let Some(rhs_gradient) = rhs.as_gradient()
-                    {
-                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulScalar{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
-                    }
-
-                    self.calculate_gradient(assigned_gradients, rhs.into());
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                },
-                Op::Pow{lhs, power, output: _} =>
-                {
-                    let gradient = gradient.as_tensor();
-
-                    let (rows, columns) = tensor_shape!(self, lhs.as_value());
-
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        let power_index = new_value_index!(self);
-                        self.values[power_index.0] = power as f32;
-
-                        let pow_d_lhs = new_tensor_index!(self, rows, columns);
-                        self.gradient_operations.push(GradientOp::Pow{lhs: lhs.as_value(), power: (power - 1) as u32, output: pow_d_lhs});
-
-                        let pow_d = new_tensor_index!(self, rows, columns);
-                        self.gradient_operations.push(GradientOp::MulScalar{lhs: pow_d_lhs, rhs: power_index.into(), output: pow_d});
-
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulComponentwise{lhs: pow_d, rhs: gradient, output: lhs_gradient});
-
-                        self.calculate_gradient(assigned_gradients, lhs.into());
-                    }
-                },
-                Op::Sigmoid{value, output} =>
-                {
-                    // sigmoid(x) * (1.0 - sigmoid(x))
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(value_gradient) = value.as_gradient()
-                    {
-                        add_gradient_operation(self, value_gradient.into(), GradientOp::SigmoidDiff{value: output.as_value(), gradient, output: value_gradient});
-
-                        self.calculate_gradient(assigned_gradients, value.into());
-                    }
-                },
-                Op::Tanh{value, output} =>
-                {
-                    // 1 - tanh^2(x)
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(value_gradient) = value.as_gradient()
-                    {
-                        add_gradient_operation(self, value_gradient.into(), GradientOp::TanhDiff{value: output.as_value(), gradient, output: value_gradient});
-
-                        self.calculate_gradient(assigned_gradients, value.into());
-                    }
-                },
-                Op::LeakyRelu{value, output: _} =>
-                {
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(value_gradient) = value.as_gradient()
-                    {
-                        add_gradient_operation(self, value_gradient.into(), GradientOp::LeakyReluDiff{value: value.as_value(), gradient, output: value_gradient});
-
-                        self.calculate_gradient(assigned_gradients, value.into());
-                    }
-                },
-                Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output: _} =>
-                {
-                    let gradient = gradient.as_value();
-
-                    if let Some(values_gradient) = values.as_gradient()
-                    {
-                        add_gradient_operation(self, values_gradient.into(), GradientOp::SoftmaxCrossEntropyDiff{
-                            softmaxed_values: softmaxed_output.as_value(),
-                            gradient,
-                            targets: targets.clone(),
-                            output: values_gradient
-                        });
-
-                        self.calculate_gradient(assigned_gradients, values.into());
-                    }
-                },
-                Op::Matmulv{lhs, rhs, output: _} =>
-                {
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::OuterProduct{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
-                    }
-
-                    if let Some(rhs_gradient) = rhs.as_gradient()
-                    {
-                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
-                    }
-
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                    self.calculate_gradient(assigned_gradients, rhs.into());
-                },
-                Op::MatmulvAdd{lhs, rhs, added, output: _} =>
-                {
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::OuterProduct{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
-                    }
-
-                    if let Some(rhs_gradient) = rhs.as_gradient()
-                    {
-                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
-                    }
-
-                    if let Some(added_gradient) = added.as_gradient()
-                    {
-                        add_gradient_operation(self, added_gradient.into(), GradientOp::Copy{src: gradient, dst: added_gradient});
-                    }
-
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                    self.calculate_gradient(assigned_gradients, rhs.into());
-                    self.calculate_gradient(assigned_gradients, added.into());
-                },
-                Op::MatmulOneHotvAdd{lhs, rhs, added, output: _} =>
-                {
-                    let gradient = gradient.as_tensor();
-
-                    if let Some(lhs_gradient) = lhs.as_gradient()
-                    {
-                        add_gradient_operation(self, lhs_gradient.into(), GradientOp::OuterProductOneHot{lhs: gradient, rhs: rhs, output: lhs_gradient});
-                    }
-
-                    if let Some(added_gradient) = added.as_gradient()
-                    {
-                        add_gradient_operation(self, added_gradient.into(), GradientOp::Copy{src: gradient, dst: added_gradient});
-                    }
-
-                    self.calculate_gradient(assigned_gradients, lhs.into());
-                    self.calculate_gradient(assigned_gradients, added.into());
-                },
-                Op::Loop{index, ops} =>
-                {
-                    todo!()
                 }
+
+                if let Op::MulComponentwise{rhs, ..} = this_operation
+                {
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                    }
+                } else if let Op::MulScalar{rhs, ..} = this_operation
+                {
+                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    {
+                        let pre_fold = new_tensor_index!(self, rows, columns);
+                        self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: pre_fold});
+
+                        add_gradient_operation(self, rhs_gradient.into(), GradientOp::SumTensor{value: pre_fold, output: rhs_gradient});
+                    }
+                } else
+                {
+                    unreachable!()
+                }
+
+                let rhs = if let Op::MulComponentwise{rhs, ..} = this_operation
+                {
+                    rhs.into()
+                } else if let Op::MulScalar{rhs, ..} = this_operation
+                {
+                    rhs.into()
+                } else
+                {
+                    unreachable!()
+                };
+
+                next_nodes.push_back(rhs);
+                next_nodes.push_back(lhs.into());
+            },
+            Op::SumTensor{value, output: _} =>
+            {
+                let gradient = gradient.as_value();
+
+                if let Some(value_gradient) = value.as_gradient()
+                {
+                    add_gradient_operation(self, value_gradient.into(), GradientOp::Fill{value: gradient, output: value_gradient});
+
+                    next_nodes.push_back(value.into());
+                }
+            },
+            Op::Dot{lhs, rhs, output: _} =>
+            {
+                let gradient = gradient.as_value();
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulScalar{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                }
+
+                if let Some(rhs_gradient) = rhs.as_gradient()
+                {
+                    add_gradient_operation(self, rhs_gradient.into(), GradientOp::MulScalar{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                }
+
+                next_nodes.push_back(rhs.into());
+                next_nodes.push_back(lhs.into());
+            },
+            Op::Pow{lhs, power, output: _} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                let (rows, columns) = tensor_shape!(self, lhs.as_value());
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    let power_index = new_value_index!(self);
+                    self.values[power_index.0] = power as f32;
+
+                    let pow_d_lhs = new_tensor_index!(self, rows, columns);
+                    self.gradient_operations.push(GradientOp::Pow{lhs: lhs.as_value(), power: (power - 1) as u32, output: pow_d_lhs});
+
+                    let pow_d = new_tensor_index!(self, rows, columns);
+                    self.gradient_operations.push(GradientOp::MulScalar{lhs: pow_d_lhs, rhs: power_index.into(), output: pow_d});
+
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::MulComponentwise{lhs: pow_d, rhs: gradient, output: lhs_gradient});
+
+                    next_nodes.push_back(lhs.into());
+                }
+            },
+            Op::Sigmoid{value, output} =>
+            {
+                // sigmoid(x) * (1.0 - sigmoid(x))
+                let gradient = gradient.as_tensor();
+
+                if let Some(value_gradient) = value.as_gradient()
+                {
+                    add_gradient_operation(self, value_gradient.into(), GradientOp::SigmoidDiff{value: output.as_value(), gradient, output: value_gradient});
+
+                    next_nodes.push_back(value.into());
+                }
+            },
+            Op::Tanh{value, output} =>
+            {
+                // 1 - tanh^2(x)
+                let gradient = gradient.as_tensor();
+
+                if let Some(value_gradient) = value.as_gradient()
+                {
+                    add_gradient_operation(self, value_gradient.into(), GradientOp::TanhDiff{value: output.as_value(), gradient, output: value_gradient});
+
+                    next_nodes.push_back(value.into());
+                }
+            },
+            Op::LeakyRelu{value, output: _} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                if let Some(value_gradient) = value.as_gradient()
+                {
+                    add_gradient_operation(self, value_gradient.into(), GradientOp::LeakyReluDiff{value: value.as_value(), gradient, output: value_gradient});
+
+                    next_nodes.push_back(value.into());
+                }
+            },
+            Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output: _} =>
+            {
+                let gradient = gradient.as_value();
+
+                if let Some(values_gradient) = values.as_gradient()
+                {
+                    add_gradient_operation(self, values_gradient.into(), GradientOp::SoftmaxCrossEntropyDiff{
+                        softmaxed_values: softmaxed_output.as_value(),
+                        gradient,
+                        targets: targets.clone(),
+                        output: values_gradient
+                    });
+
+                    next_nodes.push_back(values.into());
+                }
+            },
+            Op::Matmulv{lhs, rhs, output: _} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::OuterProduct{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
+                }
+
+                if let Some(rhs_gradient) = rhs.as_gradient()
+                {
+                    add_gradient_operation(self, rhs_gradient.into(), GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                }
+
+                next_nodes.push_back(lhs.into());
+                next_nodes.push_back(rhs.into());
+            },
+            Op::MatmulvAdd{lhs, rhs, added, output: _} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::OuterProduct{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
+                }
+
+                if let Some(rhs_gradient) = rhs.as_gradient()
+                {
+                    add_gradient_operation(self, rhs_gradient.into(), GradientOp::MatmulvTransposed{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                }
+
+                if let Some(added_gradient) = added.as_gradient()
+                {
+                    add_gradient_operation(self, added_gradient.into(), GradientOp::Copy{src: gradient, dst: added_gradient});
+                }
+
+                next_nodes.push_back(lhs.into());
+                next_nodes.push_back(rhs.into());
+                next_nodes.push_back(added.into());
+            },
+            Op::MatmulOneHotvAdd{lhs, rhs, added, output: _} =>
+            {
+                let gradient = gradient.as_tensor();
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, lhs_gradient.into(), GradientOp::OuterProductOneHot{lhs: gradient, rhs: rhs, output: lhs_gradient});
+                }
+
+                if let Some(added_gradient) = added.as_gradient()
+                {
+                    add_gradient_operation(self, added_gradient.into(), GradientOp::Copy{src: gradient, dst: added_gradient});
+                }
+
+                next_nodes.push_back(lhs.into());
+                next_nodes.push_back(added.into());
+            },
+            Op::Loop{index, inputs, ..} =>
+            {
+                self.gradient_operations.push(GradientOp::Jump(JumpInfo::Target{inputs, index}));
+
+                debug_assert!(source.1.is_some());
+
+                //let previous_assigned = assigned_gradients.clone();
+
+                let mut loop_nodes = VecDeque::new();
+
+                self.calculate_gradient_op(assigned_gradients, &mut loop_nodes, gradient, source, true);
+
+                while let Some(loop_node) = loop_nodes.pop_front()
+                {
+                    if let Some((loop_node_gradient, loop_node_source)) = loop_node.destructure()
+                    {
+                        if let Some(loop_node_source@OperationIndex(_, Some(_))) = loop_node_source
+                        {
+                            self.calculate_gradient_op(assigned_gradients, &mut loop_nodes, loop_node_gradient, loop_node_source, true);
+                        } else
+                        {
+                            next_nodes.push_back(loop_node);
+                        }
+                    }
+                }
+
+                // new gradients created inside the loop which will get overriden with each new run
+                // could be useful to check that theyre not important!
+                /*assigned_gradients.iter().filter(|(value, _)| !previous_assigned.iter().any(|(x, _)| x == value))
+                    .for_each(|(new_value, new_position)|
+                    {
+                        eprintln!("{new_value:?} {new_position:?}");
+                    });*/
+
+                self.gradient_operations.push(GradientOp::Jump(JumpInfo::Source(index)));
             }
         }
     }
@@ -2840,7 +3122,13 @@ impl DiffValue
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct OperationIndex(usize);
+struct OperationIndex(usize, Option<usize>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct LoopOperationIndex(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct GradientOperationIndex(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffTensorPtr
@@ -2984,6 +3272,28 @@ impl From<DiffScalar> for DiffWrapper
     }
 }
 
+impl DiffWrapper
+{
+    fn destructure(self) -> Option<(DiffValue, Option<OperationIndex>)>
+    {
+        match self
+        {
+            DiffWrapper::Tensor(DiffTensorPtr{index: _, gradient, source}) =>
+            {
+                let gradient = if let Some(x) = gradient { x } else { return None; };
+
+                Some((gradient.into(), source))
+            },
+            DiffWrapper::Value(DiffScalar{index: _, gradient, source}) =>
+            {
+                let gradient = if let Some(x) = gradient { x } else { return None; };
+
+                Some((gradient.into(), source))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OwnedDiffValue
 {
@@ -3007,10 +3317,10 @@ impl From<f32> for OwnedDiffValue
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum JumpInfo
 {
-    Target(LoopIndex),
+    Target{inputs: Vec<InputTypePtr>, index: LoopIndex},
     Source(LoopIndex)
 }
 
@@ -3239,7 +3549,7 @@ pub enum Op
     Matmulv{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     MatmulvAdd{lhs: DiffTensorPtr, rhs: DiffTensorPtr, added: DiffTensorPtr, output: DiffTensorPtr},
     MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr},
-    Loop{index: LoopIndex, ops: Vec<Op>}
+    Loop{index: LoopIndex, inputs: Vec<InputTypePtr>, ops: Vec<Op>}
 }
 
 // damn that sure is one hot layer
@@ -3286,7 +3596,7 @@ impl OneHotLayer
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum InputTypePtr
 {
     Normal(TensorPtr),
@@ -3901,6 +4211,9 @@ mod tests
     #[test]
     fn loops()
     {
+        let loops_count = 3;
+        let is: Vec<LayerType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value)).collect();
+
         check_tensor(|recorder, a, b|
         {
             let ab = recorder.mul_componentwise(a, b);
@@ -3908,12 +4221,17 @@ mod tests
             let (rows, columns) = recorder.tensor_shape(a.as_value());
             let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
 
+            let loops_value = recorder.set_new_value(loops_count as f32 * 20.0);
             let loop_index = recorder.begin_loop(vec![i.into()]);
 
-            let s = recorder.sigmoid(ab);
+            let abb = recorder.mul_scalar(ab, loops_value);
+            let s = recorder.tanh(abb);
             let si = recorder.mul_componentwise(s, DiffTensorPtr::no_gradient(i));
 
             recorder.end_loop(loop_index);
+
+            recorder.set_loop_times(loop_index, loops_count);
+            recorder.set_loop_inputs(loop_index, is.clone());
 
             si
         })
