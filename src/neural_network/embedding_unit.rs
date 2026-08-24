@@ -14,6 +14,7 @@ use crate::{
         WeightInfo,
         WeightInfoPtr,
         NetworkUnitNewable,
+        NetworkUnitStateMappable,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, Embeddingsable, EmbeddingsableOwned, NetworkUnitParameterable}
     }
@@ -23,17 +24,16 @@ use crate::{
 pub type EmbeddingUnit<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (weights, false, LayerSize::Input, LayerSize::Hidden),
-    (bias, false, LayerSize::One, LayerSize::Hidden)
+    (weights, false, false, LayerSize::Input, LayerSize::Hidden),
+    (bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
 impl Embeddingsable for EmbeddingUnit<WeightInfoPtr>
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensorPtr
     {
-        let block_index = recorder.current_block().into_index();
-
-        recorder.matmul_onehotv_add(self.weights.weight_dropped[block_index], input, self.bias.weight_dropped[block_index])
+        todo!()
+        //recorder.matmul_onehotv_add(self.weights.weight_dropped[block_index], input, self.bias.weight_dropped[block_index])
     }
 }
 
@@ -46,6 +46,11 @@ impl EmbeddingsableOwned for EmbeddingUnit<WeightInfoPtr>
 
         weights.matmul_onehotv_add(input, bias)
     }
+}
+
+impl<T, U> NetworkUnitStateMappable<T, U, ()> for ()
+{
+    fn map<F: FnMut(T) -> U>(self, _f: F) -> () { () }
 }
 
 impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>

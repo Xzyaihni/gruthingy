@@ -1,8 +1,10 @@
 use std::{
     f32,
     vec,
+    mem,
     iter,
     convert,
+    fmt::{self, Debug},
     cmp::Ordering,
     borrow::Borrow
 };
@@ -15,8 +17,8 @@ use crate::{
         OperationsRecorder,
         Softmaxer,
         NetworkUnitStateable,
+        NetworkUnitStateMappable,
         NetworkUnitNewable,
-        BlockIndex,
         DiffTensor,
         DiffTensorPtr,
         DiffScalar,
@@ -43,12 +45,14 @@ use crate::{
 };
 
 
+#[derive(Debug, PartialEq)]
 pub struct WeightsSize<T>
 {
     pub weights: T,
     pub previous_size: usize,
     pub this_size: usize,
-    pub is_hidden: bool
+    pub is_hidden: bool,
+    pub is_state_reliant: bool
 }
 
 impl<T> WeightsSize<T>
@@ -61,6 +65,7 @@ impl<T> WeightsSize<T>
             previous_size: self.previous_size,
             this_size: self.this_size,
             is_hidden: self.is_hidden,
+            is_state_reliant: self.is_state_reliant,
             weights: f(self.weights)
         }
     }
@@ -87,7 +92,7 @@ impl<T> WeightsNamed<T>
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LayerSizes
 {
     pub input: usize,
@@ -116,38 +121,10 @@ impl LayerSize
     }
 }
 
-pub fn dropconnected_weights(
-    recorder: &mut OperationsRecorder,
-    weights: DiffTensorPtr,
-    dropconnect_mask: DiffTensorPtr
-) -> [DiffTensorPtr; 2]
-{
-    let initial_block = recorder.current_block();
-
-    let new_weights = if recorder.blocks_count() == 1
-    {
-        let new_weights = recorder.mul_componentwise(weights, dropconnect_mask);
-
-        [new_weights, new_weights]
-    } else
-    {
-        recorder.blocks_iter().map(|block|
-        {
-            recorder.set_current_block(block);
-
-            recorder.mul_componentwise(weights, dropconnect_mask)
-        }).collect::<Vec<_>>().try_into().unwrap()
-    };
-
-    recorder.set_current_block(initial_block);
-
-    new_weights
-}
-
 #[macro_export]
 macro_rules! create_weights_container
 {
-    ($(($name:ident, $is_hidden:expr, $previous_size:expr, $this_size:expr)),+) =>
+    ($(($name:ident, $is_hidden:expr, $is_state_reliant:expr, $previous_size:expr, $this_size:expr)),+) =>
     {
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
@@ -160,7 +137,7 @@ macro_rules! create_weights_container
         };
 
 
-        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         pub struct WeightsContainer<T>
         {
             sizes: $crate::neural_network::LayerSizes,
@@ -216,7 +193,8 @@ macro_rules! create_weights_container
                             weights: &mut self.$name,
                             this_size: $this_size.into_number(self.sizes),
                             previous_size: $previous_size.into_number(self.sizes),
-                            is_hidden: $is_hidden
+                            is_hidden: $is_hidden,
+                            is_state_reliant: $is_state_reliant
                         },
                     )+
                 ].into_iter()
@@ -280,14 +258,14 @@ macro_rules! create_weights_container
                             let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
                             WeightInfoPtr{
-                                weight_dropped: [DiffTensorPtr::undefined(), DiffTensorPtr::undefined()],
+                                weight_dropped: DiffTensorPtr::undefined(),
                                 weight_original,
                                 dropconnect_mask: Some(dropconnect_mask.as_value())
                             }
                         } else
                         {
                             WeightInfoPtr{
-                                weight_dropped: [weight_original, weight_original],
+                                weight_dropped: weight_original,
                                 weight_original,
                                 dropconnect_mask: None
                             }
@@ -345,7 +323,8 @@ macro_rules! create_weights_container
                         weights: &mut self.$name,
                         this_size: $this_size.into_number(self.sizes),
                         previous_size: $previous_size.into_number(self.sizes),
-                        is_hidden: $is_hidden
+                        is_hidden: $is_hidden,
+                        is_state_reliant: $is_state_reliant
                     });
                 )+
             }
@@ -361,7 +340,8 @@ macro_rules! create_weights_container
                             weights: self.$name,
                             this_size: $this_size.into_number(self.sizes),
                             previous_size: $previous_size.into_number(self.sizes),
-                            is_hidden: $is_hidden
+                            is_hidden: $is_hidden,
+                            is_state_reliant: $is_state_reliant
                         }),
                     )+
                 }
@@ -379,6 +359,24 @@ macro_rules! create_weights_container
                 }
             }
 
+            fn map_ref_with_info<U, F>(&self, mut f: F) -> WeightsContainer<U>
+            where
+                F: FnMut(WeightsSize<&T>) -> U
+            {
+                WeightsContainer{
+                    sizes: self.sizes,
+                    $(
+                        $name: f(WeightsSize{
+                            weights: &self.$name,
+                            this_size: $this_size.into_number(self.sizes),
+                            previous_size: $previous_size.into_number(self.sizes),
+                            is_hidden: $is_hidden,
+                            is_state_reliant: $is_state_reliant
+                        }),
+                    )+
+                }
+            }
+
             fn clone_weights_with_info<F>(&self, mut f: F) -> Self
             where
                 F: FnMut(WeightsSize<&T>) -> T
@@ -391,7 +389,8 @@ macro_rules! create_weights_container
                                 weights: &self.$name,
                                 this_size: $this_size.into_number(self.sizes),
                                 previous_size: $previous_size.into_number(self.sizes),
-                                is_hidden: $is_hidden
+                                is_hidden: $is_hidden,
+                                is_state_reliant: $is_state_reliant
                             }
                         ),
                     )+
@@ -410,7 +409,8 @@ macro_rules! create_weights_container
                                 weights: &self.$name,
                                 this_size: $this_size.into_number(self.sizes),
                                 previous_size: $previous_size.into_number(self.sizes),
-                                is_hidden: $is_hidden
+                                is_hidden: $is_hidden,
+                                is_state_reliant: $is_state_reliant
                             }
                         },
                     )+
@@ -520,6 +520,17 @@ pub struct WeightsFullContainer<N: UnitFactory, T>
     output: T
 }
 
+impl<N: UnitFactory, T> PartialEq for WeightsFullContainer<N, T>
+where
+    T: PartialEq,
+    N::Unit<T>: PartialEq
+{
+    fn eq(&self, other: &Self) -> bool
+    {
+        self.layers == other.layers && self.output == other.output
+    }
+}
+
 impl<N: UnitFactory, T> Clone for WeightsFullContainer<N, T>
 where
     T: Clone,
@@ -531,6 +542,20 @@ where
             layers: self.layers.clone(),
             output: self.output.clone()
         }
+    }
+}
+
+impl<N: UnitFactory, T> Debug for WeightsFullContainer<N, T>
+where
+    T: Debug,
+    N::Unit<T>: Debug
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        f.debug_struct("WeightsFullContainer")
+            .field("layers", &self.layers)
+            .field("output", &self.output)
+            .finish()
     }
 }
 
@@ -613,14 +638,14 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 #[derive(Debug, Clone, Copy)]
 pub struct WeightInfoGeneric<D, I>
 {
-    pub weight_dropped: [D; 2],
+    pub weight_dropped: D,
     pub weight_original: D,
     pub dropconnect_mask: Option<I>
 }
 
 pub type WeightInfoPtr = WeightInfoGeneric<DiffTensorPtr, TensorPtr>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeightInfo
 {
     pub weight: DiffTensor,
@@ -663,38 +688,80 @@ where
 
         Self{
             sizes: x.sizes,
-            dropout_probability: x.dropout_probability,
+            dropout_probability: x.dropouts.dropout_probability,
             optimizer_info: x.optimizer_info,
             weights
         }
     }
 }
 
-struct BlockInfo<N: UnitFactory>
-where
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+#[derive(Clone)]
+struct NetworkDropoutData
+{
+    dropout_probability: f32,
+    dropout_masks_ptrs: Vec<TensorPtr>,
+    dropout_masks: Vec<TensorIndex>
+}
+
+impl NetworkDropoutData
+{
+    fn new(dropout_probability: f32) -> Self
+    {
+        Self{
+            dropout_masks_ptrs: Vec::new(),
+            dropout_masks: Vec::new(),
+            dropout_probability
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NetworkInputsData
+{
+    input_ptrs: Vec<InputTypePtr>,
+    initial_inputs_targets: Vec<InputType>,
+    inputs_targets: Vec<InputType>
+}
+
+impl Default for NetworkInputsData
+{
+    fn default() -> Self
+    {
+        Self{
+            input_ptrs: Vec::new(),
+            initial_inputs_targets: Vec::new(),
+            inputs_targets: Vec::new(),
+        }
+    }
+}
+
+impl NetworkInputsData
+{
+    fn push_initial(&mut self, input: InputTypePtr, target: InputType)
+    {
+        self.input_ptrs.push(input);
+
+        self.initial_inputs_targets.push(InputType::undefined());
+        self.initial_inputs_targets.push(target);
+    }
+}
+
+#[derive(Clone)]
+struct NetworkOutputsData
 {
     output_ptr: Option<DiffTensorPtr>,
     output: DiffTensor,
-    loss: DiffScalar,
-    next_state_ptr: Vec<UnitState<N, DiffTensorPtr>>,
-    next_state: Vec<UnitState<N, DiffTensor>>,
-    index: BlockIndex
+    loss: DiffScalar
 }
 
-impl<N: UnitFactory> BlockInfo<N>
-where
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+impl Default for NetworkOutputsData
 {
-    fn undefined() -> Self
+    fn default() -> Self
     {
         Self{
             output_ptr: None,
             output: DiffTensor::undefined(),
-            loss: DiffScalar::undefined(),
-            next_state_ptr: Vec::new(),
-            next_state: Vec::new(),
-            index: BlockIndex::undefined()
+            loss: DiffScalar::undefined()
         }
     }
 }
@@ -711,13 +778,9 @@ where
     sizes: LayerSizes,
     is_multistep: Option<bool>,
     is_input_one_hot: Option<bool>,
-    dropout_probability: f32,
-    dropout_masks_ptrs: Vec<TensorPtr>,
-    dropout_masks: Vec<TensorIndex>,
-    input_ptr: Option<InputTypePtr>,
-    input_target: (InputType, OneHotIndex),
-    no_state: BlockInfo<N>,
-    with_state: BlockInfo<N>,
+    dropouts: NetworkDropoutData,
+    inputs: NetworkInputsData,
+    outputs: NetworkOutputsData,
     optimizer_info: Option<WeightsFullContainer<N, O>>,
     weights_ptr: Option<WeightsFullContainer<N, WeightInfoPtr>>,
     weights: Option<WeightsFullContainer<N, WeightInfo>>
@@ -738,13 +801,9 @@ where
             sizes: self.sizes,
             is_multistep: self.is_multistep,
             is_input_one_hot: self.is_input_one_hot,
-            dropout_probability: self.dropout_probability,
-            dropout_masks_ptrs: Vec::new(),
-            dropout_masks: Vec::new(),
-            input_ptr: None,
-            input_target: (InputType::undefined(), OneHotIndex::undefined()),
-            no_state: BlockInfo::undefined(),
-            with_state: BlockInfo::undefined(),
+            dropouts: self.dropouts.clone(),
+            inputs: self.inputs.clone(),
+            outputs: self.outputs.clone(),
             optimizer_info: self.optimizer_info.clone(),
             weights_ptr: self.weights_ptr.clone(),
             weights: self.weights.clone()
@@ -777,7 +836,7 @@ where
             };
 
             WeightInfoPtr{
-                weight_dropped: [weights, weights],
+                weight_dropped: weights,
                 weight_original: weights,
                 dropconnect_mask: None
             }
@@ -787,11 +846,10 @@ where
             sizes: x.sizes,
             is_multistep: None,
             is_input_one_hot: None,
-            dropout_probability: x.dropout_probability,
             optimizer_info: x.optimizer_info,
             weights_ptr: Some(WeightsFullContainer{
                 output: weight_info_from(&mut recorder, x.weights.output),
-                layers: x.weights.layers.into_iter().map(|x| x.map_with_info(|WeightsSize{weights: value, this_size, previous_size, is_hidden}|
+                layers: x.weights.layers.into_iter().map(|x| x.map_with_info(|WeightsSize{weights: value, this_size, previous_size, is_hidden, ..}|
                 {
                     let info = weight_info_from(&mut recorder, value);
 
@@ -800,7 +858,7 @@ where
                         let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
 
                         WeightInfoPtr{
-                            weight_dropped: [DiffTensorPtr::undefined(), DiffTensorPtr::undefined()],
+                            weight_dropped: DiffTensorPtr::undefined(),
                             weight_original: info.weight_original,
                             dropconnect_mask: Some(dropconnect_mask.as_value())
                         }
@@ -811,12 +869,9 @@ where
                 })).collect()
             }),
             weights: None,
-            dropout_masks_ptrs: Vec::new(),
-            dropout_masks: Vec::new(),
-            input_ptr: None,
-            input_target: (InputType::undefined(), OneHotIndex::undefined()),
-            no_state: BlockInfo::undefined(),
-            with_state: BlockInfo::undefined(),
+            dropouts: NetworkDropoutData::new(x.dropout_probability),
+            inputs: NetworkInputsData::default(),
+            outputs: NetworkOutputsData::default(),
             recorder
         };
 
@@ -857,7 +912,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
@@ -891,7 +946,7 @@ where
             }));
 
             WeightInfoPtr{
-                weight_dropped: [weights, weights],
+                weight_dropped: weights,
                 weight_original: weights,
                 dropconnect_mask: None
             }
@@ -907,18 +962,14 @@ where
         let mut this = Self{
             recorder,
             sizes,
-            dropout_masks_ptrs: Vec::new(),
-            dropout_masks: Vec::new(),
-            input_ptr: None,
-            input_target: (InputType::undefined(), OneHotIndex::undefined()),
-            no_state: BlockInfo::undefined(),
-            with_state: BlockInfo::undefined(),
+            dropouts: NetworkDropoutData::new(dropout_probability),
+            inputs: NetworkInputsData::default(),
+            outputs: NetworkOutputsData::default(),
             optimizer_info,
             weights_ptr: Some(weights_ptr),
             weights,
             is_multistep: Some(is_multistep),
-            is_input_one_hot: Some(is_input_one_hot),
-            dropout_probability
+            is_input_one_hot: Some(is_input_one_hot)
         };
 
         this.initialize();
@@ -947,13 +998,6 @@ where
             return;
         }
 
-        self.no_state.index = self.recorder.current_block();
-
-        if self.is_multistep.unwrap()
-        {
-            self.with_state.index = self.recorder.new_block();
-        }
-
         self.initialize_dropped_weights();
     }
 
@@ -967,8 +1011,7 @@ where
                 {
                     if is_hidden
                     {
-                        value.weight_dropped = dropconnected_weights(
-                            &mut self.recorder,
+                        value.weight_dropped = self.recorder.mul_componentwise(
                             value.weight_original,
                             DiffTensorPtr::no_gradient(value.dropconnect_mask.unwrap())
                         );
@@ -993,37 +1036,17 @@ where
                 self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_gradient().unwrap());
             }
 
-            let is_multiblock = self.recorder.blocks_count() > 1;
-
             if !store_gradient
             {
-                let mut prepare_block = |block: &mut BlockInfo<_>|
-                {
-                    self.recorder.store_tensor_until_end_in_block(block.index, block.output_ptr.unwrap().as_value());
-                };
+                /*self.recorder.store_tensor_until_end(block.index, block.output_ptr.unwrap().as_value());
 
-                prepare_block(&mut self.no_state);
-
-                if is_multiblock
-                {
-                    debug_assert_ne!(self.with_state.loss, DiffScalar::undefined());
-                    prepare_block(&mut self.with_state);
-                }
+                prepare_block(&mut self.no_state);*/todo!();
             }
 
             if store_gradient
             {
-                let respect = if !is_multiblock
-                {
-                    vec![self.no_state.loss.into()]
-                } else
-                {
-                    debug_assert_ne!(self.with_state.loss, DiffScalar::undefined());
-
-                    vec![self.no_state.loss.into(), self.with_state.loss.into()]
-                };
-
-                self.recorder.gradient_with_respect(respect);
+                todo!();
+                //self.recorder.gradient_with_respect(self.no_state.loss.into());
             } else
             {
                 self.recorder.no_gradient();
@@ -1031,26 +1054,36 @@ where
 
             self.prepare_shared(store_gradient);
 
-            if !store_gradient
+            /*let prepare_block = |block: &mut BlockInfo<_>|
             {
-                let prepare_block = |block: &mut BlockInfo<_>|
+                if !store_gradient
                 {
                     block.output = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(block.output_ptr.unwrap().as_value()));
-                };
-
-                prepare_block(&mut self.no_state);
-
-                if is_multiblock
-                {
-                    prepare_block(&mut self.with_state);
                 }
-            }
+
+                debug_assert!(block.next_state.is_empty());
+
+                mem::take(&mut block.next_state_ptr).into_iter().for_each(|p: UnitState<N, DiffTensorPtr>|
+                {
+                    block.next_state.push(p.map(|x|
+                    {
+                        self.recorder.resolve_diff_tensor_ptr(x)
+                    }));
+                });
+            };
+
+            prepare_block(&mut self.no_state);
+
+            if is_multiblock
+            {
+                prepare_block(&mut self.with_state);
+            }*/todo!();
         }
     }
 
     fn prepare_setup_shared(&mut self)
     {
-        let is_multiblock = self.recorder.blocks_count() > 1;
+/*        let is_multiblock = self.recorder.blocks_count() > 1;
 
         self.recorder.finish();
 
@@ -1068,16 +1101,17 @@ where
         if is_multiblock
         {
             prepare_state_block(&mut self.with_state);
-        }
+        }*/todo!()
     }
 
     fn prepare_shared(&mut self, store_gradient: bool)
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
+        dbg!(&self.recorder);
         self.recorder.resolve_memory();
 
-        self.input_target.0 = match self.input_ptr.unwrap()
+        /*self.input_target.0 = match self.input_ptr.unwrap()
         {
             InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
             InputTypePtr::OneHot(x) => InputType::OneHot(x)
@@ -1093,7 +1127,7 @@ where
             }
         });
 
-        self.weights = Some(weights);
+        self.weights = Some(weights);*/todo!()
     }
 
     fn record_feedforward(&mut self, store_gradient: bool)
@@ -1103,47 +1137,75 @@ where
             self.recorder.set_new_tensor(LayerType::repeat(self.sizes.hidden, 1, 0.0)).as_value()
         }).collect();
 
-        let this_input: InputTypePtr = if self.is_input_one_hot.unwrap()
-        {
-            InputTypePtr::OneHot(self.recorder.new_one_hot())
-        } else
-        {
-            InputTypePtr::Normal(self.recorder.new_tensor_no_gradient(self.sizes.input, 1).as_value())
+        let create_input = {
+            let is_input_one_hot = self.is_input_one_hot.unwrap();
+            let input_size = self.sizes.input;
+
+            move |recorder: &mut OperationsRecorder| -> InputTypePtr
+            {
+                if is_input_one_hot
+                {
+                    InputTypePtr::OneHot(recorder.new_one_hot())
+                } else
+                {
+                    InputTypePtr::Normal(recorder.new_tensor_no_gradient(input_size, 1).as_value())
+                }
+            }
         };
 
-        let this_target = self.recorder.new_one_hot();
+        let this_input_first = create_input(&mut self.recorder);
+        let this_target_first = self.recorder.new_one_hot();
 
-        self.input_ptr = Some(this_input);
-        self.input_target.1 = this_target;
+        self.inputs.push_initial(this_input_first, this_target_first.into());
 
-        let set_from_output = |NetworkOutput{
-            state: next_state_ptr,
-            output: (output, loss)
-        }: NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, _>, block: &mut BlockInfo<_>| -> Vec<UnitState<N, DiffTensorPtr>>
-        {
-            block.next_state_ptr = next_state_ptr.clone();
-            block.output_ptr = Some(output);
-            block.loss = loss;
-
-            next_state_ptr
-        };
-
-        let no_state_next_state = set_from_output(
-            self.record_feedforward_single_input(None, &dropout_masks_ptrs, this_input, this_target, store_gradient),
-            &mut self.no_state
+        let no_state_output = self.record_feedforward_single_input(
+            None,
+            &dropout_masks_ptrs,
+            this_input_first,
+            this_target_first,
+            store_gradient
         );
 
-        if self.recorder.blocks_count() > 1
+        let final_output = if self.is_multistep.unwrap()
         {
-            self.recorder.set_current_block(self.with_state.index);
+            let this_input_second = create_input(&mut self.recorder);
+            let this_target_second = self.recorder.new_one_hot();
 
-            set_from_output(
-                self.record_feedforward_single_input(Some(no_state_next_state), &dropout_masks_ptrs, this_input, this_target, store_gradient),
-                &mut self.with_state
+            self.inputs.push_initial(this_input_second, this_target_second.into());
+
+            let with_state_output = self.record_feedforward_single_input(
+                Some(no_state_output.state),
+                &dropout_masks_ptrs,
+                this_input_second,
+                this_target_second,
+                store_gradient
             );
-        }
 
-        self.dropout_masks_ptrs = dropout_masks_ptrs;
+            let this_input_loop = create_input(&mut self.recorder);
+            let this_target_loop = self.recorder.new_one_hot();
+
+            let loop_index = self.recorder.begin_loop(vec![this_input_loop, this_target_loop.into()]);
+
+            let final_output = self.record_feedforward_single_input(
+                Some(with_state_output.state),
+                &dropout_masks_ptrs,
+                this_input_loop,
+                this_target_loop,
+                store_gradient
+            );
+
+            self.recorder.end_loop(loop_index);
+
+            final_output
+        } else
+        {
+            no_state_output
+        };
+
+        self.outputs.output_ptr = Some(final_output.output.0);
+        self.outputs.loss = final_output.output.1;
+
+        self.dropouts.dropout_masks_ptrs = dropout_masks_ptrs;
     }
 
     fn record_feedforward_single_input(
@@ -1247,10 +1309,7 @@ where
             .record_feedforward_unit(&mut self.recorder, previous_state, input, store_gradient)
             .map(|output|
             {
-                self.recorder.matmulv(
-                    self.weights_ptr.as_ref().unwrap().output.weight_dropped[self.recorder.current_block().into_index()],
-                    output
-                )
+                self.recorder.matmulv(self.weights_ptr.as_ref().unwrap().output.weight_dropped, output)
             })
     }
 
@@ -1295,7 +1354,7 @@ where
     {
         let inputs_count = input.len();
 
-        let total_loss = self.feedforward_with(|_, _| {}, input);
+        /*let total_loss = self.feedforward_with(|_, _| {}, input);
 
         (0..inputs_count).rev().for_each(|index|
         {
@@ -1303,22 +1362,52 @@ where
 
             let this_info = if is_with_state { &self.with_state } else { &self.no_state };
 
-            if (index + 1) != inputs_count
+            if (index + 1) != inputs_count && index != 0
             {
+                debug_assert!(!self.no_state.next_state.is_empty());
+                debug_assert!(!self.with_state.next_state.is_empty());
+
                 self.no_state.next_state.iter()
                     .zip(this_info.next_state.iter())
                     .for_each(|(no_state, with_state)| with_state.set_gradient(&mut self.recorder, no_state));
             }
 
-            self.recorder.calculate_backpropagate(this_info.index);
+            self.recorder.calculate_backpropagate();
+
+            eprintln!("{index}"); let remove_me = ();
+            eprintln!("{:?} {:?}", self.recorder.get_tensor(TensorIndex::from_raw(18)), self.recorder.get_tensor(TensorIndex::from_raw(25)));
         });
 
-        let gradients = self.weights.as_ref().unwrap().map_ref(|weight|
+        let f = |weight: &WeightInfo|
         {
             self.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone_owned()
-        });
+        };
 
-        (total_loss, gradients)
+        let gradients = if inputs_count == 1
+        {
+            let weights = self.weights.as_ref().unwrap();
+            WeightsFullContainer{
+                output: f(&weights.output),
+                layers: weights.layers.iter().map(|x|
+                {
+                    x.map_ref_with_info(|WeightsSize{weights: weight, this_size, previous_size, is_state_reliant, ..}|
+                    {
+                        if is_state_reliant
+                        {
+                            LayerType::new(this_size, previous_size)
+                        } else
+                        {
+                            f(weight)
+                        }
+                    })
+                }).collect()
+            }
+        } else
+        {
+            self.weights.as_ref().unwrap().map_ref(f)
+        };
+
+        (total_loss, gradients)*/todo!()
     }
 
     fn feedforward_with(
@@ -1329,12 +1418,12 @@ where
     where
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        self.feedforward_setup_dropout();
+        /*self.feedforward_setup_dropout();
 
         self.feedforward_like(|this, this_target|
         {
             this.recorder.set_one_hot(this.input_target.1, this_target);
-        }, convert::identity, f, input)
+        }, convert::identity, f, input)*/todo!()
     }
 
     fn feedforward_like<T, U>(
@@ -1347,15 +1436,13 @@ where
     where
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        let is_multiblock = self.recorder.blocks_count() > 1;
-
-        let mut total_loss = 0.0;
+/*        let mut total_loss = 0.0;
 
         input.enumerate().for_each(|(index, input)|
         {
             let (this_input, rest_input) = get_input(input);
 
-            let is_with_state = index != 0 && is_multiblock;
+            let is_with_state = index != 0;
 
             match self.input_target.0
             {
@@ -1369,19 +1456,22 @@ where
 
             if is_with_state && index != 1
             {
+                debug_assert!(!self.no_state.next_state.is_empty());
+                debug_assert!(!self.with_state.next_state.is_empty());
+
                 self.no_state.next_state.iter()
                     .zip(this_info.next_state.iter())
                     .for_each(|(no_state, with_state)| no_state.set_value(&mut self.recorder, with_state));
             }
 
-            self.recorder.calculate_feedforward(this_info.index);
+            self.recorder.calculate_feedforward();
 
             total_loss += self.recorder.get_value(this_info.loss.as_value());
 
             f(self, is_with_state);
         });
 
-        total_loss
+        total_loss*/todo!()
     }
 
     pub fn weights_info<'b, 'c>(
@@ -1403,7 +1493,8 @@ where
                     weights: &self.weights.as_ref().unwrap().output,
                     this_size: self.sizes.output,
                     previous_size: self.sizes.hidden,
-                    is_hidden: false
+                    is_hidden: false,
+                    is_state_reliant: false
                 }
             }))
             .map(|x| x.map(|x| self.recorder.get_tensor(x.weight.as_value())))
@@ -1539,9 +1630,9 @@ where
             });
         }
 
-        self.dropout_masks.iter().for_each(|dropout_mask|
+        self.dropouts.dropout_masks.iter().for_each(|dropout_mask|
         {
-            Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), self.dropout_probability);
+            Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), self.dropouts.dropout_probability);
         });
     }
 
@@ -1583,7 +1674,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        self.prepare(false);
+/*        self.prepare(false);
 
         let weights = self.weights.as_mut().unwrap();
 
@@ -1621,7 +1712,7 @@ where
                 f_output(output);
             },
             input
-        );
+        );*/todo!()
     }
 
     fn set_dropout_mask(
@@ -1663,16 +1754,12 @@ where
             sizes: self.sizes,
             is_multistep: self.is_multistep,
             is_input_one_hot: self.is_input_one_hot,
-            dropout_probability: self.dropout_probability,
             optimizer_info: None,
             weights_ptr: self.weights_ptr,
             weights: self.weights,
-            dropout_masks_ptrs: self.dropout_masks_ptrs,
-            dropout_masks: self.dropout_masks,
-            input_ptr: self.input_ptr,
-            input_target: self.input_target,
-            no_state: self.no_state,
-            with_state: self.with_state
+            dropouts: self.dropouts,
+            inputs: self.inputs,
+            outputs: self.outputs
         }
     }
 
@@ -1682,5 +1769,183 @@ where
         debug_assert_eq!(weights.layers.len(), 1);
 
         weights.layers[0].embeddings_calculate(&self.recorder, input)
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    use crate::neural_network::Lstm;
+
+
+    struct LstmUnitFactory;
+
+    impl UnitFactory for LstmUnitFactory
+    {
+        type Unit<T> = Lstm<T>;
+    }
+
+    #[test]
+    fn steps_equivalent()
+    {
+        let seed = 123;
+
+        let sizes = LayerSizes{
+            hidden: 2,
+            input: 2,
+            layers: 1,
+            output: 2
+        };
+
+        let dropout_probability = 0.5;
+        let is_multistep = true;
+        let is_input_one_hot = true;
+
+        type NetworkType = Network<LstmUnitFactory, ()>;
+
+
+        let inputs = [OwnedInputType::OneHot(OneHotLayer::new([0], 2)), OwnedInputType::OneHot(OneHotLayer::new([1], 2))];
+        let outputs = [OneHotLayer::new([1], 2), OneHotLayer::new([0], 2)];
+
+        let input_outputs = inputs.iter().cloned().zip(outputs);
+
+
+        fastrand::seed(seed);
+
+        let mut with_steps: NetworkType = Network::new(sizes, dropout_probability, is_multistep, is_input_one_hot);
+
+        fastrand::seed(seed);
+
+        let mut at_once: NetworkType = Network::new(sizes, dropout_probability, false, is_input_one_hot);
+
+
+        fastrand::seed(seed);
+        with_steps.prepare(true);
+        let with_steps_gradient = with_steps.gradients(input_outputs.clone());
+        dbg!(&with_steps.recorder);
+
+        fastrand::seed(seed);
+        let at_once_gradient = {
+            let dropout_masks_ptrs: Vec<_> = at_once.weights_ptr.as_ref().unwrap().layers.iter().skip(1).map(|_|
+            {
+                at_once.recorder.set_new_tensor(LayerType::repeat(at_once.sizes.hidden, 1, 0.0)).as_value()
+            }).collect();
+
+            let input_outputs_ptrs: Vec<(InputTypePtr, OneHotIndex)> = (0..input_outputs.len()).map(|_|
+            {
+                assert!(is_input_one_hot);
+
+                (InputTypePtr::OneHot(at_once.recorder.new_one_hot()), at_once.recorder.new_one_hot())
+            }).collect();
+
+            let mut previous_state = None;
+            let mut output = None;
+
+            input_outputs_ptrs.iter().enumerate().for_each(|(index, (this_input, this_target))|
+            {
+                let NetworkOutput{
+                    state: next_state_ptr,
+                    output: (_this_output, loss)
+                } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, *this_target, true);
+
+                previous_state = Some(next_state_ptr);
+
+                if let Some(output) = output.as_mut()
+                {
+                    *output = at_once.recorder.add_scalars(*output, loss);
+                } else
+                {
+                    output = Some(loss);
+                }
+            });
+
+            let input_outputs_indices: Vec<_> = input_outputs_ptrs.into_iter().map(|(input_ptr, target_index)|
+            {
+                (if let InputTypePtr::OneHot(x) = input_ptr { x } else { unreachable!() }, target_index)
+            }).collect();
+
+            input_outputs_indices.into_iter().zip(input_outputs).for_each(|((input_index, target_index), (input_layer, target_layer))|
+            {
+                at_once.recorder.set_one_hot(input_index, input_layer.into_one_hot());
+                at_once.recorder.set_one_hot(target_index, target_layer);
+            });
+
+            at_once.recorder.finish();
+
+            at_once.recorder.store_value_until_end(output.unwrap().as_value());
+
+            at_once.weights_ptr.as_ref().unwrap().iter().for_each(|x|
+            {
+                at_once.recorder.store_tensor_until_end(x.weight_original.as_value());
+                at_once.recorder.store_tensor_until_end(x.weight_original.as_gradient().unwrap());
+
+                if let Some(dropconnect_mask) = x.dropconnect_mask
+                {
+                    at_once.recorder.store_tensor_until_end(dropconnect_mask);
+                }
+            });
+
+            at_once.recorder.gradient_with_respect(output.unwrap().into());
+
+            dbg!(&at_once.recorder);
+            at_once.recorder.resolve_memory();
+
+            at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
+            {
+                WeightInfo{
+                    weight: at_once.recorder.resolve_diff_tensor_ptr(x.weight_original),
+                    dropconnect_mask: x.dropconnect_mask.map(|x| at_once.recorder.resolve_tensor_ptr(x))
+                }
+            }));
+
+            at_once.feedforward_setup_dropout();
+
+            at_once.recorder.calculate();
+
+            let loss = at_once.recorder.get_value(output.unwrap().as_value());
+
+            let gradients = {
+                let weights = at_once.weights.clone().unwrap();
+
+                let f = |x: WeightInfo|
+                {
+                    let gradient = x.weight.as_gradient().unwrap();
+
+                    if !at_once.recorder.is_undefined_location(gradient)
+                    {
+                        Some(at_once.recorder.get_tensor(gradient).clone_owned())
+                    } else
+                    {
+                        None
+                    }
+                };
+
+                let g = |x: WeightsSize<_>|
+                {
+                    f(x.weights).unwrap_or_else(|| LayerType::new(x.this_size, x.previous_size))
+                };
+
+                WeightsFullContainer{
+                    output: f(weights.output).unwrap(),
+                    layers: weights.layers.into_iter().map(|x| x.map_with_info(g)).collect()
+                }
+            };
+
+            (loss, gradients)
+        };
+
+        let map_weights = |r: &mut OperationsRecorder, w: WeightInfo| -> LayerType
+        {
+            r.get_tensor(w.weight.as_value()).clone_owned()
+        };
+
+        assert_eq!(
+            with_steps.weights.unwrap().map(|x| map_weights(&mut with_steps.recorder, x)),
+            at_once.weights.unwrap().map(|x| map_weights(&mut at_once.recorder, x))
+        );
+
+        assert_eq!(with_steps_gradient, at_once_gradient);
     }
 }

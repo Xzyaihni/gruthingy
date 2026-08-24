@@ -19,7 +19,7 @@ use super::{
     leaky_relu_d
 };
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
 
 impl Debug for MatrixWrapper

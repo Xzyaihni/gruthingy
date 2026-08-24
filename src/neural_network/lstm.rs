@@ -13,6 +13,7 @@ use crate::{
         LayerSizes,
         OperationsRecorder,
         NetworkUnitStateable,
+        NetworkUnitStateMappable,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, NetworkUnitParameterable}
@@ -23,21 +24,21 @@ use crate::{
 pub type Lstm<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (input_update, false, LayerSize::Input, LayerSize::Hidden),
-    (input_forget, false, LayerSize::Input, LayerSize::Hidden),
-    (input_output, false, LayerSize::Input, LayerSize::Hidden),
-    (input_memory, false, LayerSize::Input, LayerSize::Hidden),
-    (hidden_update, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_forget, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_output, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_memory, true, LayerSize::Hidden, LayerSize::Hidden),
-    (update_bias, false, LayerSize::One, LayerSize::Hidden),
-    (forget_bias, false, LayerSize::One, LayerSize::Hidden),
-    (output_bias, false, LayerSize::One, LayerSize::Hidden),
-    (memory_bias, false, LayerSize::One, LayerSize::Hidden)
+    (input_update, false, false, LayerSize::Input, LayerSize::Hidden),
+    (input_forget, false, true, LayerSize::Input, LayerSize::Hidden),
+    (input_output, false, false, LayerSize::Input, LayerSize::Hidden),
+    (input_memory, false, false, LayerSize::Input, LayerSize::Hidden),
+    (hidden_update, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_forget, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_output, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_memory, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
+    (forget_bias, false, true, LayerSize::One, LayerSize::Hidden),
+    (output_bias, false, false, LayerSize::One, LayerSize::Hidden),
+    (memory_bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LSTMState<T>
 {
     hidden: T,
@@ -56,6 +57,17 @@ impl NetworkUnitStateable for LSTMState<DiffTensor>
     {
         recorder.set_tensor_from(self.hidden.as_gradient().unwrap(), new.hidden.as_gradient().unwrap());
         recorder.set_tensor_from(self.memory.as_gradient().unwrap(), new.memory.as_gradient().unwrap());
+    }
+}
+
+impl<T, U> NetworkUnitStateMappable<T, U, LSTMState<U>> for LSTMState<T>
+{
+    fn map<F: FnMut(T) -> U>(self, mut f: F) -> LSTMState<U>
+    {
+        LSTMState{
+            hidden: f(self.hidden),
+            memory: f(self.memory)
+        }
     }
 }
 
@@ -90,48 +102,40 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         store_gradient: bool
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let block = recorder.current_block();
-
-        if previous_state.is_some()
-        {
-            let mut store_both = |weight: DiffTensorPtr|
-            {
-                recorder.store_tensor_until_end_in_block(block, weight.as_value());
-                if store_gradient { recorder.store_tensor_until_end_in_block(block, weight.as_gradient().unwrap()); }
-            };
-
-            store_both(self.hidden_update.weight_original);
-            store_both(self.hidden_forget.weight_original);
-            store_both(self.hidden_output.weight_original);
-            store_both(self.hidden_memory.weight_original);
-
-            store_both(self.forget_bias.weight_original);
-
-            store_both(self.input_forget.weight_original);
-        }
-
         {
             let mut always_store = |weight: DiffTensorPtr|
             {
-                recorder.store_tensor_until_end(weight.as_value());
-                if store_gradient { recorder.store_tensor_until_end(weight.as_gradient().unwrap()); }
+                let value = weight.as_value();
+                recorder.store_tensor_until_end(value);
+
+                if store_gradient
+                {
+                    let gradient = weight.as_gradient().unwrap();
+
+                    recorder.store_tensor_until_end(gradient);
+                }
             };
 
+            always_store(self.hidden_update.weight_original);
+            always_store(self.hidden_forget.weight_original);
+            always_store(self.hidden_output.weight_original);
+            always_store(self.hidden_memory.weight_original);
+
             always_store(self.update_bias.weight_original);
+            always_store(self.forget_bias.weight_original);
             always_store(self.output_bias.weight_original);
             always_store(self.memory_bias.weight_original);
 
             always_store(self.input_update.weight_original);
+            always_store(self.input_forget.weight_original);
             always_store(self.input_output.weight_original);
             always_store(self.input_memory.weight_original);
         }
 
-        let block_index = block.into_index();
-
         let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped[block_index];
-            let bias = bias.weight_dropped[block_index];
+            let weights = weights.weight_dropped;
+            let bias = bias.weight_dropped;
 
             match input
             {
@@ -147,12 +151,9 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
-            recorder.set_block_input(block, previous_state.hidden.as_value());
-            recorder.set_block_input(block, previous_state.memory.as_value());
-
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
-                let mm = recorder.matmulv(hidden.weight_dropped[block_index], previous_hidden);
+                let mm = recorder.matmulv(hidden.weight_dropped, previous_hidden);
                 *gate = recorder.add(*gate, mm);
             };
 
@@ -166,10 +167,6 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         update_gate = recorder.sigmoid(update_gate);
         output_gate = recorder.sigmoid(output_gate);
         memory_gate = recorder.tanh(memory_gate);
-
-        Self::reuse_for_next_block(recorder, update_gate.as_value());
-        Self::reuse_for_next_block(recorder, output_gate.as_value());
-        Self::reuse_for_next_block(recorder, memory_gate.as_value());
 
         let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
@@ -185,8 +182,6 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         let hidden = {
             let memory = recorder.tanh(this_memory);
 
-            Self::reuse_for_next_block(recorder, memory.as_value());
-
             recorder.mul_componentwise(output_gate, memory)
         };
 
@@ -194,16 +189,6 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             hidden: hidden.clone(),
             memory: this_memory
         };
-
-        if store_gradient
-        {
-            recorder.store_tensor_until_end_in_block(block, state.hidden.as_gradient().unwrap());
-            recorder.store_tensor_until_end_in_block(block, state.memory.as_gradient().unwrap());
-        } else
-        {
-            recorder.store_tensor_until_end_in_block(block, state.hidden.as_value());
-            recorder.store_tensor_until_end_in_block(block, state.memory.as_value());
-        }
 
         NetworkOutput{
             state,
@@ -251,7 +236,7 @@ mod tests
             let weight = one_weight(value);
 
             WeightInfoPtr{
-                weight_dropped: [weight.clone(), weight.clone()],
+                weight_dropped: weight.clone(),
                 weight_original: weight,
                 dropconnect_mask: None
             }
@@ -301,7 +286,7 @@ mod tests
         let input = one_weight(1.0);
 
         let output = {
-            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input));
+            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input), true);
 
             NetworkOutput{
                 state: output.state,
@@ -319,15 +304,14 @@ mod tests
         recorder.store_tensor_until_end(memory);
         recorder.store_tensor_until_end(hidden);
 
-        recorder.gradient_with_respect(vec![output.output.into()]);
+        recorder.gradient_with_respect(output.output.into());
 
         recorder.resolve_memory();
 
         let memory = recorder.resolve_tensor_ptr(memory);
         let hidden = recorder.resolve_tensor_ptr(hidden);
 
-        let current_block = recorder.current_block();
-        recorder.calculate(current_block);
+        recorder.calculate();
 
         let single_value = |l: TensorIndex|
         {

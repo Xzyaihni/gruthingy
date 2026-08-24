@@ -34,11 +34,21 @@ use crate::{
 use optimizers::*;
 
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
-pub use network_unit::{NetworkUnitStateable, NetworkUnitParameterable, NetworkUnitNewable, NetworkUnit, GenericUnit, UnitFactory, OptimizerUnit};
+
+pub use network_unit::{
+    NetworkUnitStateable,
+    NetworkUnitStateMappable,
+    NetworkUnitParameterable,
+    NetworkUnitNewable,
+    NetworkUnit,
+    GenericUnit,
+    UnitFactory,
+    OptimizerUnit
+};
+
 pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed};
 pub use containers::{
     OperationsRecorder,
-    BlockIndex,
     LayerType,
     LayerTypeRef,
     LayerTypeMut,
@@ -59,8 +69,8 @@ pub use containers::{
 #[allow(unused_imports)]
 pub use network::{WeightInfo, WeightInfoPtr, WeightsSize};
 
-#[allow(unused_imports)]
-use gru::Gru;
+// #[allow(unused_imports)]
+// use gru::Gru;
 
 #[allow(unused_imports)]
 use lstm::Lstm;
@@ -69,7 +79,7 @@ pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
-mod gru;
+// mod gru;
 mod lstm;
 mod embedding_unit;
 
@@ -676,7 +686,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensorPtr>: Clone,
+        UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
         for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
@@ -719,7 +729,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensorPtr>: Clone,
+        UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
         UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
         for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
@@ -829,7 +839,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
     UnitState<N, DiffTensor>: NetworkUnitStateable,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
@@ -852,7 +862,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
     UnitState<N, DiffTensor>: NetworkUnitStateable,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
@@ -875,7 +885,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
     UnitState<N, DiffTensor>: NetworkUnitStateable,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
@@ -1000,7 +1010,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     D: NetworkDictionary

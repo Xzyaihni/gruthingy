@@ -52,6 +52,10 @@ pub trait GenericUnit<T>
     where
         F: FnMut(&T) -> U;
 
+    fn map_ref_with_info<U, F>(&self, f: F) -> Self::Unit<U>
+    where
+        F: FnMut(WeightsSize<&T>) -> U;
+
     fn clone_weights_with_info<F>(&self, f: F) -> Self
     where
         F: FnMut(WeightsSize<&T>) -> T;
@@ -72,6 +76,11 @@ pub trait NetworkUnitStateable
 {
     fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self);
     fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self);
+}
+
+pub trait NetworkUnitStateMappable<T, V, U>
+{
+    fn map<F: FnMut(T) -> V>(self, f: F) -> U;
 }
 
 impl NetworkUnitStateable for ()
@@ -129,20 +138,6 @@ where
 
         output.output = recorder.mul_componentwise(new_output, DiffTensorPtr::no_gradient(dropout_mask));
 
-        Self::reuse_for_next_block(recorder, output.output.as_value());
-
         output
-    }
-
-    fn reuse_for_next_block(recorder: &mut OperationsRecorder, value: TensorPtr)
-    {
-        let block_index = recorder.current_block().into_index();
-        let next_block = recorder.blocks_iter().nth(block_index + 1);
-
-        if let Some(next_block) = next_block
-        {
-            recorder.set_block_input(next_block, value);
-            recorder.store_tensor_until_end(value);
-        }
     }
 }
