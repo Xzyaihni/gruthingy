@@ -22,6 +22,7 @@ use crate::{
         DiffTensor,
         DiffTensorPtr,
         DiffScalar,
+        LoopIndex,
         TensorIndex,
         TensorPtr,
         OneHotLayer,
@@ -236,7 +237,11 @@ macro_rules! create_weights_container
                         {
                             LayerSize::One =>
                             {
-                                recorder.new_tensor(this_size, previous_size)
+                                let bias = recorder.new_tensor(this_size, previous_size);
+
+                                recorder.set_tensor_ptr_zeroed(bias.as_value());
+
+                                bias
                             },
                             x =>
                             {
@@ -718,9 +723,9 @@ impl NetworkDropoutData
 #[derive(Clone)]
 struct NetworkInputsData
 {
+    steps_loop: Option<LoopIndex>,
     input_ptrs: Vec<InputTypePtr>,
-    initial_inputs_targets: Vec<InputType>,
-    inputs_targets: Vec<InputType>
+    initial_inputs_targets: Vec<InputType>
 }
 
 impl Default for NetworkInputsData
@@ -728,9 +733,9 @@ impl Default for NetworkInputsData
     fn default() -> Self
     {
         Self{
+            steps_loop: None,
             input_ptrs: Vec::new(),
-            initial_inputs_targets: Vec::new(),
-            inputs_targets: Vec::new(),
+            initial_inputs_targets: Vec::new()
         }
     }
 }
@@ -1034,74 +1039,35 @@ where
             if store_gradient
             {
                 self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_gradient().unwrap());
-            }
 
-            if !store_gradient
-            {
-                /*self.recorder.store_tensor_until_end(block.index, block.output_ptr.unwrap().as_value());
-
-                prepare_block(&mut self.no_state);*/todo!();
-            }
-
-            if store_gradient
-            {
-                todo!();
-                //self.recorder.gradient_with_respect(self.no_state.loss.into());
+                self.recorder.gradient_with_respect(self.outputs.loss.into());
             } else
             {
+                self.recorder.store_tensor_until_end(self.outputs.output_ptr.unwrap().as_value());
+
                 self.recorder.no_gradient();
             }
 
             self.prepare_shared(store_gradient);
 
-            /*let prepare_block = |block: &mut BlockInfo<_>|
+            if !store_gradient
             {
-                if !store_gradient
-                {
-                    block.output = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(block.output_ptr.unwrap().as_value()));
-                }
+                let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
 
-                debug_assert!(block.next_state.is_empty());
-
-                mem::take(&mut block.next_state_ptr).into_iter().for_each(|p: UnitState<N, DiffTensorPtr>|
-                {
-                    block.next_state.push(p.map(|x|
-                    {
-                        self.recorder.resolve_diff_tensor_ptr(x)
-                    }));
-                });
-            };
-
-            prepare_block(&mut self.no_state);
-
-            if is_multiblock
-            {
-                prepare_block(&mut self.with_state);
-            }*/todo!();
+                self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
+            }
         }
     }
 
     fn prepare_setup_shared(&mut self)
     {
-/*        let is_multiblock = self.recorder.blocks_count() > 1;
-
         self.recorder.finish();
 
-        debug_assert_ne!(self.no_state.loss, DiffScalar::undefined());
+        debug_assert_ne!(self.outputs.loss, DiffScalar::undefined());
 
         self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_value());
 
-        let mut prepare_state_block = |state_block: &mut BlockInfo<_>|
-        {
-            self.recorder.store_value_until_end(state_block.loss.as_value());
-        };
-
-        prepare_state_block(&mut self.no_state);
-
-        if is_multiblock
-        {
-            prepare_state_block(&mut self.with_state);
-        }*/todo!()
+        self.recorder.store_value_until_end(self.outputs.loss.as_value());
     }
 
     fn prepare_shared(&mut self, store_gradient: bool)
@@ -1111,11 +1077,14 @@ where
         dbg!(&self.recorder);
         self.recorder.resolve_memory();
 
-        /*self.input_target.0 = match self.input_ptr.unwrap()
+        mem::take(&mut self.inputs.input_ptrs).into_iter().enumerate().for_each(|(index, input_ptr)|
         {
-            InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
-            InputTypePtr::OneHot(x) => InputType::OneHot(x)
-        };
+            self.inputs.initial_inputs_targets[index * 2] = match input_ptr
+            {
+                InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
+                InputTypePtr::OneHot(x) => InputType::OneHot(x)
+            };
+        });
 
         let weights = self.weights_ptr.take().unwrap().map(|mut weight_info|
         {
@@ -1127,7 +1096,7 @@ where
             }
         });
 
-        self.weights = Some(weights);*/todo!()
+        self.weights = Some(weights);
     }
 
     fn record_feedforward(&mut self, store_gradient: bool)
@@ -1195,6 +1164,8 @@ where
             );
 
             self.recorder.end_loop(loop_index);
+
+            self.inputs.steps_loop = Some(loop_index);
 
             final_output
         } else
@@ -1354,9 +1325,9 @@ where
     {
         let inputs_count = input.len();
 
-        /*let total_loss = self.feedforward_with(|_, _| {}, input);
+        let total_loss = self.feedforward_with(OperationsRecorder::calculate, input);
 
-        (0..inputs_count).rev().for_each(|index|
+        /*(0..inputs_count).rev().for_each(|index|
         {
             let is_with_state = index != 0;
 
@@ -1405,73 +1376,54 @@ where
         } else
         {
             self.weights.as_ref().unwrap().map_ref(f)
-        };
+        };*/todo!();
 
-        (total_loss, gradients)*/todo!()
+        let gradients = todo!();
+
+        (total_loss, gradients)
     }
 
     fn feedforward_with(
         &mut self,
-        f: impl FnMut(&mut Self, bool),
+        calculate_function: fn(&mut OperationsRecorder),
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
         UnitState<N, DiffTensor>: NetworkUnitStateable
     {
-        /*self.feedforward_setup_dropout();
+        self.feedforward_setup_dropout();
 
-        self.feedforward_like(|this, this_target|
+        let inputs_count = input.len();
+        let mut inputs = input.flat_map(|(input, target)| [input, OwnedInputType::OneHot(target)]);
+
+        debug_assert!(inputs_count > 0, "inputs must not be empty");
+
+        let mut set_initial = |i: usize|
         {
-            this.recorder.set_one_hot(this.input_target.1, this_target);
-        }, convert::identity, f, input)*/todo!()
-    }
+            let i = i * 2;
 
-    fn feedforward_like<T, U>(
-        &mut self,
-        mut setup: impl FnMut(&mut Self, U),
-        get_input: impl Fn(T) -> (OwnedInputType, U),
-        mut f: impl FnMut(&mut Self, bool),
-        input: impl ExactSizeIterator<Item=T>
-    ) -> f32
-    where
-        UnitState<N, DiffTensor>: NetworkUnitStateable
-    {
-/*        let mut total_loss = 0.0;
+            self.recorder.set_input(self.inputs.initial_inputs_targets[i], inputs.next().unwrap());
+            self.recorder.set_input(self.inputs.initial_inputs_targets[i + 1], inputs.next().unwrap());
+        };
 
-        input.enumerate().for_each(|(index, input)|
+        set_initial(0);
+
+        if inputs_count > 1
         {
-            let (this_input, rest_input) = get_input(input);
+            debug_assert!(inputs_count >= 3, "there must be at least 3 input/target pairs, got {inputs_count}");
 
-            let is_with_state = index != 0;
+            set_initial(1);
 
-            match self.input_target.0
-            {
-                InputType::Normal(x) => self.recorder.set_tensor(x, this_input.into_normal()),
-                InputType::OneHot(x) => self.recorder.set_one_hot(x, this_input.into_one_hot())
-            }
+            let steps_loop = self.inputs.steps_loop.unwrap();
 
-            setup(self, rest_input);
+            self.recorder.set_loop_inputs(steps_loop, inputs.collect());
 
-            let this_info = if is_with_state { &self.with_state } else { &self.no_state };
+            self.recorder.set_loop_times(steps_loop, inputs_count - 2);
+        }
 
-            if is_with_state && index != 1
-            {
-                debug_assert!(!self.no_state.next_state.is_empty());
-                debug_assert!(!self.with_state.next_state.is_empty());
+        calculate_function(&mut self.recorder);
 
-                self.no_state.next_state.iter()
-                    .zip(this_info.next_state.iter())
-                    .for_each(|(no_state, with_state)| no_state.set_value(&mut self.recorder, with_state));
-            }
-
-            self.recorder.calculate_feedforward();
-
-            total_loss += self.recorder.get_value(this_info.loss.as_value());
-
-            f(self, is_with_state);
-        });
-
-        total_loss*/todo!()
+        self.recorder.get_value(self.outputs.loss.as_value())
     }
 
     pub fn weights_info<'b, 'c>(
@@ -1646,7 +1598,7 @@ where
     {
         self.prepare(false);
 
-        self.feedforward_with(|_this, _is_with_state| {}, input)
+        self.feedforward_with(OperationsRecorder::calculate_feedforward, input)
     }
 
     fn predict(
@@ -1777,7 +1729,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::Lstm;
+    use crate::neural_network::{EmbeddingUnit, Lstm};
 
 
     struct LstmUnitFactory;
@@ -1785,6 +1737,13 @@ mod tests
     impl UnitFactory for LstmUnitFactory
     {
         type Unit<T> = Lstm<T>;
+    }
+
+    struct EmbeddingUnitFactory;
+
+    impl UnitFactory for EmbeddingUnitFactory
+    {
+        type Unit<T> = EmbeddingUnit<T>;
     }
 
     #[test]
@@ -1803,11 +1762,11 @@ mod tests
         let is_multistep = true;
         let is_input_one_hot = true;
 
-        type NetworkType = Network<LstmUnitFactory, ()>;
+        type NetworkType = Network<EmbeddingUnitFactory, ()>;
 
 
-        let inputs = [OwnedInputType::OneHot(OneHotLayer::new([0], 2)), OwnedInputType::OneHot(OneHotLayer::new([1], 2))];
-        let outputs = [OneHotLayer::new([1], 2), OneHotLayer::new([0], 2)];
+        let inputs = [OwnedInputType::OneHot(OneHotLayer::new([0], 2)), OwnedInputType::OneHot(OneHotLayer::new([1], 2)), OwnedInputType::OneHot(OneHotLayer::new([0], 2))];
+        let outputs = [OneHotLayer::new([1], 2), OneHotLayer::new([0], 2), OneHotLayer::new([0], 2)];
 
         let input_outputs = inputs.iter().cloned().zip(outputs);
 

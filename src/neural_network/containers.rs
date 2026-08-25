@@ -327,7 +327,7 @@ impl TensorRawDataPointer
 struct LoopInfo
 {
     times: usize,
-    input_values: Vec<LayerType>,
+    input_values: Vec<OwnedInputType>,
     inputs: Vec<InputType>
 }
 
@@ -667,6 +667,14 @@ impl OperationsRecorder
         dst.copy_from(src);
     }
 
+    pub fn set_tensor_ptr_zeroed(&mut self, index: TensorPtr)
+    {
+        #[cfg(debug_assertions)]
+        {
+            self.set_tensors_check.push(index.into());
+        }
+    }
+
     pub fn set_tensor_from(&mut self, index: TensorIndex, src: TensorIndex)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
@@ -692,6 +700,15 @@ impl OperationsRecorder
     pub fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
     {
         self.one_hot_layers[index.0] = value;
+    }
+
+    pub fn set_input(&mut self, input: InputType, value: OwnedInputType)
+    {
+        match input
+        {
+            InputType::Normal(input) => self.set_tensor(input, value.into_normal()),
+            InputType::OneHot(input) => self.set_one_hot(input, value.into_one_hot())
+        }
     }
 
     pub fn set_new_tensor_gradientable(&mut self, value: LayerType) -> DiffTensorPtr
@@ -1186,7 +1203,7 @@ impl OperationsRecorder
         self.loops[index.0].times = times;
     }
 
-    pub fn set_loop_inputs(&mut self, index: LoopIndex, inputs: Vec<LayerType>)
+    pub fn set_loop_inputs(&mut self, index: LoopIndex, inputs: Vec<OwnedInputType>)
     {
         self.loops[index.0].input_values = inputs;
     }
@@ -1237,20 +1254,12 @@ impl OperationsRecorder
 
             for input_index in 0..inputs_count
             {
-                match self.loops[loop_index].inputs[input_index]
-                {
-                    InputType::Normal(input) =>
-                    {
-                        let value = self.loops[loop_index].input_values[current_index + input_index].clone();
+                let value = self.loops[loop_index].input_values[current_index + input_index].clone();
 
-                        self.set_tensor(input, value)
-                    },
-                    InputType::OneHot(input) => todo!()
-                }
+                self.set_input(self.loops[loop_index].inputs[input_index], value)
             }
         }
 
-        dbg!(&self);
         #[cfg(debug_assertions)]
         {
             self.tensor_inputs.iter().for_each(|input_tensor_ptr|
@@ -2377,6 +2386,8 @@ impl OperationsRecorder
                                     }
                                 }).collect();
 
+                                debug_assert!(!loops_labels.iter().any(|x| x.0 == index));
+
                                 loops_labels.push((index, GradientOperationIndex(operation_index.0 + 1)));
 
                                 ignore_output = true;
@@ -2385,9 +2396,10 @@ impl OperationsRecorder
                             },
                             JumpInfo::Source(index) =>
                             {
-                                let target_index: GradientOperationIndex = loops_labels.iter().find(|(loop_index, _)| index == *loop_index)
-                                    .expect("loop must be defined before being used")
-                                    .1;
+                                let loops_label_index = loops_labels.iter().position(|(loop_index, _)| index == *loop_index)
+                                    .expect("loop must be defined before being used");
+
+                                let target_index: GradientOperationIndex = loops_labels.remove(loops_label_index).1;
 
                                 RawJumpInfo{loop_index: index, operation_index: target_index}
                             }
@@ -4212,7 +4224,7 @@ mod tests
     fn loops()
     {
         let loops_count = 3;
-        let is: Vec<LayerType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value)).collect();
+        let is: Vec<OwnedInputType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
         check_tensor(|recorder, a, b|
         {

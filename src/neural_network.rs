@@ -55,6 +55,7 @@ pub use containers::{
     DiffTensorPtr,
     DiffTensor,
     DiffScalar,
+    LoopIndex,
     TensorIndex,
     TensorPtr,
     OneHotIndex,
