@@ -14,6 +14,7 @@ use serde::{Serialize, Deserialize};
 use crate::{
     EmbeddingsUnitFactory,
     neural_network::{
+        DebugUnitInfo,
         OperationsRecorder,
         Softmaxer,
         NetworkUnitNewable,
@@ -128,6 +129,7 @@ macro_rules! create_weights_container
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
         use $crate::neural_network::{
+            DebugUnitInfo,
             LayerType,
             NewableLayer,
             GenericUnit,
@@ -254,11 +256,14 @@ macro_rules! create_weights_container
                             }
                         };
 
+                        recorder.name_diff_tensor(weights, stringify!($name));
+
                         let weight_original = weights;
 
                         if $is_hidden
                         {
                             let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
+                            recorder.name_diff_tensor(dropconnect_mask, stringify!($name).to_owned() + "_dropconnect_mask");
 
                             WeightInfoPtr{
                                 weight_dropped: DiffTensorPtr::undefined(),
@@ -319,16 +324,30 @@ macro_rules! create_weights_container
 
             fn map_inplace_with_info<F>(&mut self, mut f: F)
             where
-                F: FnMut(WeightsSize<&mut T>)
+                F: FnMut(WeightsSize<&mut T>, DebugUnitInfo)
             {
                 $(
+                    let debug_unit_info;
+
+                    #[cfg(debug_assertions)]
+                    {
+                        debug_unit_info = DebugUnitInfo{
+                            name: stringify!($name)
+                        };
+                    }
+
+                    #[cfg(not(debug_assertions))]
+                    {
+                        debug_unit_info = DebugUnitInfo;
+                    }
+
                     f(WeightsSize{
                         weights: &mut self.$name,
                         this_size: $this_size.into_number(self.sizes),
                         previous_size: $previous_size.into_number(self.sizes),
                         is_hidden: $is_hidden,
                         is_state_reliant: $is_state_reliant
-                    });
+                    }, debug_unit_info);
                 )+
             }
 
@@ -948,6 +967,8 @@ where
                 (fastrand::f32() * 2.0 - 1.0) * v
             }));
 
+            recorder.name_diff_tensor(weights, "output_weights");
+
             WeightInfoPtr{
                 weight_dropped: weights,
                 weight_original: weights,
@@ -1010,14 +1031,21 @@ where
         {
             weights_ptr.layers.iter_mut().for_each(|layer|
             {
-                layer.map_inplace_with_info(|WeightsSize{weights: value, is_hidden, ..}|
+                layer.map_inplace_with_info(|weights_size, debug_info|
                 {
-                    if is_hidden
+                    if weights_size.is_hidden
                     {
-                        value.weight_dropped = self.recorder.mul_componentwise(
-                            value.weight_original,
-                            DiffTensorPtr::no_gradient(value.dropconnect_mask.unwrap())
+                        let weight_dropped = self.recorder.mul_componentwise(
+                            weights_size.weights.weight_original,
+                            DiffTensorPtr::no_gradient(weights_size.weights.dropconnect_mask.unwrap())
                         );
+
+                        #[cfg(debug_assertions)]
+                        {
+                            self.recorder.name_diff_tensor(weight_dropped, debug_info.name.to_owned() + "_dropped");
+                        }
+
+                        weights_size.weights.weight_dropped = weight_dropped;
                     }
                 });
             });
@@ -1026,7 +1054,8 @@ where
 
     pub fn prepare(&mut self, store_gradient: bool)
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         if !self.recorder.is_ready()
         {
@@ -1036,9 +1065,13 @@ where
 
             if store_gradient
             {
-                self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_gradient().unwrap());
+                self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
+                {
+                    self.recorder.store_tensor_until_end(weight.weight_original.as_value());
+                    self.recorder.store_tensor_until_end(weight.weight_original.as_gradient().unwrap());
+                });
 
-                self.recorder.gradient_with_respect(self.outputs.loss.into());
+                self.recorder.gradient();
             } else
             {
                 self.recorder.store_tensor_until_end(self.outputs.output_ptr.unwrap().as_value());
@@ -1124,6 +1157,9 @@ where
         let this_input_first = create_input(&mut self.recorder);
         let this_target_first = self.recorder.new_one_hot();
 
+        self.recorder.name_input(this_input_first, "input_first");
+        self.recorder.name_one_hot(this_target_first, "target_first");
+
         self.inputs.push_initial(this_input_first, this_target_first.into());
 
         let no_state_output = self.record_feedforward_single_input(
@@ -1134,10 +1170,16 @@ where
             store_gradient
         );
 
+        self.recorder.name_diff_tensor(no_state_output.output.0, "no_state_output");
+        self.recorder.name_diff_scalar(no_state_output.output.1, "no_state_loss");
+
         let (final_output, final_loss) = if self.is_multistep.unwrap()
         {
             let this_input_second = create_input(&mut self.recorder);
             let this_target_second = self.recorder.new_one_hot();
+
+            self.recorder.name_input(this_input_second, "input_second");
+            self.recorder.name_one_hot(this_target_second, "target_second");
 
             self.inputs.push_initial(this_input_second, this_target_second.into());
 
@@ -1149,10 +1191,14 @@ where
                 store_gradient
             );
 
+            self.recorder.name_diff_tensor(with_state_output.output.0, "with_state_output");
+            self.recorder.name_diff_scalar(with_state_output.output.1, "with_state_loss");
+
             let no_state_loss = no_state_output.output.1;
             let with_state_loss = with_state_output.output.1;
 
             let compound_loss = self.recorder.add_scalars(no_state_loss, with_state_loss);
+            self.recorder.name_diff_scalar(compound_loss, "compound_loss");
 
             let this_input_loop = create_input(&mut self.recorder);
             let this_target_loop = self.recorder.new_one_hot();
@@ -1167,8 +1213,13 @@ where
                 store_gradient
             );
 
+            self.recorder.name_diff_tensor(final_output.output.0, "final_output");
+            self.recorder.name_diff_scalar(final_output.output.1, "final_output_loss");
+
             let final_output_loss = final_output.output.1;
             let final_loss = self.recorder.add_scalars(compound_loss, final_output_loss);
+
+            self.recorder.name_diff_scalar(final_loss, "final_loss");
 
             self.recorder.end_loop(loop_index);
 
@@ -1568,7 +1619,8 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.prepare(false);
 
@@ -1741,13 +1793,17 @@ mod tests
         let inputs = [
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
+            OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
+            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([0], 2))
         ];
 
         let outputs = [
             OneHotLayer::new([1], 2),
             OneHotLayer::new([0], 2),
-            OneHotLayer::new([0], 2)
+            OneHotLayer::new([0], 2),
+            OneHotLayer::new([1], 2),
+            OneHotLayer::new([1], 2)
         ];
 
         assert_eq!(inputs.len(), outputs.len());
@@ -1832,7 +1888,7 @@ mod tests
                 }
             });
 
-            at_once.recorder.gradient_with_respect(output.unwrap().into());
+            at_once.recorder.gradient();
 
             dbg!(&at_once.recorder);
             at_once.recorder.resolve_memory();

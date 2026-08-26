@@ -15,6 +15,15 @@ use crate::neural_network::{
 };
 
 
+#[cfg(not(debug_assertions))]
+pub struct DebugUnitInfo;
+
+#[cfg(debug_assertions)]
+pub struct DebugUnitInfo
+{
+    pub name: &'static str
+}
+
 pub trait UnitFactory
 {
     type Unit<T>;
@@ -42,7 +51,7 @@ pub trait GenericUnit<T>
 
     fn map_inplace_with_info<F>(&mut self, f: F)
     where
-        F: FnMut(WeightsSize<&mut T>);
+        F: FnMut(WeightsSize<&mut T>, DebugUnitInfo);
 
     fn map_with_info<U, F>(self, f: F) -> Self::Unit<U>
     where
@@ -119,7 +128,10 @@ where
             }
         };
 
+        recorder.name_diff_tensor(new_output, "output_activated");
+
         output.output = recorder.mul_componentwise(new_output, DiffTensorPtr::no_gradient(dropout_mask));
+        recorder.name_diff_tensor(output.output, "output_dropped_out");
 
         output
     }

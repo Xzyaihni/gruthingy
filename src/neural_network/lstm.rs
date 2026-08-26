@@ -121,6 +121,8 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
 //        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
 
+        recorder.name_diff_tensor(output_gate, "output_gate");
+
         if let Some(previous_state) = previous_state
         {
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
@@ -158,6 +160,8 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             recorder.mul_componentwise(output_gate, memory)
         };*/let put_me_back = ();
         let hidden = this_memory;
+
+        recorder.name_diff_tensor(hidden, "hidden");
 
         let state = LSTMState{
             hidden: hidden.clone(),

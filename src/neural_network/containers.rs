@@ -974,7 +974,40 @@ impl OperationsRecorder
     {
         #[cfg(debug_assertions)]
         {
-            self.variable_names.insert(value, name);
+            if self.variable_names.values().any(|x| *x == name)
+            {
+                let name_chars: Vec<char> = name.chars().collect();
+
+                let mut count = 0;
+
+                let end_number: String = name_chars.iter().rev().copied().take_while(|c: &char|
+                {
+                    let is_digit = c.is_ascii_digit();
+
+                    if is_digit
+                    {
+                        count += 1;
+                    }
+
+                    is_digit
+                }).collect();
+
+                let new_name = if end_number.is_empty()
+                {
+                    name + "1"
+                } else
+                {
+                    let new_end_number = (end_number.parse::<u32>().expect("must be valid") + 1).to_string();
+
+                    let total_chars = name_chars.len();
+                    name_chars.into_iter().take(total_chars - count).collect::<String>() + &new_end_number
+                };
+
+                self.name_diff_value(value, new_name);
+            } else
+            {
+                self.variable_names.insert(value, name);
+            }
         }
     }
 
@@ -986,6 +1019,16 @@ impl OperationsRecorder
     pub fn name_value(&mut self, value: ValueIndex, name: impl Into<String>)
     {
         self.name_diff_value(DiffValue::Value(value), name.into().to_lowercase());
+    }
+
+    pub fn name_one_hot(&mut self, value: OneHotIndex, name: impl Into<String>)
+    {
+        self.name_diff_value(value.into(), name.into().to_uppercase());
+    }
+
+    pub fn name_input(&mut self, value: InputTypePtr, name: impl Into<String>)
+    {
+        self.name_diff_value(value.into(), name.into().to_uppercase());
     }
 
     pub fn name_diff_tensor(&mut self, tensor: DiffTensorPtr, name: impl Into<String>)
@@ -1224,7 +1267,10 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.tensors_memory[index_ptr.0].memory.expect("must be resolved")
+        self.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
+        {
+            panic!("{} must be resolved", self.format_variable(index_ptr))
+        })
     }
 
     pub fn resolve_diff_tensor_ptr(&self, diff: DiffTensorPtr) -> DiffTensor
@@ -3377,12 +3423,21 @@ impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<T, V, J>
     {
         match &self.0
         {
+            GradientOp::Copy{src, dst} => write!(f, "{dst:?} ← {src:?}"),
+            GradientOp::CopyScalar{src, dst} => write!(f, "{dst:?} ← {src:?}"),
             GradientOp::Add{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} + {rhs:?}"),
+            GradientOp::AddScalars{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} + {rhs:?}"),
             GradientOp::MulComponentwise{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊙ {rhs:?}"),
             GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊙ {rhs:?} + {added:?}"),
             GradientOp::Tanh{value, output} => write!(f, "{output:?} ← tanh({value:?})"),
             GradientOp::TanhDiff{value, gradient, output} => write!(f, "{output:?} ← tanh'({value:?}) ⊙ {gradient:?}"),
             GradientOp::MulScalar{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
+            GradientOp::Matmulv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
+            GradientOp::MatmulvTransposed{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?}"),
+            GradientOp::MatmulvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
+            GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
+            GradientOp::OuterProduct{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
+            GradientOp::OuterProductOneHot{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
             x => write!(f, "{x:?}")
         }
     }
@@ -4341,7 +4396,7 @@ mod tests
     #[test]
     fn stateful_loop()
     {
-        let loops_count = 1;
+        let loops_count = 3;
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
         check_tensor(|recorder, a, b|

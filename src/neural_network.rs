@@ -36,6 +36,7 @@ use optimizers::*;
 pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
 
 pub use network_unit::{
+    DebugUnitInfo,
     NetworkUnitParameterable,
     NetworkUnitNewable,
     NetworkUnit,
@@ -1153,6 +1154,7 @@ where
     where
         R: Read,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         let inputs = self.vectorized(reader);
@@ -1167,7 +1169,8 @@ where
         calculate_accuracy: bool
     )
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let input_outputs = InputOutputIter::new(
             &self.dictionary,
@@ -1239,6 +1242,7 @@ where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
         for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
         for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
