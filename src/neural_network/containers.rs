@@ -3030,7 +3030,7 @@ impl OperationsRecorder
 
                 //let previous_assigned = assigned_gradients.clone();
 
-                ops.into_iter().for_each(|op|
+                ops.into_iter().rev().for_each(|op|
                 {
                     self.calculate_gradient(assigned_gradients, op);
                 });
