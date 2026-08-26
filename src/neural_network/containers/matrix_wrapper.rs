@@ -527,6 +527,7 @@ impl<'a> MatrixWrapperRef<'a>
         MatrixWrapperMut(DMatrixViewMut::from(&mut cloned)).softmax_cross_entropy_inplace(targets)
     }
 
+    #[allow(dead_code)]
     pub fn matmul_onehotv_add(self, rhs: &OneHotLayer, added: MatrixWrapperRef) -> MatrixWrapper
     {
         debug_assert!(added.0.shape().1 == 1);
@@ -588,11 +589,13 @@ impl<'a> MatrixWrapperMut<'a>
         Self(view)
     }
 
+    #[allow(dead_code)]
     pub fn fill(mut self, value: f32)
     {
         self.0.fill(value);
     }
 
+    #[allow(dead_code)]
     pub fn fill_with(mut self, f: impl Fn() -> f32)
     {
         self.0.fill_with(f);
@@ -618,6 +621,7 @@ impl<'a> MatrixWrapperMut<'a>
         self.0.zip_apply(&rhs.0, |out, rhs| *out = lhs - rhs);
     }
 
+    #[allow(dead_code)]
     pub fn sub_inplace(&mut self, rhs: MatrixWrapperRef)
     {
         self.0 -= rhs.0;

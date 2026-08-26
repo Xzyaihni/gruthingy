@@ -72,23 +72,6 @@ pub trait OptimizerUnit<T>: GenericUnit<T> + Clone
     fn new_zeroed(sizes: LayerSizes) -> Self;
 }
 
-pub trait NetworkUnitStateable
-{
-    fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self);
-    fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self);
-}
-
-pub trait NetworkUnitStateMappable<T, V, U>
-{
-    fn map<F: FnMut(T) -> V>(self, f: F) -> U;
-}
-
-impl NetworkUnitStateable for ()
-{
-    fn set_value(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
-    fn set_gradient(&self, _recorder: &mut OperationsRecorder, _new: &Self) {}
-}
-
 pub trait NetworkUnitNewable
 {
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;

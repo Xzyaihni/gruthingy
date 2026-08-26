@@ -14,7 +14,6 @@ use crate::{
         WeightInfo,
         WeightInfoPtr,
         NetworkUnitNewable,
-        NetworkUnitStateMappable,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, Embeddingsable, EmbeddingsableOwned, NetworkUnitParameterable}
     }
@@ -45,11 +44,6 @@ impl EmbeddingsableOwned for EmbeddingUnit<WeightInfoPtr>
 
         weights.matmul_onehotv_add(input, bias)
     }
-}
-
-impl<T, U> NetworkUnitStateMappable<T, U, ()> for ()
-{
-    fn map<F: FnMut(T) -> U>(self, _f: F) -> () { () }
 }
 
 impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>

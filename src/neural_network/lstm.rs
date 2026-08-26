@@ -12,8 +12,6 @@ use crate::{
         WeightInfoPtr,
         LayerSizes,
         OperationsRecorder,
-        NetworkUnitStateable,
-        NetworkUnitStateMappable,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
         network_unit::{NetworkUnit, NetworkUnitParameterable}
@@ -24,18 +22,18 @@ use crate::{
 pub type Lstm<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (input_update, false, false, LayerSize::Input, LayerSize::Hidden),
-    (input_forget, false, true, LayerSize::Input, LayerSize::Hidden),
+//    (input_update, false, false, LayerSize::Input, LayerSize::Hidden),
+//    (input_forget, false, true, LayerSize::Input, LayerSize::Hidden),
     (input_output, false, false, LayerSize::Input, LayerSize::Hidden),
-    (input_memory, false, false, LayerSize::Input, LayerSize::Hidden),
-    (hidden_update, true, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_forget, true, true, LayerSize::Hidden, LayerSize::Hidden),
+//    (input_memory, false, false, LayerSize::Input, LayerSize::Hidden),
+//    (hidden_update, true, true, LayerSize::Hidden, LayerSize::Hidden),
+//    (hidden_forget, true, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_output, true, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_memory, true, true, LayerSize::Hidden, LayerSize::Hidden),
-    (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
-    (forget_bias, false, true, LayerSize::One, LayerSize::Hidden),
-    (output_bias, false, false, LayerSize::One, LayerSize::Hidden),
-    (memory_bias, false, false, LayerSize::One, LayerSize::Hidden)
+//    (hidden_memory, true, true, LayerSize::Hidden, LayerSize::Hidden),
+//    (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
+//    (forget_bias, false, true, LayerSize::One, LayerSize::Hidden),
+    (output_bias, false, false, LayerSize::One, LayerSize::Hidden)
+//    (memory_bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
 #[derive(Debug, Clone)]
@@ -43,32 +41,6 @@ pub struct LSTMState<T>
 {
     hidden: T,
     memory: T
-}
-
-impl NetworkUnitStateable for LSTMState<DiffTensor>
-{
-    fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self)
-    {
-        recorder.set_tensor_from(self.hidden.as_value(), new.hidden.as_value());
-        recorder.set_tensor_from(self.memory.as_value(), new.memory.as_value());
-    }
-
-    fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self)
-    {
-        recorder.set_tensor_from(self.hidden.as_gradient().unwrap(), new.hidden.as_gradient().unwrap());
-        recorder.set_tensor_from(self.memory.as_gradient().unwrap(), new.memory.as_gradient().unwrap());
-    }
-}
-
-impl<T, U> NetworkUnitStateMappable<T, U, LSTMState<U>> for LSTMState<T>
-{
-    fn map<F: FnMut(T) -> U>(self, mut f: F) -> LSTMState<U>
-    {
-        LSTMState{
-            hidden: f(self.hidden),
-            memory: f(self.memory)
-        }
-    }
 }
 
 impl NetworkUnitNewable for Lstm<WeightInfoPtr>
@@ -116,20 +88,20 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
                 }
             };
 
-            always_store(self.hidden_update.weight_original);
-            always_store(self.hidden_forget.weight_original);
-            always_store(self.hidden_output.weight_original);
-            always_store(self.hidden_memory.weight_original);
+            let put_me_back = ();//always_store(self.hidden_update.weight_original);
+            let put_me_back = ();//always_store(self.hidden_forget.weight_original);
+            let put_me_back = ();//always_store(self.hidden_output.weight_original);
+            let put_me_back = ();//always_store(self.hidden_memory.weight_original);
 
-            always_store(self.update_bias.weight_original);
-            always_store(self.forget_bias.weight_original);
+            let put_me_back = ();//always_store(self.update_bias.weight_original);
+            let put_me_back = ();//always_store(self.forget_bias.weight_original);
             always_store(self.output_bias.weight_original);
-            always_store(self.memory_bias.weight_original);
+            let put_me_back = ();//always_store(self.memory_bias.weight_original);
 
-            always_store(self.input_update.weight_original);
-            always_store(self.input_forget.weight_original);
+            let put_me_back = ();//always_store(self.input_update.weight_original);
+            let put_me_back = ();//always_store(self.input_forget.weight_original);
             always_store(self.input_output.weight_original);
-            always_store(self.input_memory.weight_original);
+            let put_me_back = ();//always_store(self.input_memory.weight_original);
         }
 
         let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
@@ -144,10 +116,10 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             }
         };
 
-        let mut forget_gate = matmul_inputv_add(self.input_forget, input, self.forget_bias);
-        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
+//        let mut forget_gate = matmul_inputv_add(self.input_forget, input, self.forget_bias);
+//        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
         let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
-        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
+//        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
 
         if let Some(previous_state) = previous_state
         {
@@ -157,18 +129,18 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
                 *gate = recorder.add(*gate, mm);
             };
 
-            do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
-            do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
+            let put_me_back = ();//do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
+            let put_me_back = ();//do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
             do_gate(&mut output_gate, self.hidden_output, previous_state.hidden);
-            do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
+            let put_me_back = ();//do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
         }
 
-        forget_gate = recorder.sigmoid(forget_gate);
+/*        forget_gate = recorder.sigmoid(forget_gate);
         update_gate = recorder.sigmoid(update_gate);
         output_gate = recorder.sigmoid(output_gate);
-        memory_gate = recorder.tanh(memory_gate);
+        memory_gate = recorder.tanh(memory_gate);*/let put_me_back = ();
 
-        let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
+/*        let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
         let this_memory = if let Some(previous_state) = previous_state
         {
@@ -177,13 +149,15 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         } else
         {
             this_memory_rhs
-        };
+        };*/let put_me_back = ();
+        let this_memory = output_gate; let this_is_temp = ();
 
-        let hidden = {
+        /*let hidden = {
             let memory = recorder.tanh(this_memory);
 
             recorder.mul_componentwise(output_gate, memory)
-        };
+        };*/let put_me_back = ();
+        let hidden = this_memory;
 
         let state = LSTMState{
             hidden: hidden.clone(),
@@ -224,7 +198,8 @@ mod tests
     #[test]
     fn lstm_works()
     {
-        let mut recorder = OperationsRecorder::new();
+let put_me_back = ();
+/*        let mut recorder = OperationsRecorder::new();
 
         let mut one_weight = |value: f32|
         {
@@ -319,6 +294,6 @@ mod tests
         };
 
         assert_close_enough(single_value(memory), 2.947, epsilon);
-        assert_close_enough(single_value(hidden), 0.986229, epsilon);
+        assert_close_enough(single_value(hidden), 0.986229, epsilon);*/todo!()
     }
 }

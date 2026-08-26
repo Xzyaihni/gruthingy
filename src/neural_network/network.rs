@@ -16,8 +16,6 @@ use crate::{
     neural_network::{
         OperationsRecorder,
         Softmaxer,
-        NetworkUnitStateable,
-        NetworkUnitStateMappable,
         NetworkUnitNewable,
         DiffTensor,
         DiffTensorPtr,
@@ -917,7 +915,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkUnitStateMappable<DiffTensorPtr, DiffTensor, UnitState<N, DiffTensor>>,
+    UnitState<N, DiffTensorPtr>: Clone,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
@@ -1076,6 +1074,7 @@ where
     {
         dbg!(&self.recorder);
         self.recorder.resolve_memory();
+        dbg!(&self.recorder);
 
         mem::take(&mut self.inputs.input_ptrs).into_iter().enumerate().for_each(|(index, input_ptr)|
         {
@@ -1135,7 +1134,7 @@ where
             store_gradient
         );
 
-        let final_output = if self.is_multistep.unwrap()
+        let (final_output, final_loss) = if self.is_multistep.unwrap()
         {
             let this_input_second = create_input(&mut self.recorder);
             let this_target_second = self.recorder.new_one_hot();
@@ -1150,6 +1149,11 @@ where
                 store_gradient
             );
 
+            let no_state_loss = no_state_output.output.1;
+            let with_state_loss = with_state_output.output.1;
+
+            let compound_loss = self.recorder.add_scalars(no_state_loss, with_state_loss);
+
             let this_input_loop = create_input(&mut self.recorder);
             let this_target_loop = self.recorder.new_one_hot();
 
@@ -1163,18 +1167,21 @@ where
                 store_gradient
             );
 
+            let final_output_loss = final_output.output.1;
+            let final_loss = self.recorder.add_scalars(compound_loss, final_output_loss);
+
             self.recorder.end_loop(loop_index);
 
             self.inputs.steps_loop = Some(loop_index);
 
-            final_output
+            (final_output.output.0, final_loss)
         } else
         {
-            no_state_output
+            no_state_output.output
         };
 
-        self.outputs.output_ptr = Some(final_output.output.0);
-        self.outputs.loss = final_output.output.1;
+        self.outputs.output_ptr = Some(final_output);
+        self.outputs.loss = final_loss;
 
         self.dropouts.dropout_masks_ptrs = dropout_masks_ptrs;
     }
@@ -1320,34 +1327,11 @@ where
     where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
         let inputs_count = input.len();
 
         let total_loss = self.feedforward_with(OperationsRecorder::calculate, input);
-
-        /*(0..inputs_count).rev().for_each(|index|
-        {
-            let is_with_state = index != 0;
-
-            let this_info = if is_with_state { &self.with_state } else { &self.no_state };
-
-            if (index + 1) != inputs_count && index != 0
-            {
-                debug_assert!(!self.no_state.next_state.is_empty());
-                debug_assert!(!self.with_state.next_state.is_empty());
-
-                self.no_state.next_state.iter()
-                    .zip(this_info.next_state.iter())
-                    .for_each(|(no_state, with_state)| with_state.set_gradient(&mut self.recorder, no_state));
-            }
-
-            self.recorder.calculate_backpropagate();
-
-            eprintln!("{index}"); let remove_me = ();
-            eprintln!("{:?} {:?}", self.recorder.get_tensor(TensorIndex::from_raw(18)), self.recorder.get_tensor(TensorIndex::from_raw(25)));
-        });
 
         let f = |weight: &WeightInfo|
         {
@@ -1376,9 +1360,7 @@ where
         } else
         {
             self.weights.as_ref().unwrap().map_ref(f)
-        };*/todo!();
-
-        let gradients = todo!();
+        };
 
         (total_loss, gradients)
     }
@@ -1388,8 +1370,6 @@ where
         calculate_function: fn(&mut OperationsRecorder),
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
-    where
-        UnitState<N, DiffTensor>: NetworkUnitStateable
     {
         self.feedforward_setup_dropout();
 
@@ -1473,7 +1453,6 @@ where
     ) -> impl Iterator<Item=(usize, T)>
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable,
         F: Fn(&LayerType, usize, usize) -> T
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -1498,8 +1477,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, u32)>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
         {
@@ -1520,8 +1498,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, f32)>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
         {
@@ -1535,8 +1512,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, bool)>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         self.with_predict(input, |_predicted, highest_index, target_index|
         {
@@ -1550,8 +1526,7 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         let mut total = 0;
         let correct_amount = self.correct_guesses(input).filter(|(_, x)|
@@ -1593,8 +1568,7 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         self.prepare(false);
 
@@ -1606,8 +1580,7 @@ where
         input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
     ) -> Vec<LayerType>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
 
@@ -1623,8 +1596,7 @@ where
         mut f_output: impl FnMut(LayerType)
     )
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensor>: NetworkUnitStateable
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
 /*        self.prepare(false);
 
@@ -1729,6 +1701,7 @@ mod tests
 {
     use super::*;
 
+    #[allow(unused_imports)]
     use crate::neural_network::{EmbeddingUnit, Lstm};
 
 
@@ -1739,6 +1712,7 @@ mod tests
         type Unit<T> = Lstm<T>;
     }
 
+    #[allow(dead_code)]
     struct EmbeddingUnitFactory;
 
     impl UnitFactory for EmbeddingUnitFactory
@@ -1759,14 +1733,26 @@ mod tests
         };
 
         let dropout_probability = 0.5;
-        let is_multistep = true;
         let is_input_one_hot = true;
 
-        type NetworkType = Network<EmbeddingUnitFactory, ()>;
+        type NetworkType = Network<LstmUnitFactory, ()>;
 
 
-        let inputs = [OwnedInputType::OneHot(OneHotLayer::new([0], 2)), OwnedInputType::OneHot(OneHotLayer::new([1], 2)), OwnedInputType::OneHot(OneHotLayer::new([0], 2))];
-        let outputs = [OneHotLayer::new([1], 2), OneHotLayer::new([0], 2), OneHotLayer::new([0], 2)];
+        let inputs = [
+            OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
+            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
+            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
+        ];
+
+        let outputs = [
+            OneHotLayer::new([1], 2),
+            OneHotLayer::new([0], 2),
+            OneHotLayer::new([0], 2)
+        ];
+
+        assert_eq!(inputs.len(), outputs.len());
+
+        let is_multistep = inputs.len() > 1;
 
         let input_outputs = inputs.iter().cloned().zip(outputs);
 
