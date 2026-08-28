@@ -377,7 +377,6 @@ struct PhiOtherSelectorRecording
 {
     first: DiffWrapper,
     other: Option<DiffWrapper>,
-    output: DiffWrapper,
     value_index: Option<PhiOtherSelectorIndex>,
     gradient_index: Option<PhiOtherSelectorIndex>
 }
@@ -863,12 +862,9 @@ impl OperationsRecorder
 
         let id = self.phi_other_selectors.len();
 
-        let output = new_value!(self, true);
-
         self.phi_other_selectors_recording.push(PhiOtherSelectorRecording{
             first: first.into(),
             other: None,
-            output: output.into(),
             value_index: None,
             gradient_index: None
         });
@@ -884,10 +880,10 @@ impl OperationsRecorder
 
         let new_other = value.into();
 
-        match (&selector.first, &new_other, &selector.output)
+        match (&selector.first, &new_other)
         {
-            (DiffWrapper::Value(_), DiffWrapper::Value(_), DiffWrapper::Value(_))
-            | (DiffWrapper::Tensor(_), DiffWrapper::Tensor(_), DiffWrapper::Tensor(_)) => (),
+            (DiffWrapper::Value(_), DiffWrapper::Value(_))
+            | (DiffWrapper::Tensor(_), DiffWrapper::Tensor(_)) => (),
             x => panic!("phi selector type mismatch: {x:#?}")
         }
 
@@ -904,11 +900,11 @@ impl OperationsRecorder
 
         let this_selector = &self.phi_other_selectors_recording[index.0];
 
-        let output = this_selector.output.into_value();
+        let output = new_value!(self, true);
 
         if let DiffWrapper::Value(_) = this_selector.first
         {
-            self.add_recording_operation(Op::GetOtherSelectorValue(index));
+            self.add_recording_operation(Op::GetOtherSelectorValue{index, output});
 
             output
         } else
@@ -976,7 +972,7 @@ impl OperationsRecorder
                 output.into()
             },
             Op::SetOtherSelector(_) => panic!("set selector operation must not be last"),
-            Op::GetOtherSelectorValue(_) => panic!("get selector operation must not be last"),
+            Op::GetOtherSelectorValue{output, ..} => output.into(),
             Op::Loop{ops, ..} => { self.set_ones_in_op(ops.into_iter().last().expect("loop must not be empty")); return; }
         };
 
@@ -2172,11 +2168,9 @@ impl OperationsRecorder
                 {
                     GradientOp::SetOtherSelector(phi_other_selectors_recording[index.0].value_index.unwrap())
                 },
-                Op::GetOtherSelectorValue(index) =>
+                Op::GetOtherSelectorValue{index, output} =>
                 {
                     let this_selector = &mut phi_other_selectors_recording[index.0];
-
-                    let output = this_selector.output.into_value();
 
                     let new_index = PhiOtherSelectorIndex(phi_other_selectors.len());
                     phi_other_selectors.push(PhiOtherSelector{
@@ -3262,22 +3256,15 @@ impl OperationsRecorder
                 }
             },
             Op::SetOtherSelector(_) => (),
-            Op::GetOtherSelectorValue(index) =>
+            Op::GetOtherSelectorValue{index, output} =>
             {
                 let this_selector = &self.phi_other_selectors_recording[index.0];
                 let gradient_index = this_selector.gradient_index.expect("must be initialized");
 
-                match this_selector.output
+                if let Some(output_gradient) = output.as_gradient()
                 {
-                    DiffWrapper::Value(output) =>
-                    {
-                        if let Some(output_gradient) = output.as_gradient()
-                        {
-                            // this only works with loops as the control flow block, but i dont have any other ones so its fine
-                            self.gradient_operations.push(GradientOp::OtherSelectorValueGradient{index: gradient_index, src: output_gradient});
-                        }
-                    },
-                    DiffWrapper::Tensor(_output) => unimplemented!()
+                    // this only works with loops as the control flow block, but i dont have any other ones so its fine
+                    self.gradient_operations.push(GradientOp::OtherSelectorValueGradient{index: gradient_index, src: output_gradient});
                 }
             },
             Op::Loop{index, inputs, ops} =>
@@ -3289,7 +3276,7 @@ impl OperationsRecorder
 
                     ops.iter().for_each(|op|
                     {
-                        if let Op::GetOtherSelectorValue(phi_selector_index) = op
+                        if let Op::GetOtherSelectorValue{index: phi_selector_index, ..} = op
                         {
                             let this_selector = &mut self.phi_other_selectors_recording[phi_selector_index.0];
 
@@ -3992,7 +3979,7 @@ pub enum Op
     MatmulvAdd{lhs: DiffTensorPtr, rhs: DiffTensorPtr, added: DiffTensorPtr, output: DiffTensorPtr},
     MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr},
     SetOtherSelector(PhiOtherSelectorRecordingIndex),
-    GetOtherSelectorValue(PhiOtherSelectorRecordingIndex),
+    GetOtherSelectorValue{index: PhiOtherSelectorRecordingIndex, output: DiffScalar},
     Loop{index: LoopIndex, inputs: Vec<InputTypePtr>, ops: Vec<Op>}
 }
 
