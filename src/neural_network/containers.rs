@@ -30,7 +30,7 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = true;
 const NO_COLORING: bool = false;
-const PRINT_CALCULATE_VALUES: bool = true;
+const PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -382,17 +382,9 @@ struct PhiOtherSelectorRecording
 }
 
 #[derive(Debug, Clone)]
-struct PhiOtherSelector
-{
-    first: DiffValue,
-    other: DiffValue
-}
-
-#[derive(Debug, Clone)]
 struct PhiOtherSelectorValue
 {
-    first: ValueIndex,
-    other: ValueIndex,
+    loop_index: LoopIndex,
     is_set: bool
 }
 
@@ -410,7 +402,6 @@ pub struct OperationsRecorder
     one_hot_layers: Vec<OneHotLayer>,
     loops: Vec<LoopInfo>,
     phi_other_selectors_recording: Vec<PhiOtherSelectorRecording>,
-    phi_other_selectors: Vec<PhiOtherSelector>,
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
     recording_operations: Vec<Op>,
     gradient_operations: Vec<StandardGradientOp>,
@@ -442,7 +433,7 @@ impl Debug for OperationsRecorder
         {
             gradient_operations = self.gradient_operations.iter().map(|op|
             {
-                NotationGradientOp(self, op.clone().map(|t|
+                NotationGradientOp(op.clone().map(|t|
                 {
                     DebugStringRaw(self.format_variable(t))
                 }, |v|
@@ -471,7 +462,6 @@ impl Debug for OperationsRecorder
             .field("one_hot_layers", &self.one_hot_layers)
             .field("loops", &self.loops)
             .field("phi_other_selectors_recording", &self.phi_other_selectors_recording)
-            .field("phi_other_selectors", &self.phi_other_selectors)
             .field("phi_other_selectors_values", &self.phi_other_selectors_values)
             .field("recording_operations", &self.recording_operations.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("gradient_operations", &gradient_operations)
@@ -669,7 +659,6 @@ impl OperationsRecorder
             one_hot_layers: Vec::new(),
             loops: Vec::new(),
             phi_other_selectors_recording: Vec::new(),
-            phi_other_selectors: Vec::new(),
             phi_other_selectors_values: Vec::new(),
             recording_operations: Vec::new(),
             gradient_operations: Vec::new(),
@@ -860,7 +849,7 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Recording);
 
-        let id = self.phi_other_selectors.len();
+        let id = self.phi_other_selectors_recording.len();
 
         self.phi_other_selectors_recording.push(PhiOtherSelectorRecording{
             first: first.into(),
@@ -1473,7 +1462,6 @@ impl OperationsRecorder
 
     fn calculate_steps(&mut self, start: usize, end: usize)
     {
-        dbg!(&self);
         debug_assert_eq!(self.state, RecorderState::Ready);
 
         for loop_index in 0..self.loops.len()
@@ -1626,7 +1614,10 @@ impl OperationsRecorder
                 {
                     #[cfg(debug_assertions)]
                     {
-                        eprintln!("{:?}", $x);
+                        if PRINT_CALCULATE_VALUES
+                        {
+                            eprintln!("{:?}", $x);
+                        }
                     }
                 }
             }
@@ -1641,7 +1632,7 @@ impl OperationsRecorder
 
                     self.phi_other_selectors_values[index.0].is_set = true;
                 },
-                GradientOp::GetOtherSelectorValue{info: index, output} =>
+                GradientOp::GetOtherSelectorValue{info: index, first, other, output} =>
                 {
                     debug_print_op!(gradient_op);
 
@@ -1649,15 +1640,15 @@ impl OperationsRecorder
 
                     let src = if this_selector.is_set
                     {
-                        this_selector.other
+                        other
                     } else
                     {
-                        this_selector.first
+                        first
                     };
 
                     self.values[output.0] = self.values[src.0];
                 },
-                GradientOp::OtherSelectorValueGradient{index, src} =>
+                GradientOp::OtherSelectorValueGradient{index, first, other, src} =>
                 {
                     debug_print_op!(gradient_op);
 
@@ -1665,10 +1656,10 @@ impl OperationsRecorder
 
                     let dst = if this_selector.is_set
                     {
-                        this_selector.first
+                        first
                     } else
                     {
-                        this_selector.other
+                        other
                     };
 
                     self.values[dst.0] = self.values[src.0];
@@ -2080,7 +2071,7 @@ impl OperationsRecorder
 
         fn handle_op(
             target: &mut Vec<StandardGradientOp>,
-            phi_other_selectors: &mut Vec<PhiOtherSelector>,
+            phi_other_selectors_values: &mut Vec<PhiOtherSelectorValue>,
             phi_other_selectors_recording: &mut [PhiOtherSelectorRecording],
             op: &Op
         )
@@ -2172,23 +2163,36 @@ impl OperationsRecorder
                 {
                     let this_selector = &mut phi_other_selectors_recording[index.0];
 
-                    let new_index = PhiOtherSelectorIndex(phi_other_selectors.len());
-                    phi_other_selectors.push(PhiOtherSelector{
-                        first: this_selector.first.as_value(),
-                        other: this_selector.other.expect("must be initialized").as_value()
-                    });
+                    let value_index = this_selector.value_index.expect("must be initialized");
 
-                    this_selector.value_index = Some(new_index);
+                    let first = this_selector.first.as_value().into_value();
+                    let other = this_selector.other.expect("must be initialized").as_value().into_value();
 
-                    GradientOp::GetOtherSelectorValue{info: new_index, output: output.as_value()}
+                    GradientOp::GetOtherSelectorValue{info: value_index, first, other, output: output.as_value()}
                 },
                 Op::Loop{index, inputs, ops} =>
                 {
                     target.push(GradientOp::Jump(JumpInfo::JumpTo{inputs: inputs.clone(), index: *index}));
 
+                    ops.iter().for_each(|op|
+                    {
+                        if let Op::SetOtherSelector(phi_selector_index) = op
+                        {
+                            let this_selector = &mut phi_other_selectors_recording[phi_selector_index.0];
+
+                            let new_index = PhiOtherSelectorIndex(phi_other_selectors_values.len());
+                            phi_other_selectors_values.push(PhiOtherSelectorValue{
+                                loop_index: *index,
+                                is_set: false
+                            });
+
+                            this_selector.value_index = Some(new_index);
+                        }
+                    });
+
                     ops.iter().for_each(|inner_op|
                     {
-                        handle_op(target, phi_other_selectors, phi_other_selectors_recording, inner_op);
+                        handle_op(target, phi_other_selectors_values, phi_other_selectors_recording, inner_op);
                     });
 
                     target.push(GradientOp::Jump(JumpInfo::JumpFrom(*index)));
@@ -2202,7 +2206,7 @@ impl OperationsRecorder
 
         self.recording_operations.iter().for_each(|op|
         {
-            handle_op(&mut self.gradient_operations, &mut self.phi_other_selectors, &mut self.phi_other_selectors_recording, op)
+            handle_op(&mut self.gradient_operations, &mut self.phi_other_selectors_values, &mut self.phi_other_selectors_recording, op)
         });
 
         self.feedforward_operations_count = self.gradient_operations.len();
@@ -2353,19 +2357,22 @@ impl OperationsRecorder
                 *start = Some(op_index as i32);
             };
 
-            let mut tensor_ptrs = Vec::new();
-            op.for_outputs(|tensor_ptr|
+            if !matches!(op, GradientOp::OtherSelectorValueGradient{..})
             {
-                tensor_ptrs.push(tensor_ptr);
-            }, |value_index|
-            {
-                handle_output(&mut self.value_live_ranges[value_index.0], format_variable!(self, value_index));
-            });
+                let mut tensor_ptrs = Vec::new();
+                op.for_outputs(|tensor_ptr|
+                {
+                    tensor_ptrs.push(tensor_ptr);
+                }, |value_index|
+                {
+                    handle_output(&mut self.value_live_ranges[value_index.0], format_variable!(self, value_index));
+                });
 
-            tensor_ptrs.into_iter().for_each(|tensor_ptr|
-            {
-                handle_output(&mut self.tensor_live_ranges[tensor_ptr.0], format_variable!(self, tensor_ptr));
-            });
+                tensor_ptrs.into_iter().for_each(|tensor_ptr|
+                {
+                    handle_output(&mut self.tensor_live_ranges[tensor_ptr.0], format_variable!(self, tensor_ptr));
+                });
+            }
 
             let handle_arg = |live_range: &mut LiveRange, err_name: String|
             {
@@ -2383,13 +2390,16 @@ impl OperationsRecorder
                 }
             };
 
-            op.for_args(|tensor_ptr|
+            if !matches!(op, GradientOp::GetOtherSelectorValue{..})
             {
-                handle_arg(&mut self.tensor_live_ranges[tensor_ptr.0], format_variable!(self, tensor_ptr));
-            }, |value_index|
-            {
-                handle_arg(&mut self.value_live_ranges[value_index.0], format_variable!(self, value_index));
-            });
+                op.for_args(|tensor_ptr|
+                {
+                    handle_arg(&mut self.tensor_live_ranges[tensor_ptr.0], format_variable!(self, tensor_ptr));
+                }, |value_index|
+                {
+                    handle_arg(&mut self.value_live_ranges[value_index.0], format_variable!(self, value_index));
+                });
+            }
         });
 
         let mut any_unused = false;
@@ -3255,7 +3265,15 @@ impl OperationsRecorder
                     add_gradient_operation(self, added_gradient.into(), GradientOp::Copy{src: gradient, dst: added_gradient});
                 }
             },
-            Op::SetOtherSelector(_) => (),
+            Op::SetOtherSelector(index) =>
+            {
+                let gradient_index = self.phi_other_selectors_recording[index.0].gradient_index.expect("must be initialized");
+
+                self.gradient_operations.push(GradientOp::SetOtherSelectorValueGradient{
+                    loop_index: self.phi_other_selectors_values[gradient_index.0].loop_index,
+                    selector_index: gradient_index
+                });
+            },
             Op::GetOtherSelectorValue{index, output} =>
             {
                 let this_selector = &self.phi_other_selectors_recording[index.0];
@@ -3263,43 +3281,34 @@ impl OperationsRecorder
 
                 if let Some(output_gradient) = output.as_gradient()
                 {
+                    let first = this_selector.first.as_gradient().expect("selectors must have a gradient").into_value();
+                    let other = this_selector.other.expect("must be initialized").as_gradient().expect("selectors must have a gradient").into_value();
+
+                    let src = output_gradient;
+
                     // this only works with loops as the control flow block, but i dont have any other ones so its fine
-                    self.gradient_operations.push(GradientOp::OtherSelectorValueGradient{index: gradient_index, src: output_gradient});
+                    self.gradient_operations.push(GradientOp::OtherSelectorValueGradient{index: gradient_index, first, other, src});
                 }
             },
             Op::Loop{index, inputs, ops} =>
             {
                 self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpTo{inputs, index}));
 
+                ops.iter().for_each(|op|
                 {
-                    let mut inner_phi_selectors = Vec::new();
-
-                    ops.iter().for_each(|op|
+                    if let Op::SetOtherSelector(phi_selector_index) = op
                     {
-                        if let Op::GetOtherSelectorValue{index: phi_selector_index, ..} = op
-                        {
-                            let this_selector = &mut self.phi_other_selectors_recording[phi_selector_index.0];
+                        let this_selector = &mut self.phi_other_selectors_recording[phi_selector_index.0];
 
-                            let new_index = PhiOtherSelectorIndex(self.phi_other_selectors.len());
-                            self.phi_other_selectors.push(PhiOtherSelector{
-                                first: this_selector.first.as_gradient().expect("selectors must have a gradient"),
-                                other: this_selector.other.expect("must be initialized").as_gradient().expect("selectors must have a gradient")
-                            });
-
-                            this_selector.gradient_index = Some(new_index);
-
-                            inner_phi_selectors.push(new_index);
-                        }
-                    });
-
-                    inner_phi_selectors.into_iter().for_each(|phi_selector_index|
-                    {
-                        self.gradient_operations.push(GradientOp::SetOtherSelectorValueGradient{
+                        let new_index = PhiOtherSelectorIndex(self.phi_other_selectors_values.len());
+                        self.phi_other_selectors_values.push(PhiOtherSelectorValue{
                             loop_index: index,
-                            selector_index: phi_selector_index
+                            is_set: false
                         });
-                    });
-                }
+
+                        this_selector.gradient_index = Some(new_index);
+                    }
+                });
 
                 //let previous_assigned = assigned_gradients.clone();
 
@@ -3679,13 +3688,13 @@ impl<I> JumpInfo<I>
     }
 }
 
-struct NotationGradientOp<'a, T, V, J, S>(&'a OperationsRecorder, GradientOp<T, V, J, S>);
+struct NotationGradientOp<T, V, J, S>(GradientOp<T, V, J, S>);
 
-impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<'_, T, V, J, PhiOtherSelectorIndex>
+impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<T, V, J, PhiOtherSelectorIndex>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
-        match &self.1
+        match &self.0
         {
             GradientOp::Copy{src, dst} => write!(f, "{dst:?} ← {src:?}"),
             GradientOp::CopyScalar{src, dst} => write!(f, "{dst:?} ← {src:?}"),
@@ -3704,25 +3713,9 @@ impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<'_, T, V, J, Phi
             GradientOp::OuterProduct{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
             GradientOp::OuterProductOneHot{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
             GradientOp::SumTensor{value, output} => write!(f, "{output:?} ← ∑{value:?}"),
-            GradientOp::GetOtherSelectorValue{info, output} =>
-            {
-                let this_selector = &self.0.phi_other_selectors[info.0];
-
-                let first = self.0.format_variable(this_selector.first);
-                let other = self.0.format_variable(this_selector.other);
-
-                write!(f, "{output:?} ← {first} | {other} (id {})", info.0)
-            },
+            GradientOp::GetOtherSelectorValue{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),
             GradientOp::SetOtherSelector(info) => write!(f, "SetOtherSelector(id {})", info.0),
-            GradientOp::OtherSelectorValueGradient{index, src} =>
-            {
-                let this_selector = &self.0.phi_other_selectors[index.0];
-
-                let first = self.0.format_variable(this_selector.first);
-                let other = self.0.format_variable(this_selector.other);
-
-                write!(f, "{first} | {other} ← {src:?} (id {})", index.0)
-            },
+            GradientOp::OtherSelectorValueGradient{index, first, other, src} => write!(f, "{first:?} | {other:?} ← {src:?} (id {})", index.0),
             x => write!(f, "{x:?}")
         }
     }
@@ -3737,8 +3730,8 @@ pub enum GradientOp<T, V, J, S>
     None,
     Jump(J),
     SetOtherSelector(S),
-    GetOtherSelectorValue{info: S, output: V},
-    OtherSelectorValueGradient{index: PhiOtherSelectorIndex, src: V},
+    GetOtherSelectorValue{info: S, first: V, other: V, output: V},
+    OtherSelectorValueGradient{index: PhiOtherSelectorIndex, first: V, other: V, src: V},
     SetOtherSelectorValueGradient{loop_index: LoopIndex, selector_index: PhiOtherSelectorIndex},
     Copy{src: T, dst: T},
     CopyScalar{src: V, dst: V},
@@ -3787,8 +3780,14 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
         {
             Self::None => GradientOp::None,
             Self::SetOtherSelector(info) => GradientOp::SetOtherSelector(select_f(info)),
-            Self::GetOtherSelectorValue{info, output}  => GradientOp::GetOtherSelectorValue{info: select_f(info), output: vf(output)},
-            Self::OtherSelectorValueGradient{index, src} => GradientOp::OtherSelectorValueGradient{index, src: vf(src)},
+            Self::GetOtherSelectorValue{info, first, other, output}  =>
+            {
+                GradientOp::GetOtherSelectorValue{info: select_f(info), first: vf(first), other: vf(other), output: vf(output)}
+            },
+            Self::OtherSelectorValueGradient{index, first, other, src} =>
+            {
+                GradientOp::OtherSelectorValueGradient{index, first: vf(first), other: vf(other), src: vf(src)}
+            },
             Self::SetOtherSelectorValueGradient{loop_index, selector_index} => GradientOp::SetOtherSelectorValueGradient{loop_index, selector_index},
             Self::Copy{src, dst} => GradientOp::Copy{src: tf(src), dst: tf(dst)},
             Self::CopyScalar{src, dst} => GradientOp::CopyScalar{src: vf(src), dst: vf(dst)},
@@ -3890,8 +3889,8 @@ impl<T: Clone, J: Clone, S: Clone> GradientOp<T, ValueIndex, J, S>
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
-            Self::GetOtherSelectorValue{info, output} => Self::GetOtherSelectorValue{info, output: vf(output)},
-            Self::OtherSelectorValueGradient{index, src} => Self::OtherSelectorValueGradient{index, src},
+            Self::GetOtherSelectorValue{info, first, other, output} => Self::GetOtherSelectorValue{info, first, other, output: vf(output)},
+            Self::OtherSelectorValueGradient{index, first, other, src} => Self::OtherSelectorValueGradient{index, first: vf(first), other: vf(other), src},
             Self::SetOtherSelectorValueGradient{loop_index, selector_index} => Self::SetOtherSelectorValueGradient{loop_index, selector_index},
             Self::Jump(x) => Self::Jump(x),
             Self::AddInplace{..} => unreachable!()
@@ -3948,8 +3947,8 @@ impl<T: Clone, J: Clone, S: Clone> GradientOp<T, ValueIndex, J, S>
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
-            Self::GetOtherSelectorValue{info, output} => Self::GetOtherSelectorValue{info, output},
-            Self::OtherSelectorValueGradient{index, src} => Self::OtherSelectorValueGradient{index, src: vf(src)},
+            Self::GetOtherSelectorValue{info, first, other, output} => Self::GetOtherSelectorValue{info, first: vf(first), other: vf(other), output},
+            Self::OtherSelectorValueGradient{index, first, other, src} => Self::OtherSelectorValueGradient{index, first, other, src: vf(src)},
             Self::SetOtherSelectorValueGradient{loop_index, selector_index} => Self::SetOtherSelectorValueGradient{loop_index, selector_index},
             Self::Jump(x) => Self::Jump(x),
             Self::AddInplace{..} => unreachable!()
@@ -4244,7 +4243,6 @@ mod tests
 
         recorder.gradient();
 
-        dbg!(&recorder);
         recorder.resolve_memory();
 
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
