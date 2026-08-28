@@ -1203,6 +1203,8 @@ where
             let this_input_loop = create_input(&mut self.recorder);
             let this_target_loop = self.recorder.new_one_hot();
 
+            let final_loss_selector = self.recorder.phi_other_selector(compound_loss);
+
             let loop_index = self.recorder.begin_loop(vec![this_input_loop, this_target_loop.into()]);
 
             let final_output = self.record_feedforward_single_input(
@@ -1217,8 +1219,14 @@ where
             self.recorder.name_diff_scalar(final_output.output.1, "final_output_loss");
 
             let final_output_loss = final_output.output.1;
-            let final_loss = self.recorder.add_scalars(compound_loss, final_output_loss);
 
+            let final_loss_selected = self.recorder.select_value(final_loss_selector);
+
+            let new_combined = self.recorder.add_scalars(final_loss_selected, final_output_loss);
+
+            self.recorder.set_phi_other_selector(final_loss_selector, new_combined);
+
+            let final_loss = self.recorder.select_value(final_loss_selector);
             self.recorder.name_diff_scalar(final_loss, "final_loss");
 
             self.recorder.end_loop(loop_index);
