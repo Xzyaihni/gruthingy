@@ -333,6 +333,7 @@ struct LoopInfo
     current_index: usize,
     reversed: bool,
     live_range: LiveRange,
+    loops_gradient: Option<LoopIndex>,
     gradient_of_loop: Option<LoopIndex>,
     defined_values: Vec<DiffValue>,
     used_values: Vec<DiffValue>,
@@ -1542,6 +1543,7 @@ impl OperationsRecorder
             current_index: 0,
             reversed: false,
             live_range: LiveRange::default(),
+            loops_gradient: None,
             gradient_of_loop: None,
             defined_values: Vec::new(),
             used_values: Vec::new(),
@@ -1565,7 +1567,14 @@ impl OperationsRecorder
 
     pub fn set_loop_times(&mut self, index: LoopIndex, times: usize)
     {
-        self.loops[index.0].times_total = times;
+        let this_loop = &mut self.loops[index.0];
+
+        this_loop.times_total = times;
+
+        if let Some(loops_gradient) = this_loop.loops_gradient
+        {
+            self.set_loop_times(loops_gradient, times);
+        }
     }
 
     pub fn set_loop_inputs(&mut self, index: LoopIndex, inputs: Vec<OwnedInputType>)
@@ -1609,7 +1618,7 @@ impl OperationsRecorder
 
             let input_values_amount = self.loops_values[loop_info.input_values.0].input_values.len();
 
-            debug_assert!(loop_info.times_total > 0);
+            debug_assert!(loop_info.times_total > 0, "LoopIndex({loop_index}) was uninitialized or has 0 iterations");
             debug_assert_eq!(loop_info.times_total * loop_info.inputs.len(), input_values_amount);
 
             let total_count = input_values_amount / inputs_count;
@@ -2607,19 +2616,66 @@ impl OperationsRecorder
 
     fn calculate_live_ranges_once(&mut self) -> bool
     {
+        let mut inside_loop_values = Vec::new();
+
         let mut inside_loop: Option<LoopIndex> = None;
+
+        self.gradient_operations.iter().for_each(|op|
+        {
+            let mut set_loop_lifetime = |inside_loop: Option<LoopIndex>, live_range: &mut LiveRange, value: DiffValue|
+            {
+                if let Some(loop_index) = inside_loop
+                {
+                    *live_range = self.loops[loop_index.0].live_range.clone();
+
+                    inside_loop_values.push(value);
+                }
+            };
+
+            match op
+            {
+                GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
+                {
+                    inside_loop = Some(*index);
+                },
+                GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
+                {
+                    inside_loop = None;
+                },
+                GradientOp::GetOtherSelectorValue{other, ..} =>
+                {
+                    set_loop_lifetime(inside_loop, &mut self.value_live_ranges[other.0], (*other).into());
+                },
+                GradientOp::GetOtherSelectorTensor{other, ..} =>
+                {
+                    set_loop_lifetime(inside_loop, &mut self.tensor_live_ranges[other.0], (*other).into());
+                },
+                _ => ()
+            }
+        });
 
         self.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
-            let handle_output = |live_range: &mut LiveRange, err_name: String|
+            let handle_output = |live_range: &mut LiveRange, allow_reuse: bool, err_name: String|
             {
                 let start = &mut live_range.start;
 
                 let new_start = op_index as i32;
 
-                debug_assert!(start.is_none(), "{err_name} was reused at operation {} and {op_index}", start.unwrap());
+                if allow_reuse
+                {
+                    *start = Some(start.map(|start| start.min(new_start)).unwrap_or(new_start));
+                } else
+                {
+                    debug_assert!(start.is_none(), "{err_name} was reused at operation {} and {op_index}", start.unwrap());
 
-                *start = Some(new_start);
+                    *start = Some(new_start);
+                }
+            };
+
+            let is_allow_reuse = |value: DiffValue| -> bool
+            {
+                inside_loop_values.contains(&value)
             };
 
             if !matches!(op, GradientOp::OtherSelectorValueGradient{..})
@@ -2630,50 +2686,27 @@ impl OperationsRecorder
                     tensor_ptrs.push(tensor_ptr);
                 }, |value_index|
                 {
-                    handle_output(&mut self.value_live_ranges[value_index.0], format_variable!(self, value_index));
+                    handle_output(
+                        &mut self.value_live_ranges[value_index.0],
+                        is_allow_reuse(value_index.into()),
+                        format_variable!(self, value_index)
+                    );
                 });
 
                 tensor_ptrs.into_iter().for_each(|tensor_ptr|
                 {
-                    handle_output(&mut self.tensor_live_ranges[tensor_ptr.0], format_variable!(self, tensor_ptr));
+                    handle_output(
+                        &mut self.tensor_live_ranges[tensor_ptr.0],
+                        is_allow_reuse(tensor_ptr.into()),
+                        format_variable!(self, tensor_ptr)
+                    );
                 });
-            }
-
-            let set_loop_lifetime = |inside_loop: Option<LoopIndex>, live_range: &mut LiveRange|
-            {
-                if let Some(loop_index) = inside_loop
-                {
-                    *live_range = self.loops[loop_index.0].live_range.clone();
-                }
-            };
-
-            match op
-            {
-                GradientOp::Jump(JumpInfo::JumpTo{..}) =>
-                {
-                    inside_loop = None;
-                },
-                GradientOp::Jump(JumpInfo::JumpFrom(index)) =>
-                {
-                    inside_loop = Some(*index);
-                },
-                _ => ()
             }
 
             let allow_end_before = match op
             {
-                GradientOp::GetOtherSelectorValue{other, ..} =>
-                {
-                    set_loop_lifetime(inside_loop, &mut self.value_live_ranges[other.0]);
-
-                    true
-                },
-                GradientOp::GetOtherSelectorTensor{other, ..} =>
-                {
-                    set_loop_lifetime(inside_loop, &mut self.tensor_live_ranges[other.0]);
-
-                    true
-                },
+                GradientOp::GetOtherSelectorValue{..}
+                | GradientOp::GetOtherSelectorTensor{..} => true,
                 _ => false
             };
 
@@ -3921,6 +3954,8 @@ impl OperationsRecorder
                     gradient_of_loop: Some(index),
                     ..self.loops[index.0].clone()
                 });
+
+                self.loops[index.0].loops_gradient = Some(gradient_loop_index);
 
                 ops.iter().for_each(|op|
                 {
