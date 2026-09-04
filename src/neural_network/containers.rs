@@ -341,6 +341,36 @@ struct LoopInfo
     inputs: Vec<InputType>
 }
 
+struct LoopInfoDebug<'a>
+{
+    recorder: &'a OperationsRecorder,
+    info: &'a LoopInfo
+}
+
+impl Debug for LoopInfoDebug<'_>
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        let info = self.info;
+
+        let defined_values = ForceNoPretty(info.defined_values.iter().map(|x| DebugStringRaw(self.recorder.format_variable(*x))).collect::<Vec<_>>());
+        let used_values = ForceNoPretty(info.used_values.iter().map(|x| DebugStringRaw(self.recorder.format_variable(*x))).collect::<Vec<_>>());
+
+        f.debug_struct("LoopInfo")
+            .field("times", &DebugStringRaw(format!("{}/{}", info.times, info.times_total)))
+            .field("current_index", &info.current_index)
+            .field("reversed", &info.reversed)
+            .field("live_range", &ForceNoPretty(&info.live_range))
+            .field("loops_gradient", &ForceNoPretty(&info.loops_gradient))
+            .field("gradient_of_loop", &ForceNoPretty(&info.gradient_of_loop))
+            .field("defined_values", &defined_values)
+            .field("used_values", &used_values)
+            .field("input_values", &ForceNoPretty(&info.input_values))
+            .field("inputs", &info.inputs)
+            .finish()
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct LoopValues
 {
@@ -491,6 +521,7 @@ impl Debug for OperationsRecorder
         }
 
         let raw_operations;
+        let loops;
 
         #[cfg(debug_assertions)]
         {
@@ -501,11 +532,14 @@ impl Debug for OperationsRecorder
                     DebugStringRaw(self.format_variable(v))
                 }, convert::identity, convert::identity))
             }).collect::<Vec<_>>();
+
+            loops = self.loops.iter().map(|info| LoopInfoDebug{recorder: self, info}).collect::<Vec<_>>();
         }
 
         #[cfg(not(debug_assertions))]
         {
             raw_operations = self.raw_operations.iter().map(ForceNoPretty).collect::<Vec<_>>();
+            loops = self.loops.clone();
         }
 
         s.field("state", &self.state)
@@ -518,7 +552,7 @@ impl Debug for OperationsRecorder
             .field("tensors_raw_data", &DebugStringRaw(format!("{} values", self.tensors_raw_data.len())))
             .field("one_hot_layers", &self.one_hot_layers)
             .field("loops_values", &self.loops_values)
-            .field("loops", &self.loops)
+            .field("loops", &loops)
             .field("phi_other_selectors_recording", &self.phi_other_selectors_recording)
             .field("phi_other_selectors_values", &self.phi_other_selectors_values)
             .field("recording_operations", &self.recording_operations.iter().map(ForceNoPretty).collect::<Vec<_>>())
@@ -3845,6 +3879,8 @@ impl OperationsRecorder
                     info.loop_selected == this.loops[inside_loop.0].gradient_of_loop
                 }).unwrap_or(false);
 
+                let needs_to_add_selector = is_inside_selected_loop && info.extra_operation_index.is_none();
+
                 let new_op = gradient_op.map_outputs(|x|
                 {
                     if x != output
@@ -3856,7 +3892,7 @@ impl OperationsRecorder
 
                     let new_output = handle_output(this, &mut rhs, x);
 
-                    if is_inside_selected_loop
+                    if needs_to_add_selector
                     {
                         let selector_index = add_selector(this);
 
@@ -3891,7 +3927,7 @@ impl OperationsRecorder
                     new_output
                 });
 
-                let (add_lhs, add_rhs) = if is_inside_selected_loop
+                let (add_lhs, add_rhs) = if needs_to_add_selector
                 {
                     (rhs.unwrap(), selector_rhs.unwrap())
                 } else
@@ -3901,19 +3937,23 @@ impl OperationsRecorder
 
                 if let Some(extra_operation_index) = info.extra_operation_index
                 {
-                    // for selector args
-                    let new_extra = this.gradient_operations[extra_operation_index.0].clone().map_args(|arg|
+                    if !is_inside_selected_loop
                     {
-                        if arg == old_previous_op_output.unwrap()
+                        // for selector args
+                        let new_extra = this.gradient_operations[extra_operation_index.0].clone().map_args(|arg|
                         {
-                            lhs.unwrap()
-                        } else
-                        {
-                            arg
-                        }
-                    });
+                            if arg == old_previous_op_output.unwrap()
+                            {
+                                lhs.unwrap()
+                            } else
+                            {
+                                arg
+                            }
+                        });
 
-                    this.gradient_operations[extra_operation_index.0] = new_extra;
+                        dbg!(&this.gradient_operations[extra_operation_index.0], &new_extra);
+                        this.gradient_operations[extra_operation_index.0] = new_extra;
+                    }
                 }
 
                 this.gradient_operations[info.operation_index.0] = new_previous_op;
@@ -6474,7 +6514,7 @@ mod tests
     #[test]
     fn stateful_pls_loop()
     {
-        let loops_count = 1; let put_me_to_3 = ();
+        let loops_count = 2; let put_me_to_3 = ();
 
         let input_size = LAYER_PREV;
         let hidden_size = LAYER_CURR;
