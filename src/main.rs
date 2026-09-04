@@ -19,6 +19,9 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 #[allow(unused_imports)]
 use neural_network::{
+    PhiOtherSelectorRecordingIndex,
+    NetworkStateSelectable,
+    NetworkStateGettable,
     TrainingInfo,
     NeuralNetwork,
     UnitState,
@@ -142,7 +145,8 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
+    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'de> N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam> + Deserialize<'de>,
     for<'de> O::WeightParam: NewableLayer + Serialize + Deserialize<'de>,
     for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + Deserialize<'de>,

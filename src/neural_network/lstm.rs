@@ -5,6 +5,9 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
+        PhiOtherSelectorRecordingIndex,
+        NetworkStateSelectable,
+        NetworkStateGettable,
         DiffTensor,
         DiffTensorPtr,
         DiffInputType,
@@ -41,6 +44,41 @@ pub struct LSTMState<T>
 {
     hidden: T,
     memory: T
+}
+
+impl NetworkStateSelectable<LSTMState<PhiOtherSelectorRecordingIndex>> for LSTMState<DiffTensorPtr>
+{
+    fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> LSTMState<PhiOtherSelectorRecordingIndex>
+    {
+        LSTMState{
+            hidden: recorder.phi_other_selector(self.hidden),
+            memory: recorder.phi_other_selector(self.memory)
+        }
+    }
+}
+
+impl NetworkStateGettable<LSTMState<DiffTensorPtr>> for LSTMState<PhiOtherSelectorRecordingIndex>
+{
+    fn select(&self, recorder: &mut OperationsRecorder) -> LSTMState<DiffTensorPtr>
+    {
+        let hidden = recorder.select_tensor(self.hidden);
+        recorder.name_diff_tensor(hidden, "hidden_selected");
+
+        /*let memory = recorder.select_tensor(self.memory);
+        recorder.name_diff_tensor(memory, "memory_selected");*/let put_me_back = ();
+        let memory = hidden;
+
+        LSTMState{
+            hidden,
+            memory
+        }
+    }
+
+    fn set_phi_other_selector(&self, recorder: &mut OperationsRecorder, other: LSTMState<DiffTensorPtr>)
+    {
+        recorder.set_phi_other_selector(self.hidden, other.hidden);
+        let put_me_back = ();//recorder.set_phi_other_selector(self.memory, other.memory);
+    }
 }
 
 impl NetworkUnitNewable for Lstm<WeightInfoPtr>

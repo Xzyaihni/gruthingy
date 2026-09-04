@@ -1,5 +1,6 @@
 use std::{
     f32,
+    num::FpCategory,
     fmt::{self, Debug},
     borrow::Borrow,
     ops::{Mul, Add, Sub, Div, AddAssign, SubAssign, DivAssign, Neg}
@@ -746,8 +747,13 @@ impl<'a> MatrixWrapperMut<'a>
 
     pub fn softmax_cross_entropy_inplace(mut self, targets: &OneHotLayer) -> f32
     {
+        debug_assert_eq!(self.0.shape().0, targets.size);
+
         self.0.apply(|x| *x = x.exp());
         let s = self.0.sum();
+
+        debug_assert!(s.classify() != FpCategory::Zero);
+        debug_assert!(s.classify() != FpCategory::Infinite);
 
         self.0 /= s;
 

@@ -5,6 +5,8 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
+        NetworkStateSelectable,
+        NetworkStateGettable,
         OperationsRecorder,
         DiffTensorPtr,
         OneHotIndex,
@@ -44,6 +46,18 @@ impl EmbeddingsableOwned for EmbeddingUnit<WeightInfoPtr>
 
         weights.matmul_onehotv_add(input, bias)
     }
+}
+
+impl NetworkStateSelectable<()> for ()
+{
+    fn phi_other_selector(&self, _recorder: &mut OperationsRecorder) -> () {}
+}
+
+impl NetworkStateGettable<()> for ()
+{
+    fn select(&self, _recorder: &mut OperationsRecorder) -> () {}
+
+    fn set_phi_other_selector(&self, _recorder: &mut OperationsRecorder, other: ()) {}
 }
 
 impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>

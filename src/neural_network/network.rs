@@ -17,6 +17,9 @@ use crate::{
         DebugUnitInfo,
         OperationsRecorder,
         Softmaxer,
+        PhiOtherSelectorRecordingIndex,
+        NetworkStateSelectable,
+        NetworkStateGettable,
         NetworkUnitNewable,
         DiffTensor,
         DiffTensorPtr,
@@ -934,7 +937,8 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
+    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
@@ -1071,7 +1075,7 @@ where
                     self.recorder.store_tensor_until_end(weight.weight_original.as_gradient().unwrap());
                 });
 
-                self.recorder.gradient();
+                self.recorder.gradient(self.outputs.loss.into());
             } else
             {
                 self.recorder.store_tensor_until_end(self.outputs.output_ptr.unwrap().as_value());
@@ -1204,11 +1208,14 @@ where
             let this_target_loop = self.recorder.new_one_hot();
 
             let final_loss_selector = self.recorder.phi_other_selector(compound_loss);
+            let state_selectors: Vec<_> = with_state_output.state.iter().map(|state| state.phi_other_selector(&mut self.recorder)).collect();
 
             let loop_index = self.recorder.begin_loop(vec![this_input_loop, this_target_loop.into()]);
 
+            let previous_state_selected: Vec<_> = state_selectors.iter().map(|selector| selector.select(&mut self.recorder)).collect();
+
             let final_output = self.record_feedforward_single_input(
-                Some(with_state_output.state),
+                Some(previous_state_selected),
                 &dropout_masks_ptrs,
                 this_input_loop,
                 this_target_loop,
@@ -1226,14 +1233,16 @@ where
 
             self.recorder.set_phi_other_selector(final_loss_selector, new_combined);
 
-            let final_loss = self.recorder.select_value(final_loss_selector);
-            self.recorder.name_diff_scalar(final_loss, "final_loss");
+            state_selectors.iter().zip(final_output.state).for_each(|(selector, final_state)|
+            {
+                selector.set_phi_other_selector(&mut self.recorder, final_state)
+            });
 
             self.recorder.end_loop(loop_index);
 
             self.inputs.steps_loop = Some(loop_index);
 
-            (final_output.output.0, final_loss)
+            (final_output.output.0, new_combined)
         } else
         {
             no_state_output.output
@@ -1765,6 +1774,7 @@ mod tests
     use crate::neural_network::{EmbeddingUnit, Lstm};
 
 
+    #[derive(Debug)]
     struct LstmUnitFactory;
 
     impl UnitFactory for LstmUnitFactory
@@ -1773,6 +1783,7 @@ mod tests
     }
 
     #[allow(dead_code)]
+    #[derive(Debug)]
     struct EmbeddingUnitFactory;
 
     impl UnitFactory for EmbeddingUnitFactory
@@ -1798,12 +1809,13 @@ mod tests
         type NetworkType = Network<LstmUnitFactory, ()>;
 
 
+        let more_inputs = ();
         let inputs = [
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
-            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
+//            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
         ];
 
         let outputs = [
@@ -1811,7 +1823,7 @@ mod tests
             OneHotLayer::new([0], 2),
             OneHotLayer::new([0], 2),
             OneHotLayer::new([1], 2),
-            OneHotLayer::new([1], 2)
+//            OneHotLayer::new([1], 2)
         ];
 
         assert_eq!(inputs.len(), outputs.len());
@@ -1824,6 +1836,8 @@ mod tests
         fastrand::seed(seed);
 
         let mut with_steps: NetworkType = Network::new(sizes, dropout_probability, is_multistep, is_input_one_hot);
+
+        dbg!(&with_steps.recorder);
 
         fastrand::seed(seed);
 
@@ -1896,7 +1910,7 @@ mod tests
                 }
             });
 
-            at_once.recorder.gradient();
+            at_once.recorder.gradient(output.unwrap().into());
 
             dbg!(&at_once.recorder);
             at_once.recorder.resolve_memory();
