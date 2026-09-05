@@ -2012,9 +2012,6 @@ impl OperationsRecorder
 
                     if this_selector.is_set
                     {
-                        copy_tensor!(src, first);
-                    } else
-                    {
                         let (other, src, added) = get_disjoint_mut!(
                             (LayerTypeMut, other, x0),
                             (LayerTypeRef, src, x1),
@@ -2022,6 +2019,9 @@ impl OperationsRecorder
                         );
 
                         other.add_to(src, added);
+                    } else
+                    {
+                        copy_tensor!(src, first);
                     }
 
                     debug_calculate_values_result!((first, other),());
@@ -6512,9 +6512,117 @@ mod tests
     }
 
     #[test]
-    fn stateful_pls_loop()
+    fn stateful_no_b_loop()
     {
         let loops_count = 2; let put_me_to_3 = ();
+
+        let input_size = LAYER_PREV;
+        let hidden_size = LAYER_CURR;
+        let output_size = 2;
+
+        let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
+        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_| OneHotLayer::new([fastrand::usize(0..output_size)], output_size)).collect();
+
+        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        {
+            let mut create_input = |input: OwnedInputType| -> TensorPtr
+            {
+                let input = recorder.set_new_tensor(input.into_normal());
+                recorder.name_diff_tensor(input, "input");
+
+                input.as_value()
+            };
+
+            let i0 = create_input(is[0].clone());
+            let i1 = create_input(is[1].clone());
+
+            let mut create_target = |targets_values: OneHotLayer| -> OneHotIndex
+            {
+                let targets = recorder.new_one_hot();
+                recorder.name_one_hot(targets, "targets");
+
+                recorder.set_one_hot(targets, targets_values);
+
+                targets
+            };
+
+            let t0 = create_target(targets[0].clone());
+            let t1 = create_target(targets[1].clone());
+
+            let do_one = |
+                recorder: &mut OperationsRecorder,
+                state: Option<DiffTensorPtr>,
+                input: TensorPtr,
+                targets: OneHotIndex
+            | -> (DiffTensorPtr, DiffScalar)
+            {
+                let mut gate = recorder.matmulv(a, DiffTensorPtr::no_gradient(input));
+                recorder.name_diff_tensor(gate, "gate");
+
+                if let Some(state) = state
+                {
+                    gate = recorder.add(gate, state);
+                }
+
+                (gate, recorder.softmax_cross_entropy(gate, targets).1)
+            };
+
+            let (s0, s0_loss) = do_one(recorder, None, i0, t0);
+            recorder.name_diff_tensor(s0, "s0");
+            recorder.name_diff_scalar(s0_loss, "s0_loss");
+
+            let (s1, s1_loss) = do_one(recorder, Some(s0), i1, t1);
+            recorder.name_diff_tensor(s1, "s1");
+            recorder.name_diff_scalar(s1_loss, "s1_loss");
+
+            let compound_loss = recorder.add_scalars(s0_loss, s1_loss);
+            recorder.name_diff_scalar(compound_loss, "compound_loss");
+
+            let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
+            recorder.name_tensor(i, "loop_i");
+
+            let target = recorder.new_one_hot();
+            recorder.name_one_hot(target, "loop_target");
+
+            let final_state_selector = recorder.phi_other_selector(compound_loss);
+            let previous_state_selector = recorder.phi_other_selector(s1);
+
+            let loop_index = recorder.begin_loop(vec![i.into(), target.into()]);
+
+            let previous_state_selected = recorder.select_tensor(previous_state_selector);
+
+            let (s2, s2_loss) = do_one(recorder, Some(previous_state_selected), i, target);
+            recorder.name_diff_tensor(s2, "s2");
+            recorder.name_diff_scalar(s2_loss, "s2_loss");
+
+            recorder.set_phi_other_selector(previous_state_selector, s2);
+
+            let final_combined_selected = recorder.select_value(final_state_selector);
+            recorder.name_diff_scalar(final_combined_selected, "final_combined_selected");
+
+            let final_combined_state = recorder.add_scalars(final_combined_selected, s2_loss);
+            recorder.name_diff_scalar(final_combined_state, "final_combined_state");
+
+            recorder.set_phi_other_selector(final_state_selector, final_combined_state);
+
+            recorder.end_loop(loop_index);
+
+            recorder.set_loop_times(loop_index, loops_count);
+
+            let inputs_targets: Vec<_> = is.iter().cloned().zip(targets.iter().cloned()).skip(2)
+                .flat_map(|(i, t)| [i, OwnedInputType::OneHot(t)])
+                .collect();
+
+            recorder.set_loop_inputs(loop_index, inputs_targets);
+
+            recorder.add_scalar(b, final_combined_state)
+        })
+    }
+
+    #[test]
+    fn stateful_pls_loop()
+    {
+        let loops_count = 1; let put_me_to_3 = ();
 
         let input_size = LAYER_PREV;
         let hidden_size = LAYER_CURR;
