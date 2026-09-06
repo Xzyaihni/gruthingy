@@ -10,7 +10,7 @@ use std::{
 };
 
 #[allow(unused_imports)]
-use std::{iter, cmp::Ordering, collections::HashMap};
+use std::{iter, marker::PhantomData, cmp::Ordering, collections::HashMap};
 
 use serde::{Serialize, Deserialize};
 
@@ -338,7 +338,9 @@ struct LoopInfo
     defined_values: Vec<DiffValue>,
     used_values: Vec<DiffValue>,
     input_values: LoopValuesIndex,
-    inputs: Vec<InputType>
+    inputs: Vec<InputType>,
+    #[cfg(debug_assertions)]
+    expected_pairs: Vec<(DiffValue, DiffValue)>
 }
 
 struct LoopInfoDebug<'a>
@@ -367,15 +369,117 @@ impl Debug for LoopInfoDebug<'_>
             .field("used_values", &used_values)
             .field("input_values", &ForceNoPretty(&info.input_values))
             .field("inputs", &info.inputs)
+            .field("expected_pairs", &info.expected_pairs.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .finish()
     }
+}
+
+#[cfg(debug_assertions)]
+#[derive(Debug, Default, Clone)]
+struct LoopStackValue<T, TargetType>
+{
+    value: T,
+    source: Option<TargetType>
+}
+
+impl<T, TargetType> From<T> for LoopStackValue<T, TargetType>
+{
+    fn from(value: T) -> Self
+    {
+        Self{value, source: None}
+    }
+}
+
+trait Targettable
+{
+    fn convert(self, recorder: &OperationsRecorder) -> Option<DiffValue>;
+}
+
+impl Targettable for ValueIndex
+{
+    fn convert(self, _recorder: &OperationsRecorder) -> Option<DiffValue> { Some(DiffValue::Value(self)) }
+}
+
+impl Targettable for TensorRawDataPointer
+{
+    fn convert(self, recorder: &OperationsRecorder) -> Option<DiffValue>
+    {
+        recorder.raw_ptr_to_ptr(self).map(DiffValue::Tensor)
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<T, TargetType: Targettable> LoopStackValue<T, TargetType>
+{
+    fn get_stack_value_for(
+        self,
+        recorder: &OperationsRecorder,
+        loop_index: LoopIndex,
+        target: TargetType
+    ) -> T
+    {
+        let expected_pairs = &recorder.loops[loop_index.0].expected_pairs;
+
+        let source = self.source.expect("source must be initialized").convert(recorder);
+        let target = target.convert(recorder);
+
+        if let (Some(source), Some(target)) = (source, target)
+        {
+            let target_fmt = recorder.format_variable(target);
+
+            let (expected_source, _target) = expected_pairs.iter().find(|(_, expected_target)|
+            {
+                *expected_target == target
+            }).expect("pop target must exist").clone();
+
+            assert_eq!(
+                expected_source, source,
+                "stack operation expected to push from {} and pop to {}, instead pushed from {} and popped to {}",
+                recorder.format_variable(expected_source),
+                target_fmt,
+                recorder.format_variable(source),
+                target_fmt
+            );
+        }
+
+        self.value
+    }
+
+    fn set_source(&mut self, source: TargetType)
+    {
+        self.source = Some(source);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+#[derive(Debug, Default, Clone)]
+struct LoopStackValue<T, TargetType>
+{
+    value: T,
+    target_type: PhantomData<TargetType>
+}
+
+#[cfg(not(debug_assertions))]
+impl<T, TargetType> LoopStackValue<T, TargetType>
+{
+    fn get_stack_value_for(
+        self,
+        _recorder: &OperationsRecorder,
+        _loop_index: LoopIndex,
+        target: TargetType
+    ) -> T
+    {
+        self.value
+    }
+
+    fn set_source(&self, _x: TargetType) {}
 }
 
 #[derive(Debug, Default, Clone)]
 struct LoopValues
 {
-    values_stack: Vec<f32>,
-    tensors_stack: Vec<LayerType>,
+    values_stack: Vec<LoopStackValue<f32, ValueIndex>>,
+    tensors_stack: Vec<LoopStackValue<LayerType, TensorRawDataPointer>>,
     input_values: Vec<OwnedInputType>
 }
 
@@ -527,7 +631,10 @@ impl Debug for OperationsRecorder
         {
             raw_operations = self.raw_operations.iter().map(|op|
             {
-                NotationGradientOp(op.clone().map(convert::identity, |v|
+                NotationGradientOp(op.clone().map(|t|
+                {
+                    DebugStringRaw(self.format_tensor_raw_ptr(t))
+                }, |v|
                 {
                     DebugStringRaw(self.format_variable(v))
                 }, convert::identity, convert::identity))
@@ -1127,9 +1234,36 @@ impl OperationsRecorder
         }
     }
 
+    fn raw_ptr_to_ptr(&self, raw_ptr: TensorRawDataPointer) -> Option<TensorPtr>
+    {
+        let tensor_index = TensorIndex(self.tensors.iter().position(|x| *x == raw_ptr).expect("must be a real ptr"));
+        let possible_tensor_ptrs: Vec<_> = self.tensors_memory.iter().enumerate().filter(|(_, x)|
+        {
+            x.memory == Some(tensor_index)
+        }).collect();
+
+        (possible_tensor_ptrs.len() == 1).then(||
+        {
+            let (tensor_ptr, _spot) = possible_tensor_ptrs.into_iter().next().unwrap();
+
+            TensorPtr(tensor_ptr)
+        })
+    }
+
     fn format_variable<V: Debug + Clone + Into<DiffValue>>(&self, variable: V) -> String
     {
         format_variable!(self, variable)
+    }
+
+    fn format_tensor_raw_ptr(&self, raw_ptr: TensorRawDataPointer) -> String
+    {
+        if let Some(tensor_ptr) = self.raw_ptr_to_ptr(raw_ptr)
+        {
+            self.format_variable(tensor_ptr)
+        } else
+        {
+            format!("{:?}", raw_ptr)
+        }
     }
 
     pub fn is_undefined_location(&self, index: TensorIndex) -> bool
@@ -1618,7 +1752,9 @@ impl OperationsRecorder
             defined_values: Vec::new(),
             used_values: Vec::new(),
             input_values: loops_values_index,
-            inputs: Vec::new()
+            inputs: Vec::new(),
+            #[cfg(debug_assertions)]
+            expected_pairs: Vec::new()
         });
 
         self.recording_operations.push(Op::Loop{index: id, inputs, ops: Vec::new()});
@@ -1760,17 +1896,24 @@ impl OperationsRecorder
                         #[allow(unused_assignments)]
                         if PRINT_CALCULATE_VALUES
                         {
+                            #[allow(unused_variables, unused_mut)]
                             let mut is_first = true;
 
                             $(
                                 if !is_first { eprint!(", "); }
-                                eprint!("{}: {:?} = {:?}", stringify!($t_name), $t_name, &self.tensors_raw_data[$t_name.range()]);
+
+                                let var_name = self.format_tensor_raw_ptr(*$t_name);
+                                eprint!("{}: {} = {:?}", stringify!($t_name), var_name, &self.tensors_raw_data[$t_name.range()]);
+
                                 is_first = false;
                             )*
 
                             $(
                                 if !is_first { eprint!(", "); }
-                                eprint!("{}: {:?} = {:?}", stringify!($v_name), $v_name, &self.values[$v_name.0]);
+
+                                let var_name = self.format_variable(*$v_name);
+                                eprint!("{}: {} = {:?}", stringify!($v_name), var_name, &self.values[$v_name.0]);
+
                                 is_first = false;
                             )*
                         }
@@ -1842,7 +1985,7 @@ impl OperationsRecorder
                 GradientOp::None => unreachable!(),
                 GradientOp::ZeroValue(dst) =>
                 {
-                    debug_calculate_values!(ZeroValue, (),(dst));
+                    debug_calculate_values!(ZeroValue, (),());
 
                     self.values[dst.0] = 0.0;
 
@@ -1850,7 +1993,7 @@ impl OperationsRecorder
                 },
                 GradientOp::ZeroTensor(dst) =>
                 {
-                    debug_calculate_values!(ZeroTensor, (dst),());
+                    debug_calculate_values!(ZeroTensor, (),());
 
                     self.tensors_raw_data[dst.range()].fill(0.0);
 
@@ -1862,7 +2005,10 @@ impl OperationsRecorder
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
-                    self.loops_values[loop_values_index.0].values_stack.push(self.values[value.0]);
+                    let mut stack_value: LoopStackValue<_, _> = self.values[value.0].into();
+                    stack_value.set_source(*value);
+
+                    self.loops_values[loop_values_index.0].values_stack.push(stack_value);
                 },
                 GradientOp::PushStackTensor{loop_index, tensor} =>
                 {
@@ -1870,8 +2016,12 @@ impl OperationsRecorder
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
-                    let tensor = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *tensor);
-                    self.loops_values[loop_values_index.0].tensors_stack.push(tensor.clone_owned());
+                    let tensor_ref = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *tensor);
+
+                    let mut stack_value: LoopStackValue<_, _> = tensor_ref.clone_owned().into();
+                    stack_value.set_source(*tensor);
+
+                    self.loops_values[loop_values_index.0].tensors_stack.push(stack_value);
                 },
                 GradientOp::PopStackValue{loop_index, output} =>
                 {
@@ -1879,7 +2029,10 @@ impl OperationsRecorder
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
-                    self.values[output.0] = self.loops_values[loop_values_index.0].values_stack.pop().expect("stack must not be empty");
+                    let stack_value = self.loops_values[loop_values_index.0].values_stack.pop()
+                        .expect("stack must not be empty");
+
+                    self.values[output.0] = stack_value.get_stack_value_for(self, *loop_index, *output);
                 },
                 GradientOp::PopStackTensor{loop_index, output} =>
                 {
@@ -1887,7 +2040,10 @@ impl OperationsRecorder
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
-                    let tensor = self.loops_values[loop_values_index.0].tensors_stack.pop().expect("stack must not be empty");
+                    let stack_value = self.loops_values[loop_values_index.0].tensors_stack.pop()
+                        .expect("stack must not be empty");
+
+                    let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
 
                     set_tensor_raw!(self, *output, tensor);
                 },
@@ -1915,7 +2071,7 @@ impl OperationsRecorder
                 },
                 GradientOp::GetOtherSelectorValue{info: index, first, other, output} =>
                 {
-                    debug_calculate_values!(GetOtherSelectorValue, (),(first, other, output));
+                    debug_calculate_values!(GetOtherSelectorValue, (),(first, other));
 
                     let this_selector = &mut self.phi_other_selectors_values[index.0];
 
@@ -1933,7 +2089,7 @@ impl OperationsRecorder
                 },
                 GradientOp::GetOtherSelectorTensor{info: index, first, other, output} =>
                 {
-                    debug_calculate_values!(GetOtherSelectorTensor, (first, other, output),());
+                    debug_calculate_values!(GetOtherSelectorTensor, (first, other),());
 
                     let this_selector = &mut self.phi_other_selectors_values[index.0];
 
@@ -1951,7 +2107,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OtherSelectorValueGradient{index, first, other, src} =>
                 {
-                    debug_calculate_values!(OtherSelectorValueGradient, (),(first, other, src));
+                    debug_calculate_values!(OtherSelectorValueGradient, (),(src));
 
                     let this_selector = &mut self.phi_other_selectors_values[index.0];
 
@@ -1969,7 +2125,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OtherSelectorTensorGradient{index, first, other, src} =>
                 {
-                    debug_calculate_values!(OtherSelectorTensorGradient, (first, other, src),());
+                    debug_calculate_values!(OtherSelectorTensorGradient, (src),());
 
                     let this_selector = &mut self.phi_other_selectors_values[index.0];
 
@@ -1987,7 +2143,7 @@ impl OperationsRecorder
                 },
                 GradientOp::GradientSelectAddValue{index, first, other, src, added} =>
                 {
-                    debug_calculate_values!(GradientSelectAddValue, (),(first, other, src, added));
+                    debug_calculate_values!(GradientSelectAddValue, (),(src, added));
 
                     let this_selector = &mut self.phi_other_selectors_values[index.0];
 
@@ -2005,7 +2161,7 @@ impl OperationsRecorder
                 },
                 GradientOp::GradientSelectAddTensor{index, first, other, src, added} =>
                 {
-                    debug_calculate_values!(GradientSelectAddTensor, (first, other, src, added),());
+                    debug_calculate_values!(GradientSelectAddTensor, (src, added),());
 
                     let this_selector = &mut self.phi_other_selectors_values[index.0];
 
@@ -2027,7 +2183,7 @@ impl OperationsRecorder
                 },
                 GradientOp::IfSetTensor{index, dst, src} =>
                 {
-                    debug_calculate_values!(IfSetTensor, (dst, src),());
+                    debug_calculate_values!(IfSetTensor, (src),());
 
                     if self.phi_other_selectors_values[index.0].is_set
                     {
@@ -2038,7 +2194,7 @@ impl OperationsRecorder
                 },
                 GradientOp::IfNotSetTensor{index, dst, src} =>
                 {
-                    debug_calculate_values!(IfNotSetTensor, (dst, src),());
+                    debug_calculate_values!(IfNotSetTensor, (src),());
 
                     if !self.phi_other_selectors_values[index.0].is_set
                     {
@@ -2082,25 +2238,25 @@ impl OperationsRecorder
                 },
                 GradientOp::Copy{src, dst} =>
                 {
-                    debug_calculate_values!(Copy, (src, dst),());
+                    debug_calculate_values!(Copy, (src),());
                     copy_tensor!(src, dst);
                     debug_calculate_values_result!((dst),());
                 },
                 GradientOp::CopyScalar{src, dst} =>
                 {
-                    debug_calculate_values!(CopyScalar, (),(src, dst));
+                    debug_calculate_values!(CopyScalar, (),(src));
                     self.values[dst.0] = self.values[src.0];
                     debug_calculate_values_result!((),(dst));
                 },
                 GradientOp::AddScalars{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(AddScalars, (),(lhs, rhs, output));
+                    debug_calculate_values!(AddScalars, (),(lhs, rhs));
                     self.values[output.0] = self.values[lhs.0] + self.values[rhs.0];
                     debug_calculate_values_result!((),(output));
                 },
                 GradientOp::AddScalar{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(AddScalar, (lhs, output),(rhs));
+                    debug_calculate_values!(AddScalar, (lhs),(rhs));
                     copy_tensor!(lhs, output);
 
                     LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).add_scalar(self.values[rhs.0]);
@@ -2108,7 +2264,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Add{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Add, (lhs, rhs, output),());
+                    debug_calculate_values!(Add, (lhs, rhs),());
 
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
@@ -2128,7 +2284,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Sub{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Sub, (lhs, rhs, output),());
+                    debug_calculate_values!(Sub, (lhs, rhs),());
 
                     {
                         let (mut output, lhs, rhs) = get_disjoint_mut!(
@@ -2144,7 +2300,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SubFromScalar{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(SubFromScalar, (rhs, output),(lhs));
+                    debug_calculate_values!(SubFromScalar, (rhs),(lhs));
 
                     {
                         let (output, rhs) = get_disjoint_mut!(
@@ -2159,7 +2315,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MulScalar{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulScalar, (lhs, output),(rhs));
+                    debug_calculate_values!(MulScalar, (lhs),(rhs));
                     copy_tensor!(lhs, output);
 
                     LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).scale(self.values[rhs.0]);
@@ -2167,13 +2323,13 @@ impl OperationsRecorder
                 },
                 GradientOp::MulScalars{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulScalars, (),(lhs, rhs, output));
+                    debug_calculate_values!(MulScalars, (),(lhs, rhs));
                     self.values[output.0] = self.values[lhs.0] * self.values[rhs.0];
                     debug_calculate_values_result!((),(output));
                 },
                 GradientOp::MulComponentwise{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulComponentwise, (lhs, rhs, output),());
+                    debug_calculate_values!(MulComponentwise, (lhs, rhs),());
 
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
@@ -2189,7 +2345,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MulComponentwise, (lhs, rhs, added, output),());
+                    debug_calculate_values!(MulComponentwise, (lhs, rhs, added),());
 
                     {
                         let (output, lhs, rhs, added) = get_disjoint_mut!(
@@ -2206,13 +2362,13 @@ impl OperationsRecorder
                 },
                 GradientOp::SumTensor{value, output} =>
                 {
-                    debug_calculate_values!(SumTensor, (value),(output));
+                    debug_calculate_values!(SumTensor, (value),());
                     self.values[output.0] = self.tensors_raw_data[value.range()].iter().sum();
                     debug_calculate_values_result!((),(output));
                 },
                 GradientOp::Dot{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Dot, (lhs, rhs),(output));
+                    debug_calculate_values!(Dot, (lhs, rhs),());
                     let lhs = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *lhs);
                     let rhs = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *rhs);
 
@@ -2221,13 +2377,13 @@ impl OperationsRecorder
                 },
                 GradientOp::Fill{value, output} =>
                 {
-                    debug_calculate_values!(Fill, (output),(value));
+                    debug_calculate_values!(Fill, (),(value));
                     self.tensors_raw_data[output.range()].fill(self.values[value.0]);
                     debug_calculate_values_result!((output),());
                 },
                 GradientOp::Pow{lhs, power, output} =>
                 {
-                    debug_calculate_values!(Pow, (lhs, output),());
+                    debug_calculate_values!(Pow, (lhs),());
                     copy_tensor!(lhs, output);
 
                     LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).pow_inplace(*power);
@@ -2235,7 +2391,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Sigmoid{value, output} =>
                 {
-                    debug_calculate_values!(Sigmoid, (value, output),());
+                    debug_calculate_values!(Sigmoid, (value),());
                     copy_tensor!(value, output);
 
                     LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).sigmoid_inplace();
@@ -2243,7 +2399,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SigmoidDiff{value, gradient, output} =>
                 {
-                    debug_calculate_values!(SigmoidDiff, (value, gradient, output),());
+                    debug_calculate_values!(SigmoidDiff, (value, gradient),());
 
                     {
                         let (output, value, gradient) = get_disjoint_mut!(
@@ -2259,7 +2415,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Tanh{value, output} =>
                 {
-                    debug_calculate_values!(Tanh, (value, output),());
+                    debug_calculate_values!(Tanh, (value),());
                     copy_tensor!(value, output);
 
                     LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).tanh_inplace();
@@ -2267,7 +2423,7 @@ impl OperationsRecorder
                 },
                 GradientOp::TanhDiff{value, gradient, output} =>
                 {
-                    debug_calculate_values!(TanhDiff, (value, gradient, output),());
+                    debug_calculate_values!(TanhDiff, (value, gradient),());
 
                     {
                         let (output, value, gradient) = get_disjoint_mut!(
@@ -2283,7 +2439,7 @@ impl OperationsRecorder
                 },
                 GradientOp::LeakyRelu{value, output} =>
                 {
-                    debug_calculate_values!(LeakyRelu, (value, output),());
+                    debug_calculate_values!(LeakyRelu, (value),());
                     copy_tensor!(value, output);
 
                     LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, *output).leaky_relu_inplace();
@@ -2291,7 +2447,7 @@ impl OperationsRecorder
                 },
                 GradientOp::LeakyReluDiff{value, gradient, output} =>
                 {
-                    debug_calculate_values!(LeakyReluDiff, (value, gradient, output),());
+                    debug_calculate_values!(LeakyReluDiff, (value, gradient),());
 
                     {
                         let (output, value, gradient) = get_disjoint_mut!(
@@ -2307,7 +2463,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropy, (values, softmaxed_output),(output));
+                    debug_calculate_values!(SoftmaxCrossEntropy, (values),());
 
                     {
                         copy_tensor!(values, softmaxed_output);
@@ -2321,7 +2477,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),(output));
+                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),());
                     let values = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *values);
 
                     self.values[output.0] = values.softmax_cross_entropy(&self.one_hot_layers[targets.0]);
@@ -2329,7 +2485,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values, output),(gradient));
+                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values),(gradient));
 
                     {
                         debug_assert_eq!(
@@ -2353,7 +2509,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Matmulv{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Matmulv, (lhs, rhs, output),());
+                    debug_calculate_values!(Matmulv, (lhs, rhs),());
 
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
@@ -2369,7 +2525,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MatmulvAdd, (lhs, rhs, added, output),());
+                    debug_calculate_values!(MatmulvAdd, (lhs, rhs, added),());
 
                     {
                         let (output, lhs, rhs, added) = get_disjoint_mut!(
@@ -2386,7 +2542,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MatmulOneHotvAdd, (lhs, added, output),());
+                    debug_calculate_values!(MatmulOneHotvAdd, (lhs, added),());
 
                     {
                         let (output, lhs, added) = get_disjoint_mut!(
@@ -2402,7 +2558,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulvTransposed{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MatmulvTransposed, (lhs, rhs, output),());
+                    debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
 
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
@@ -2418,7 +2574,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OuterProduct{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(OuterProduct, (lhs, rhs, output),());
+                    debug_calculate_values!(OuterProduct, (lhs, rhs),());
 
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
@@ -2434,7 +2590,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OuterProductOneHot{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(OuterProductOneHot, (lhs, output),());
+                    debug_calculate_values!(OuterProductOneHot, (lhs),());
 
                     {
                         let (output, lhs) = get_disjoint_mut!(
@@ -3733,6 +3889,13 @@ impl OperationsRecorder
                         };
 
                         this.gradient_operations.push(pop_op);
+
+                        #[cfg(debug_assertions)]
+                        {
+                            let this_pair = (arg, loop_intermediate);
+
+                            this.loops[inside_loop.0].expected_pairs.push(this_pair);
+                        }
 
                         loop_intermediate
                     } else

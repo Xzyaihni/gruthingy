@@ -1877,14 +1877,19 @@ mod tests
         {
             let NetworkOutput{
                 state: next_state_ptr,
-                output: (_this_output, loss)
+                output: (this_output, loss)
             } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, *this_target, true);
+
+            at_once.recorder.name_diff_tensor(this_output, "output");
+            at_once.recorder.name_diff_scalar(loss, "loss");
 
             previous_state = Some(next_state_ptr);
 
             if let Some(output) = output.as_mut()
             {
                 *output = at_once.recorder.add_scalars(*output, loss);
+
+                at_once.recorder.name_diff_scalar(*output, "loss_combined");
             } else
             {
                 output = Some(loss);
