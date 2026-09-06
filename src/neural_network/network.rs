@@ -1133,14 +1133,36 @@ where
         });
 
         self.weights = Some(weights);
+
+        self.resolve_dropout_masks();
+    }
+
+    fn resolve_dropout_masks(&mut self)
+    {
+        self.dropouts.dropout_masks = mem::take(&mut self.dropouts.dropout_masks_ptrs).into_iter().map(|dropout_mask|
+        {
+            self.recorder.resolve_tensor_ptr(dropout_mask)
+        }).collect();
+    }
+
+    fn create_dropout_masks_ptrs(&mut self) -> Vec<TensorPtr>
+    {
+        let ptrs: Vec<TensorPtr> = self.weights_ptr.as_ref().unwrap().layers.iter().skip(1).map(|_|
+        {
+            let ptr = self.recorder.new_tensor_no_gradient(self.sizes.hidden, 1).as_value();
+            self.recorder.name_tensor(ptr, "dropout_mask");
+
+            ptr
+        }).collect();
+
+        self.dropouts.dropout_masks_ptrs = ptrs.clone();
+
+        ptrs
     }
 
     fn record_feedforward(&mut self, store_gradient: bool)
     {
-        let dropout_masks_ptrs: Vec<_> = self.weights_ptr.as_ref().unwrap().layers.iter().skip(1).map(|_|
-        {
-            self.recorder.set_new_tensor(LayerType::repeat(self.sizes.hidden, 1, 0.0)).as_value()
-        }).collect();
+        let dropout_masks_ptrs = self.create_dropout_masks_ptrs();
 
         let create_input = {
             let is_input_one_hot = self.is_input_one_hot.unwrap();
@@ -1250,8 +1272,6 @@ where
 
         self.outputs.output_ptr = Some(final_output);
         self.outputs.loss = final_loss;
-
-        self.dropouts.dropout_masks_ptrs = dropout_masks_ptrs;
     }
 
     fn record_feedforward_single_input(
@@ -1774,6 +1794,20 @@ mod tests
     use crate::neural_network::{EmbeddingUnit, Lstm};
 
 
+    const SEED: u64 = 123;
+
+    const DROPOUT_PROBABILITY: f32 = 0.5;
+
+    const IS_INPUT_ONE_HOT: bool = true;
+
+    const more_layers: () = ();
+    const SIZES: LayerSizes = LayerSizes{
+        hidden: 2,
+        input: 2,
+        layers: 2,
+        output: 2
+    };
+
     #[derive(Debug)]
     struct LstmUnitFactory;
 
@@ -1791,173 +1825,179 @@ mod tests
         type Unit<T> = EmbeddingUnit<T>;
     }
 
-    #[test]
-    fn steps_equivalent()
+    type NetworkType = Network<LstmUnitFactory, ()>;
+
+    fn inputs_outputs() -> (Vec<OwnedInputType>, Vec<OneHotLayer>)
     {
-        let seed = 123;
-
-        let sizes = LayerSizes{
-            hidden: 2,
-            input: 2,
-            layers: 1,
-            output: 2
-        };
-
-        let dropout_probability = 0.5;
-        let is_input_one_hot = true;
-
-        type NetworkType = Network<LstmUnitFactory, ()>;
-
-
         let more_inputs = ();
-        let inputs = [
+        let inputs = vec![
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
-            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
+//            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
 //            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
         ];
 
-        let outputs = [
+        let outputs = vec![
             OneHotLayer::new([1], 2),
             OneHotLayer::new([0], 2),
             OneHotLayer::new([0], 2),
-            OneHotLayer::new([1], 2),
+//            OneHotLayer::new([1], 2),
 //            OneHotLayer::new([1], 2)
         ];
 
         assert_eq!(inputs.len(), outputs.len());
 
+        (inputs, outputs)
+    }
+
+    fn run_unrolled() -> (NetworkType, (f32, WeightsFullContainer<LstmUnitFactory, LayerType>))
+    {
+        fastrand::seed(SEED);
+
+        let (inputs, outputs) = inputs_outputs();
+
+        let input_outputs = inputs.iter().cloned().zip(outputs);
+
+        let mut at_once: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, false, IS_INPUT_ONE_HOT);
+
+        let dropout_masks_ptrs = at_once.create_dropout_masks_ptrs();
+
+        let input_outputs_ptrs: Vec<(InputTypePtr, OneHotIndex)> = (0..input_outputs.len()).map(|_|
+        {
+            assert!(IS_INPUT_ONE_HOT);
+
+            (InputTypePtr::OneHot(at_once.recorder.new_one_hot()), at_once.recorder.new_one_hot())
+        }).collect();
+
+        let mut previous_state = None;
+        let mut output = None;
+
+        input_outputs_ptrs.iter().for_each(|(this_input, this_target)|
+        {
+            let NetworkOutput{
+                state: next_state_ptr,
+                output: (_this_output, loss)
+            } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, *this_target, true);
+
+            previous_state = Some(next_state_ptr);
+
+            if let Some(output) = output.as_mut()
+            {
+                *output = at_once.recorder.add_scalars(*output, loss);
+            } else
+            {
+                output = Some(loss);
+            }
+        });
+
+        let input_outputs_indices: Vec<_> = input_outputs_ptrs.into_iter().map(|(input_ptr, target_index)|
+        {
+            (if let InputTypePtr::OneHot(x) = input_ptr { x } else { unreachable!() }, target_index)
+        }).collect();
+
+        input_outputs_indices.into_iter().zip(input_outputs).for_each(|((input_index, target_index), (input_layer, target_layer))|
+        {
+            at_once.recorder.set_one_hot(input_index, input_layer.into_one_hot());
+            at_once.recorder.set_one_hot(target_index, target_layer);
+        });
+
+        at_once.recorder.finish();
+
+        at_once.recorder.store_value_until_end(output.unwrap().as_value());
+
+        at_once.weights_ptr.as_ref().unwrap().iter().for_each(|x|
+        {
+            at_once.recorder.store_tensor_until_end(x.weight_original.as_value());
+            at_once.recorder.store_tensor_until_end(x.weight_original.as_gradient().unwrap());
+
+            if let Some(dropconnect_mask) = x.dropconnect_mask
+            {
+                at_once.recorder.store_tensor_until_end(dropconnect_mask);
+            }
+        });
+
+        at_once.recorder.gradient(output.unwrap().into());
+
+        dbg!(&at_once.recorder);
+        at_once.recorder.resolve_memory();
+
+        at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
+        {
+            WeightInfo{
+                weight: at_once.recorder.resolve_diff_tensor_ptr(x.weight_original),
+                dropconnect_mask: x.dropconnect_mask.map(|x| at_once.recorder.resolve_tensor_ptr(x))
+            }
+        }));
+
+        at_once.resolve_dropout_masks();
+
+        at_once.feedforward_setup_dropout();
+
+        at_once.recorder.calculate();
+
+        let loss = at_once.recorder.get_value(output.unwrap().as_value());
+
+        let gradients = {
+            let weights = at_once.weights.clone().unwrap();
+
+            let f = |x: WeightInfo|
+            {
+                let gradient = x.weight.as_gradient().unwrap();
+
+                if !at_once.recorder.is_undefined_location(gradient)
+                {
+                    Some(at_once.recorder.get_tensor(gradient).clone_owned())
+                } else
+                {
+                    None
+                }
+            };
+
+            let g = |x: WeightsSize<_>|
+            {
+                f(x.weights).unwrap_or_else(|| LayerType::new(x.this_size, x.previous_size))
+            };
+
+            WeightsFullContainer{
+                output: f(weights.output).unwrap(),
+                layers: weights.layers.into_iter().map(|x| x.map_with_info(g)).collect()
+            }
+        };
+
+        (at_once, (loss, gradients))
+    }
+
+    #[test]
+    fn nonzero_gradients()
+    {
+        let (_network, (loss, gradients)) = run_unrolled();
+
+        assert!(loss > 0.0);
+
+        assert!(gradients.iter().all(|x| !x.as_vec().into_iter().all(|x| x == 0.0)), "gradients have unused fields: {gradients:?}");
+    }
+
+    #[test]
+    fn steps_equivalent()
+    {
+        fastrand::seed(SEED);
+
+        let (inputs, outputs) = inputs_outputs();
+
         let is_multistep = inputs.len() > 1;
 
         let input_outputs = inputs.iter().cloned().zip(outputs);
 
-
-        fastrand::seed(seed);
-
-        let mut with_steps: NetworkType = Network::new(sizes, dropout_probability, is_multistep, is_input_one_hot);
+        let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, is_multistep, IS_INPUT_ONE_HOT);
 
         dbg!(&with_steps.recorder);
 
-        fastrand::seed(seed);
-
-        let mut at_once: NetworkType = Network::new(sizes, dropout_probability, false, is_input_one_hot);
-
-
-        fastrand::seed(seed);
         with_steps.prepare(true);
         let with_steps_gradient = with_steps.gradients(input_outputs.clone());
         dbg!(&with_steps.recorder);
 
-        fastrand::seed(seed);
-        let at_once_gradient = {
-            let dropout_masks_ptrs: Vec<_> = at_once.weights_ptr.as_ref().unwrap().layers.iter().skip(1).map(|_|
-            {
-                at_once.recorder.set_new_tensor(LayerType::repeat(at_once.sizes.hidden, 1, 0.0)).as_value()
-            }).collect();
-
-            let input_outputs_ptrs: Vec<(InputTypePtr, OneHotIndex)> = (0..input_outputs.len()).map(|_|
-            {
-                assert!(is_input_one_hot);
-
-                (InputTypePtr::OneHot(at_once.recorder.new_one_hot()), at_once.recorder.new_one_hot())
-            }).collect();
-
-            let mut previous_state = None;
-            let mut output = None;
-
-            input_outputs_ptrs.iter().enumerate().for_each(|(index, (this_input, this_target))|
-            {
-                let NetworkOutput{
-                    state: next_state_ptr,
-                    output: (_this_output, loss)
-                } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, *this_target, true);
-
-                previous_state = Some(next_state_ptr);
-
-                if let Some(output) = output.as_mut()
-                {
-                    *output = at_once.recorder.add_scalars(*output, loss);
-                } else
-                {
-                    output = Some(loss);
-                }
-            });
-
-            let input_outputs_indices: Vec<_> = input_outputs_ptrs.into_iter().map(|(input_ptr, target_index)|
-            {
-                (if let InputTypePtr::OneHot(x) = input_ptr { x } else { unreachable!() }, target_index)
-            }).collect();
-
-            input_outputs_indices.into_iter().zip(input_outputs).for_each(|((input_index, target_index), (input_layer, target_layer))|
-            {
-                at_once.recorder.set_one_hot(input_index, input_layer.into_one_hot());
-                at_once.recorder.set_one_hot(target_index, target_layer);
-            });
-
-            at_once.recorder.finish();
-
-            at_once.recorder.store_value_until_end(output.unwrap().as_value());
-
-            at_once.weights_ptr.as_ref().unwrap().iter().for_each(|x|
-            {
-                at_once.recorder.store_tensor_until_end(x.weight_original.as_value());
-                at_once.recorder.store_tensor_until_end(x.weight_original.as_gradient().unwrap());
-
-                if let Some(dropconnect_mask) = x.dropconnect_mask
-                {
-                    at_once.recorder.store_tensor_until_end(dropconnect_mask);
-                }
-            });
-
-            at_once.recorder.gradient(output.unwrap().into());
-
-            dbg!(&at_once.recorder);
-            at_once.recorder.resolve_memory();
-
-            at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
-            {
-                WeightInfo{
-                    weight: at_once.recorder.resolve_diff_tensor_ptr(x.weight_original),
-                    dropconnect_mask: x.dropconnect_mask.map(|x| at_once.recorder.resolve_tensor_ptr(x))
-                }
-            }));
-
-            at_once.feedforward_setup_dropout();
-
-            at_once.recorder.calculate();
-
-            let loss = at_once.recorder.get_value(output.unwrap().as_value());
-
-            let gradients = {
-                let weights = at_once.weights.clone().unwrap();
-
-                let f = |x: WeightInfo|
-                {
-                    let gradient = x.weight.as_gradient().unwrap();
-
-                    if !at_once.recorder.is_undefined_location(gradient)
-                    {
-                        Some(at_once.recorder.get_tensor(gradient).clone_owned())
-                    } else
-                    {
-                        None
-                    }
-                };
-
-                let g = |x: WeightsSize<_>|
-                {
-                    f(x.weights).unwrap_or_else(|| LayerType::new(x.this_size, x.previous_size))
-                };
-
-                WeightsFullContainer{
-                    output: f(weights.output).unwrap(),
-                    layers: weights.layers.into_iter().map(|x| x.map_with_info(g)).collect()
-                }
-            };
-
-            (loss, gradients)
-        };
+        let (mut at_once, at_once_gradient) = run_unrolled();
 
         let map_weights = |r: &mut OperationsRecorder, w: WeightInfo| -> LayerType
         {
@@ -1968,6 +2008,8 @@ mod tests
             with_steps.weights.unwrap().map(|x| map_weights(&mut with_steps.recorder, x)),
             at_once.weights.unwrap().map(|x| map_weights(&mut at_once.recorder, x))
         );
+
+        eprintln!("{with_steps_gradient:?}");
 
         assert_eq!(with_steps_gradient, at_once_gradient);
     }

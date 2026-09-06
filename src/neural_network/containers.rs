@@ -1676,7 +1676,6 @@ impl OperationsRecorder
 
     fn calculate_steps(&mut self, start: usize, end: usize)
     {
-        dbg!(&self);
         debug_assert_eq!(self.state, RecorderState::Ready);
 
         self.phi_other_selectors_values.iter_mut().for_each(|selector| selector.is_set = false);
@@ -3669,8 +3668,6 @@ impl OperationsRecorder
 
                 self.calculate_gradient(&mut assigned_gradients, &mut selectors, &mut intermediate_selectors, op, None);
             }
-
-            dbg!(&self);
         }
 
         self.copy_coalesce();
@@ -3803,7 +3800,6 @@ impl OperationsRecorder
                 any_args_match
             })
             {
-                dbg!("here");
                 let selector_index = add_selector(this);
 
                 let new_gradient_op = match gradient_op
@@ -3951,7 +3947,6 @@ impl OperationsRecorder
                             }
                         });
 
-                        dbg!(&this.gradient_operations[extra_operation_index.0], &new_extra);
                         this.gradient_operations[extra_operation_index.0] = new_extra;
                     }
                 }
@@ -4008,7 +4003,6 @@ impl OperationsRecorder
                 is_assigned.map(|output| (info, output))
             })
             {
-                dbg!("there");
                 overlaps = true;
 
                 sum_gradients(info, gradient_op.clone(), output);
@@ -4027,7 +4021,6 @@ impl OperationsRecorder
                 }
             } else
             {
-                dbg!("yaya");
                 simple_insert(this, assigned_gradients, gradient_op.clone());
             }
 
@@ -4041,7 +4034,6 @@ impl OperationsRecorder
                     any_outputs_match
                 })
                 {
-                    dbg!("bloop");
                     debug_assert!(!overlaps);
 
                     let last_operation_index = last_op_index(this);
@@ -5678,7 +5670,6 @@ mod tests
 
         recorder.gradient(out.into());
 
-        dbg!(&recorder);
         recorder.resolve_memory();
 
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
@@ -6514,7 +6505,7 @@ mod tests
     #[test]
     fn stateful_no_b_loop()
     {
-        let loops_count = 2; let put_me_to_3 = ();
+        let loops_count = 3;
 
         let input_size = LAYER_PREV;
         let hidden_size = LAYER_CURR;
@@ -6622,7 +6613,7 @@ mod tests
     #[test]
     fn stateful_pls_loop()
     {
-        let loops_count = 1; let put_me_to_3 = ();
+        let loops_count = 3;
 
         let input_size = LAYER_PREV;
         let hidden_size = LAYER_CURR;
@@ -6756,7 +6747,7 @@ mod tests
     #[test]
     fn stateful_more_loop()
     {
-        let loops_count = 2; let put_me_to_3 = ();
+        let loops_count = 3;
 
         let input_size = LAYER_PREV;
         let hidden_size = LAYER_CURR;
