@@ -3,7 +3,6 @@ use std::{
     vec,
     mem,
     iter,
-    convert,
     fmt::{self, Debug},
     cmp::Ordering,
     borrow::Borrow
@@ -14,7 +13,6 @@ use serde::{Serialize, Deserialize};
 use crate::{
     EmbeddingsUnitFactory,
     neural_network::{
-        DebugUnitInfo,
         OperationsRecorder,
         Softmaxer,
         PhiOtherSelectorRecordingIndex,
@@ -1047,7 +1045,7 @@ where
         {
             weights_ptr.layers.iter_mut().for_each(|layer|
             {
-                layer.map_inplace_with_info(|weights_size, debug_info|
+                layer.map_inplace_with_info(|weights_size, _debug_info|
                 {
                     if weights_size.is_hidden
                     {
@@ -1058,7 +1056,7 @@ where
 
                         #[cfg(debug_assertions)]
                         {
-                            self.recorder.name_diff_tensor(weight_dropped, debug_info.name.to_owned() + "_dropped");
+                            self.recorder.name_diff_tensor(weight_dropped, _debug_info.name.to_owned() + "_dropped");
                         }
 
                         weights_size.weights.weight_dropped = weight_dropped;

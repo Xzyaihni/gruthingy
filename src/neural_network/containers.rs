@@ -30,6 +30,8 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = true;
 const NO_COLORING: bool = true;
+
+#[allow(dead_code)]
 const PRINT_CALCULATE_VALUES: bool = false;
 
 
@@ -343,6 +345,7 @@ struct LoopInfo
     expected_pairs: Vec<(DiffValue, DiffValue)>
 }
 
+#[allow(dead_code)]
 struct LoopInfoDebug<'a>
 {
     recorder: &'a OperationsRecorder,
@@ -393,6 +396,7 @@ struct LoopStackValue<T, TargetType>
     source: Option<TargetType>
 }
 
+#[cfg(debug_assertions)]
 impl<T, TargetType> From<T> for LoopStackValue<T, TargetType>
 {
     fn from(value: T) -> Self
@@ -401,6 +405,7 @@ impl<T, TargetType> From<T> for LoopStackValue<T, TargetType>
     }
 }
 
+#[allow(dead_code)]
 trait Targettable
 {
     fn convert(self, recorder: &OperationsRecorder) -> Option<DiffValue>;
@@ -471,13 +476,22 @@ struct LoopStackValue<T, TargetType>
 }
 
 #[cfg(not(debug_assertions))]
+impl<T, TargetType> From<T> for LoopStackValue<T, TargetType>
+{
+    fn from(value: T) -> Self
+    {
+        Self{value, target_type: PhantomData}
+    }
+}
+
+#[cfg(not(debug_assertions))]
 impl<T, TargetType> LoopStackValue<T, TargetType>
 {
     fn get_stack_value_for(
         self,
         _recorder: &OperationsRecorder,
         _loop_index: LoopIndex,
-        target: TargetType
+        _target: TargetType
     ) -> T
     {
         self.value
@@ -514,6 +528,7 @@ enum OperationsTarget
     Loop(LoopOperationIndex)
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum InputCheckType
 {
@@ -1048,11 +1063,11 @@ impl OperationsRecorder
         set_tensor!(self, index, value)
     }
 
-    pub fn set_tensor_ptr_zeroed(&mut self, index: TensorPtr)
+    pub fn set_tensor_ptr_zeroed(&mut self, _index: TensorPtr)
     {
         #[cfg(debug_assertions)]
         {
-            self.set_tensors_check.push(index.into());
+            self.set_tensors_check.push(_index.into());
         }
     }
 
@@ -1354,13 +1369,13 @@ impl OperationsRecorder
         &self.one_hot_layers[index.0]
     }
 
-    fn name_diff_value(&mut self, value: DiffValue, name: String)
+    fn name_diff_value(&mut self, _value: DiffValue, _name: String)
     {
         #[cfg(debug_assertions)]
         {
-            if self.variable_names.values().any(|x| *x == name)
+            if self.variable_names.values().any(|x| *x == _name)
             {
-                let name_chars: Vec<char> = name.chars().collect();
+                let name_chars: Vec<char> = _name.chars().collect();
 
                 let mut count = 0;
 
@@ -1378,7 +1393,7 @@ impl OperationsRecorder
 
                 let new_name = if end_number.is_empty()
                 {
-                    name + "1"
+                    _name + "1"
                 } else
                 {
                     let new_end_number = (end_number.parse::<u32>().expect("must be valid") + 1).to_string();
@@ -1387,10 +1402,10 @@ impl OperationsRecorder
                     name_chars.into_iter().take(total_chars - count).collect::<String>() + &new_end_number
                 };
 
-                self.name_diff_value(value, new_name);
+                self.name_diff_value(_value, new_name);
             } else
             {
-                self.variable_names.insert(value, name);
+                self.variable_names.insert(_value, _name);
             }
         }
     }
@@ -1410,15 +1425,15 @@ impl OperationsRecorder
         self.name_diff_value(value.into(), name.into().to_uppercase());
     }
 
-    pub fn name_suffix_generic(&mut self, value: DiffValue, inherit: DiffValue, suffix: &str)
+    pub fn name_suffix_generic(&mut self, _value: DiffValue, _inherit: DiffValue, _suffix: &str)
     {
         #[cfg(debug_assertions)]
         {
-            if let Some(inherit_name) = self.variable_names.get(&inherit)
+            if let Some(inherit_name) = self.variable_names.get(&_inherit)
             {
-                let new_name = inherit_name.to_owned() + suffix;
+                let new_name = inherit_name.to_owned() + _suffix;
 
-                match value
+                match _value
                 {
                     DiffValue::Value(value) => self.name_value(value, new_name),
                     DiffValue::Tensor(tensor) => self.name_tensor(tensor, new_name),
@@ -2047,6 +2062,7 @@ impl OperationsRecorder
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
+                    #[allow(unused_mut)]
                     let mut stack_value: LoopStackValue<_, _> = self.values[value.0].into();
                     stack_value.set_source(*value);
 
@@ -2062,6 +2078,7 @@ impl OperationsRecorder
 
                     let tensor_ref = LayerTypeRef::from_data_with_start(&self.tensors_raw_data, *tensor);
 
+                    #[allow(unused_mut)]
                     let mut stack_value: LoopStackValue<_, _> = tensor_ref.clone_owned().into();
                     stack_value.set_source(*tensor);
 
@@ -5205,6 +5222,7 @@ struct NotationGradientOp<T, V, J, S>(GradientOp<T, V, J, S>);
 
 impl<S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStringRaw>, S>
 {
+    #[allow(dead_code)]
     fn from_nameable(recorder: &OperationsRecorder, op: GradientOp<TensorPtr, ValueIndex, JumpInfo, S>) -> Self
     {
         Self(op.map(|t|
