@@ -140,7 +140,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             always_store(self.input_memory.weight_original);
         }
 
-        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
             let bias = bias.weight_dropped;
@@ -195,31 +195,41 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
         let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
+        recorder.name_diff_tensor(this_memory_rhs, "this_memory_rhs");
+
         let this_memory = if let Some(previous_state) = previous_state
         {
             let left = recorder.mul_componentwise(forget_gate.unwrap(), previous_state.memory);
+            recorder.name_diff_tensor(left, "left");
+
             recorder.add(left, this_memory_rhs)
         } else
         {
             this_memory_rhs
         };
 
+        recorder.name_diff_tensor(this_memory, "this_memory");
+
         let hidden = {
             let memory = recorder.tanh(this_memory);
+            recorder.name_diff_tensor(memory, "memory_inner");
 
             recorder.mul_componentwise(output_gate, memory)
         };
 
         recorder.name_diff_tensor(hidden, "hidden");
 
+        let hidden_copy = recorder.copy(hidden);
+        recorder.name_diff_tensor(hidden, "hidden_copy");
+
         let state = LSTMState{
-            hidden: hidden.clone(),
+            hidden: hidden_copy,
             memory: this_memory
         };
 
         NetworkOutput{
             state,
-            output: hidden
+            output: hidden_copy
         }
     }
 }

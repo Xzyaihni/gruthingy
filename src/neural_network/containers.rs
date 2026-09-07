@@ -1494,6 +1494,16 @@ impl OperationsRecorder
         dst
     }
 
+    pub fn copy(&mut self, src: DiffTensorPtr) -> DiffTensorPtr
+    {
+        let (rows, columns) = self.tensor_shape(src.as_value());
+        let dst = self.new_tensor_op(rows, columns);
+
+        self.add_recording_operation(Op::Copy{src, dst});
+
+        dst
+    }
+
     pub fn add_scalars(&mut self, a: DiffScalar, b: DiffScalar) -> DiffScalar
     {
         let output = self.new_value_op();
@@ -2638,6 +2648,10 @@ impl OperationsRecorder
                 Op::CopyScalar{src, dst} =>
                 {
                     GradientOp::CopyScalar{src: src.as_value(), dst: dst.as_value()}
+                },
+                Op::Copy{src, dst} =>
+                {
+                    GradientOp::Copy{src: src.as_value(), dst: dst.as_value()}
                 },
                 Op::AddScalar{lhs, rhs, output} =>
                 {
@@ -4386,6 +4400,15 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::CopyScalar{src: gradient, dst: src_gradient});
                 }
             },
+            Op::Copy{src, dst} =>
+            {
+                let gradient = gradient_or_return!(dst);
+
+                if let Some(src_gradient) = src.as_gradient()
+                {
+                    add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: src_gradient});
+                }
+            },
             Op::Add{lhs, output, ..}
             | Op::AddScalar{lhs, output, ..} =>
             {
@@ -5589,6 +5612,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
 pub enum Op
 {
     CopyScalar{src: DiffScalar, dst: DiffScalar},
+    Copy{src: DiffTensorPtr, dst: DiffTensorPtr},
     AddScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     AddScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     Add{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
@@ -5620,6 +5644,7 @@ impl Op
         match *self
         {
             Self::CopyScalar{dst, ..} => f(dst.into()),
+            Self::Copy{dst, ..} => f(dst.into()),
             Self::AddScalar{output, ..} => f(output.into()),
             Self::AddScalars{output, ..} => f(output.into()),
             Self::Add{output, ..} => f(output.into()),
@@ -5650,6 +5675,7 @@ impl Op
         match *self
         {
             Self::CopyScalar{src, ..} => f(src.into()),
+            Self::Copy{src, ..} => f(src.into()),
             Self::AddScalar{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::AddScalars{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::Add{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },

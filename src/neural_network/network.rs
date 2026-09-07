@@ -1803,7 +1803,7 @@ mod tests
     const SIZES: LayerSizes = LayerSizes{
         hidden: 2,
         input: 2,
-        layers: 2,
+        layers: 1,
         output: 2
     };
 
