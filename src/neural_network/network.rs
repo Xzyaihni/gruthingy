@@ -782,6 +782,13 @@ impl Default for NetworkOutputsData
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NetworkMode
+{
+    Predict,
+    Train
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
@@ -791,6 +798,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
 {
     recorder: OperationsRecorder,
+    network_mode: Option<NetworkMode>,
     sizes: LayerSizes,
     is_multistep: Option<bool>,
     is_input_one_hot: Option<bool>,
@@ -814,6 +822,7 @@ where
     {
         Self{
             recorder: self.recorder.clone(),
+            network_mode: self.network_mode,
             sizes: self.sizes,
             is_multistep: self.is_multistep,
             is_input_one_hot: self.is_input_one_hot,
@@ -860,6 +869,7 @@ where
 
         let mut this = Self{
             sizes: x.sizes,
+            network_mode: None,
             is_multistep: None,
             is_input_one_hot: None,
             optimizer_info: x.optimizer_info,
@@ -980,6 +990,7 @@ where
 
         let mut this = Self{
             recorder,
+            network_mode: None,
             sizes,
             dropouts: NetworkDropoutData::new(dropout_probability),
             inputs: NetworkInputsData::default(),
@@ -994,6 +1005,16 @@ where
         this.initialize();
 
         this
+    }
+
+    pub fn set_train_mode(&mut self)
+    {
+        self.network_mode = Some(NetworkMode::Train);
+    }
+
+    pub fn set_predict_mode(&mut self)
+    {
+        self.network_mode = Some(NetworkMode::Predict);
     }
 
     pub fn initialize_with_params(&mut self, is_multistep: bool, is_input_one_hot: bool)
@@ -1152,6 +1173,8 @@ where
 
     fn record_feedforward(&mut self, store_gradient: bool)
     {
+        debug_assert!(self.network_mode.is_some());
+
         let dropout_masks_ptrs = self.create_dropout_masks_ptrs();
 
         let create_input = {
@@ -1171,13 +1194,26 @@ where
         };
 
         let this_input_first = create_input(&mut self.recorder);
-        let this_target_first = self.recorder.new_one_hot();
 
         self.recorder.name_input(this_input_first, "input_first");
-        self.recorder.name_one_hot(this_target_first, "target_first");
 
         self.inputs.input_ptr = Some(this_input_first);
-        self.inputs.initial_target = this_target_first.into();
+
+        let has_target = self.network_mode == Some(NetworkMode::Train);
+
+        let this_target_first = if has_target
+        {
+            let this_target_first = self.recorder.new_one_hot();
+
+            self.recorder.name_one_hot(this_target_first, "target_first");
+
+            self.inputs.initial_target = this_target_first.into();
+
+            Some(this_target_first)
+        } else
+        {
+            None
+        };
 
         let no_state_output = self.record_feedforward_single_input(
             None,
@@ -1195,12 +1231,23 @@ where
             let no_state_loss = no_state_output.output.1;
 
             let this_input_loop = create_input(&mut self.recorder);
-            let this_target_loop = self.recorder.new_one_hot();
+
+            let this_target_loop = has_target.then(|| self.recorder.new_one_hot());
 
             let final_loss_selector = self.recorder.phi_other_selector(no_state_loss);
             let state_selectors: Vec<_> = no_state_output.state.iter().map(|state| state.phi_other_selector(&mut self.recorder)).collect();
 
-            let loop_index = self.recorder.begin_loop(vec![this_input_loop, this_target_loop.into()]);
+            let loop_index = {
+                let inputs = if let Some(this_target_loop) = this_target_loop
+                {
+                    vec![this_input_loop, this_target_loop.into()]
+                } else
+                {
+                    vec![this_input_loop]
+                };
+
+                self.recorder.begin_loop(inputs)
+            };
 
             let previous_state_selected: Vec<_> = state_selectors.iter().map(|selector| selector.select(&mut self.recorder)).collect();
 
@@ -1247,7 +1294,7 @@ where
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
         input: InputTypePtr,
-        targets: OneHotIndex,
+        targets: Option<OneHotIndex>,
         store_gradient: bool
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, DiffScalar)>
     {
@@ -1258,7 +1305,7 @@ where
                 previous_state,
                 input,
                 store_gradient
-            ).map(|output| (output, this.recorder.softmax_cross_entropy(output, targets).1))
+            ).map(|output| (output, this.recorder.softmax_cross_entropy(output, targets.expect("ill implement it later whathata")).1))
         }, previous_states, dropout_masks, input, store_gradient)
     }
 
@@ -1427,6 +1474,8 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
+        debug_assert_eq!(self.network_mode, Some(NetworkMode::Train));
+
         self.feedforward_setup_dropout();
 
         let inputs_count = input.len();
@@ -1498,6 +1547,7 @@ where
     ) -> impl Iterator<Item=(usize, T)>
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         F: Fn(&LayerType, usize, usize) -> T
     {
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
@@ -1522,7 +1572,8 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, u32)>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
         {
@@ -1543,7 +1594,8 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, f32)>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_predict(input, |predicted, _highest_index, target_index|
         {
@@ -1557,7 +1609,8 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, bool)>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_predict(input, |_predicted, highest_index, target_index|
         {
@@ -1571,7 +1624,8 @@ where
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut total = 0;
         let correct_amount = self.correct_guesses(input).filter(|(_, x)|
@@ -1626,7 +1680,8 @@ where
         input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
     ) -> Vec<LayerType>
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
 
@@ -1638,13 +1693,16 @@ where
     pub fn predict_temperature(
         &mut self,
         temperature: f32,
-        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator,
+        mut input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator,
         mut f_output: impl FnMut(LayerType)
     )
     where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-/*        self.prepare(false);
+        debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
+
+        self.prepare(false);
 
         let weights = self.weights.as_mut().unwrap();
 
@@ -1662,27 +1720,33 @@ where
             });
         }
 
-        self.dropout_masks.iter().for_each(|dropout_mask|
+        self.dropouts.dropout_masks.iter().for_each(|dropout_mask|
         {
             Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), 0.0);
         });
 
-        self.feedforward_like(
-            |_, _| {},
-            |x| (x, ()),
-            |this, is_with_state|
-            {
-                let output = if is_with_state { this.with_state.output } else { this.no_state.output };
+        let inputs_count = input.len();
 
-                let fix_this = ();
-                let mut output = this.recorder.get_tensor(output.as_value()).clone_owned();
+        debug_assert!(inputs_count > 0, "inputs must not be empty");
 
-                Softmaxer::softmax_temperature(&mut output, temperature);
+        self.recorder.set_input(self.inputs.initial_input, input.next().unwrap());
 
-                f_output(output);
-            },
-            input
-        );*/todo!()
+        if inputs_count > 1
+        {
+            let steps_loop = self.inputs.steps_loop.unwrap();
+
+            self.recorder.set_loop_inputs(steps_loop, input.collect());
+
+            self.recorder.set_loop_times(steps_loop, inputs_count - 1);
+        }
+
+        self.recorder.calculate_feedforward();
+
+        let mut output = self.recorder.get_tensor(self.outputs.output.as_value()).clone_owned();
+
+        Softmaxer::softmax_temperature(&mut output, temperature);
+
+        f_output(output);
     }
 
     fn set_dropout_mask(
@@ -1721,6 +1785,7 @@ where
     {
         Network{
             recorder: self.recorder,
+            network_mode: self.network_mode,
             sizes: self.sizes,
             is_multistep: self.is_multistep,
             is_input_one_hot: self.is_input_one_hot,
