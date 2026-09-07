@@ -1109,9 +1109,7 @@ where
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
-        dbg!(&self.recorder);
         self.recorder.resolve_memory();
-        dbg!(&self.recorder);
 
         mem::take(&mut self.inputs.input_ptrs).into_iter().enumerate().for_each(|(index, input_ptr)|
         {
@@ -1796,7 +1794,7 @@ mod tests
 
     const SEED: u64 = 123;
 
-    const DROPOUT_PROBABILITY: f32 = 0.5;
+    const DROPOUT_PROBABILITY: f32 = 0.35;
 
     const IS_INPUT_ONE_HOT: bool = true;
 
@@ -1922,7 +1920,6 @@ mod tests
 
         at_once.recorder.gradient(output.unwrap().into());
 
-        dbg!(&at_once.recorder);
         at_once.recorder.resolve_memory();
 
         at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
@@ -1994,11 +1991,8 @@ mod tests
 
         let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, is_multistep, IS_INPUT_ONE_HOT);
 
-        dbg!(&with_steps.recorder);
-
         with_steps.prepare(true);
         let with_steps_gradient = with_steps.gradients(input_outputs.clone());
-        dbg!(&with_steps.recorder);
 
         let (mut at_once, at_once_gradient) = run_unrolled();
 
