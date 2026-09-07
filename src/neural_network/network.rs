@@ -744,8 +744,9 @@ impl NetworkDropoutData
 struct NetworkInputsData
 {
     steps_loop: Option<LoopIndex>,
-    input_ptrs: Vec<InputTypePtr>,
-    initial_inputs_targets: Vec<InputType>
+    input_ptr: Option<InputTypePtr>,
+    initial_input: InputType,
+    initial_target: InputType
 }
 
 impl Default for NetworkInputsData
@@ -754,20 +755,10 @@ impl Default for NetworkInputsData
     {
         Self{
             steps_loop: None,
-            input_ptrs: Vec::new(),
-            initial_inputs_targets: Vec::new()
+            input_ptr: None,
+            initial_input: InputType::undefined(),
+            initial_target: InputType::undefined()
         }
-    }
-}
-
-impl NetworkInputsData
-{
-    fn push_initial(&mut self, input: InputTypePtr, target: InputType)
-    {
-        self.input_ptrs.push(input);
-
-        self.initial_inputs_targets.push(InputType::undefined());
-        self.initial_inputs_targets.push(target);
     }
 }
 
@@ -1111,14 +1102,15 @@ where
     {
         self.recorder.resolve_memory();
 
-        mem::take(&mut self.inputs.input_ptrs).into_iter().enumerate().for_each(|(index, input_ptr)|
         {
-            self.inputs.initial_inputs_targets[index * 2] = match input_ptr
+            let input_ptr = self.inputs.input_ptr.take().expect("input ptr must be set");
+
+            self.inputs.initial_input = match input_ptr
             {
                 InputTypePtr::Normal(x) => InputType::Normal(self.recorder.resolve_tensor_ptr(x)),
                 InputTypePtr::OneHot(x) => InputType::OneHot(x)
             };
-        });
+        }
 
         let weights = self.weights_ptr.take().unwrap().map(|mut weight_info|
         {
@@ -1184,7 +1176,8 @@ where
         self.recorder.name_input(this_input_first, "input_first");
         self.recorder.name_one_hot(this_target_first, "target_first");
 
-        self.inputs.push_initial(this_input_first, this_target_first.into());
+        self.inputs.input_ptr = Some(this_input_first);
+        self.inputs.initial_target = this_target_first.into();
 
         let no_state_output = self.record_feedforward_single_input(
             None,
@@ -1199,36 +1192,13 @@ where
 
         let (final_output, final_loss) = if self.is_multistep.unwrap()
         {
-            let this_input_second = create_input(&mut self.recorder);
-            let this_target_second = self.recorder.new_one_hot();
-
-            self.recorder.name_input(this_input_second, "input_second");
-            self.recorder.name_one_hot(this_target_second, "target_second");
-
-            self.inputs.push_initial(this_input_second, this_target_second.into());
-
-            let with_state_output = self.record_feedforward_single_input(
-                Some(no_state_output.state),
-                &dropout_masks_ptrs,
-                this_input_second,
-                this_target_second,
-                store_gradient
-            );
-
-            self.recorder.name_diff_tensor(with_state_output.output.0, "with_state_output");
-            self.recorder.name_diff_scalar(with_state_output.output.1, "with_state_loss");
-
             let no_state_loss = no_state_output.output.1;
-            let with_state_loss = with_state_output.output.1;
-
-            let compound_loss = self.recorder.add_scalars(no_state_loss, with_state_loss);
-            self.recorder.name_diff_scalar(compound_loss, "compound_loss");
 
             let this_input_loop = create_input(&mut self.recorder);
             let this_target_loop = self.recorder.new_one_hot();
 
-            let final_loss_selector = self.recorder.phi_other_selector(compound_loss);
-            let state_selectors: Vec<_> = with_state_output.state.iter().map(|state| state.phi_other_selector(&mut self.recorder)).collect();
+            let final_loss_selector = self.recorder.phi_other_selector(no_state_loss);
+            let state_selectors: Vec<_> = no_state_output.state.iter().map(|state| state.phi_other_selector(&mut self.recorder)).collect();
 
             let loop_index = self.recorder.begin_loop(vec![this_input_loop, this_target_loop.into()]);
 
@@ -1464,27 +1434,16 @@ where
 
         debug_assert!(inputs_count > 0, "inputs must not be empty");
 
-        let mut set_initial = |i: usize|
-        {
-            let i = i * 2;
-
-            self.recorder.set_input(self.inputs.initial_inputs_targets[i], inputs.next().unwrap());
-            self.recorder.set_input(self.inputs.initial_inputs_targets[i + 1], inputs.next().unwrap());
-        };
-
-        set_initial(0);
+        self.recorder.set_input(self.inputs.initial_input, inputs.next().unwrap());
+        self.recorder.set_input(self.inputs.initial_target, inputs.next().unwrap());
 
         if inputs_count > 1
         {
-            debug_assert!(inputs_count >= 3, "there must be at least 3 input/target pairs, got {inputs_count}");
-
-            set_initial(1);
-
             let steps_loop = self.inputs.steps_loop.unwrap();
 
             self.recorder.set_loop_inputs(steps_loop, inputs.collect());
 
-            self.recorder.set_loop_times(steps_loop, inputs_count - 2);
+            self.recorder.set_loop_times(steps_loop, inputs_count - 1);
         }
 
         calculate_function(&mut self.recorder);
