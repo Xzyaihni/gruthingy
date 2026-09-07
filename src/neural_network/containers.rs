@@ -30,7 +30,7 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = true;
 const NO_COLORING: bool = true;
-const PRINT_CALCULATE_VALUES: bool = true;
+const PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -557,6 +557,14 @@ struct LoopSelectorInfo
     next_total: DiffValue,
     next_previous: DiffValue,
     other: DiffValue
+}
+
+#[derive(Debug, Clone)]
+struct UsedStackValueInfo
+{
+    loop_index: LoopIndex,
+    source: DiffValue,
+    target: DiffValue
 }
 
 #[derive(Clone)]
@@ -3804,6 +3812,112 @@ impl OperationsRecorder
         });
     }
 
+    fn resolve_stack_values(&mut self, used_stack_values: Vec<UsedStackValueInfo>)
+    {
+        used_stack_values.iter().cloned().for_each(|UsedStackValueInfo{loop_index, source, ..}|
+        {
+            let loop_info = &mut self.loops[loop_index.0];
+            loop_info.used_values.push(source);
+
+            if let Some(source_loop) = loop_info.gradient_of_loop
+            {
+                self.loops[source_loop.0].used_values.push(source);
+            }
+        });
+
+        let pushed_ordered: Vec<Vec<_>> = {
+            (0..self.loops.len()).map(|current_loop_index| -> Vec<_>
+            {
+                self.loops[current_loop_index].defined_values.iter().filter(|defined_value|
+                {
+                    used_stack_values.iter().any(|info|
+                    {
+                        info.loop_index == LoopIndex(current_loop_index) && info.source == **defined_value
+                    })
+                }).cloned().collect()
+            }).collect()
+        };
+
+        let mut popped = Vec::new();
+
+        fn pop_stack_value(
+            this: &mut OperationsRecorder,
+            pushed_ordered_all: &[Vec<DiffValue>],
+            popped: &mut Vec<DiffValue>,
+            used_stack_values: &[UsedStackValueInfo],
+            pop_op_index: Option<usize>,
+            selected_stack_value: usize
+        )
+        {
+            let UsedStackValueInfo{loop_index, source, target} = used_stack_values[selected_stack_value];
+
+            if popped.contains(&source)
+            {
+                return;
+            }
+
+            let pop_op_index = pop_op_index.unwrap_or_else(||
+            {
+                this.gradient_operations.iter().position(|op|
+                {
+                    let mut is_found = false;
+                    op.for_args(|arg| if arg == target { is_found = true });
+
+                    is_found
+                }).expect("pop argument must exist")
+            });
+
+            let mut offset_index = 0;
+
+            let pushed_ordered = &pushed_ordered_all[loop_index.0];
+            while pushed_ordered[pushed_ordered.len() - popped.len() - 1] != source
+            {
+                let next_pop = pushed_ordered[pushed_ordered.len() - popped.len() - 1];
+                let correct_source = used_stack_values.iter().position(|x| x.source == next_pop)
+                    .expect("popped value must have been pushed");
+
+                pop_stack_value(this, pushed_ordered_all, popped, used_stack_values, Some(pop_op_index + offset_index), correct_source);
+
+                offset_index += 1;
+            }
+
+            let pop_op_index = pop_op_index + offset_index;
+
+            let pop_op: StandardGradientOp = match target
+            {
+                DiffValue::Value(output) =>
+                {
+                    this.name_value_suffix(output, source.into_value(), "_loop");
+
+                    GradientOp::PopStackValue{loop_index, output}
+                },
+                DiffValue::Tensor(output) =>
+                {
+                    this.name_tensor_suffix(output, source.into_tensor(), "_loop");
+
+                    GradientOp::PopStackTensor{loop_index, output}
+                },
+                DiffValue::OneHot(_) => unimplemented!()
+            };
+
+            this.gradient_operations.insert(pop_op_index, pop_op);
+
+            popped.push(source);
+
+            #[cfg(debug_assertions)]
+            {
+                let this_pair = (source, target);
+
+                this.loops[loop_index.0].expected_pairs.push(this_pair);
+            }
+        }
+
+        (0..used_stack_values.len()).for_each(|index|
+        {
+            pop_stack_value(self, &pushed_ordered, &mut popped, &used_stack_values, None, index);
+        });
+    }
+
     pub fn gradient(&mut self, respect: DiffWrapper)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
@@ -3818,12 +3932,23 @@ impl OperationsRecorder
 
             let mut intermediate_selectors = Vec::new();
 
+            let mut used_stack_values = Vec::new();
+
             for op_index in (0..self.recording_operations.len()).rev()
             {
                 let op = self.recording_operations[op_index].clone();
 
-                self.calculate_gradient(&mut assigned_gradients, &mut selectors, &mut intermediate_selectors, op, None);
+                self.calculate_gradient(
+                    &mut assigned_gradients,
+                    &mut selectors,
+                    &mut intermediate_selectors,
+                    &mut used_stack_values,
+                    op,
+                    None
+                );
             }
+
+            self.resolve_stack_values(used_stack_values);
         }
 
         self.copy_coalesce();
@@ -3840,14 +3965,13 @@ impl OperationsRecorder
         assigned_gradients: &mut Vec<AssignedInfo>,
         selectors: &mut Vec<LoopSelectorInfo>,
         intermediate_selectors: &mut Vec<PhiOtherSelectorIndex>,
+        used_stack_values: &mut Vec<UsedStackValueInfo>,
         op: Op,
         inside_loop: Option<LoopIndex>
     )
     {
         let mut add_gradient_operation = |this: &mut Self, selectors: &mut Vec<LoopSelectorInfo>, gradient_op: StandardGradientOp|
         {
-            let TEMP = NotationGradientOp::from_nameable(this, gradient_op.clone());
-            eprintln!("{TEMP:?} {:?}", assigned_gradients.iter().map(|x| DebugStringRaw(this.format_variable(x.value))).collect::<Vec<_>>());
             let make_new = |this: &mut Self, x: DiffValue| -> DiffValue
             {
                 if let DiffValue::Tensor(x) = x
@@ -3867,35 +3991,13 @@ impl OperationsRecorder
                 {
                     if this.loops[inside_loop.0].defined_values.contains(&arg)
                     {
-                        this.loops[inside_loop.0].used_values.push(arg);
-
                         let loop_intermediate = make_new(this, arg);
 
-                        let pop_op = match loop_intermediate
-                        {
-                            DiffValue::Value(output) =>
-                            {
-                                this.name_value_suffix(output, arg.into_value(), "_loop");
-
-                                GradientOp::PopStackValue{loop_index: inside_loop, output}
-                            },
-                            DiffValue::Tensor(output) =>
-                            {
-                                this.name_tensor_suffix(output, arg.into_tensor(), "_loop");
-
-                                GradientOp::PopStackTensor{loop_index: inside_loop, output}
-                            },
-                            DiffValue::OneHot(_) => unimplemented!()
-                        };
-
-                        this.gradient_operations.push(pop_op);
-
-                        #[cfg(debug_assertions)]
-                        {
-                            let this_pair = (arg, loop_intermediate);
-
-                            this.loops[inside_loop.0].expected_pairs.push(this_pair);
-                        }
+                        used_stack_values.push(UsedStackValueInfo{
+                            loop_index: inside_loop,
+                            source: arg,
+                            target: loop_intermediate
+                        });
 
                         loop_intermediate
                     } else
@@ -4641,7 +4743,14 @@ impl OperationsRecorder
 
                 ops.into_iter().rev().for_each(|op|
                 {
-                    self.calculate_gradient(assigned_gradients, selectors, intermediate_selectors, op, Some(gradient_loop_index));
+                    self.calculate_gradient(
+                        assigned_gradients,
+                        selectors,
+                        intermediate_selectors,
+                        used_stack_values,
+                        op,
+                        Some(gradient_loop_index)
+                    );
                 });
 
                 intermediate_selectors.iter().for_each(|intermediate_selector_index|
@@ -4650,8 +4759,6 @@ impl OperationsRecorder
                 });
 
                 self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpFrom(gradient_loop_index)));
-
-                self.loops[index.0].used_values = self.loops[gradient_loop_index.0].used_values.clone();
             }
         }
     }

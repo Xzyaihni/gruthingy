@@ -1800,7 +1800,6 @@ mod tests
 
     const IS_INPUT_ONE_HOT: bool = true;
 
-    const more_layers: () = ();
     const SIZES: LayerSizes = LayerSizes{
         hidden: 2,
         input: 2,
@@ -1829,21 +1828,20 @@ mod tests
 
     fn inputs_outputs() -> (Vec<OwnedInputType>, Vec<OneHotLayer>)
     {
-        let more_inputs = ();
         let inputs = vec![
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
             OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
-//            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
-//            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
+            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
+            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
         ];
 
         let outputs = vec![
             OneHotLayer::new([1], 2),
             OneHotLayer::new([0], 2),
             OneHotLayer::new([0], 2),
-//            OneHotLayer::new([1], 2),
-//            OneHotLayer::new([1], 2)
+            OneHotLayer::new([1], 2),
+            OneHotLayer::new([1], 2)
         ];
 
         assert_eq!(inputs.len(), outputs.len());
