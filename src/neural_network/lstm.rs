@@ -140,7 +140,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             always_store(self.input_memory.weight_original);
         }
 
-        let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
             let bias = bias.weight_dropped;
@@ -152,36 +152,43 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             }
         };
 
-        let mut forget_gate = matmul_inputv_add(self.input_forget, input, self.forget_bias);
-        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
-        let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
-        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
+        let mut update_gate = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
+        let mut output_gate = matmul_inputv_add(recorder, self.input_output, input, self.output_bias);
+        let mut memory_gate = matmul_inputv_add(recorder, self.input_memory, input, self.memory_bias);
 
-        recorder.name_diff_tensor(forget_gate, "forget_gate");
         recorder.name_diff_tensor(update_gate, "update_gate");
         recorder.name_diff_tensor(output_gate, "output_gate");
         recorder.name_diff_tensor(memory_gate, "memory_gate");
 
+        let mut forget_gate = None;
+
         if let Some(previous_state) = previous_state
         {
+            let mut forget_gate_inner = matmul_inputv_add(recorder, self.input_forget, input, self.forget_bias);
+
+            recorder.name_diff_tensor(forget_gate_inner, "forget_gate");
+
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
                 let mm = recorder.matmulv(hidden.weight_dropped, previous_hidden);
                 *gate = recorder.add(*gate, mm);
             };
 
-            do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
+            do_gate(&mut forget_gate_inner, self.hidden_forget, previous_state.hidden);
             do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
             do_gate(&mut output_gate, self.hidden_output, previous_state.hidden);
             do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
+
+            let forget_gate_new = recorder.sigmoid(forget_gate_inner);
+            recorder.name_diff_tensor(forget_gate_new, "forget_gate_activated");
+
+            forget_gate = Some(forget_gate_new);
         }
 
-        forget_gate = recorder.sigmoid(forget_gate);
         update_gate = recorder.sigmoid(update_gate);
         output_gate = recorder.sigmoid(output_gate);
         memory_gate = recorder.tanh(memory_gate);
 
-        recorder.name_diff_tensor(forget_gate, "forget_gate_activated");
         recorder.name_diff_tensor(update_gate, "update_gate_activated");
         recorder.name_diff_tensor(output_gate, "output_gate_activated");
         recorder.name_diff_tensor(memory_gate, "memory_gate_activated");
@@ -190,7 +197,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
         let this_memory = if let Some(previous_state) = previous_state
         {
-            let left = recorder.mul_componentwise(forget_gate, previous_state.memory);
+            let left = recorder.mul_componentwise(forget_gate.unwrap(), previous_state.memory);
             recorder.add(left, this_memory_rhs)
         } else
         {
