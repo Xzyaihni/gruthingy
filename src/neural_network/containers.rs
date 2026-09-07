@@ -30,7 +30,7 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = true;
 const NO_COLORING: bool = true;
-const PRINT_CALCULATE_VALUES: bool = false;
+const PRINT_CALCULATE_VALUES: bool = true;
 
 
 macro_rules! get_disjoint_mut_with
@@ -358,8 +358,9 @@ impl Debug for LoopInfoDebug<'_>
         let defined_values = ForceNoPretty(info.defined_values.iter().map(|x| DebugStringRaw(self.recorder.format_variable(*x))).collect::<Vec<_>>());
         let used_values = ForceNoPretty(info.used_values.iter().map(|x| DebugStringRaw(self.recorder.format_variable(*x))).collect::<Vec<_>>());
 
-        f.debug_struct("LoopInfo")
-            .field("times", &DebugStringRaw(format!("{}/{}", info.times, info.times_total)))
+        let mut struct_info = f.debug_struct("LoopInfo");
+
+        struct_info.field("times", &DebugStringRaw(format!("{}/{}", info.times, info.times_total)))
             .field("current_index", &info.current_index)
             .field("reversed", &info.reversed)
             .field("live_range", &ForceNoPretty(&info.live_range))
@@ -368,9 +369,19 @@ impl Debug for LoopInfoDebug<'_>
             .field("defined_values", &defined_values)
             .field("used_values", &used_values)
             .field("input_values", &ForceNoPretty(&info.input_values))
-            .field("inputs", &info.inputs)
-            .field("expected_pairs", &info.expected_pairs.iter().map(ForceNoPretty).collect::<Vec<_>>())
-            .finish()
+            .field("inputs", &info.inputs);
+
+        #[cfg(debug_assertions)]
+        {
+            let expected_pairs = info.expected_pairs.iter().map(|(source, target)|
+            {
+                ForceNoPretty((DebugStringRaw(self.recorder.format_variable(*source)), DebugStringRaw(self.recorder.format_variable(*target))))
+            }).collect::<Vec<_>>();
+
+            struct_info.field("expected_pairs", &expected_pairs);
+        }
+
+        struct_info.finish()
     }
 }
 
@@ -1943,11 +1954,18 @@ impl OperationsRecorder
             {
                 ($name:ident, ($($t_name:ident),*),($($v_name:ident),*)) =>
                 {
+                    let _counter: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*];
+
                     #[cfg(debug_assertions)]
                     {
                         if PRINT_CALCULATE_VALUES
                         {
-                            eprint!("{} (BEFORE ", stringify!($name));
+                            eprint!("{}", stringify!($name));
+
+                            if _counter.len() > 0
+                            {
+                                eprint!(" (BEFORE ");
+                            }
                         }
                     }
 
@@ -1959,7 +1977,13 @@ impl OperationsRecorder
                     {
                         if PRINT_CALCULATE_VALUES
                         {
-                            eprint!(") (AFTER ");
+                            if _counter.len() > 0
+                            {
+                                eprint!(") (AFTER ");
+                            } else
+                            {
+                                eprint!(" (");
+                            }
                         }
                     }
                 }
@@ -2019,7 +2043,7 @@ impl OperationsRecorder
                 },
                 GradientOp::PushStackValue{loop_index, value} =>
                 {
-                    debug_print_op!(gradient_op);
+                    debug_calculate_values!(PushStackValue, (),());
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
@@ -2027,10 +2051,12 @@ impl OperationsRecorder
                     stack_value.set_source(*value);
 
                     self.loops_values[loop_values_index.0].values_stack.push(stack_value);
+
+                    debug_calculate_values_result!((),(value));
                 },
                 GradientOp::PushStackTensor{loop_index, tensor} =>
                 {
-                    debug_print_op!(gradient_op);
+                    debug_calculate_values!(PushStackTensor, (),());
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
@@ -2040,10 +2066,12 @@ impl OperationsRecorder
                     stack_value.set_source(*tensor);
 
                     self.loops_values[loop_values_index.0].tensors_stack.push(stack_value);
+
+                    debug_calculate_values_result!((tensor),());
                 },
                 GradientOp::PopStackValue{loop_index, output} =>
                 {
-                    debug_print_op!(gradient_op);
+                    debug_calculate_values!(PopStackValue, (),());
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
@@ -2051,10 +2079,12 @@ impl OperationsRecorder
                         .expect("stack must not be empty");
 
                     self.values[output.0] = stack_value.get_stack_value_for(self, *loop_index, *output);
+
+                    debug_calculate_values_result!((),(output));
                 },
                 GradientOp::PopStackTensor{loop_index, output} =>
                 {
-                    debug_print_op!(gradient_op);
+                    debug_calculate_values!(PopStackTensor, (),());
 
                     let loop_values_index = self.loops[loop_index.0].input_values;
 
@@ -2064,6 +2094,8 @@ impl OperationsRecorder
                     let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
 
                     set_tensor_raw!(self, *output, tensor);
+
+                    debug_calculate_values_result!((output),());
                 },
                 GradientOp::SetInputs(loop_index) =>
                 {
@@ -2842,6 +2874,7 @@ impl OperationsRecorder
     fn is_ptr_output(&self, ptr: TensorPtr) -> bool
     {
         self.tensor_live_ranges[ptr.0].end == Some(i32::MAX)
+            || self.loops.iter().any(|l| l.used_values.iter().any(|used_value| *used_value == DiffValue::Tensor(ptr)))
     }
 
     fn copy_coalesce(&mut self)
@@ -3826,8 +3859,26 @@ impl OperationsRecorder
         });
     }
 
-    fn resolve_stack_values(&mut self, used_stack_values: Vec<UsedStackValueInfo>)
+    fn resolve_stack_values(&mut self, used_stack_values_unsorted: Vec<UsedStackValueInfo>)
     {
+        fn position_of_target(gradient_operations: &[StandardGradientOp], target: DiffValue) -> GradientOperationIndex
+        {
+            GradientOperationIndex(gradient_operations.iter().position(|op|
+            {
+                let mut is_found = false;
+                op.for_args(|arg| if arg == target { is_found = true });
+
+                is_found
+            }).expect("pop argument must exist"))
+        }
+
+        let used_stack_values = {
+            let mut used_stack_values = used_stack_values_unsorted;
+            used_stack_values.sort_by_key(|x| position_of_target(&self.gradient_operations, x.target).0);
+
+            used_stack_values
+        };
+
         used_stack_values.iter().cloned().for_each(|UsedStackValueInfo{loop_index, source, ..}|
         {
             let loop_info = &mut self.loops[loop_index.0];
@@ -3856,46 +3907,13 @@ impl OperationsRecorder
 
         fn pop_stack_value(
             this: &mut OperationsRecorder,
-            pushed_ordered_all: &[Vec<DiffValue>],
             popped: &mut Vec<DiffValue>,
             used_stack_values: &[UsedStackValueInfo],
-            pop_op_index: Option<usize>,
-            selected_stack_value: usize
+            selected_stack_value: usize,
+            pop_op_index: GradientOperationIndex
         )
         {
             let UsedStackValueInfo{loop_index, source, target} = used_stack_values[selected_stack_value];
-
-            if popped.contains(&source)
-            {
-                return;
-            }
-
-            let pop_op_index = pop_op_index.unwrap_or_else(||
-            {
-                this.gradient_operations.iter().position(|op|
-                {
-                    let mut is_found = false;
-                    op.for_args(|arg| if arg == target { is_found = true });
-
-                    is_found
-                }).expect("pop argument must exist")
-            });
-
-            let mut offset_index = 0;
-
-            let pushed_ordered = &pushed_ordered_all[loop_index.0];
-            while pushed_ordered[pushed_ordered.len() - popped.len() - 1] != source
-            {
-                let next_pop = pushed_ordered[pushed_ordered.len() - popped.len() - 1];
-                let correct_source = used_stack_values.iter().position(|x| x.source == next_pop)
-                    .expect("popped value must have been pushed");
-
-                pop_stack_value(this, pushed_ordered_all, popped, used_stack_values, Some(pop_op_index + offset_index), correct_source);
-
-                offset_index += 1;
-            }
-
-            let pop_op_index = pop_op_index + offset_index;
 
             let pop_op: StandardGradientOp = match target
             {
@@ -3914,7 +3932,7 @@ impl OperationsRecorder
                 DiffValue::OneHot(_) => unimplemented!()
             };
 
-            this.gradient_operations.insert(pop_op_index, pop_op);
+            this.gradient_operations.insert(pop_op_index.0, pop_op);
 
             popped.push(source);
 
@@ -3926,10 +3944,43 @@ impl OperationsRecorder
             }
         }
 
-        (0..used_stack_values.len()).for_each(|index|
+        let mut current_used_index = 0;
+        pushed_ordered.iter().enumerate().rev().for_each(|(current_loop_index, pushes)|
         {
-            pop_stack_value(self, &pushed_ordered, &mut popped, &used_stack_values, None, index);
+            pushes.iter().rev().for_each(|defined_value|
+            {
+                debug_assert!(!popped.contains(defined_value));
+
+                let index = used_stack_values.iter().position(|info|
+                {
+                    info.loop_index == LoopIndex(current_loop_index) && info.source == *defined_value
+                }).expect("must be a defined value");
+
+                let pop_op_index = position_of_target(&self.gradient_operations, used_stack_values[current_used_index].target);
+
+                pop_stack_value(self, &mut popped, &used_stack_values, index, pop_op_index);
+
+                if index == current_used_index
+                {
+                    while popped.contains(&used_stack_values[current_used_index].source)
+                    {
+                        current_used_index += 1;
+
+                        if current_used_index == used_stack_values.len()
+                        {
+                            return;
+                        }
+                    }
+                } else
+                {
+                    debug_assert!(index > current_used_index)
+                }
+            });
         });
+
+        debug_assert_eq!(popped.len(), popped.iter().cloned().collect::<HashSet<_>>().len());
+
+        debug_assert_eq!(popped.len(), used_stack_values.len());
     }
 
     pub fn gradient(&mut self, respect: DiffWrapper)
@@ -4005,15 +4056,21 @@ impl OperationsRecorder
                 {
                     if this.loops[inside_loop.0].defined_values.contains(&arg)
                     {
-                        let loop_intermediate = make_new(this, arg);
+                        if let Some(info) = used_stack_values.iter().find(|x| x.source == arg && x.loop_index == inside_loop)
+                        {
+                            info.target
+                        } else
+                        {
+                            let loop_intermediate = make_new(this, arg);
 
-                        used_stack_values.push(UsedStackValueInfo{
-                            loop_index: inside_loop,
-                            source: arg,
-                            target: loop_intermediate
-                        });
+                            used_stack_values.push(UsedStackValueInfo{
+                                loop_index: inside_loop,
+                                source: arg,
+                                target: loop_intermediate
+                            });
 
-                        loop_intermediate
+                            loop_intermediate
+                        }
                     } else
                     {
                         arg
