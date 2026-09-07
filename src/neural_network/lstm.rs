@@ -8,7 +8,6 @@ use crate::{
         PhiOtherSelectorRecordingIndex,
         NetworkStateSelectable,
         NetworkStateGettable,
-        DiffTensor,
         DiffTensorPtr,
         DiffInputType,
         WeightInfo,
@@ -25,18 +24,18 @@ use crate::{
 pub type Lstm<T> = WeightsContainer<T>;
 
 create_weights_container!{
-//    (input_update, false, false, LayerSize::Input, LayerSize::Hidden),
-//    (input_forget, false, true, LayerSize::Input, LayerSize::Hidden),
+    (input_update, false, false, LayerSize::Input, LayerSize::Hidden),
+    (input_forget, false, true, LayerSize::Input, LayerSize::Hidden),
     (input_output, false, false, LayerSize::Input, LayerSize::Hidden),
-//    (input_memory, false, false, LayerSize::Input, LayerSize::Hidden),
-//    (hidden_update, true, true, LayerSize::Hidden, LayerSize::Hidden),
-//    (hidden_forget, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (input_memory, false, false, LayerSize::Input, LayerSize::Hidden),
+    (hidden_update, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_forget, true, true, LayerSize::Hidden, LayerSize::Hidden),
     (hidden_output, true, true, LayerSize::Hidden, LayerSize::Hidden),
-//    (hidden_memory, true, true, LayerSize::Hidden, LayerSize::Hidden),
-//    (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
-//    (forget_bias, false, true, LayerSize::One, LayerSize::Hidden),
-    (output_bias, false, false, LayerSize::One, LayerSize::Hidden)
-//    (memory_bias, false, false, LayerSize::One, LayerSize::Hidden)
+    (hidden_memory, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
+    (forget_bias, false, true, LayerSize::One, LayerSize::Hidden),
+    (output_bias, false, false, LayerSize::One, LayerSize::Hidden),
+    (memory_bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
 #[derive(Debug, Clone)]
@@ -64,9 +63,8 @@ impl NetworkStateGettable<LSTMState<DiffTensorPtr>> for LSTMState<PhiOtherSelect
         let hidden = recorder.select_tensor(self.hidden);
         recorder.name_diff_tensor(hidden, "hidden_selected");
 
-        /*let memory = recorder.select_tensor(self.memory);
-        recorder.name_diff_tensor(memory, "memory_selected");*/let put_me_back = ();
-        let memory = hidden;
+        let memory = recorder.select_tensor(self.memory);
+        recorder.name_diff_tensor(memory, "memory_selected");
 
         LSTMState{
             hidden,
@@ -77,7 +75,7 @@ impl NetworkStateGettable<LSTMState<DiffTensorPtr>> for LSTMState<PhiOtherSelect
     fn set_phi_other_selector(&self, recorder: &mut OperationsRecorder, other: LSTMState<DiffTensorPtr>)
     {
         recorder.set_phi_other_selector(self.hidden, other.hidden);
-        let put_me_back = ();//recorder.set_phi_other_selector(self.memory, other.memory);
+        recorder.set_phi_other_selector(self.memory, other.memory);
     }
 }
 
@@ -126,20 +124,20 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
                 }
             };
 
-            let put_me_back = ();//always_store(self.hidden_update.weight_original);
-            let put_me_back = ();//always_store(self.hidden_forget.weight_original);
-            let put_me_back = ();//always_store(self.hidden_output.weight_original);
-            let put_me_back = ();//always_store(self.hidden_memory.weight_original);
+            always_store(self.hidden_update.weight_original);
+            always_store(self.hidden_forget.weight_original);
+            always_store(self.hidden_output.weight_original);
+            always_store(self.hidden_memory.weight_original);
 
-            let put_me_back = ();//always_store(self.update_bias.weight_original);
-            let put_me_back = ();//always_store(self.forget_bias.weight_original);
+            always_store(self.update_bias.weight_original);
+            always_store(self.forget_bias.weight_original);
             always_store(self.output_bias.weight_original);
-            let put_me_back = ();//always_store(self.memory_bias.weight_original);
+            always_store(self.memory_bias.weight_original);
 
-            let put_me_back = ();//always_store(self.input_update.weight_original);
-            let put_me_back = ();//always_store(self.input_forget.weight_original);
+            always_store(self.input_update.weight_original);
+            always_store(self.input_forget.weight_original);
             always_store(self.input_output.weight_original);
-            let put_me_back = ();//always_store(self.input_memory.weight_original);
+            always_store(self.input_memory.weight_original);
         }
 
         let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
@@ -154,12 +152,15 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             }
         };
 
-//        let mut forget_gate = matmul_inputv_add(self.input_forget, input, self.forget_bias);
-//        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
+        let mut forget_gate = matmul_inputv_add(self.input_forget, input, self.forget_bias);
+        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
         let mut output_gate = matmul_inputv_add(self.input_output, input, self.output_bias);
-//        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
+        let mut memory_gate = matmul_inputv_add(self.input_memory, input, self.memory_bias);
 
+        recorder.name_diff_tensor(forget_gate, "forget_gate");
+        recorder.name_diff_tensor(update_gate, "update_gate");
         recorder.name_diff_tensor(output_gate, "output_gate");
+        recorder.name_diff_tensor(memory_gate, "memory_gate");
 
         if let Some(previous_state) = previous_state
         {
@@ -169,18 +170,23 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
                 *gate = recorder.add(*gate, mm);
             };
 
-            let put_me_back = ();//do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
-            let put_me_back = ();//do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
+            do_gate(&mut forget_gate, self.hidden_forget, previous_state.hidden);
+            do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
             do_gate(&mut output_gate, self.hidden_output, previous_state.hidden);
-            let put_me_back = ();//do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
+            do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
         }
 
-/*        forget_gate = recorder.sigmoid(forget_gate);
+        forget_gate = recorder.sigmoid(forget_gate);
         update_gate = recorder.sigmoid(update_gate);
         output_gate = recorder.sigmoid(output_gate);
-        memory_gate = recorder.tanh(memory_gate);*/let put_me_back = ();
+        memory_gate = recorder.tanh(memory_gate);
 
-/*        let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
+        recorder.name_diff_tensor(forget_gate, "forget_gate_activated");
+        recorder.name_diff_tensor(update_gate, "update_gate_activated");
+        recorder.name_diff_tensor(output_gate, "output_gate_activated");
+        recorder.name_diff_tensor(memory_gate, "memory_gate_activated");
+
+        let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
         let this_memory = if let Some(previous_state) = previous_state
         {
@@ -189,15 +195,13 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         } else
         {
             this_memory_rhs
-        };*/let put_me_back = ();
-        let this_memory = output_gate; let this_is_temp = ();
+        };
 
-        /*let hidden = {
+        let hidden = {
             let memory = recorder.tanh(this_memory);
 
             recorder.mul_componentwise(output_gate, memory)
-        };*/let put_me_back = ();
-        let hidden = this_memory;
+        };
 
         recorder.name_diff_tensor(hidden, "hidden");
 
@@ -240,8 +244,7 @@ mod tests
     #[test]
     fn lstm_works()
     {
-let put_me_back = ();
-/*        let mut recorder = OperationsRecorder::new();
+        let mut recorder = OperationsRecorder::new();
 
         let mut one_weight = |value: f32|
         {
@@ -321,7 +324,7 @@ let put_me_back = ();
         recorder.store_tensor_until_end(memory);
         recorder.store_tensor_until_end(hidden);
 
-        recorder.gradient_with_respect(output.output.into());
+        recorder.gradient(output.output.into());
 
         recorder.resolve_memory();
 
@@ -336,6 +339,6 @@ let put_me_back = ();
         };
 
         assert_close_enough(single_value(memory), 2.947, epsilon);
-        assert_close_enough(single_value(hidden), 0.986229, epsilon);*/todo!()
+        assert_close_enough(single_value(hidden), 0.986229, epsilon);
     }
 }

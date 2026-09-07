@@ -35,6 +35,7 @@ impl NewableLayer for ()
     fn new(_previous_size: usize, _this_size: usize) -> Self {}
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdamGradientInfo
 {
@@ -73,6 +74,7 @@ impl NewableLayer for AdamXGradientInfo
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSignGradientInfo
 {
@@ -131,6 +133,7 @@ impl Optimizer for ()
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sgd
 {
@@ -162,6 +165,7 @@ impl Optimizer for Sgd
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSign
 {
@@ -283,6 +287,7 @@ impl Optimizer for AdamX
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Adam
 {

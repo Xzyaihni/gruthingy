@@ -57,7 +57,7 @@ impl NetworkStateGettable<()> for ()
 {
     fn select(&self, _recorder: &mut OperationsRecorder) -> () {}
 
-    fn set_phi_other_selector(&self, _recorder: &mut OperationsRecorder, other: ()) {}
+    fn set_phi_other_selector(&self, _recorder: &mut OperationsRecorder, _other: ()) {}
 }
 
 impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>

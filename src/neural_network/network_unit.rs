@@ -11,7 +11,6 @@ use crate::neural_network::{
     OneHotIndex,
     LayerSizes,
     WeightsNamed,
-    PhiOtherSelectorRecordingIndex,
     network::{WeightsSize, NetworkOutput}
 };
 
