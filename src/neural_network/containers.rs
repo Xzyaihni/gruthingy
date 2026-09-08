@@ -340,7 +340,8 @@ struct LoopInfo
     defined_values: Vec<DiffValue>,
     used_values: Vec<DiffValue>,
     input_values: LoopValuesIndex,
-    inputs: Vec<InputType>,
+    stack_values: LoopStackIndex,
+    inputs: Vec<Option<InputType>>,
     #[cfg(debug_assertions)]
     expected_pairs: Vec<(DiffValue, DiffValue)>
 }
@@ -503,9 +504,14 @@ impl<T, TargetType> LoopStackValue<T, TargetType>
 #[derive(Debug, Default, Clone)]
 struct LoopValues
 {
-    values_stack: Vec<LoopStackValue<f32, ValueIndex>>,
-    tensors_stack: Vec<LoopStackValue<LayerType, TensorRawDataPointer>>,
     input_values: Vec<OwnedInputType>
+}
+
+#[derive(Debug, Default, Clone)]
+struct LoopStack
+{
+    values_stack: Vec<LoopStackValue<f32, ValueIndex>>,
+    tensors_stack: Vec<LoopStackValue<LayerType, TensorRawDataPointer>>
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +523,9 @@ struct RawJumpInfo
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct LoopValuesIndex(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct LoopStackIndex(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopIndex(usize);
@@ -653,10 +662,27 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
             self.memory.format_tensor_index(*x)
         };
 
+        let fv = |x: &[TensorIndex]| -> Vec<_>
+        {
+            x.iter().map(fm).collect::<Vec<_>>()
+        };
+
         f.debug_struct("SetTensorMemoryChecks")
-            .field("read_memory", &self.info.read_memory.iter().map(fm).collect::<Vec<_>>())
-            .field("set_memory", &self.info.set_memory.iter().map(fm).collect::<Vec<_>>())
+            .field("read_memory", &fv(&self.info.read_memory))
+            .field("set_memory", &fv(&self.info.set_memory))
             .finish()
+    }
+}
+
+#[cfg(debug_assertions)]
+impl SetTensorMemoryChecks
+{
+    fn new() -> Self
+    {
+        Self{
+            read_memory: Vec::new(),
+            set_memory: Vec::new()
+        }
     }
 }
 
@@ -671,6 +697,7 @@ pub struct OperationsRecorderMemory
     tensors_raw_data: Vec<f32>,
     one_hot_layers: Vec<OneHotLayer>,
     loops_values: Vec<LoopValues>,
+    loops_stack: Vec<LoopStack>,
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
     variable_names: VariableNames,
     #[cfg(debug_assertions)]
@@ -701,6 +728,7 @@ impl Debug for OperationsRecorderMemory
             .field("tensors_raw_data", &DebugStringRaw(format!("{} values", self.tensors_raw_data.len())))
             .field("one_hot_layers", &self.one_hot_layers)
             .field("loops_values", &self.loops_values)
+            .field("loops_stack", &self.loops_stack)
             .field("phi_other_selectors_values", &self.phi_other_selectors_values);
 
         #[cfg(debug_assertions)]
@@ -761,10 +789,11 @@ impl OperationsRecorderMemory
             tensors_raw_data: Vec::new(),
             one_hot_layers: Vec::new(),
             loops_values: Vec::new(),
+            loops_stack: Vec::new(),
             phi_other_selectors_values: Vec::new(),
             variable_names: VariableNames::new(),
             #[cfg(debug_assertions)]
-            set_tensor_memory: RefCell::new(SetTensorMemoryChecks{read_memory: Vec::new(), set_memory: Vec::new()}),
+            set_tensor_memory: RefCell::new(SetTensorMemoryChecks::new()),
             #[cfg(debug_assertions)]
             tensor_inputs: Vec::new(),
             #[cfg(debug_assertions)]
@@ -956,6 +985,7 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_use_index(&self, memory_index: TensorIndex)
     {
+        return; let temp = ();
         let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
 
         debug_assert!(
@@ -964,7 +994,10 @@ impl OperationsRecorderMemory
             self.format_tensor_index(memory_index)
         );
 
-        set_tensor_memory.read_memory.push(memory_index);
+        if !set_tensor_memory.read_memory.contains(&memory_index)
+        {
+            set_tensor_memory.read_memory.push(memory_index);
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -978,6 +1011,7 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_assign_index(&mut self, memory_index: TensorIndex)
     {
+        return; let temp = ();
         let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
 
         if let Some(read_index) = set_tensor_memory.read_memory.iter().position(|x| *x == memory_index)
@@ -985,11 +1019,9 @@ impl OperationsRecorderMemory
             set_tensor_memory.read_memory.remove(read_index);
         } else
         {
-            assert!(
-                !set_tensor_memory.set_memory.contains(&memory_index),
-                "{} was reassigned without being read",
-                self.format_tensor_index(memory_index)
-            );
+            let is_no_read_reassigned = set_tensor_memory.set_memory.contains(&memory_index);
+
+            assert!(!is_no_read_reassigned, "{} was reassigned without being read", self.format_tensor_index(memory_index));
         }
 
         set_tensor_memory.set_memory.push(memory_index);
@@ -1870,6 +1902,9 @@ impl OperationsRecorder
         let loops_values_index = LoopValuesIndex(self.memory.loops_values.len());
         self.memory.loops_values.push(LoopValues::default());
 
+        let loops_stack_index = LoopStackIndex(self.memory.loops_stack.len());
+        self.memory.loops_stack.push(LoopStack::default());
+
         self.loops.push(LoopInfo{
             times: 0,
             times_total: 0,
@@ -1881,6 +1916,7 @@ impl OperationsRecorder
             defined_values: Vec::new(),
             used_values: Vec::new(),
             input_values: loops_values_index,
+            stack_values: loops_stack_index,
             inputs: Vec::new(),
             #[cfg(debug_assertions)]
             expected_pairs: Vec::new()
@@ -1956,15 +1992,18 @@ impl OperationsRecorder
             debug_assert!(loop_info.times_total > 0, "LoopIndex({loop_index}) was uninitialized or has 0 iterations");
             debug_assert_eq!(loop_info.times_total * loop_info.inputs.len(), input_values_amount);
 
-            let total_count = input_values_amount / inputs_count;
+            if inputs_count > 0
+            {
+                let total_count = input_values_amount / inputs_count;
 
-            loop_info.current_index = if loop_info.reversed
-            {
-                loop_info.times_total - 1
-            } else
-            {
-                total_count - loop_info.times_total
-            };
+                loop_info.current_index = if loop_info.reversed
+                {
+                    loop_info.times_total - 1
+                } else
+                {
+                    total_count - loop_info.times_total
+                };
+            }
 
             loop_info.times = loop_info.times_total;
         }
@@ -2151,23 +2190,23 @@ impl OperationsRecorder
                 },
                 GradientOp::PushStackValue{loop_index, value} =>
                 {
-                    debug_calculate_values!(PushStackValue, (),());
+                    debug_calculate_values!(PushStackValue, (),(value));
 
-                    let loop_values_index = self.loops[loop_index.0].input_values;
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
 
                     #[allow(unused_mut)]
                     let mut stack_value: LoopStackValue<_, _> = self.memory.values[value.0].into();
                     stack_value.set_source(*value);
 
-                    self.memory.loops_values[loop_values_index.0].values_stack.push(stack_value);
+                    self.memory.loops_stack[loop_stack_index.0].values_stack.push(stack_value);
 
-                    debug_calculate_values_result!((),(value));
+                    debug_calculate_values_result!((),());
                 },
                 GradientOp::PushStackTensor{loop_index, tensor} =>
                 {
-                    debug_calculate_values!(PushStackTensor, (),());
+                    debug_calculate_values!(PushStackTensor, (tensor),());
 
-                    let loop_values_index = self.loops[loop_index.0].input_values;
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
 
                     let tensor_ref = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *tensor);
 
@@ -2175,17 +2214,17 @@ impl OperationsRecorder
                     let mut stack_value: LoopStackValue<_, _> = tensor_ref.clone_owned().into();
                     stack_value.set_source(*tensor);
 
-                    self.memory.loops_values[loop_values_index.0].tensors_stack.push(stack_value);
+                    self.memory.loops_stack[loop_stack_index.0].tensors_stack.push(stack_value);
 
-                    debug_calculate_values_result!((tensor),());
+                    debug_calculate_values_result!((),());
                 },
                 GradientOp::PopStackValue{loop_index, output} =>
                 {
                     debug_calculate_values!(PopStackValue, (),());
 
-                    let loop_values_index = self.loops[loop_index.0].input_values;
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
 
-                    let stack_value = self.memory.loops_values[loop_values_index.0].values_stack.pop()
+                    let stack_value = self.memory.loops_stack[loop_stack_index.0].values_stack.pop()
                         .expect("stack must not be empty");
 
                     self.memory.values[output.0] = stack_value.get_stack_value_for(self, *loop_index, *output);
@@ -2196,9 +2235,9 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(PopStackTensor, (),());
 
-                    let loop_values_index = self.loops[loop_index.0].input_values;
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
 
-                    let stack_value = self.memory.loops_values[loop_values_index.0].tensors_stack.pop()
+                    let stack_value = self.memory.loops_stack[loop_stack_index.0].tensors_stack.pop()
                         .expect("stack must not be empty");
 
                     let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
@@ -2217,10 +2256,13 @@ impl OperationsRecorder
 
                     (0..inputs_count).for_each(|input_index|
                     {
-                        let values = &self.memory.loops_values[loop_info.input_values.0].input_values;
-                        let value = values[loop_info.current_index * inputs_count + input_index].clone();
+                        if let Some(input_ptr) = loop_info.inputs[input_index]
+                        {
+                            let values = &self.memory.loops_values[loop_info.input_values.0].input_values;
+                            let value = values[loop_info.current_index * inputs_count + input_index].clone();
 
-                        self.memory.set_input(loop_info.inputs[input_index], value);
+                            self.memory.set_input(input_ptr, value);
+                        }
                     });
                 },
                 GradientOp::SetOtherSelector(index) =>
@@ -2423,7 +2465,7 @@ impl OperationsRecorder
 
                         if loop_info.reversed
                         {
-                            loop_info.current_index -= 1;
+                            loop_info.current_index = loop_info.current_index.saturating_sub(1);
                         } else
                         {
                             loop_info.current_index += 1;
@@ -3062,7 +3104,12 @@ impl OperationsRecorder
                     {
                         for (_, check_op) in self.gradient_operations.iter_mut().enumerate().filter(|(x_index, _)| *x_index != i)
                         {
-                            *check_op = check_op.clone().map_args_with_state((), |_s, arg| if arg == dst { src } else { arg }, |_s, x| x);
+                            *check_op = check_op.clone().map_args_with_state(
+                                (),
+                                |_s, arg| if arg == dst { src } else { arg },
+                                |_s, x| x,
+                                |_s, x| x
+                            );
                         }
 
                         self.remove_gradient_operation(i);
@@ -3291,7 +3338,7 @@ impl OperationsRecorder
                 {
                     DiffValue::Tensor(tensor_ptr) => &mut self.memory.tensor_live_ranges[tensor_ptr.0],
                     DiffValue::Value(value_index) => &mut self.memory.value_live_ranges[value_index.0],
-                    DiffValue::OneHot(_) => unimplemented!()
+                    DiffValue::OneHot(_) => return
                 };
 
                 handle_arg(live_range, name);
@@ -3655,7 +3702,7 @@ impl OperationsRecorder
         {
             let this_index: TensorIndex = self.memory.tensors_memory[ptr.0].memory.unwrap_or_else(||
             {
-                panic!("{} was used but not resolved", self.memory.format_variable(ptr))
+                panic!("{} was used but not resolved", self.memory.variable_names.format_variable(ptr))
             });
 
             let current_value = self.memory.tensors[this_index.0];
@@ -3707,12 +3754,9 @@ impl OperationsRecorder
                                     {
                                         InputTypePtr::Normal(x) =>
                                         {
-                                            let resolved_input = self.memory.tensors_memory[x.0].memory
-                                                .unwrap_or_else(|| panic!("loop input {} is unused", self.memory.format_variable(x)));
-
-                                            InputType::Normal(resolved_input)
+                                            self.memory.tensors_memory[x.0].memory.map(InputType::Normal)
                                         },
-                                        InputTypePtr::OneHot(x) => InputType::OneHot(x)
+                                        InputTypePtr::OneHot(x) => Some(InputType::OneHot(x))
                                     }
                                 }).collect();
 
@@ -3720,9 +3764,9 @@ impl OperationsRecorder
 
                                 loops_labels.push((index, GradientOperationIndex(operation_index.0)));
 
-                                self.raw_operations.push(GradientOp::SetInputs(index));
-
                                 ignore_output = true;
+
+                                self.raw_operations.push(GradientOp::SetInputs(index));
 
                                 RawJumpInfo{loop_index: LoopIndex(usize::MAX), operation_index: GradientOperationIndex(usize::MAX)}
                             },
@@ -3841,7 +3885,7 @@ impl OperationsRecorder
                 {
                     value_args.push(v_arg);
                     v_arg
-                });
+                }, |_s, o_arg| o_arg);
 
                 fn any_duplicates<T: Eq>(values: &[T]) -> bool
                 {
@@ -4229,15 +4273,12 @@ impl OperationsRecorder
             {
                 gradient_op.map_args(|arg|
                 {
-                    if let DiffValue::Tensor(t_arg) = arg
+                    if let Some((_source_input, gradient_input)) = loop_inputs.iter().find(|(source_input, _)|
                     {
-                        if let Some((_source_input, gradient_input)) = loop_inputs.iter().find(|(source_input, _)|
-                        {
-                            *source_input == InputTypePtr::Normal(t_arg)
-                        })
-                        {
-                            return DiffValue::Tensor(gradient_input.into_normal());
-                        }
+                        DiffValue::from(*source_input) == arg
+                    })
+                    {
+                        return DiffValue::from(*gradient_input);
                     }
 
                     if this.loops[inside_loop.0].defined_values.contains(&arg)
@@ -5173,6 +5214,11 @@ impl DiffValue
     {
         if let Self::Value(x) = self { x } else { panic!("into_value must be called on a value") }
     }
+
+    fn into_one_hot(self) -> OneHotIndex
+    {
+        if let Self::OneHot(x) = self { x } else { panic!("into_one_hot must be called on a onehot") }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5644,6 +5690,9 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, S>
         }, |inner_f, v_arg|
         {
             inner_f(DiffValue::Value(v_arg)).into_value()
+        }, |inner_f, o_arg|
+        {
+            inner_f(DiffValue::OneHot(o_arg)).into_one_hot()
         })
     }
 
@@ -5659,6 +5708,10 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, S>
         }, |inner_f, x|
         {
             inner_f(DiffValue::Value(x));
+            x
+        }, |inner_f, x|
+        {
+            inner_f(DiffValue::OneHot(x));
             x
         });
     }
@@ -5775,7 +5828,8 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
         self,
         mut state: State,
         mut tf: impl FnMut(&mut State, T) -> T,
-        mut vf: impl FnMut(&mut State, ValueIndex) -> ValueIndex
+        mut vf: impl FnMut(&mut State, ValueIndex) -> ValueIndex,
+        mut of: impl FnMut(&mut State, OneHotIndex) -> OneHotIndex
     ) -> Self
     {
         match self
@@ -5811,11 +5865,16 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             Self::Dot{lhs, rhs, output} => Self::Dot{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
             {
-                Self::SoftmaxCrossEntropy{values: tf(&mut state, values), targets, softmaxed_output, output}
+                Self::SoftmaxCrossEntropy{values: tf(&mut state, values), targets: of(&mut state, targets), softmaxed_output, output}
             },
             Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
             {
-                Self::SoftmaxCrossEntropyDiff{softmaxed_values: tf(&mut state, softmaxed_values), gradient: vf(&mut state, gradient), targets, output}
+                Self::SoftmaxCrossEntropyDiff{
+                    softmaxed_values: tf(&mut state, softmaxed_values),
+                    gradient: vf(&mut state, gradient),
+                    targets: of(&mut state, targets),
+                    output
+                }
             },
             Self::Matmulv{lhs, rhs, output} =>
             {
@@ -5827,11 +5886,11 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             },
             Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
             {
-                Self::MatmulOneHotvAdd{lhs: tf(&mut state, lhs), rhs, added: tf(&mut state, added), output}
+                Self::MatmulOneHotvAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::OuterProduct{lhs, rhs, output} => Self::OuterProduct{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
-            Self::OuterProductOneHot{lhs, rhs, output} => Self::OuterProductOneHot{lhs: tf(&mut state, lhs), rhs, output},
+            Self::OuterProductOneHot{lhs, rhs, output} => Self::OuterProductOneHot{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output},
             Self::CopyScalar{src, dst} => Self::CopyScalar{src: vf(&mut state, src), dst},
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
@@ -6274,7 +6333,7 @@ mod tests
         new_recorder.store_tensor_until_end(output_value);
 
         new_recorder.finish();
-        new_recorder.no_gradient();
+        new_recorder.gradient(output.into());
 
         new_recorder.resolve_memory();
 

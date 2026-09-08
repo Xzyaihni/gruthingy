@@ -1811,7 +1811,7 @@ mod tests
     use super::*;
 
     #[allow(unused_imports)]
-    use crate::neural_network::{EmbeddingUnit, Lstm};
+    use crate::neural_network::{EmbeddingUnit, Lstm, Gru};
 
 
     const SEED: u64 = 123;
@@ -1832,7 +1832,7 @@ mod tests
 
     impl UnitFactory for LstmUnitFactory
     {
-        type Unit<T> = Lstm<T>;
+        type Unit<T> = Gru<T>;
     }
 
     #[allow(dead_code)]
@@ -1878,6 +1878,7 @@ mod tests
         let input_outputs = inputs.iter().cloned().zip(outputs);
 
         let mut at_once: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, false, IS_INPUT_ONE_HOT);
+        at_once.set_train_mode();
 
         let dropout_masks_ptrs = at_once.create_dropout_masks_ptrs();
 
@@ -1896,7 +1897,7 @@ mod tests
             let NetworkOutput{
                 state: next_state_ptr,
                 output: (this_output, loss)
-            } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, *this_target, true);
+            } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, Some(*this_target), true);
 
             at_once.recorder.name_diff_tensor(this_output, "output");
             at_once.recorder.name_diff_scalar(loss, "loss");
@@ -2012,6 +2013,7 @@ mod tests
         let input_outputs = inputs.iter().cloned().zip(outputs);
 
         let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, is_multistep, IS_INPUT_ONE_HOT);
+        with_steps.set_train_mode();
 
         with_steps.prepare(true);
         let with_steps_gradient = with_steps.gradients(input_outputs.clone());

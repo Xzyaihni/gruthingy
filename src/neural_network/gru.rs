@@ -6,8 +6,9 @@ use crate::{
     create_weights_container,
     neural_network::{
         OperationsRecorder,
-        NetworkUnitStateable,
-        DiffTensor,
+        PhiOtherSelectorRecordingIndex,
+        NetworkStateSelectable,
+        NetworkStateGettable,
         DiffTensorPtr,
         DiffInputType,
         LayerSizes,
@@ -23,27 +24,38 @@ use crate::{
 pub type Gru<T> = WeightsContainer<T>;
 
 create_weights_container!{
-    (input_update, false, LayerSize::Input, LayerSize::Hidden),
-    (input_reset, false, LayerSize::Input, LayerSize::Hidden),
-    (input_activation, false, LayerSize::Input, LayerSize::Hidden),
-    (hidden_update, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_reset, true, LayerSize::Hidden, LayerSize::Hidden),
-    (hidden_activation, true, LayerSize::Hidden, LayerSize::Hidden),
-    (update_bias, false, LayerSize::One, LayerSize::Hidden),
-    (reset_bias, false, LayerSize::One, LayerSize::Hidden),
-    (activation_bias, false, LayerSize::One, LayerSize::Hidden)
+    (input_update, false, false, LayerSize::Input, LayerSize::Hidden),
+    (input_reset, false, true, LayerSize::Input, LayerSize::Hidden),
+    (input_activation, false, false, LayerSize::Input, LayerSize::Hidden),
+    (hidden_update, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_reset, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (hidden_activation, true, true, LayerSize::Hidden, LayerSize::Hidden),
+    (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
+    (reset_bias, false, true, LayerSize::One, LayerSize::Hidden),
+    (activation_bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
-impl NetworkUnitStateable for DiffTensor
+impl NetworkStateSelectable<PhiOtherSelectorRecordingIndex> for DiffTensorPtr
 {
-    fn set_value(&self, recorder: &mut OperationsRecorder, new: &Self)
+    fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> PhiOtherSelectorRecordingIndex
     {
-        recorder.set_tensor_from(self.as_value(), new.as_value());
+        recorder.phi_other_selector(*self)
+    }
+}
+
+impl NetworkStateGettable<DiffTensorPtr> for PhiOtherSelectorRecordingIndex
+{
+    fn select(&self, recorder: &mut OperationsRecorder) -> DiffTensorPtr
+    {
+        let state = recorder.select_tensor(*self);
+        recorder.name_diff_tensor(state, "state");
+
+        state
     }
 
-    fn set_gradient(&self, recorder: &mut OperationsRecorder, new: &Self)
+    fn set_phi_other_selector(&self, recorder: &mut OperationsRecorder, other: DiffTensorPtr)
     {
-        recorder.set_tensor_from(self.as_gradient().unwrap(), new.as_gradient().unwrap());
+        recorder.set_phi_other_selector(*self, other);
     }
 }
 
@@ -79,45 +91,37 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         store_gradient: bool
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let block = recorder.current_block();
-
-        if previous_state.is_some()
-        {
-            let mut store_both = |weight: DiffTensorPtr|
-            {
-                recorder.store_tensor_until_end_in_block(block, weight.as_value());
-                if store_gradient { recorder.store_tensor_until_end_in_block(block, weight.as_gradient().unwrap()); }
-            };
-
-            store_both(self.hidden_update.weight_original);
-            store_both(self.hidden_reset.weight_original);
-            store_both(self.hidden_activation.weight_original);
-
-            store_both(self.reset_bias.weight_original);
-
-            store_both(self.input_reset.weight_original);
-        }
-
         {
             let mut always_store = |weight: DiffTensorPtr|
             {
-                recorder.store_tensor_until_end(weight.as_value());
-                if store_gradient { recorder.store_tensor_until_end(weight.as_gradient().unwrap()); }
+                let value = weight.as_value();
+                recorder.store_tensor_until_end(value);
+
+                if store_gradient
+                {
+                    let gradient = weight.as_gradient().unwrap();
+
+                    recorder.store_tensor_until_end(gradient);
+                }
             };
 
-            always_store(self.update_bias.weight_original);
-            always_store(self.activation_bias.weight_original);
+            always_store(self.hidden_update.weight_original);
+            always_store(self.hidden_reset.weight_original);
+            always_store(self.hidden_activation.weight_original);
 
             always_store(self.input_update.weight_original);
+            always_store(self.input_reset.weight_original);
             always_store(self.input_activation.weight_original);
+
+            always_store(self.update_bias.weight_original);
+            always_store(self.reset_bias.weight_original);
+            always_store(self.activation_bias.weight_original);
         }
 
-        let block_index = block.into_index();
-
-        let mut matmul_inputv_add = |weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped[block_index];
-            let bias = bias.weight_dropped[block_index];
+            let weights = weights.weight_dropped;
+            let bias = bias.weight_dropped;
 
             match input
             {
@@ -126,34 +130,49 @@ impl NetworkUnit for Gru<WeightInfoPtr>
             }
         };
 
-        let mut update_gate = matmul_inputv_add(self.input_update, input, self.update_bias);
-        let mut reset_gate = matmul_inputv_add(self.input_reset, input, self.reset_bias);
-        let mut activation_gate = matmul_inputv_add(self.input_activation, input, self.activation_bias);
+        let mut update_gate = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
+        let mut activation_gate = matmul_inputv_add(recorder, self.input_activation, input, self.activation_bias);
+
+        recorder.name_diff_tensor(update_gate, "update_gate");
+        recorder.name_diff_tensor(activation_gate, "activation_gate");
+
+        let mut reset_gate = None;
 
         if let Some(previous_state) = previous_state
         {
+            let mut reset_gate_inner = matmul_inputv_add(recorder, self.input_reset, input, self.reset_bias);
+            recorder.name_diff_tensor(reset_gate_inner, "reset_gate");
+
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
             {
-                let mm = recorder.matmulv(hidden.weight_dropped[block_index], *previous_state);
+                let mm = recorder.matmulv(hidden.weight_dropped, *previous_state);
                 *gate = recorder.add(*gate, mm);
             };
 
             do_gate(&mut update_gate, self.hidden_update);
-            do_gate(&mut reset_gate, self.hidden_reset);
+            do_gate(&mut reset_gate_inner, self.hidden_reset);
+
+            let reset_gate_new = recorder.sigmoid(reset_gate_inner);
+            recorder.name_diff_tensor(reset_gate_new, "reset_gate_activated");
+
+            reset_gate = Some(reset_gate_new);
         }
 
         update_gate = recorder.sigmoid(update_gate);
-        reset_gate = recorder.sigmoid(reset_gate);
+
+        recorder.name_diff_tensor(update_gate, "update_gate_activated");
 
         if let Some(previous_state) = previous_state
         {
-            let activation_v = recorder.mul_componentwise(reset_gate, *previous_state);
-            let mm = recorder.matmulv(self.hidden_activation.weight_dropped[block_index], activation_v);
+            let activation_v = recorder.mul_componentwise(reset_gate.unwrap(), *previous_state);
+            let mm = recorder.matmulv(self.hidden_activation.weight_dropped, activation_v);
 
             activation_gate = recorder.add(activation_gate, mm);
         }
 
         activation_gate = recorder.tanh(activation_gate);
+
+        recorder.name_diff_tensor(activation_gate, "activation_gate_activated");
 
         let this_activation = recorder.mul_componentwise(activation_gate, update_gate);
 
