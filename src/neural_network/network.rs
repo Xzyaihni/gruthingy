@@ -1854,7 +1854,9 @@ mod tests
         type Unit<T> = EmbeddingUnit<T>;
     }
 
-    type NetworkType = Network<LstmUnitFactory, ()>;
+    type ThisFactory = GruUnitFactory;
+
+    type NetworkType = Network<ThisFactory, ()>;
 
     fn inputs_outputs() -> (Vec<OwnedInputType>, Vec<OneHotLayer>)
     {
@@ -1879,7 +1881,7 @@ mod tests
         (inputs, outputs)
     }
 
-    fn run_unrolled() -> (NetworkType, (f32, WeightsFullContainer<LstmUnitFactory, LayerType>))
+    fn run_unrolled() -> (NetworkType, (f32, WeightsFullContainer<ThisFactory, LayerType>))
     {
         fastrand::seed(SEED);
 

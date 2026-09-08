@@ -641,6 +641,7 @@ impl VariableNames
 #[derive(Clone)]
 struct SetTensorMemoryChecks
 {
+    set_ptrs: Vec<TensorPtr>,
     read_memory: Vec<TensorIndex>,
     set_memory: Vec<TensorIndex>
 }
@@ -668,6 +669,7 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
         };
 
         f.debug_struct("SetTensorMemoryChecks")
+            .field("set_ptrs", &self.info.set_ptrs.iter().map(|x| self.memory.format_variable(*x)).collect::<Vec<_>>())
             .field("read_memory", &fv(&self.info.read_memory))
             .field("set_memory", &fv(&self.info.set_memory))
             .finish()
@@ -680,6 +682,7 @@ impl SetTensorMemoryChecks
     fn new() -> Self
     {
         Self{
+            set_ptrs: Vec::new(),
             read_memory: Vec::new(),
             set_memory: Vec::new()
         }
@@ -1220,6 +1223,8 @@ impl OperationsRecorder
         #[cfg(debug_assertions)]
         {
             self.memory.set_tensors_check.push(_index.into());
+
+            self.memory.set_tensor_memory.borrow_mut().set_ptrs.push(_index);
         }
     }
 
@@ -3836,41 +3841,6 @@ impl OperationsRecorder
             eprintln!("using {} memory spots", self.memory.tensors.len());
         }
 
-        #[cfg(debug_assertions)]
-        {
-            let mut new_store_tensors_check = Vec::new();
-
-            self.memory.store_tensors_check.iter().for_each(|k|
-            {
-                let this_index: TensorIndex = match *k
-                {
-                    StoreCheckKey::PreResolve(ptr) => self.memory.tensors_memory[ptr.0].memory.expect("must be resolved"),
-                    StoreCheckKey::Resolved(_) => unreachable!()
-                };
-
-                let new_k = StoreCheckKey::Resolved(this_index);
-
-                // new_k has overlap with other ptrs so this check will give some false negatives
-                // disable graph coloring for an exact check
-
-                if !new_store_tensors_check.contains(&new_k)
-                {
-                    new_store_tensors_check.push(new_k);
-                }
-            });
-
-            self.memory.store_tensors_check = new_store_tensors_check;
-
-            self.memory.store_values_check = self.memory.store_values_check.iter().map(|k|
-            {
-                match *k
-                {
-                    StoreCheckKey::PreResolve(x) => StoreCheckKey::Resolved(x),
-                    StoreCheckKey::Resolved(_) => unreachable!()
-                }
-            }).collect();
-        }
-
         self.operations_to_raw(&mut memory_assignments);
 
         #[cfg(debug_assertions)]
@@ -3934,6 +3904,51 @@ impl OperationsRecorder
         self.memory.tensor_live_ranges = Vec::new();
 
         self.state = RecorderState::Ready;
+
+        #[cfg(debug_assertions)]
+        {
+            let mut new_store_tensors_check = Vec::new();
+
+            self.memory.store_tensors_check.iter().for_each(|k|
+            {
+                let this_index: TensorIndex = match *k
+                {
+                    StoreCheckKey::PreResolve(ptr) => self.memory.tensors_memory[ptr.0].memory.expect("must be resolved"),
+                    StoreCheckKey::Resolved(_) => unreachable!()
+                };
+
+                let new_k = StoreCheckKey::Resolved(this_index);
+
+                // new_k has overlap with other ptrs so this check will give some false negatives
+                // disable graph coloring for an exact check
+
+                if !new_store_tensors_check.contains(&new_k)
+                {
+                    new_store_tensors_check.push(new_k);
+                }
+            });
+
+            self.memory.store_tensors_check = new_store_tensors_check;
+
+            self.memory.store_values_check = self.memory.store_values_check.iter().map(|k|
+            {
+                match *k
+                {
+                    StoreCheckKey::PreResolve(x) => StoreCheckKey::Resolved(x),
+                    StoreCheckKey::Resolved(_) => unreachable!()
+                }
+            }).collect();
+
+            {
+                let resolved_set_ptrs: Vec<_> = {
+                    self.memory.set_tensor_memory.borrow().set_ptrs.iter().map(|x| self.resolve_tensor_ptr(*x)).collect()
+                };
+
+                let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
+
+                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter());
+            }
+        }
     }
 
     pub fn no_gradient(&mut self)
