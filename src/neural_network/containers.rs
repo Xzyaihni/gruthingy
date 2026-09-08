@@ -10,7 +10,7 @@ use std::{
 };
 
 #[allow(unused_imports)]
-use std::{iter, marker::PhantomData, cmp::Ordering, collections::HashMap};
+use std::{iter, cell::RefCell, marker::PhantomData, cmp::Ordering, collections::HashMap};
 
 use serde::{Serialize, Deserialize};
 
@@ -32,7 +32,7 @@ const OPT_INFO: bool = true;
 const NO_COLORING: bool = true;
 
 #[allow(dead_code)]
-const PRINT_CALCULATE_VALUES: bool = false;
+const PRINT_CALCULATE_VALUES: bool = true;
 
 
 macro_rules! get_disjoint_mut_with
@@ -628,6 +628,38 @@ impl VariableNames
     }
 }
 
+#[cfg(debug_assertions)]
+#[derive(Clone)]
+struct SetTensorMemoryChecks
+{
+    read_memory: Vec<TensorIndex>,
+    set_memory: Vec<TensorIndex>
+}
+
+#[cfg(debug_assertions)]
+struct SetTensorMemoryChecksDebug<'a>
+{
+    memory: &'a OperationsRecorderMemory,
+    info: &'a SetTensorMemoryChecks
+}
+
+#[cfg(debug_assertions)]
+impl Debug for SetTensorMemoryChecksDebug<'_>
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        let fm = |x: &TensorIndex|
+        {
+            self.memory.format_tensor_index(*x)
+        };
+
+        f.debug_struct("SetTensorMemoryChecks")
+            .field("read_memory", &self.info.read_memory.iter().map(fm).collect::<Vec<_>>())
+            .field("set_memory", &self.info.set_memory.iter().map(fm).collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationsRecorderMemory
 {
@@ -642,7 +674,7 @@ pub struct OperationsRecorderMemory
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
     variable_names: VariableNames,
     #[cfg(debug_assertions)]
-    set_tensor_memory: Vec<TensorIndex>,
+    set_tensor_memory: RefCell<SetTensorMemoryChecks>,
     #[cfg(debug_assertions)]
     tensor_inputs: Vec<TensorPtr>,
     #[cfg(debug_assertions)]
@@ -703,7 +735,7 @@ impl Debug for OperationsRecorderMemory
                 DebugStringRaw(format!("{key}: {value}"))
             }).collect::<Vec<_>>();
 
-            s.field("set_tensor_memory", &self.set_tensor_memory.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            s.field("set_tensor_memory", &SetTensorMemoryChecksDebug{info: &self.set_tensor_memory.borrow(), memory: self})
                 .field("variable_names", &variable_names)
                 .field("tensor_inputs", &self.tensor_inputs.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("set_tensors_check", &self.set_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
@@ -715,6 +747,7 @@ impl Debug for OperationsRecorderMemory
     }
 }
 
+#[allow(dead_code)]
 impl OperationsRecorderMemory
 {
     pub fn new() -> Self
@@ -731,7 +764,7 @@ impl OperationsRecorderMemory
             phi_other_selectors_values: Vec::new(),
             variable_names: VariableNames::new(),
             #[cfg(debug_assertions)]
-            set_tensor_memory: Vec::new(),
+            set_tensor_memory: RefCell::new(SetTensorMemoryChecks{read_memory: Vec::new(), set_memory: Vec::new()}),
             #[cfg(debug_assertions)]
             tensor_inputs: Vec::new(),
             #[cfg(debug_assertions)]
@@ -825,6 +858,8 @@ impl OperationsRecorderMemory
         #[cfg(debug_assertions)]
         {
             self.set_tensors_check.push(index.into());
+
+            self.verify_raw_ptr_assign_index(index);
         }
 
         self.set_tensor_raw(self.tensors[index.0], value);
@@ -864,6 +899,12 @@ impl OperationsRecorderMemory
     fn raw_ptr_to_ptr(&self, raw_ptr: TensorRawDataPointer) -> Option<TensorPtr>
     {
         let tensor_index = self.raw_ptr_to_memory(raw_ptr);
+
+        self.memory_to_ptr(tensor_index)
+    }
+
+    fn memory_to_ptr(&self, tensor_index: TensorIndex) -> Option<TensorPtr>
+    {
         let possible_tensor_ptrs: Vec<_> = self.tensors_memory.iter().enumerate().filter(|(_, x)|
         {
             x.memory == Some(tensor_index)
@@ -882,6 +923,17 @@ impl OperationsRecorderMemory
         self.variable_names.format_variable(variable)
     }
 
+    fn format_tensor_index(&self, tensor_index: TensorIndex) -> String
+    {
+        if let Some(tensor_ptr) = self.memory_to_ptr(tensor_index)
+        {
+            self.format_variable(tensor_ptr)
+        } else
+        {
+            format!("{tensor_index:?}")
+        }
+    }
+
     fn format_tensor_raw_ptr(&self, raw_ptr: TensorRawDataPointer) -> String
     {
         if let Some(tensor_ptr) = self.raw_ptr_to_ptr(raw_ptr)
@@ -893,18 +945,54 @@ impl OperationsRecorderMemory
         }
     }
 
-    fn verify_raw_ptr_use(&mut self, raw_ptr: TensorRawDataPointer)
+    #[cfg(debug_assertions)]
+    fn verify_raw_ptr_use(&self, raw_ptr: TensorRawDataPointer)
     {
-        /*debug_assert!(
-            self.set_tensor_memory.contains(&self.raw_ptr_to_memory(raw_ptr)),
-            "{} was used without being set",
-            self.format_tensor_raw_ptr(raw_ptr)
-        );*/let add_me = ();
+        let memory_index = self.raw_ptr_to_memory(raw_ptr);
+
+        self.verify_raw_ptr_use_index(memory_index)
     }
 
+    #[cfg(debug_assertions)]
+    fn verify_raw_ptr_use_index(&self, memory_index: TensorIndex)
+    {
+        let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
+
+        debug_assert!(
+            set_tensor_memory.set_memory.contains(&memory_index),
+            "{} was used without being set",
+            self.format_tensor_index(memory_index)
+        );
+
+        set_tensor_memory.read_memory.push(memory_index);
+    }
+
+    #[cfg(debug_assertions)]
     fn verify_raw_ptr_assign(&mut self, raw_ptr: TensorRawDataPointer)
     {
-        let add_me = ();
+        let memory_index = self.raw_ptr_to_memory(raw_ptr);
+
+        self.verify_raw_ptr_assign_index(memory_index)
+    }
+
+    #[cfg(debug_assertions)]
+    fn verify_raw_ptr_assign_index(&mut self, memory_index: TensorIndex)
+    {
+        let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
+
+        if let Some(read_index) = set_tensor_memory.read_memory.iter().position(|x| *x == memory_index)
+        {
+            set_tensor_memory.read_memory.remove(read_index);
+        } else
+        {
+            assert!(
+                !set_tensor_memory.set_memory.contains(&memory_index),
+                "{} was reassigned without being read",
+                self.format_tensor_index(memory_index)
+            );
+        }
+
+        set_tensor_memory.set_memory.push(memory_index);
     }
 }
 
@@ -977,6 +1065,7 @@ impl Debug for OperationsRecorder
         }
 
         f.debug_struct("OperationsRecorder")
+            .field("memory", &self.memory)
             .field("state", &self.state)
             .field("operations_target", &self.operations_target)
             .field("loops", &loops)
@@ -1140,12 +1229,7 @@ impl OperationsRecorder
     {
         let input = self.memory.new_tensor(true, TensorMemoryValue::Value(value));
 
-        #[cfg(debug_assertions)]
-        {
-            self.memory.set_tensors_check.push(input.as_value().into());
-        }
-
-        self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
+        self.set_new_tensor_common(&input);
 
         input
     }
@@ -1154,14 +1238,19 @@ impl OperationsRecorder
     {
         let input = self.memory.new_tensor(false, TensorMemoryValue::Value(value));
 
+        self.set_new_tensor_common(&input);
+
+        input
+    }
+
+    fn set_new_tensor_common(&mut self, input: &DiffTensorPtr)
+    {
         #[cfg(debug_assertions)]
         {
             self.memory.set_tensors_check.push(input.as_value().into());
         }
 
         self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
-
-        input
     }
 
     pub fn set_new_value(&mut self, value: f32) -> DiffScalar
@@ -1308,6 +1397,8 @@ impl OperationsRecorder
         #[cfg(debug_assertions)]
         {
             verify_store_check(&self.memory.store_tensors_check, index, "tensor");
+
+            self.memory.verify_raw_ptr_use_index(index);
         }
 
         let info = self.memory.tensors[index.0];
@@ -1326,14 +1417,13 @@ impl OperationsRecorder
             if USES_VALUE
             {
                 verify_store_check(&self.memory.store_tensors_check, index, "tensor");
-            }
-        }
 
-        #[cfg(debug_assertions)]
-        {
-            if !USES_VALUE
+                self.memory.verify_raw_ptr_use_index(index);
+            } else
             {
                 self.memory.set_tensors_check.push(index.into());
+
+                self.memory.verify_raw_ptr_assign_index(index);
             }
         }
 
@@ -1968,9 +2058,9 @@ impl OperationsRecorder
 
                     #[cfg(debug_assertions)]
                     {
-                        /*$(
-                            self.verify_raw_ptr_use(*$t_name);
-                        )**/let add_me = ();
+                        $(
+                            self.memory.verify_raw_ptr_use(*$t_name);
+                        )*
 
                         if PRINT_CALCULATE_VALUES
                         {
@@ -2017,6 +2107,10 @@ impl OperationsRecorder
                         {
                             eprintln!(")");
                         }
+
+                        $(
+                            self.memory.verify_raw_ptr_assign(*$t_name);
+                        )*
                     }
                 }
             }
@@ -2128,11 +2222,6 @@ impl OperationsRecorder
 
                         self.memory.set_input(loop_info.inputs[input_index], value);
                     });
-
-                    #[cfg(debug_assertions)]
-                    {
-                        let here = ();
-                    }
                 },
                 GradientOp::SetOtherSelector(index) =>
                 {
@@ -2142,15 +2231,17 @@ impl OperationsRecorder
                 },
                 GradientOp::GetOtherSelectorValue{info: index, first, other, output} =>
                 {
-                    debug_calculate_values!(GetOtherSelectorValue, (),(first, other));
-
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
                     let src = if this_selector.is_set
                     {
+                        debug_calculate_values!(GetOtherSelectorValue, (),(other));
+
                         other
                     } else
                     {
+                        debug_calculate_values!(GetOtherSelectorValue, (),(first));
+
                         first
                     };
 
@@ -2160,15 +2251,17 @@ impl OperationsRecorder
                 },
                 GradientOp::GetOtherSelectorTensor{info: index, first, other, output} =>
                 {
-                    debug_calculate_values!(GetOtherSelectorTensor, (first, other),());
-
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
                     let src = if this_selector.is_set
                     {
+                        debug_calculate_values!(GetOtherSelectorTensor, (other),());
+
                         other
                     } else
                     {
+                        debug_calculate_values!(GetOtherSelectorTensor, (first),());
+
                         first
                     };
 
@@ -2192,7 +2285,13 @@ impl OperationsRecorder
 
                     self.memory.values[dst.0] = self.memory.values[src.0];
 
-                    debug_calculate_values_result!((),(first, other));
+                    if this_selector.is_set
+                    {
+                        debug_calculate_values_result!((),(first));
+                    } else
+                    {
+                        debug_calculate_values_result!((),(other));
+                    }
                 },
                 GradientOp::OtherSelectorTensorGradient{index, first, other, src} =>
                 {
@@ -2210,34 +2309,52 @@ impl OperationsRecorder
 
                     copy_tensor!(src, dst);
 
-                    debug_calculate_values_result!((first, other),());
+                    if this_selector.is_set
+                    {
+                        debug_calculate_values_result!((first),());
+                    } else
+                    {
+                        debug_calculate_values_result!((other),());
+                    }
                 },
                 GradientOp::GradientSelectAddValue{index, first, other, src, added} =>
                 {
-                    debug_calculate_values!(GradientSelectAddValue, (),(src, added));
-
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
-                    let src = self.memory.values[src.0];
+                    let src_value = self.memory.values[src.0];
 
-                    if this_selector.is_set
+                    let is_set = this_selector.is_set;
+
+                    if is_set
                     {
-                        self.memory.values[first.0] = src;
+                        debug_calculate_values!(GradientSelectAddValue, (),(src, added));
+
+                        self.memory.values[other.0] = src_value + self.memory.values[added.0];
                     } else
                     {
-                        self.memory.values[other.0] = src + self.memory.values[added.0];
+                        debug_calculate_values!(GradientSelectAddValue, (),(src));
+
+                        self.memory.values[first.0] = src_value;
                     }
 
-                    debug_calculate_values_result!((),(first, other));
+                    if is_set
+                    {
+                        debug_calculate_values_result!((),(other));
+                    } else
+                    {
+                        debug_calculate_values_result!((),(first));
+                    }
                 },
                 GradientOp::GradientSelectAddTensor{index, first, other, src, added} =>
                 {
-                    debug_calculate_values!(GradientSelectAddTensor, (src, added),());
-
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
-                    if this_selector.is_set
+                    let is_set = this_selector.is_set;
+
+                    if is_set
                     {
+                        debug_calculate_values!(GradientSelectAddTensor, (src, added),());
+
                         let (other, src, added) = get_disjoint_mut!(
                             (LayerTypeMut, other, x0),
                             (LayerTypeRef, src, x1),
@@ -2247,32 +2364,40 @@ impl OperationsRecorder
                         other.add_to(src, added);
                     } else
                     {
+                        debug_calculate_values!(GradientSelectAddTensor, (src),());
+
                         copy_tensor!(src, first);
                     }
 
-                    debug_calculate_values_result!((first, other),());
+                    if is_set
+                    {
+                        debug_calculate_values_result!((other),());
+                    } else
+                    {
+                        debug_calculate_values_result!((first),());
+                    }
                 },
                 GradientOp::IfSetTensor{index, dst, src} =>
                 {
-                    debug_calculate_values!(IfSetTensor, (src),());
-
                     if self.memory.phi_other_selectors_values[index.0].is_set
                     {
-                        copy_tensor!(src, dst);
-                    }
+                        debug_calculate_values!(IfSetTensor, (src),());
 
-                    debug_calculate_values_result!((dst),());
+                        copy_tensor!(src, dst);
+
+                        debug_calculate_values_result!((dst),());
+                    }
                 },
                 GradientOp::IfNotSetTensor{index, dst, src} =>
                 {
-                    debug_calculate_values!(IfNotSetTensor, (src),());
-
                     if !self.memory.phi_other_selectors_values[index.0].is_set
                     {
-                        copy_tensor!(src, dst);
-                    }
+                        debug_calculate_values!(IfNotSetTensor, (src),());
 
-                    debug_calculate_values_result!((dst),());
+                        copy_tensor!(src, dst);
+
+                        debug_calculate_values_result!((dst),());
+                    }
                 },
                 GradientOp::SetOtherSelectorGradient{loop_index, selector_index} =>
                 {
@@ -3492,18 +3617,28 @@ impl OperationsRecorder
 
             let id = TensorIndexRaw(self.memory.tensors_raw_data.len());
 
-            match this_tensor
-            {
-                TensorMemoryValue::Value(x) => self.memory.tensors_raw_data.extend(x.as_slice()),
-                TensorMemoryValue::Size{..} => self.memory.tensors_raw_data.resize(self.memory.tensors_raw_data.len() + size, 0.0)
-            }
-
-            debug_assert_eq!(self.memory.tensors[this_index.0], TensorRawDataPointer::undefined());
-            self.memory.tensors[this_index.0] = TensorRawDataPointer{
+            let this_tensor_raw_ptr = TensorRawDataPointer{
                 raw_index: id,
                 rows,
                 columns
             };
+
+            debug_assert_eq!(self.memory.tensors[this_index.0], TensorRawDataPointer::undefined());
+            self.memory.tensors[this_index.0] = this_tensor_raw_ptr;
+
+            match this_tensor
+            {
+                TensorMemoryValue::Value(x) =>
+                {
+                    #[cfg(debug_assertions)]
+                    {
+                        self.memory.verify_raw_ptr_assign(this_tensor_raw_ptr);
+                    }
+
+                    self.memory.tensors_raw_data.extend(x.as_slice())
+                },
+                TensorMemoryValue::Size{..} => self.memory.tensors_raw_data.resize(self.memory.tensors_raw_data.len() + size, 0.0)
+            }
         };
 
         usage_counts.into_iter().rev().for_each(|(this_index, _, local)|
@@ -3573,7 +3708,7 @@ impl OperationsRecorder
                                         InputTypePtr::Normal(x) =>
                                         {
                                             let resolved_input = self.memory.tensors_memory[x.0].memory
-                                                .unwrap_or_else(|| panic!("loop input {x:?} is unused"));
+                                                .unwrap_or_else(|| panic!("loop input {} is unused", self.memory.format_variable(x)));
 
                                             InputType::Normal(resolved_input)
                                         },
@@ -4046,6 +4181,7 @@ impl OperationsRecorder
                     &mut selectors,
                     &mut intermediate_selectors,
                     &mut used_stack_values,
+                    &[],
                     op,
                     None
                 );
@@ -4069,6 +4205,7 @@ impl OperationsRecorder
         selectors: &mut Vec<LoopSelectorInfo>,
         intermediate_selectors: &mut Vec<PhiOtherSelectorIndex>,
         used_stack_values: &mut Vec<UsedStackValueInfo>,
+        loop_inputs: &[(InputTypePtr, InputTypePtr)],
         op: Op,
         inside_loop: Option<LoopIndex>
     )
@@ -4092,6 +4229,17 @@ impl OperationsRecorder
             {
                 gradient_op.map_args(|arg|
                 {
+                    if let DiffValue::Tensor(t_arg) = arg
+                    {
+                        if let Some((_source_input, gradient_input)) = loop_inputs.iter().find(|(source_input, _)|
+                        {
+                            *source_input == InputTypePtr::Normal(t_arg)
+                        })
+                        {
+                            return DiffValue::Tensor(gradient_input.into_normal());
+                        }
+                    }
+
                     if this.loops[inside_loop.0].defined_values.contains(&arg)
                     {
                         if let Some(info) = used_stack_values.iter().find(|x| x.source == arg && x.loop_index == inside_loop)
@@ -4856,7 +5004,31 @@ impl OperationsRecorder
                     }
                 });
 
-                self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpTo{inputs, index: gradient_loop_index}));
+                let gradient_inputs: Vec<_> = inputs.iter().map(|x|
+                {
+                    match x
+                    {
+                        InputTypePtr::Normal(tensor) =>
+                        {
+                            let (rows, columns) = self.memory.tensor_shape(*tensor);
+
+                            let gradient_input = self.new_tensor_no_gradient(rows, columns).as_value();
+                            self.name_tensor_suffix(gradient_input, *tensor, "_grad");
+
+                            #[cfg(debug_assertions)]
+                            {
+                                self.memory.set_tensors_check.push(gradient_input.into());
+                            }
+
+                            InputTypePtr::Normal(gradient_input)
+                        },
+                        InputTypePtr::OneHot(_) => InputTypePtr::OneHot(self.new_one_hot())
+                    }
+                }).collect();
+
+                let input_replacements: Vec<(_, _)> = inputs.iter().cloned().zip(gradient_inputs.iter().cloned()).collect();
+
+                self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpTo{inputs: gradient_inputs, index: gradient_loop_index}));
 
                 ops.into_iter().rev().for_each(|op|
                 {
@@ -4865,6 +5037,7 @@ impl OperationsRecorder
                         selectors,
                         intermediate_selectors,
                         used_stack_values,
+                        &input_replacements,
                         op,
                         Some(gradient_loop_index)
                     );
@@ -5841,7 +6014,7 @@ impl OneHotLayer
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputTypePtr
 {
     Normal(TensorPtr),
@@ -5861,6 +6034,14 @@ impl From<OneHotIndex> for InputTypePtr
     fn from(index: OneHotIndex) -> Self
     {
         Self::OneHot(index)
+    }
+}
+
+impl InputTypePtr
+{
+    pub fn into_normal(self) -> TensorPtr
+    {
+        if let Self::Normal(x) = self { x } else { panic!("expected normal") }
     }
 }
 
@@ -6093,7 +6274,7 @@ mod tests
         new_recorder.store_tensor_until_end(output_value);
 
         new_recorder.finish();
-        new_recorder.gradient(output.into());
+        new_recorder.no_gradient();
 
         new_recorder.resolve_memory();
 
