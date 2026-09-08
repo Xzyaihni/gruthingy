@@ -1827,10 +1827,20 @@ mod tests
         output: 2
     };
 
+    #[allow(dead_code)]
     #[derive(Debug)]
     struct LstmUnitFactory;
 
     impl UnitFactory for LstmUnitFactory
+    {
+        type Unit<T> = Lstm<T>;
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug)]
+    struct GruUnitFactory;
+
+    impl UnitFactory for GruUnitFactory
     {
         type Unit<T> = Gru<T>;
     }

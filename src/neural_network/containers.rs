@@ -32,7 +32,7 @@ const OPT_INFO: bool = true;
 const NO_COLORING: bool = true;
 
 #[allow(dead_code)]
-const PRINT_CALCULATE_VALUES: bool = true;
+const PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -985,7 +985,6 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_use_index(&self, memory_index: TensorIndex)
     {
-        return; let temp = ();
         let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
 
         debug_assert!(
@@ -1011,7 +1010,6 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_assign_index(&mut self, memory_index: TensorIndex)
     {
-        return; let temp = ();
         let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
 
         if let Some(read_index) = set_tensor_memory.read_memory.iter().position(|x| *x == memory_index)
@@ -3267,6 +3265,18 @@ impl OperationsRecorder
 
         self.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
+            let is_stack_unused = |loop_index: LoopIndex, value: DiffValue|
+            {
+                !self.loops[loop_index.0].used_values.contains(&value)
+            };
+
+            match op
+            {
+                GradientOp::PushStackValue{loop_index, value} => if is_stack_unused(*loop_index, (*value).into()) { return },
+                GradientOp::PushStackTensor{loop_index, tensor} => if is_stack_unused(*loop_index, (*tensor).into()) { return },
+                _ => ()
+            }
+
             let handle_output = |live_range: &mut LiveRange, allow_reuse: bool, err_name: String|
             {
                 let start = &mut live_range.start;
@@ -6096,6 +6106,7 @@ impl From<OneHotIndex> for InputTypePtr
     }
 }
 
+#[allow(dead_code)]
 impl InputTypePtr
 {
     pub fn into_normal(self) -> TensorPtr
@@ -6310,9 +6321,7 @@ mod tests
 
         recorder.gradient(out.into());
 
-        dbg!(&recorder);
         recorder.resolve_memory();
-        dbg!(&recorder);
 
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
         let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
@@ -6333,7 +6342,7 @@ mod tests
         new_recorder.store_tensor_until_end(output_value);
 
         new_recorder.finish();
-        new_recorder.gradient(output.into());
+        new_recorder.no_gradient();
 
         new_recorder.resolve_memory();
 
