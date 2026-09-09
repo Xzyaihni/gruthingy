@@ -1007,11 +1007,15 @@ where
 
     pub fn set_train_mode(&mut self)
     {
+        debug_assert!(self.network_mode.is_none());
+
         self.network_mode = Some(NetworkMode::Train);
     }
 
     pub fn set_predict_mode(&mut self)
     {
+        debug_assert!(self.network_mode.is_none());
+
         self.network_mode = Some(NetworkMode::Predict);
     }
 
@@ -1312,7 +1316,10 @@ where
                 previous_state,
                 input,
                 store_gradient
-            ).map(|output| (output, this.recorder.softmax_cross_entropy(output, targets.expect("ill implement it later whathata")).1))
+            ).map(|output|
+            {
+                (output, this.recorder.softmax_cross_entropy(output, targets.expect("ill implement it later whathata")).1)
+            })
         }, previous_states, dropout_masks, input, store_gradient)
     }
 

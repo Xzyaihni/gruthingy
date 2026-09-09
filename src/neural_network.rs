@@ -695,6 +695,8 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
         for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
     {
+        network.set_predict_mode();
+
         let input_amount = self.words.borrow().len();
         let mut previous_word = None;
 
