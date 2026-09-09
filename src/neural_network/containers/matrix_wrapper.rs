@@ -20,6 +20,7 @@ use super::{
     leaky_relu_d
 };
 
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatrixWrapper(DMatrix<f32>);
 
@@ -298,7 +299,7 @@ impl Neg for &MatrixWrapper
 
 impl Softmaxable for MatrixWrapper
 {
-    fn exp(&mut self)
+    fn exp_inplace(&mut self)
     {
         self.exp_inplace();
     }

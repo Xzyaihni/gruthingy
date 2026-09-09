@@ -1375,13 +1375,13 @@ where
                 {
                     acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
                     {
-                        *acc += this;
+                        acc.add_inplace(this.as_ref());
                     });
 
                     acc
                 }).expect("batch size must not be 0");
 
-                gradients.iter_mut().for_each(|gradient| *gradient /= info.batch_size as f32);
+                gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((info.batch_size as f32).recip()));
 
                 let batch_loss = kahan_sum.value() / steps_num as f64;
 

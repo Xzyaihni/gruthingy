@@ -6,7 +6,7 @@ use std::{
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
-    ops::{DivAssign, Range}
+    ops::Range
 };
 
 #[allow(unused_imports)]
@@ -14,17 +14,19 @@ use std::{iter, cell::RefCell, marker::PhantomData, cmp::Ordering, collections::
 
 use serde::{Serialize, Deserialize};
 
-use matrix_wrapper::{MatrixWrapper, MatrixWrapperRef, MatrixWrapperMut, VectorWrapper, VectorWrapperMut};
+//use matrix_wrapper::{MatrixWrapper, MatrixWrapperRef, MatrixWrapperMut, VectorWrapper, VectorWrapperMut};
+use ywrapper::*;
 
-mod matrix_wrapper;
+//mod matrix_wrapper;
+mod ywrapper;
 
 
-pub type LayerType = MatrixWrapper;
-pub type LayerTypeRef<'a> = MatrixWrapperRef<'a>;
-pub type LayerTypeMut<'a> = MatrixWrapperMut<'a>;
+pub type LayerType = YWrapper;
+pub type LayerTypeRef<'a> = YWrapperRef<'a>;
+pub type LayerTypeMut<'a> = YWrapperMut<'a>;
 
-pub type LayerTypeVector<'a> = VectorWrapper<'a>;
-pub type LayerTypeVectorMut<'a> = VectorWrapperMut<'a>;
+pub type LayerTypeVectorRef<'a> = YVectorWrapperRef<'a>;
+pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
@@ -73,11 +75,11 @@ pub fn leaky_relu_d(value: f32) -> f32
 }
 
 pub trait Softmaxable
-where
-    Self: DivAssign<f32>
 {
-    fn exp(&mut self);
+    fn exp_inplace(&mut self);
     fn sum(&self) -> f32;
+
+    fn mul_scalar_inplace(&mut self, value: f32);
 }
 
 #[derive(Debug)]
@@ -88,17 +90,17 @@ impl Softmaxer
     #[allow(dead_code)]
     pub fn softmax_temperature(layer: &mut LayerType, temperature: f32)
     {
-        *layer /= temperature;
+        layer.mul_scalar_inplace(temperature.recip());
 
         Self::softmax(layer)
     }
 
     pub fn softmax(layer: &mut impl Softmaxable)
     {
-        layer.exp();
+        layer.exp_inplace();
         let s = layer.sum();
 
-        *layer /= s;
+        layer.mul_scalar_inplace(s.recip());
     }
 
     pub fn pick_weighed_inner<I, T>(mut iter: I) -> usize
@@ -2642,7 +2644,7 @@ impl OperationsRecorder
                     debug_calculate_values!(MulScalar, (lhs),(rhs));
                     copy_tensor!(lhs, output);
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).scale(self.memory.values[rhs.0]);
+                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).mul_scalar_inplace(self.memory.values[rhs.0]);
                     debug_calculate_values_result!((output),());
                 },
                 GradientOp::MulScalars{lhs, rhs, output} =>
@@ -2822,9 +2824,9 @@ impl OperationsRecorder
                             (LayerTypeRef, softmaxed_values, x1)
                         );
 
-                        output.sub_to(softmaxed_values, MatrixWrapperRef::from(&self.memory.one_hot_layers[targets.0].clone().into_layer()));
+                        output.sub_to(softmaxed_values, LayerTypeRef::from(&self.memory.one_hot_layers[targets.0].clone().into_layer()));
 
-                        output.scale(self.memory.values[gradient.0]);
+                        output.mul_scalar_inplace(self.memory.values[gradient.0]);
                     }
 
                     debug_calculate_values_result!((output),());
@@ -2837,7 +2839,7 @@ impl OperationsRecorder
                         let (output, lhs, rhs) = get_disjoint_mut!(
                             (LayerTypeVectorMut, output, x0),
                             (LayerTypeRef, lhs, x1),
-                            (LayerTypeVector, rhs, x2)
+                            (LayerTypeVectorRef, rhs, x2)
                         );
 
                         output.matmulv_into(lhs, rhs);
@@ -6647,7 +6649,7 @@ mod tests
             let v = a_value.clone();
             let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = fg(vals(&(v + epsilon), &b_value));
+            let this_fg = fg(vals(&(v.add(epsilon.as_ref())), &b_value));
 
             a_fg[index] = this_fg;
         }
@@ -6658,7 +6660,7 @@ mod tests
             let v = b_value.clone();
             let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = fg(vals(&a_value, &(v + epsilon)));
+            let this_fg = fg(vals(&a_value, &(v.add(epsilon.as_ref()))));
 
             b_fg[index] = this_fg;
         }
