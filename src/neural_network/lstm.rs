@@ -265,7 +265,11 @@ mod tests
 
         let mut one_weight = |value: f32|
         {
-            recorder.set_new_tensor_gradientable(LayerType::from_raw([value], 1, 1).into())
+            let w = recorder.set_new_tensor_gradientable(LayerType::from_raw([value], 1, 1).into());
+
+            recorder.allow_discard(w.as_value());
+
+            w
         };
 
         let mut one_weight_info = |value: f32|

@@ -30,9 +30,10 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = true;
 const NO_COLORING: bool = true;
+const REASSIGN_CHECKS: bool = true;
 
 #[allow(dead_code)]
-const PRINT_CALCULATE_VALUES: bool = false;
+const PRINT_CALCULATE_VALUES: bool = true;
 
 
 macro_rules! get_disjoint_mut_with
@@ -337,6 +338,7 @@ struct LoopInfo
     live_range: LiveRange,
     loops_gradient: Option<LoopIndex>,
     gradient_of_loop: Option<LoopIndex>,
+    kept_inside: Vec<DiffValue>,
     defined_values: Vec<DiffValue>,
     used_values: Vec<DiffValue>,
     input_values: LoopValuesIndex,
@@ -359,6 +361,7 @@ impl Debug for LoopInfoDebug<'_>
     {
         let info = self.info;
 
+        let kept_inside = ForceNoPretty(info.kept_inside.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>());
         let defined_values = ForceNoPretty(info.defined_values.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>());
         let used_values = ForceNoPretty(info.used_values.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>());
 
@@ -370,6 +373,7 @@ impl Debug for LoopInfoDebug<'_>
             .field("live_range", &ForceNoPretty(&info.live_range))
             .field("loops_gradient", &ForceNoPretty(&info.loops_gradient))
             .field("gradient_of_loop", &ForceNoPretty(&info.gradient_of_loop))
+            .field("kept_inside", &kept_inside)
             .field("defined_values", &defined_values)
             .field("used_values", &used_values)
             .field("input_values", &ForceNoPretty(&info.input_values))
@@ -660,7 +664,7 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
     {
         let fm = |x: &TensorIndex|
         {
-            self.memory.format_tensor_index(*x)
+            DebugStringRaw(self.memory.format_tensor_index(*x))
         };
 
         let fv = |x: &[TensorIndex]| -> Vec<_>
@@ -707,6 +711,8 @@ pub struct OperationsRecorderMemory
     set_tensor_memory: RefCell<SetTensorMemoryChecks>,
     #[cfg(debug_assertions)]
     tensor_inputs: Vec<TensorPtr>,
+    #[cfg(debug_assertions)]
+    allow_discard: Vec<TensorPtr>,
     #[cfg(debug_assertions)]
     set_tensors_check: Vec<InputCheckType>,
     #[cfg(debug_assertions)]
@@ -769,6 +775,7 @@ impl Debug for OperationsRecorderMemory
             s.field("set_tensor_memory", &SetTensorMemoryChecksDebug{info: &self.set_tensor_memory.borrow(), memory: self})
                 .field("variable_names", &variable_names)
                 .field("tensor_inputs", &self.tensor_inputs.iter().map(ForceNoPretty).collect::<Vec<_>>())
+                .field("allow_discard", &self.allow_discard.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("set_tensors_check", &self.set_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("store_values_check", &self.store_values_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
@@ -799,6 +806,8 @@ impl OperationsRecorderMemory
             set_tensor_memory: RefCell::new(SetTensorMemoryChecks::new()),
             #[cfg(debug_assertions)]
             tensor_inputs: Vec::new(),
+            #[cfg(debug_assertions)]
+            allow_discard: Vec::new(),
             #[cfg(debug_assertions)]
             set_tensors_check: Vec::new(),
             #[cfg(debug_assertions)]
@@ -1022,7 +1031,13 @@ impl OperationsRecorderMemory
         {
             let is_no_read_reassigned = set_tensor_memory.set_memory.contains(&memory_index);
 
-            assert!(!is_no_read_reassigned, "{} was reassigned without being read", self.format_tensor_index(memory_index));
+            if REASSIGN_CHECKS
+            {
+                if is_no_read_reassigned
+                {
+                    eprintln!("{} was reassigned without being read", self.format_tensor_index(memory_index));
+                }
+            }
         }
 
         set_tensor_memory.set_memory.push(memory_index);
@@ -1051,19 +1066,9 @@ impl Debug for OperationsRecorder
 
         #[cfg(debug_assertions)]
         {
-            gradient_operations = self.gradient_operations.iter().filter_map(|op|
+            gradient_operations = self.gradient_operations.iter().map(|op|
             {
-                let is_popped = |index: LoopIndex, value: DiffValue| -> bool
-                {
-                    self.loops[index.0].used_values.contains(&value)
-                };
-
-                match op
-                {
-                    GradientOp::PushStackTensor{loop_index, tensor} if !is_popped(*loop_index, DiffValue::Tensor(*tensor)) => None,
-                    GradientOp::PushStackValue{loop_index, value} if !is_popped(*loop_index, DiffValue::Value(*value)) => None,
-                    op => Some(NotationGradientOp::from_nameable(&self.memory, op.clone()))
-                }
+                NotationGradientOp::from_nameable(&self.memory, op.clone())
             }).collect::<Vec<_>>();
         }
 
@@ -1225,6 +1230,14 @@ impl OperationsRecorder
             self.memory.set_tensors_check.push(_index.into());
 
             self.memory.set_tensor_memory.borrow_mut().set_ptrs.push(_index);
+        }
+    }
+
+    pub fn allow_discard(&mut self, _index: TensorPtr)
+    {
+        #[cfg(debug_assertions)]
+        {
+            self.memory.allow_discard.push(_index);
         }
     }
 
@@ -1390,6 +1403,8 @@ impl OperationsRecorder
                 #[cfg(debug_assertions)]
                 {
                     self.memory.set_tensors_check.push(gradient_ptr.into());
+
+                    self.allow_discard(gradient_ptr);
                 }
 
                 self.memory.tensor_live_ranges[gradient_ptr.0].start = Some(-1);
@@ -1916,6 +1931,7 @@ impl OperationsRecorder
             live_range: LiveRange::default(),
             loops_gradient: None,
             gradient_of_loop: None,
+            kept_inside: Vec::new(),
             defined_values: Vec::new(),
             used_values: Vec::new(),
             input_values: loops_values_index,
@@ -3068,6 +3084,24 @@ impl OperationsRecorder
             || self.loops.iter().any(|l| l.used_values.iter().any(|used_value| *used_value == DiffValue::Tensor(ptr)))
     }
 
+    fn remove_unused_pushes(&mut self)
+    {
+        self.gradient_operations.retain(|op|
+        {
+            let is_stack_used = |loop_index: LoopIndex, value: DiffValue|
+            {
+                self.loops[loop_index.0].used_values.contains(&value)
+            };
+
+            match op
+            {
+                GradientOp::PushStackValue{loop_index, value} => is_stack_used(*loop_index, (*value).into()),
+                GradientOp::PushStackTensor{loop_index, tensor} => is_stack_used(*loop_index, (*tensor).into()),
+                _ => true
+            }
+        });
+    }
+
     fn copy_coalesce(&mut self)
     {
         let mut i = 0;
@@ -3201,87 +3235,68 @@ impl OperationsRecorder
     {
         let mut inside_loop_values = Vec::new();
 
-        let mut inside_loop: Option<LoopIndex> = None;
-
-        self.gradient_operations.iter().for_each(|op|
         {
-            let memory = &mut self.memory;
-            let variable_names = &memory.variable_names;
+            let mut inside_loop: Option<LoopIndex> = None;
 
-            let mut set_loop_lifetime = |inside_loop: Option<LoopIndex>, live_range: &mut LiveRange, value: DiffValue, is_set: bool|
+            self.gradient_operations.iter().for_each(|op|
             {
-                if let Some(loop_index) = inside_loop
+                let memory = &mut self.memory;
+
+                let mut set_loop_lifetime = |inside_loop: Option<LoopIndex>, live_range: &mut LiveRange, value: DiffValue|
                 {
-                    debug_assert!(live_range.start.is_none(), "{} was assigned multiple times", variable_names.format_variable(value));
-
-                    let loop_range = self.loops[loop_index.0].live_range.clone();
-
-                    if is_set
+                    if let Some(loop_index) = inside_loop
                     {
-                        live_range.start = loop_range.start;
+                        let loop_range = self.loops[loop_index.0].live_range.clone();
+
+                        *live_range = loop_range;
 
                         inside_loop_values.push(value);
-                    } else
-                    {
-                        live_range.end = loop_range.end;
                     }
+                };
+
+                match op
+                {
+                    GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
+                    {
+                        inside_loop = Some(*index);
+                    },
+                    GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
+                    {
+                        inside_loop = None;
+                    },
+                    GradientOp::GetOtherSelectorValue{..}
+                    | GradientOp::GetOtherSelectorTensor{..} =>
+                    {
+                        let (live_range, value): (_, DiffValue) = match op
+                        {
+                            GradientOp::GetOtherSelectorValue{other, ..} => (&mut memory.value_live_ranges[other.0], (*other).into()),
+                            GradientOp::GetOtherSelectorTensor{other, ..} => (&mut memory.tensor_live_ranges[other.0], (*other).into()),
+                            _ => unreachable!()
+                        };
+
+                        set_loop_lifetime(inside_loop, live_range, value);
+                    },
+                    GradientOp::OtherSelectorValueGradient{..}
+                    | GradientOp::OtherSelectorTensorGradient{..}
+                    | GradientOp::IfNotSetTensor{..} =>
+                    {
+                        let (live_range, value): (_, DiffValue) = match op
+                        {
+                            GradientOp::OtherSelectorValueGradient{other, ..} => (&mut memory.value_live_ranges[other.0], (*other).into()),
+                            GradientOp::OtherSelectorTensorGradient{other, ..}
+                            | GradientOp::IfNotSetTensor{dst: other, ..} => (&mut memory.tensor_live_ranges[other.0], (*other).into()),
+                            _ => unreachable!()
+                        };
+
+                        set_loop_lifetime(inside_loop, live_range, value);
+                    },
+                    _ => ()
                 }
-            };
+            });
+        }
 
-            match op
-            {
-                GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
-                {
-                    inside_loop = Some(*index);
-                },
-                GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
-                {
-                    inside_loop = None;
-                },
-                GradientOp::GetOtherSelectorValue{..}
-                | GradientOp::GetOtherSelectorTensor{..} =>
-                {
-                    let (live_range, value): (_, DiffValue) = match op
-                    {
-                        GradientOp::GetOtherSelectorValue{other, ..} => (&mut memory.value_live_ranges[other.0], (*other).into()),
-                        GradientOp::GetOtherSelectorTensor{other, ..} => (&mut memory.tensor_live_ranges[other.0], (*other).into()),
-                        _ => unreachable!()
-                    };
-
-                    set_loop_lifetime(inside_loop, live_range, value, false);
-                },
-                GradientOp::OtherSelectorValueGradient{..}
-                | GradientOp::OtherSelectorTensorGradient{..}
-                | GradientOp::IfNotSetTensor{..} =>
-                {
-                    let (live_range, value): (_, DiffValue) = match op
-                    {
-                        GradientOp::OtherSelectorValueGradient{other, ..} => (&mut memory.value_live_ranges[other.0], (*other).into()),
-                        GradientOp::OtherSelectorTensorGradient{other, ..}
-                        | GradientOp::IfNotSetTensor{dst: other, ..} => (&mut memory.tensor_live_ranges[other.0], (*other).into()),
-                        _ => unreachable!()
-                    };
-
-                    set_loop_lifetime(inside_loop, live_range, value, true);
-                },
-                _ => ()
-            }
-        });
-
-        self.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
+        self.gradient_operations.iter().enumerate().for_each(|(op_index, op)|
         {
-            let is_stack_unused = |loop_index: LoopIndex, value: DiffValue|
-            {
-                !self.loops[loop_index.0].used_values.contains(&value)
-            };
-
-            match op
-            {
-                GradientOp::PushStackValue{loop_index, value} => if is_stack_unused(*loop_index, (*value).into()) { return },
-                GradientOp::PushStackTensor{loop_index, tensor} => if is_stack_unused(*loop_index, (*tensor).into()) { return },
-                _ => ()
-            }
-
             let handle_output = |live_range: &mut LiveRange, allow_reuse: bool, err_name: String|
             {
                 let start = &mut live_range.start;
@@ -3319,7 +3334,10 @@ impl OperationsRecorder
                     }
                 });
             }
+        });
 
+        self.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
+        {
             let allow_end_before = match op
             {
                 GradientOp::GetOtherSelectorValue{..}
@@ -3339,10 +3357,8 @@ impl OperationsRecorder
                     }
                 }
 
-                if live_range.end.is_none()
-                {
-                    live_range.end = Some(op_index as i32);
-                }
+                let new_end = op_index as i32;
+                live_range.end = Some(live_range.end.map(|previous_end| previous_end.max(new_end)).unwrap_or(new_end));
             };
 
             op.for_args(|arg|
@@ -3357,6 +3373,24 @@ impl OperationsRecorder
                 };
 
                 handle_arg(live_range, name);
+            });
+        });
+
+        self.loops.iter().for_each(|loop_info|
+        {
+            loop_info.kept_inside.iter().for_each(|kept_inside|
+            {
+                let live_range = match kept_inside
+                {
+                    DiffValue::Tensor(tensor) => &mut self.memory.tensor_live_ranges[tensor.0],
+                    DiffValue::Value(value) => &mut self.memory.value_live_ranges[value.0],
+                    DiffValue::OneHot(_) => return
+                };
+
+                if live_range.end.map(|x| x < loop_info.live_range.end.unwrap()).unwrap_or(false)
+                {
+                    live_range.end = loop_info.live_range.end;
+                }
             });
         });
 
@@ -3459,11 +3493,29 @@ impl OperationsRecorder
             {
                 GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
                 {
-                    self.loops[index.0].live_range.start = Some(operation_index as i32 + 1);
+                    self.loops[index.0].live_range.start = Some(operation_index as i32);
                 },
                 GradientOp::Jump(JumpInfo::JumpFrom(index)) =>
                 {
                     self.loops[index.0].live_range.end = Some(operation_index as i32 - 1);
+                },
+                _ => ()
+            }
+        });
+
+        self.gradient_operations.iter().for_each(|op|
+        {
+            match op
+            {
+                GradientOp::Jump(JumpInfo::JumpTo{index, inputs}) =>
+                {
+                    inputs.iter().for_each(|input|
+                    {
+                        if let InputTypePtr::Normal(tensor) = input
+                        {
+                            self.memory.tensor_live_ranges[tensor.0] = self.loops[index.0].live_range.clone();
+                        }
+                    });
                 },
                 _ => ()
             }
@@ -3823,8 +3875,40 @@ impl OperationsRecorder
 
         self.memory.tensors.resize(memory_assignments.len(), TensorRawDataPointer::undefined());
 
+        dbg!(&self);
         if OPT_INFO
         {
+            self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
+            {
+                let tensor_ptr = TensorPtr(tensor_ptr_index);
+
+                let f_live = |x: Option<i32>| -> String
+                {
+                    x.map(|x|
+                    {
+                        match x
+                        {
+                            -1 => "start".to_owned(),
+                            i32::MAX => "end".to_owned(),
+                            x => x.to_string()
+                        }
+                    }).unwrap()
+                };
+
+                let tensor_name = self.memory.format_variable(tensor_ptr);
+
+                if live_range.start.is_none() && live_range.end.is_some()
+                {
+                    eprintln!("{tensor_name} is malformed, no start but ends at {}", f_live(live_range.end));
+                } else if live_range.end.is_none()
+                {
+                    eprintln!("{tensor_name} is unused");
+                } else
+                {
+                    eprintln!("{tensor_name} has live range {} to {}", f_live(live_range.start), f_live(live_range.end));
+                }
+            });
+
             (0..self.memory.tensors.len()).for_each(|tensor_index|
             {
                 let used_ptrs: Vec<_> = self.memory.tensors_memory.iter().enumerate().filter_map(|(tensor_ptr, slot)|
@@ -3880,16 +3964,25 @@ impl OperationsRecorder
                 debug_assert!(!any_duplicates(&tensor_args), "{op:?} has duplicate arguments");
                 debug_assert!(!any_duplicates(&value_args), "{op:?} has duplicate arguments");
 
-                op.clone().map_outputs_with_state(|overlaps: bool|
+                op.clone().map_outputs_with_state((), |_s, t_out|
                 {
-                    debug_assert!(!overlaps, "{op:?} has overlap between args and outputs");
-                }, |f, t_out|
-                {
-                    f(tensor_args.contains(&t_out));
+                    let t_out_index = self.memory.raw_ptr_to_memory(t_out);
+
+                    debug_assert!(
+                        !tensor_args.contains(&t_out),
+                        "{op:?} has overlap between args and outputs ({t_out:?} which is {})",
+                        self.memory.format_tensor_index(t_out_index)
+                    );
+
                     t_out
-                }, |f, v_out|
+                }, |_s, v_out|
                 {
-                    f(value_args.contains(&v_out));
+                    debug_assert!(
+                        !value_args.contains(&v_out),
+                        "{op:?} has overlap between args and outputs ({v_out:?} which is {})",
+                        self.memory.format_variable(v_out)
+                    );
+
                     v_out
                 });
             });
@@ -3899,9 +3992,6 @@ impl OperationsRecorder
                 .map(|(index, _)| TensorPtr(index))
                 .collect();
         }
-
-        self.memory.value_live_ranges = Vec::new();
-        self.memory.tensor_live_ranges = Vec::new();
 
         self.state = RecorderState::Ready;
 
@@ -3939,6 +4029,20 @@ impl OperationsRecorder
                 }
             }).collect();
 
+            self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
+            {
+                let tensor_ptr = TensorPtr(tensor_ptr_index);
+
+                if live_range.start == Some(-1) && live_range.end != Some(i32::MAX)
+                {
+                    debug_assert!(
+                        self.memory.allow_discard.contains(&tensor_ptr),
+                        "{} will be discarded after running calculate once, either store the tensor or call allow_discard on it",
+                        self.memory.format_variable(tensor_ptr)
+                    );
+                }
+            });
+
             {
                 let resolved_set_ptrs: Vec<_> = {
                     self.memory.set_tensor_memory.borrow().set_ptrs.iter().map(|x| self.resolve_tensor_ptr(*x)).collect()
@@ -3949,11 +4053,16 @@ impl OperationsRecorder
                 set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter());
             }
         }
+
+        self.memory.value_live_ranges = Vec::new();
+        self.memory.tensor_live_ranges = Vec::new();
     }
 
     pub fn no_gradient(&mut self)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
+
+        self.remove_unused_pushes();
 
         self.copy_coalesce();
 
@@ -3974,7 +4083,7 @@ impl OperationsRecorder
 
         self.recording_operations.iter().for_each(|op|
         {
-            if let Op::Loop{ops, index: loop_index, ..} = op
+            if let Op::Loop{ops, index: loop_index, inputs} = op
             {
                 let mut reachable_next_loop: HashSet<DiffValue> = HashSet::new();
 
@@ -4040,7 +4149,10 @@ impl OperationsRecorder
                     });
                 };
 
-                let mut defined_inside = Vec::new();
+                let mut defined_inside: Vec<_> = inputs.iter().map(|input|
+                {
+                    DiffValue::from(*input)
+                }).collect();
 
                 ops.iter().for_each(|op|
                 {
@@ -4081,6 +4193,8 @@ impl OperationsRecorder
                                     self.memory.format_variable(arg_diff.as_value()),
                                     reachable_next_loop.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>()
                                 );
+
+                                self.loops[loop_index.0].kept_inside.push(arg_diff.as_value());
 
                                 zero_out(&mut self.gradient_operations, arg);
                             }
@@ -4258,6 +4372,8 @@ impl OperationsRecorder
 
             self.resolve_stack_values(used_stack_values);
         }
+
+        self.remove_unused_pushes();
 
         self.copy_coalesce();
 
@@ -5049,6 +5165,7 @@ impl OperationsRecorder
                 self.loops.push(LoopInfo{
                     reversed: true,
                     gradient_of_loop: Some(index),
+                    kept_inside: Vec::new(),
                     ..self.loops[index.0].clone()
                 });
 
@@ -5094,8 +5211,9 @@ impl OperationsRecorder
 
                 let input_replacements: Vec<(_, _)> = inputs.iter().cloned().zip(gradient_inputs.iter().cloned()).collect();
 
-                self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpTo{inputs: gradient_inputs, index: gradient_loop_index}));
+                self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpTo{inputs: gradient_inputs.clone(), index: gradient_loop_index}));
 
+                let gradient_operations_start = self.gradient_operations.len();
                 ops.into_iter().rev().for_each(|op|
                 {
                     self.calculate_gradient(
@@ -5108,6 +5226,35 @@ impl OperationsRecorder
                         Some(gradient_loop_index)
                     );
                 });
+
+                {
+                    let mut defined_values: Vec<_> = gradient_inputs.iter().map(|input|
+                    {
+                        DiffValue::from(*input)
+                    }).collect();
+
+                    let gradient_ops = &self.gradient_operations[gradient_operations_start..];
+                    gradient_ops.iter().for_each(|op|
+                    {
+                        op.for_outputs(|out| defined_values.push(out));
+                    });
+
+                    gradient_ops.iter().for_each(|op|
+                    {
+                        op.for_args(|arg|
+                        {
+                            if !defined_values.contains(&arg)
+                            {
+                                let kept_inside = &mut self.loops[gradient_loop_index.0].kept_inside;
+
+                                if !kept_inside.contains(&arg)
+                                {
+                                    kept_inside.push(arg);
+                                }
+                            }
+                        });
+                    });
+                }
 
                 intermediate_selectors.iter().for_each(|intermediate_selector_index|
                 {
@@ -6322,6 +6469,9 @@ mod tests
         recorder.name_diff_tensor(a, "a");
         recorder.name_diff_tensor(b, "b");
 
+        recorder.allow_discard(a.as_value());
+        recorder.allow_discard(b.as_value());
+
         let out = f(recorder, a, b);
 
         recorder.name_diff_tensor(out, "out");
@@ -6336,7 +6486,9 @@ mod tests
 
         recorder.gradient(out.into());
 
+        dbg!(&recorder);
         recorder.resolve_memory();
+        dbg!(&recorder);
 
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
         let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
@@ -6351,6 +6503,9 @@ mod tests
         let new_a = new_recorder.new_tensor_no_gradient(a_value.rows(), a_value.columns());
         let new_b = new_recorder.new_tensor_no_gradient(b_value.rows(), b_value.columns());
 
+        new_recorder.allow_discard(new_a.as_value());
+        new_recorder.allow_discard(new_b.as_value());
+
         let output = f(&mut new_recorder, new_a, new_b);
         let output_value = output.as_value();
 
@@ -6359,7 +6514,9 @@ mod tests
         new_recorder.finish();
         new_recorder.no_gradient();
 
+        dbg!(&new_recorder);
         new_recorder.resolve_memory();
+        dbg!(&new_recorder);
 
         let output_value = new_recorder.resolve_tensor_ptr(output_value);
 
@@ -6835,6 +6992,8 @@ mod tests
             let zeros = recorder.set_new_tensor_gradientable(zeros.clone());
             recorder.name_diff_tensor(zeros, "zeros");
 
+            recorder.store_tensor_until_end(zeros.as_value());
+
             let bc_selector = recorder.phi_other_selector(zeros);
 
             let loop_index = recorder.begin_loop(vec![i.into()]);
@@ -7028,6 +7187,8 @@ mod tests
                 let s0i = recorder.set_new_tensor(is[0].clone().into_normal()).as_value();
                 recorder.name_tensor(s0i, "s0i");
 
+                recorder.store_tensor_until_end(s0i);
+
                 recorder.mul_componentwise(a, DiffTensorPtr::no_gradient(s0i))
             };
 
@@ -7039,6 +7200,8 @@ mod tests
             let s1 = {
                 let s1i = recorder.set_new_tensor(is[1].clone().into_normal()).as_value();
                 recorder.name_tensor(s1i, "s1i");
+
+                recorder.store_tensor_until_end(s1i);
 
                 let r = recorder.mul_componentwise(a, DiffTensorPtr::no_gradient(s1i));
                 recorder.name_diff_tensor(r, "r");
@@ -7107,6 +7270,8 @@ mod tests
             {
                 let input = recorder.set_new_tensor(input.into_normal());
                 recorder.name_diff_tensor(input, "input");
+
+                recorder.store_tensor_until_end(input.as_value());
 
                 input.as_value()
             };
@@ -7186,6 +7351,8 @@ mod tests
             {
                 let input = recorder.set_new_tensor(input.into_normal());
                 recorder.name_diff_tensor(input, "input");
+
+                recorder.store_tensor_until_end(input.as_value());
 
                 input.as_value()
             };
@@ -7296,6 +7463,8 @@ mod tests
                 let input = recorder.set_new_tensor(input.into_normal());
                 recorder.name_diff_tensor(input, "input");
 
+                recorder.store_tensor_until_end(input.as_value());
+
                 input.as_value()
             };
 
@@ -7355,6 +7524,8 @@ mod tests
 
             let zeros = recorder.set_new_tensor_gradientable(zeros.clone());
             recorder.name_diff_tensor(zeros, "zeros");
+
+            recorder.store_tensor_until_end(zeros.as_value());
 
             let bc_selector = recorder.phi_other_selector(zeros);
 
@@ -7429,6 +7600,8 @@ mod tests
             {
                 let input = recorder.set_new_tensor(input.into_normal());
                 recorder.name_diff_tensor(input, "input");
+
+                recorder.store_tensor_until_end(input.as_value());
 
                 input.as_value()
             };
@@ -7525,6 +7698,8 @@ mod tests
 
             let zeros = recorder.set_new_tensor(zeros.clone());
             recorder.name_diff_tensor(zeros, "zeros");
+
+            recorder.store_tensor_until_end(zeros.as_value());
 
             recorder.add_scalar(zeros, final_combined_state)
         })

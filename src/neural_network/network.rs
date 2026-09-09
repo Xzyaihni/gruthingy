@@ -1057,6 +1057,8 @@ where
                         #[cfg(debug_assertions)]
                         {
                             self.recorder.name_diff_tensor(weight_dropped, _debug_info.name.to_owned() + "_dropped");
+
+                            self.recorder.allow_discard(weights_size.weights.dropconnect_mask.unwrap());
                         }
 
                         weights_size.weights.weight_dropped = weight_dropped;
@@ -1160,6 +1162,8 @@ where
         {
             let ptr = self.recorder.new_tensor_no_gradient(self.sizes.hidden, 1).as_value();
             self.recorder.name_tensor(ptr, "dropout_mask");
+
+            self.recorder.allow_discard(ptr);
 
             ptr
         }).collect();
