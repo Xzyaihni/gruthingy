@@ -1114,11 +1114,14 @@ where
     {
         self.recorder.finish();
 
-        debug_assert_ne!(self.outputs.loss, DiffScalar::undefined());
-
         self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_value());
 
-        self.recorder.store_value_until_end(self.outputs.loss.as_value());
+        if self.network_mode == Some(NetworkMode::Train)
+        {
+            debug_assert_ne!(self.outputs.loss, DiffScalar::undefined());
+
+            self.recorder.store_value_until_end(self.outputs.loss.as_value());
+        }
     }
 
     fn prepare_shared(&mut self, store_gradient: bool)
@@ -1235,17 +1238,22 @@ where
         );
 
         self.recorder.name_diff_tensor(no_state_output.output.0, "no_state_output");
-        self.recorder.name_diff_scalar(no_state_output.output.1, "no_state_loss");
+
+        let no_state_loss = no_state_output.output.1;
+
+        if let Some(no_state_loss) = no_state_loss
+        {
+            self.recorder.name_diff_scalar(no_state_loss, "no_state_loss");
+        }
 
         let (final_output, final_loss) = if self.is_multistep.unwrap()
         {
-            let no_state_loss = no_state_output.output.1;
-
             let this_input_loop = create_input(&mut self.recorder);
 
             let this_target_loop = has_target.then(|| self.recorder.new_one_hot());
 
-            let final_loss_selector = self.recorder.phi_other_selector(no_state_loss);
+            let final_loss_selector = no_state_loss.map(|no_state_loss| self.recorder.phi_other_selector(no_state_loss));
+
             let state_selectors: Vec<_> = no_state_output.state.iter().map(|state| state.phi_other_selector(&mut self.recorder)).collect();
 
             let loop_index = {
@@ -1271,15 +1279,26 @@ where
             );
 
             self.recorder.name_diff_tensor(final_output.output.0, "final_output");
-            self.recorder.name_diff_scalar(final_output.output.1, "final_output_loss");
 
             let final_output_loss = final_output.output.1;
 
-            let final_loss_selected = self.recorder.select_value(final_loss_selector);
+            if let Some(final_output_loss) = final_output_loss
+            {
+                self.recorder.name_diff_scalar(final_output_loss, "final_output_loss");
+            }
 
-            let new_combined = self.recorder.add_scalars(final_loss_selected, final_output_loss);
+            let new_combined = final_output_loss.map(|final_output_loss|
+            {
+                let final_loss_selector = final_loss_selector.expect("must be set");
 
-            self.recorder.set_phi_other_selector(final_loss_selector, new_combined);
+                let final_loss_selected = self.recorder.select_value(final_loss_selector);
+
+                let new_combined = self.recorder.add_scalars(final_loss_selected, final_output_loss);
+
+                self.recorder.set_phi_other_selector(final_loss_selector, new_combined);
+
+                new_combined
+            });
 
             state_selectors.iter().zip(final_output.state).for_each(|(selector, final_state)|
             {
@@ -1297,7 +1316,11 @@ where
         };
 
         self.outputs.output_ptr = Some(final_output);
-        self.outputs.loss = final_loss;
+
+        if let Some(final_loss) = final_loss
+        {
+            self.outputs.loss = final_loss;
+        }
     }
 
     fn record_feedforward_single_input(
@@ -1307,7 +1330,7 @@ where
         input: InputTypePtr,
         targets: Option<OneHotIndex>,
         store_gradient: bool
-    ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, DiffScalar)>
+    ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, Option<DiffScalar>)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
         {
@@ -1318,7 +1341,7 @@ where
                 store_gradient
             ).map(|output|
             {
-                (output, this.recorder.softmax_cross_entropy(output, targets.expect("ill implement it later whathata")).1)
+                (output, targets.map(|targets| this.recorder.softmax_cross_entropy(output, targets).1))
             })
         }, previous_states, dropout_masks, input, store_gradient)
     }
@@ -1928,18 +1951,18 @@ mod tests
             } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, Some(*this_target), true);
 
             at_once.recorder.name_diff_tensor(this_output, "output");
-            at_once.recorder.name_diff_scalar(loss, "loss");
+            at_once.recorder.name_diff_scalar(loss.unwrap(), "loss");
 
             previous_state = Some(next_state_ptr);
 
             if let Some(output) = output.as_mut()
             {
-                *output = at_once.recorder.add_scalars(*output, loss);
+                *output = at_once.recorder.add_scalars(*output, loss.unwrap());
 
                 at_once.recorder.name_diff_scalar(*output, "loss_combined");
             } else
             {
-                output = Some(loss);
+                output = Some(loss.unwrap());
             }
         });
 
