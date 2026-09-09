@@ -91,14 +91,23 @@ impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
         store_gradient: bool
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let mut store_both = |weight: DiffTensorPtr|
         {
-            recorder.store_tensor_until_end(weight.as_value());
-            if store_gradient { recorder.store_tensor_until_end(weight.as_gradient().unwrap()); }
-        };
+            let mut always_store = |weight: DiffTensorPtr|
+            {
+                let value = weight.as_value();
+                recorder.store_tensor_until_end(value);
 
-        store_both(self.weights.weight_original);
-        store_both(self.bias.weight_original);
+                if store_gradient
+                {
+                    let gradient = weight.as_gradient().unwrap();
+
+                    recorder.store_tensor_until_end(gradient);
+                }
+            };
+
+            always_store(self.bias.weight_original);
+            always_store(self.weights.weight_original);
+        }
 
         let hidden = self.embeddings(recorder, input.into_one_hot());
 

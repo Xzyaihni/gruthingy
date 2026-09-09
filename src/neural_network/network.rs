@@ -1199,6 +1199,11 @@ where
 
         self.recorder.name_input(this_input_first, "input_first");
 
+        if let InputTypePtr::Normal(tensor) = this_input_first
+        {
+            self.recorder.allow_discard(tensor);
+        }
+
         self.inputs.input_ptr = Some(this_input_first);
 
         let has_target = self.network_mode == Some(NetworkMode::Train);

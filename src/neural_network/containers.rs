@@ -30,7 +30,7 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const OPT_INFO: bool = false;
 const NO_COLORING: bool = false;
-const REASSIGN_CHECKS: bool = true;
+const _REASSIGN_CHECKS: bool = true;
 
 #[allow(dead_code)]
 const PRINT_CALCULATE_VALUES: bool = false;
@@ -1031,7 +1031,7 @@ impl OperationsRecorderMemory
         {
             let is_no_read_reassigned = set_tensor_memory.set_memory.contains(&memory_index);
 
-            if REASSIGN_CHECKS
+            if _REASSIGN_CHECKS
             {
                 if is_no_read_reassigned
                 {
@@ -4028,19 +4028,22 @@ impl OperationsRecorder
                 }
             }).collect();
 
-            self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
+            if self.raw_operations.len() > 0
             {
-                let tensor_ptr = TensorPtr(tensor_ptr_index);
-
-                if live_range.start == Some(-1) && live_range.end != Some(i32::MAX)
+                self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
                 {
-                    debug_assert!(
-                        self.memory.allow_discard.contains(&tensor_ptr),
-                        "{} will be discarded after running calculate once, either store the tensor or call allow_discard on it",
-                        self.memory.format_variable(tensor_ptr)
-                    );
-                }
-            });
+                    let tensor_ptr = TensorPtr(tensor_ptr_index);
+
+                    if live_range.start == Some(-1) && live_range.end != Some(i32::MAX)
+                    {
+                        debug_assert!(
+                            self.memory.allow_discard.contains(&tensor_ptr),
+                            "{} will be discarded after running calculate once, either store the tensor or call allow_discard on it",
+                            self.memory.format_variable(tensor_ptr)
+                        );
+                    }
+                });
+            }
 
             {
                 let resolved_set_ptrs: Vec<_> = {
