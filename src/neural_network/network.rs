@@ -14,6 +14,7 @@ use crate::{
     EmbeddingsUnitFactory,
     neural_network::{
         OperationsRecorder,
+        OperationsRecorderMemory,
         Softmaxer,
         PhiOtherSelectorRecordingIndex,
         NetworkStateSelectable,
@@ -23,6 +24,7 @@ use crate::{
         DiffTensorPtr,
         DiffScalar,
         LoopIndex,
+        LoopInputs,
         TensorIndex,
         TensorPtr,
         OneHotLayer,
@@ -765,6 +767,8 @@ struct NetworkOutputsData
 {
     output_ptr: Option<DiffTensorPtr>,
     output: DiffTensor,
+    first_output_value_ptr: Option<TensorPtr>,
+    first_output_value: TensorIndex,
     loss: DiffScalar
 }
 
@@ -775,6 +779,8 @@ impl Default for NetworkOutputsData
         Self{
             output_ptr: None,
             output: DiffTensor::undefined(),
+            first_output_value_ptr: None,
+            first_output_value: TensorIndex::undefined(),
             loss: DiffScalar::undefined()
         }
     }
@@ -1094,6 +1100,7 @@ where
                 self.recorder.gradient(self.outputs.loss.into());
             } else
             {
+                self.recorder.store_tensor_until_end(self.outputs.first_output_value_ptr.unwrap());
                 self.recorder.store_tensor_until_end(self.outputs.output_ptr.unwrap().as_value());
 
                 self.recorder.no_gradient();
@@ -1106,6 +1113,8 @@ where
                 let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
 
                 self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
+
+                self.outputs.first_output_value = self.recorder.resolve_tensor_ptr(self.outputs.first_output_value_ptr.unwrap());
             }
         }
     }
@@ -1245,6 +1254,8 @@ where
         {
             self.recorder.name_diff_scalar(no_state_loss, "no_state_loss");
         }
+
+        self.outputs.first_output_value_ptr = Some(no_state_output.output.0.as_value());
 
         let (final_output, final_loss) = if self.is_multistep.unwrap()
         {
@@ -1527,7 +1538,7 @@ where
         {
             let steps_loop = self.inputs.steps_loop.unwrap();
 
-            self.recorder.set_loop_inputs(steps_loop, inputs.collect());
+            self.recorder.set_loop_inputs(steps_loop, inputs.collect::<Vec<_>>());
 
             self.recorder.set_loop_times(steps_loop, inputs_count - 1);
         }
@@ -1768,18 +1779,44 @@ where
 
         self.recorder.set_input(self.inputs.initial_input, input.next().unwrap());
 
+        let output_value = self.outputs.output.as_value();
+
         if inputs_count > 1
         {
             let steps_loop = self.inputs.steps_loop.unwrap();
 
-            self.recorder.set_loop_inputs(steps_loop, input.collect());
+            self.recorder.set_loop_inputs(steps_loop, LoopInputs::Dependent(0));
 
             self.recorder.set_loop_times(steps_loop, inputs_count - 1);
         }
 
-        self.recorder.calculate_feedforward();
+        {
+            let first_output_value = self.outputs.first_output_value;
 
-        let mut output = self.recorder.get_tensor(self.outputs.output.as_value()).clone_owned();
+            let mut is_first_input = true;
+            self.recorder.calculate_feedforward_with_dependent(|_, memory: &OperationsRecorderMemory|
+            {
+                let output = if is_first_input
+                {
+                    is_first_input = false;
+
+                    memory.get_tensor(first_output_value)
+                } else
+                {
+                    memory.get_tensor(output_value)
+                };
+
+                let mut output = output.clone_owned();
+
+                Softmaxer::softmax_temperature(&mut output, temperature);
+
+                f_output(output);
+
+                input.next().expect("must be called the same amount of times as there are inputs")
+            });
+        }
+
+        let mut output = self.recorder.get_tensor(output_value).clone_owned();
 
         Softmaxer::softmax_temperature(&mut output, temperature);
 

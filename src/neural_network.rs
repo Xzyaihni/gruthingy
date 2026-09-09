@@ -51,6 +51,7 @@ pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed};
 pub use containers::{
     PhiOtherSelectorRecordingIndex,
     OperationsRecorder,
+    OperationsRecorderMemory,
     LayerType,
     LayerTypeRef,
     LayerTypeMut,
@@ -58,6 +59,7 @@ pub use containers::{
     DiffTensor,
     DiffScalar,
     LoopIndex,
+    LoopInputs,
     TensorIndex,
     TensorPtr,
     OneHotIndex,
