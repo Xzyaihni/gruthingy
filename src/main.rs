@@ -571,7 +571,7 @@ fn closest_embeddings(mut config: Config)
 
             let other_embeddings = embeddings_of(&mut network, other_word);
 
-            let similarity = this_embeddings.cosine_similarity(&other_embeddings);
+            let similarity = this_embeddings.cosine_similarity(other_embeddings.as_ref());
 
             (other_word, similarity)
         }).collect::<Vec<_>>();

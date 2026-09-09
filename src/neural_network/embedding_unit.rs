@@ -44,7 +44,7 @@ impl EmbeddingsableOwned for EmbeddingUnit<WeightInfoPtr>
         let weights = recorder.get_tensor_memory_value(self.weights.weight_original.as_value());
         let bias = recorder.get_tensor_memory_value(self.bias.weight_original.as_value());
 
-        weights.matmul_onehotv_add(input, bias)
+        weights.matmul_onehotv_add(input, bias.as_vector_ref())
     }
 }
 

@@ -155,7 +155,7 @@ impl Optimizer for Sgd
         gradient: LayerType
     ) -> LayerType
     {
-        gradient * self.learning_rate
+        gradient.mul_scalar(self.learning_rate)
     }
 
     fn advance_time(&mut self) {}
@@ -193,14 +193,14 @@ impl Optimizer for PowerSign
         gradient: LayerType
     ) -> LayerType
     {
-        gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
+        gradient_info.m = gradient_info.m.mul_scalar(self.b1).add(gradient.mul_scalar(1.0 - self.b1).as_ref());
 
         let decay = DECAY_FUNCTION.decay(self.learning_rate, self.t);
 
-        let mut this = gradient.signum() * gradient_info.m.signum() * decay;
+        let mut this = gradient.signum().mul_componentwise(gradient_info.m.signum().as_ref()).mul_scalar(decay);
         this.exp_inplace();
 
-        this * gradient
+        this.mul_componentwise(gradient.as_ref())
     }
 
     fn advance_time(&mut self)
@@ -248,8 +248,8 @@ impl Optimizer for AdamX
         let b1_t = DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b1_t = 1.0 - b1_t;
 
-        gradient_info.m = &gradient_info.m * b1_t + &gradient * one_minus_b1_t;
-        gradient_info.v = &gradient_info.v * self.b2 + (&gradient * &gradient) * (1.0 - self.b2);
+        gradient_info.m = gradient_info.m.mul_scalar(b1_t).add(gradient.mul_scalar(one_minus_b1_t).as_ref());
+        gradient_info.v = gradient_info.v.mul_scalar(self.b2).add(gradient.mul_componentwise(gradient.as_ref()).mul_scalar(1.0 - self.b2).as_ref());
 
         if let Some(v_hat) = gradient_info.v_hat.as_mut()
         {
@@ -257,10 +257,9 @@ impl Optimizer for AdamX
 
             let lhs = (one_minus_b1_t).powi(2) / (one_minus_b1_tlast).powi(2);
 
-            let mut new_v_hat = &*v_hat * lhs;
-            new_v_hat.max(&gradient_info.v);
+            let new_v_hat = v_hat.mul_scalar(lhs);
 
-            *v_hat = new_v_hat;
+            *v_hat = new_v_hat.max(gradient_info.v.as_ref());
         } else
         {
             gradient_info.v_hat = Some(gradient_info.v.clone());
@@ -271,7 +270,7 @@ impl Optimizer for AdamX
 
         let rhs = gradient_info.v_hat.as_ref().unwrap().sqrt_plus(self.epsilon);
 
-        (&gradient_info.m * a_t) / rhs
+        gradient_info.m.mul_scalar(a_t).div_componentwise(rhs.as_ref())
     }
 
     fn advance_time(&mut self)
@@ -320,12 +319,12 @@ impl Optimizer for Adam
         let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t);
         let one_minus_b2_t: f32 = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
 
-        gradient_info.m = &gradient_info.m * self.b1 + &gradient * (1.0 - self.b1);
-        gradient_info.v = &gradient_info.v * self.b2 + (&gradient * &gradient) * (1.0 - self.b2);
+        gradient_info.m = gradient_info.m.mul_scalar(self.b1).add(gradient.mul_scalar(1.0 - self.b1).as_ref());
+        gradient_info.v = gradient_info.v.mul_scalar(self.b2).add(gradient.mul_componentwise(gradient.as_ref()).mul_scalar(1.0 - self.b2).as_ref());
 
         let a_t = self.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
 
-        (&gradient_info.m * a_t) / gradient_info.v.sqrt_plus(self.epsilon)
+        (&gradient_info.m.mul_scalar(a_t)).div_componentwise(gradient_info.v.sqrt_plus(self.epsilon).as_ref())
     }
 
     fn advance_time(&mut self)
@@ -385,7 +384,7 @@ mod tests
                     gradient.clone()
                 );
 
-                LayerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1) + change
+                LayerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1).add(change.as_ref())
             };
 
             m = vec![

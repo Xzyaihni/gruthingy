@@ -132,14 +132,24 @@ impl YWrapper
         self.as_mut().mul_scalar_inplace(value)
     }
 
+    pub fn sqrt_plus(&self, added: f32) -> Self
+    {
+        self.clone().map(|x| x.sqrt() + added)
+    }
+
     pub fn mul_componentwise(&self, other: YWrapperRef) -> Self
     {
-        todo!()
+        self.clone().zip_map(other, |a, b| a * b)
+    }
+
+    pub fn div_componentwise(&self, other: YWrapperRef) -> Self
+    {
+        self.clone().zip_map(other, |a, b| a / b)
     }
 
     pub fn add_inplace(&mut self, other: YWrapperRef)
     {
-        todo!()
+        self.as_mut().add_inplace(other)
     }
 
     pub fn add(&self, other: YWrapperRef) -> Self
@@ -152,14 +162,24 @@ impl YWrapper
         self.clone().map(|x| x.powi(power as i32))
     }
 
+    pub fn signum(&self) -> Self
+    {
+        self.clone().map(|x| x.signum())
+    }
+
     pub fn exp_inplace(&mut self)
     {
-        todo!()
+        self.as_mut().apply(|x| x.exp())
     }
 
     pub fn sum(&self) -> f32
     {
         self.values.iter().copied().sum::<f32>()
+    }
+
+    pub fn max(&self, other: YWrapperRef) -> Self
+    {
+        self.clone().zip_map(other, |a, b| a.max(b))
     }
 
     fn zip_map(self, b: YWrapperRef, f: impl Fn(f32, f32) -> f32) -> Self
@@ -180,6 +200,30 @@ impl YWrapper
             columns: self.columns,
             values: self.values.into_iter().map(f).collect()
         }
+    }
+
+    pub fn cosine_similarity(&self, other: YWrapperRef) -> f32
+    {
+        let top = self.as_ref().dot(other);
+
+        let bottom = self.magnitude() * other.magnitude();
+
+        top / bottom
+    }
+
+    pub fn cap_magnitude_inplace(&mut self, cap: f32)
+    {
+        let m = self.magnitude();
+
+        if m > cap
+        {
+            self.as_mut().mul_scalar_inplace(cap / m);
+        }
+    }
+
+    pub fn magnitude(&self) -> f32
+    {
+        self.as_ref().magnitude()
     }
 
     pub fn rows(&self) -> usize
@@ -207,17 +251,33 @@ impl YWrapper
         &self.values
     }
 
+    pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
+    {
+        self.values = values.into();
+    }
+
     pub fn as_vec(&self) -> Vec<f32>
     {
         self.values.clone()
     }
 
-    pub fn swap_raw_values<V: Into<Vec<f32>>>(&mut self, values: V)
+    pub fn iter(&self) -> impl Iterator<Item=&f32> + ExactSizeIterator
     {
-        self.values = values.into();
+        self.values.iter()
+    }
+
+    pub fn pick_weighed(&self) -> usize
+    {
+        Softmaxer::pick_weighed_inner(self.iter())
+    }
+
+    pub fn highest_index(&self) -> usize
+    {
+        Softmaxer::highest_index(self.iter())
     }
 }
 
+#[allow(dead_code)]
 impl<'a> YWrapperRef<'a>
 {
     pub fn from_data(data: &'a [f32], info: TensorRawDataPointer) -> Self
@@ -236,9 +296,18 @@ impl<'a> YWrapperRef<'a>
         }
     }
 
+    pub fn matmul_onehotv_add(self, rhs: &OneHotLayer, added: YVectorWrapperRef) -> YWrapper
+    {
+        let mut output = YWrapper::new(self.rows, 1);
+
+        output.as_mut().as_vector_mut().matmul_onehotv_add_into(self, rhs, added);
+
+        output
+    }
+
     pub fn dot(self, rhs: Self) -> f32
     {
-        todo!()
+        self.values.iter().zip(rhs.values).map(|(a, b)| *a * *b).sum::<f32>()
     }
 
     pub fn softmax_cross_entropy(self, targets: &OneHotLayer) -> f32
@@ -246,6 +315,32 @@ impl<'a> YWrapperRef<'a>
         let mut cloned = self.clone_owned();
 
         cloned.as_mut().softmax_cross_entropy_inplace(targets)
+    }
+
+    pub fn magnitude(&self) -> f32
+    {
+        self.values.iter().map(|x| *x * *x).sum::<f32>().sqrt()
+    }
+
+    pub fn as_vector_ref(&self) -> YVectorWrapperRef<'_>
+    {
+        debug_assert_eq!(self.columns, 1);
+
+        YVectorWrapperRef::from_data(&self.values, TensorRawDataPointer{
+            raw_index: TensorIndexRaw(0),
+            rows: self.rows,
+            columns: 1
+        })
+    }
+
+    pub fn rows(&self) -> usize
+    {
+        self.rows
+    }
+
+    pub fn columns(&self) -> usize
+    {
+        self.columns
     }
 
     pub fn shape(&self) -> (usize, usize)
@@ -268,6 +363,7 @@ impl<'a> YWrapperRef<'a>
     }
 }
 
+#[allow(dead_code)]
 impl<'a> YWrapperMut<'a>
 {
     pub fn from_data(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
@@ -294,6 +390,16 @@ impl<'a> YWrapperMut<'a>
         self.values.copy_from_slice(value.values)
     }
 
+    pub fn fill(self, value: f32)
+    {
+        self.values.fill(value);
+    }
+
+    pub fn fill_with(self, f: impl Fn() -> f32)
+    {
+        self.values.fill_with(f);
+    }
+
     pub fn add_to(self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
         (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] + rhs.values[i]);
@@ -309,89 +415,154 @@ impl<'a> YWrapperMut<'a>
         (0..self.values.len()).for_each(|i| self.values[i] = lhs - rhs.values[i]);
     }
 
-    pub fn add_scalar(mut self, other: f32) -> Self
+    pub fn sub_inplace(self, rhs: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i| self.values[i] = self.values[i] - rhs.values[i]);
     }
 
-    pub fn mul_scalar_inplace(mut self, value: f32)
+    pub fn add_inplace(self, rhs: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i| self.values[i] = self.values[i] + rhs.values[i]);
+    }
+
+    pub fn add_scalar_inplace(mut self, other: f32)
+    {
+        self.apply(|x| x + other)
+    }
+
+    pub fn mul_scalar_inplace(&mut self, value: f32)
+    {
+        self.apply(|x| x * value)
     }
 
     pub fn pow_inplace(mut self, power: u32)
     {
-        todo!()
+        self.apply(|x| x.powi(power as i32))
     }
 
     pub fn tanh_inplace(mut self)
     {
-        todo!()
+        self.apply(|x| x.tanh())
     }
 
-    pub fn tanh_gradient_inplace(mut self, value: YWrapperRef, gradient: YWrapperRef)
+    pub fn tanh_gradient_inplace(self, value: YWrapperRef, gradient: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i|
+        {
+            let a = value.values[i];
+
+            self.values[i] = (1.0 - a * a) * gradient.values[i]
+        })
     }
 
     pub fn sigmoid_inplace(mut self)
     {
-        todo!()
+        self.apply(|x| 1.0 / (1.0 + (-x).exp()))
     }
 
-    pub fn sigmoid_gradient_inplace(mut self, value: YWrapperRef, gradient: YWrapperRef)
+    pub fn sigmoid_gradient_inplace(self, value: YWrapperRef, gradient: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i|
+        {
+            let a = value.values[i];
+
+            self.values[i] = (1.0 - a) * a * gradient.values[i]
+        })
     }
 
     pub fn leaky_relu_inplace(mut self)
     {
-        todo!()
+        self.apply(|x| x.max(LEAKY_SLOPE * x))
     }
 
-    pub fn leaky_relu_gradient_inplace(mut self, value: YWrapperRef, gradient: YWrapperRef)
+    pub fn leaky_relu_gradient_inplace(self, value: YWrapperRef, gradient: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i| self.values[i] = leaky_relu_d(value.values[i]) * gradient.values[i])
     }
 
-    pub fn component_mul_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef)
+    pub fn component_mul_into(self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] * rhs.values[i]);
     }
 
-    pub fn component_mul_add_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef, added: YWrapperRef)
+    pub fn component_mul_add_into(self, lhs: YWrapperRef, rhs: YWrapperRef, added: YWrapperRef)
     {
-        todo!()
+        (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] * rhs.values[i] + added.values[i]);
     }
 
-    pub fn matmulv_add_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef, added: YWrapperRef)
+    pub fn outer_product_into(self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
     {
-        todo!()
+        debug_assert_eq!(self.rows(), lhs.len());
+        debug_assert_eq!(self.columns(), rhs.len());
+
+        let (rows, columns) = self.shape();
+
+        (0..columns).for_each(|column|
+        {
+            (0..rows).for_each(|row|
+            {
+                self.values[column * rows + row] = lhs.0[row] * rhs.0[column];
+            })
+        })
     }
 
-    pub fn matmul_onehotv_add_into(mut self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YWrapperRef)
+    pub fn outer_product_one_hot_into(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
     {
-        todo!()
+        debug_assert_eq!(self.rows(), lhs.len());
+        debug_assert_eq!(self.columns(), rhs.size);
+
+        let rows = self.rows();
+
+        self.values.fill(0.0);
+
+        rhs.positions.iter().for_each(|column|
+        {
+            (0..rows).for_each(|row|
+            {
+                self.values[column * rows + row] = lhs.0[row];
+            })
+        })
     }
 
-    pub fn matmulv_transposed_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef)
+    pub fn softmax_cross_entropy_inplace(&mut self, targets: &OneHotLayer) -> f32
     {
-        todo!()
+        debug_assert_eq!(self.rows(), targets.size);
+
+        self.apply(|x| x.exp());
+        let s = self.values.iter().copied().sum::<f32>();
+
+        debug_assert!(s.classify() != FpCategory::Zero);
+        debug_assert!(s.classify() != FpCategory::Infinite);
+
+        self.mul_scalar_inplace(s.recip());
+
+        -targets.positions.iter().map(|position| self.values[*position].ln()).sum::<f32>()
     }
 
-    pub fn outer_product_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef)
+    fn apply(&mut self, f: impl Fn(f32) -> f32)
     {
-        todo!()
+        self.values.iter_mut().for_each(|x| *x = f(*x));
     }
 
-    pub fn outer_product_one_hot_into(mut self, lhs: YWrapperRef, rhs: &OneHotLayer)
+    pub fn as_vector_mut(&mut self) -> YVectorWrapperMut<'_>
     {
-        todo!()
+        debug_assert_eq!(self.columns, 1);
+
+        YVectorWrapperMut::from_data(&mut self.values, TensorRawDataPointer{
+            raw_index: TensorIndexRaw(0),
+            rows: self.rows,
+            columns: 1
+        })
     }
 
-    pub fn softmax_cross_entropy_inplace(mut self, targets: &OneHotLayer) -> f32
+    pub fn rows(&self) -> usize
     {
-        todo!()
+        self.rows
+    }
+
+    pub fn columns(&self) -> usize
+    {
+        self.columns
     }
 
     pub fn shape(&self) -> (usize, usize)
@@ -427,6 +598,11 @@ impl<'a> YVectorWrapperRef<'a>
 
         Self(&data[info.raw_index.0..(info.raw_index.0 + len)])
     }
+
+    pub fn len(&self) -> usize
+    {
+        self.0.len()
+    }
 }
 
 impl<'a> YVectorWrapperMut<'a>
@@ -443,8 +619,84 @@ impl<'a> YVectorWrapperMut<'a>
         Self(&mut data[info.raw_index.0..(info.raw_index.0 + len)])
     }
 
-    pub fn matmulv_into(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+    pub fn matmulv_transposed_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
     {
-        todo!()
+        debug_assert_eq!(self.len(), lhs.columns());
+        debug_assert_eq!(lhs.rows(), rhs.len());
+
+        let (rows, columns) = lhs.shape();
+
+        (0..columns).for_each(|column|
+        {
+            self.0[column] = 0.0;
+
+            (0..rows).for_each(|row|
+            {
+                self.0[column] += lhs.values[column * rows + row] * rhs.0[row];
+            })
+        })
+    }
+
+    pub fn matmulv_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+    {
+        debug_assert_eq!(self.len(), lhs.rows());
+        debug_assert_eq!(lhs.columns(), rhs.len());
+
+        let o_size = self.len();
+        let m_size = rhs.len();
+
+        (0..o_size).for_each(|r|
+        {
+            self.0[r] = 0.0;
+
+            (0..m_size).for_each(|m|
+            {
+                self.0[r] += lhs.values[m * o_size + r] * rhs.0[m];
+            });
+        })
+    }
+
+    pub fn matmulv_add_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef, added: YVectorWrapperRef)
+    {
+        debug_assert_eq!(self.len(), lhs.rows());
+        debug_assert_eq!(lhs.columns(), rhs.len());
+        debug_assert_eq!(self.len(), added.len());
+
+        let o_size = self.len();
+        let m_size = rhs.len();
+
+        (0..o_size).for_each(|r|
+        {
+            self.0[r] = added.0[r];
+
+            (0..m_size).for_each(|m|
+            {
+                self.0[r] += lhs.values[m * o_size + r] * rhs.0[m];
+            });
+        })
+    }
+
+    pub fn matmul_onehotv_add_into(self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YVectorWrapperRef)
+    {
+        debug_assert_eq!(self.len(), lhs.rows());
+        debug_assert_eq!(lhs.columns(), rhs.size);
+        debug_assert_eq!(self.len(), added.len());
+
+        let o_size = self.len();
+
+        (0..o_size).for_each(|r|
+        {
+            self.0[r] = added.0[r];
+
+            rhs.positions.iter().for_each(|m|
+            {
+                self.0[r] += lhs.values[m * o_size + r];
+            });
+        });
+    }
+
+    pub fn len(&self) -> usize
+    {
+        self.0.len()
     }
 }

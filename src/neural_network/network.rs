@@ -1460,7 +1460,7 @@ where
             {
                 if let Some(gradient_clip) = gradient_clip
                 {
-                    gradient = gradient.cap_magnitude(gradient_clip);
+                    gradient.cap_magnitude_inplace(gradient_clip);
                 }
 
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);

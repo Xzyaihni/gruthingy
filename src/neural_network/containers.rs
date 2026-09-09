@@ -2589,7 +2589,7 @@ impl OperationsRecorder
                     debug_calculate_values!(AddScalar, (lhs),(rhs));
                     copy_tensor!(lhs, output);
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).add_scalar(self.memory.values[rhs.0]);
+                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).add_scalar_inplace(self.memory.values[rhs.0]);
                     debug_calculate_values_result!((output),());
                 },
                 GradientOp::Add{lhs, rhs, output} =>
@@ -2794,7 +2794,7 @@ impl OperationsRecorder
                     {
                         copy_tensor!(values, softmaxed_output);
 
-                        let softmaxed_output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *softmaxed_output);
+                        let mut softmaxed_output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *softmaxed_output);
 
                         self.memory.values[output.0] = softmaxed_output.softmax_cross_entropy_inplace(&self.memory.one_hot_layers[targets.0]);
                     }
@@ -2853,10 +2853,10 @@ impl OperationsRecorder
 
                     {
                         let (output, lhs, rhs, added) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
+                            (LayerTypeVectorMut, output, x0),
                             (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2),
-                            (LayerTypeRef, added, x3)
+                            (LayerTypeVectorRef, rhs, x2),
+                            (LayerTypeVectorRef, added, x3)
                         );
 
                         output.matmulv_add_into(lhs, rhs, added);
@@ -2870,9 +2870,9 @@ impl OperationsRecorder
 
                     {
                         let (output, lhs, added) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
+                            (LayerTypeVectorMut, output, x0),
                             (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, added, x2)
+                            (LayerTypeVectorRef, added, x2)
                         );
 
                         output.matmul_onehotv_add_into(lhs, &self.memory.one_hot_layers[rhs.0], added);
@@ -2886,9 +2886,9 @@ impl OperationsRecorder
 
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
+                            (LayerTypeVectorMut, output, x0),
                             (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2)
+                            (LayerTypeVectorRef, rhs, x2)
                         );
 
                         output.matmulv_transposed_into(lhs, rhs);
@@ -2903,8 +2903,8 @@ impl OperationsRecorder
                     {
                         let (output, lhs, rhs) = get_disjoint_mut!(
                             (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2)
+                            (LayerTypeVectorRef, lhs, x1),
+                            (LayerTypeVectorRef, rhs, x2)
                         );
 
                         output.outer_product_into(lhs, rhs);
@@ -2919,7 +2919,7 @@ impl OperationsRecorder
                     {
                         let (output, lhs) = get_disjoint_mut!(
                             (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1)
+                            (LayerTypeVectorRef, lhs, x1)
                         );
 
                         output.outer_product_one_hot_into(lhs, &self.memory.one_hot_layers[rhs.0]);
