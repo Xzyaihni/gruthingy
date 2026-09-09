@@ -1858,7 +1858,7 @@ mod tests
         type Unit<T> = EmbeddingUnit<T>;
     }
 
-    type ThisFactory = GruUnitFactory;
+    type ThisFactory = LstmUnitFactory;
 
     type NetworkType = Network<ThisFactory, ()>;
 

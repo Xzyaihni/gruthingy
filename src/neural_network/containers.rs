@@ -28,12 +28,12 @@ pub type LayerTypeVectorMut<'a> = VectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const OPT_INFO: bool = true;
-const NO_COLORING: bool = true;
+const OPT_INFO: bool = false;
+const NO_COLORING: bool = false;
 const REASSIGN_CHECKS: bool = true;
 
 #[allow(dead_code)]
-const PRINT_CALCULATE_VALUES: bool = true;
+const PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -3875,7 +3875,6 @@ impl OperationsRecorder
 
         self.memory.tensors.resize(memory_assignments.len(), TensorRawDataPointer::undefined());
 
-        dbg!(&self);
         if OPT_INFO
         {
             self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
@@ -4062,6 +4061,8 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
+        self.calculate_kept_inside();
+
         self.remove_unused_pushes();
 
         self.copy_coalesce();
@@ -4071,6 +4072,41 @@ impl OperationsRecorder
         self.recording_operations = Vec::new();
 
         self.state = RecorderState::AwaitingResolve;
+    }
+
+    fn calculate_kept_inside(&mut self)
+    {
+        self.recording_operations.iter().for_each(|op|
+        {
+            if let Op::Loop{ops, index: loop_index, inputs} = op
+            {
+                let mut defined_values: Vec<_> = inputs.iter().map(|input|
+                {
+                    DiffValue::from(*input)
+                }).collect();
+
+                ops.iter().for_each(|op|
+                {
+                    op.for_outputs(|output|
+                    {
+                        defined_values.push(output.as_value());
+                    });
+                });
+
+                ops.iter().for_each(|op|
+                {
+                    op.for_args(|arg|
+                    {
+                        let arg = arg.as_value();
+
+                        if !defined_values.contains(&arg)
+                        {
+                            self.loops[loop_index.0].kept_inside.push(arg);
+                        }
+                    });
+                });
+            }
+        });
     }
 
     fn scan_out_loop_gradients(
@@ -4083,7 +4119,7 @@ impl OperationsRecorder
 
         self.recording_operations.iter().for_each(|op|
         {
-            if let Op::Loop{ops, index: loop_index, inputs} = op
+            if let Op::Loop{ops, index: loop_index, ..} = op
             {
                 let mut reachable_next_loop: HashSet<DiffValue> = HashSet::new();
 
@@ -4149,10 +4185,7 @@ impl OperationsRecorder
                     });
                 };
 
-                let mut defined_inside: Vec<_> = inputs.iter().map(|input|
-                {
-                    DiffValue::from(*input)
-                }).collect();
+                let mut defined_inside = Vec::new();
 
                 ops.iter().for_each(|op|
                 {
@@ -4193,8 +4226,6 @@ impl OperationsRecorder
                                     self.memory.format_variable(arg_diff.as_value()),
                                     reachable_next_loop.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>()
                                 );
-
-                                self.loops[loop_index.0].kept_inside.push(arg_diff.as_value());
 
                                 zero_out(&mut self.gradient_operations, arg);
                             }
@@ -4350,6 +4381,7 @@ impl OperationsRecorder
             let mut selectors = Vec::new();
 
             self.scan_out_loop_gradients(&mut assigned_gradients, &mut selectors);
+            self.calculate_kept_inside();
 
             let mut intermediate_selectors = Vec::new();
 
@@ -6486,9 +6518,7 @@ mod tests
 
         recorder.gradient(out.into());
 
-        dbg!(&recorder);
         recorder.resolve_memory();
-        dbg!(&recorder);
 
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
         let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
@@ -6514,9 +6544,7 @@ mod tests
         new_recorder.finish();
         new_recorder.no_gradient();
 
-        dbg!(&new_recorder);
         new_recorder.resolve_memory();
-        dbg!(&new_recorder);
 
         let output_value = new_recorder.resolve_tensor_ptr(output_value);
 
