@@ -1,5 +1,5 @@
 Cargo.lock
-perf.data
+perf.data*
 /target
 /callgrind.*
 /vgcore*

@@ -6,6 +6,8 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
+use oxiblas_matrix::{MatRef, MatMut};
+
 use super::{
     Softmaxer,
     Softmaxable,
@@ -319,7 +321,7 @@ impl<'a> YWrapperRef<'a>
 
     pub fn magnitude(&self) -> f32
     {
-        self.values.iter().map(|x| *x * *x).sum::<f32>().sqrt()
+        oxiblas_blas::level1::nrm2_f32(self.values)
     }
 
     pub fn as_vector_ref(&self) -> YVectorWrapperRef<'_>
@@ -331,6 +333,11 @@ impl<'a> YWrapperRef<'a>
             rows: self.rows,
             columns: 1
         })
+    }
+
+    fn as_mat_ref(&self) -> MatRef<'_, f32>
+    {
+        MatRef::from_column_major(self.values, self.rows, self.columns).expect("dimensions must match")
     }
 
     pub fn rows(&self) -> usize
@@ -402,27 +409,53 @@ impl<'a> YWrapperMut<'a>
 
     pub fn add_to(self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
-        (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] + rhs.values[i]);
+        debug_assert_eq!(self.shape(), lhs.shape());
+        debug_assert_eq!(lhs.shape(), rhs.shape());
+
+        for i in 0..self.values.len()
+        {
+            unsafe{
+                *self.values.get_unchecked_mut(i) = *lhs.values.get_unchecked(i) + *rhs.values.get_unchecked(i);
+            }
+        }
     }
 
     pub fn sub_to(&mut self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
-        (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] - rhs.values[i]);
+        debug_assert_eq!(self.shape(), lhs.shape());
+        debug_assert_eq!(lhs.shape(), rhs.shape());
+
+        let mut out = nalgebra::DVectorViewMut::from(&mut *self.values);
+        let lhs = nalgebra::DVectorView::from(lhs.values);
+        let rhs = nalgebra::DVectorView::from(rhs.values);
+
+        lhs.sub_to(&rhs, &mut out);
     }
 
     pub fn sub_from_scalar(self, lhs: f32, rhs: YWrapperRef)
     {
-        (0..self.values.len()).for_each(|i| self.values[i] = lhs - rhs.values[i]);
+        debug_assert_eq!(self.shape(), rhs.shape());
+
+        for i in 0..self.values.len()
+        {
+            unsafe{
+                *self.values.get_unchecked_mut(i) = lhs - rhs.values.get_unchecked(i);
+            }
+        }
     }
 
     pub fn sub_inplace(self, rhs: YWrapperRef)
     {
-        (0..self.values.len()).for_each(|i| self.values[i] = self.values[i] - rhs.values[i]);
+        debug_assert_eq!(self.shape(), rhs.shape());
+
+        oxiblas_blas::level1::axpy_f32(-1.0, rhs.values, self.values)
     }
 
     pub fn add_inplace(self, rhs: YWrapperRef)
     {
-        (0..self.values.len()).for_each(|i| self.values[i] = self.values[i] + rhs.values[i]);
+        debug_assert_eq!(self.shape(), rhs.shape());
+
+        oxiblas_blas::level1::axpy_f32(1.0, rhs.values, self.values)
     }
 
     pub fn add_scalar_inplace(mut self, other: f32)
@@ -495,15 +528,11 @@ impl<'a> YWrapperMut<'a>
         debug_assert_eq!(self.rows(), lhs.len());
         debug_assert_eq!(self.columns(), rhs.len());
 
-        let (rows, columns) = self.shape();
+        let mut out = nalgebra::DMatrixViewMut::from_slice(self.values, self.rows, self.columns);
+        let lhs = nalgebra::DVectorView::from(lhs.0);
+        let rhs = nalgebra::DVectorView::from(rhs.0);
 
-        (0..columns).for_each(|column|
-        {
-            (0..rows).for_each(|row|
-            {
-                self.values[column * rows + row] = lhs.0[row] * rhs.0[column];
-            })
-        })
+        out.ger(1.0, &lhs, &rhs, 0.0);
     }
 
     pub fn outer_product_one_hot_into(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
@@ -553,6 +582,11 @@ impl<'a> YWrapperMut<'a>
             rows: self.rows,
             columns: 1
         })
+    }
+
+    fn as_mat_mut(&mut self) -> MatMut<'_, f32>
+    {
+        MatMut::from_column_major(self.values, self.rows, self.columns).expect("dimensions must match")
     }
 
     pub fn rows(&self) -> usize
@@ -624,17 +658,16 @@ impl<'a> YVectorWrapperMut<'a>
         debug_assert_eq!(self.len(), lhs.columns());
         debug_assert_eq!(lhs.rows(), rhs.len());
 
-        let (rows, columns) = lhs.shape();
+        let rows = lhs.rows;
+        let columns = lhs.columns;
 
-        (0..columns).for_each(|column|
+        for i in 0..columns
         {
-            self.0[column] = 0.0;
+            let lhs_column_start = i * rows;
+            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
 
-            (0..rows).for_each(|row|
-            {
-                self.0[column] += lhs.values[column * rows + row] * rhs.0[row];
-            })
-        })
+            *(unsafe{ self.0.get_unchecked_mut(i) }) = oxiblas_blas::level1::dot_f32(lhs_column, rhs.0);
+        }
     }
 
     pub fn matmulv_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
@@ -642,18 +675,18 @@ impl<'a> YVectorWrapperMut<'a>
         debug_assert_eq!(self.len(), lhs.rows());
         debug_assert_eq!(lhs.columns(), rhs.len());
 
-        let o_size = self.len();
-        let m_size = rhs.len();
+        let rows = lhs.rows;
+        let columns = lhs.columns;
 
-        (0..o_size).for_each(|r|
+        self.0.fill(0.0);
+
+        for i in 0..columns
         {
-            self.0[r] = 0.0;
+            let lhs_column_start = i * rows;
+            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
 
-            (0..m_size).for_each(|m|
-            {
-                self.0[r] += lhs.values[m * o_size + r] * rhs.0[m];
-            });
-        })
+            oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.0.get_unchecked(i) }, lhs_column, self.0);
+        }
     }
 
     pub fn matmulv_add_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef, added: YVectorWrapperRef)
@@ -662,18 +695,18 @@ impl<'a> YVectorWrapperMut<'a>
         debug_assert_eq!(lhs.columns(), rhs.len());
         debug_assert_eq!(self.len(), added.len());
 
-        let o_size = self.len();
-        let m_size = rhs.len();
+        let rows = lhs.rows;
+        let columns = lhs.columns;
 
-        (0..o_size).for_each(|r|
+        self.0.copy_from_slice(added.0);
+
+        for i in 0..columns
         {
-            self.0[r] = added.0[r];
+            let lhs_column_start = i * rows;
+            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
 
-            (0..m_size).for_each(|m|
-            {
-                self.0[r] += lhs.values[m * o_size + r] * rhs.0[m];
-            });
-        })
+            oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.0.get_unchecked(i) }, lhs_column, self.0);
+        }
     }
 
     pub fn matmul_onehotv_add_into(self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YVectorWrapperRef)
