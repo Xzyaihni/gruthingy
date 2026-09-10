@@ -13,7 +13,6 @@ use super::{
     Softmaxable,
     OneHotLayer,
     TensorRawDataPointer,
-    TensorIndexRaw,
     LEAKY_SLOPE,
     leaky_relu_d
 };
@@ -282,20 +281,16 @@ impl YWrapper
 #[allow(dead_code)]
 impl<'a> YWrapperRef<'a>
 {
-    pub fn from_data(data: &'a [f32], info: TensorRawDataPointer) -> Self
+    pub fn from_data(values: &'a [f32], rows: usize, columns: usize) -> Self
     {
-        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+        debug_assert_eq!(values.len(), rows * columns);
+
+        Self{rows, columns, values}
     }
 
     pub fn from_data_with_start(data: &'a [f32], info: TensorRawDataPointer) -> Self
     {
-        let len = info.rows * info.columns;
-
-        Self{
-            rows: info.rows,
-            columns: info.columns,
-            values: &data[info.raw_index.0..(info.raw_index.0 + len)]
-        }
+        Self::from_data(&data[info.raw_index.0..(info.raw_index.0 + info.rows * info.columns)], info.rows, info.columns)
     }
 
     pub fn matmul_onehotv_add(self, rhs: &OneHotLayer, added: YVectorWrapperRef) -> YWrapper
@@ -328,11 +323,7 @@ impl<'a> YWrapperRef<'a>
     {
         debug_assert_eq!(self.columns, 1);
 
-        YVectorWrapperRef::from_data(&self.values, TensorRawDataPointer{
-            raw_index: TensorIndexRaw(0),
-            rows: self.rows,
-            columns: 1
-        })
+        YVectorWrapperRef::from_data(&self.values, self.rows, 1)
     }
 
     fn as_mat_ref(&self) -> MatRef<'_, f32>
@@ -373,20 +364,16 @@ impl<'a> YWrapperRef<'a>
 #[allow(dead_code)]
 impl<'a> YWrapperMut<'a>
 {
-    pub fn from_data(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
+    pub fn from_data(values: &'a mut [f32], rows: usize, columns: usize) -> Self
     {
-        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+        debug_assert_eq!(values.len(), rows * columns);
+
+        Self{rows, columns, values}
     }
 
     pub fn from_data_with_start(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
     {
-        let len = info.rows * info.columns;
-
-        Self{
-            rows: info.rows,
-            columns: info.columns,
-            values: &mut data[info.raw_index.0..(info.raw_index.0 + len)]
-        }
+        Self::from_data(&mut data[info.raw_index.0..(info.raw_index.0 + info.rows * info.columns)], info.rows, info.columns)
     }
 
     pub fn copy_from(self, value: YWrapperRef)
@@ -577,11 +564,7 @@ impl<'a> YWrapperMut<'a>
     {
         debug_assert_eq!(self.columns, 1);
 
-        YVectorWrapperMut::from_data(&mut self.values, TensorRawDataPointer{
-            raw_index: TensorIndexRaw(0),
-            rows: self.rows,
-            columns: 1
-        })
+        YVectorWrapperMut::from_data(&mut self.values, self.rows, 1)
     }
 
     fn as_mat_mut(&mut self) -> MatMut<'_, f32>
@@ -621,16 +604,17 @@ impl<'a> YWrapperMut<'a>
 
 impl<'a> YVectorWrapperRef<'a>
 {
-    pub fn from_data(data: &'a [f32], info: TensorRawDataPointer) -> Self
+    pub fn from_data(values: &'a [f32], rows: usize, columns: usize) -> Self
     {
-        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+        debug_assert_eq!(columns, 1);
+        debug_assert_eq!(values.len(), rows);
+
+        Self(values)
     }
 
     pub fn from_data_with_start(data: &'a [f32], info: TensorRawDataPointer) -> Self
     {
-        let len = info.rows * info.columns;
-
-        Self(&data[info.raw_index.0..(info.raw_index.0 + len)])
+        Self::from_data(&data[info.raw_index.0..(info.raw_index.0 + info.rows * info.columns)], info.rows, info.columns)
     }
 
     pub fn len(&self) -> usize
@@ -641,16 +625,17 @@ impl<'a> YVectorWrapperRef<'a>
 
 impl<'a> YVectorWrapperMut<'a>
 {
-    pub fn from_data(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
+    pub fn from_data(values: &'a mut [f32], rows: usize, columns: usize) -> Self
     {
-        Self::from_data_with_start(data, TensorRawDataPointer{raw_index: TensorIndexRaw(0), ..info})
+        debug_assert_eq!(columns, 1);
+        debug_assert_eq!(values.len(), rows);
+
+        Self(values)
     }
 
     pub fn from_data_with_start(data: &'a mut [f32], info: TensorRawDataPointer) -> Self
     {
-        let len = info.rows * info.columns;
-
-        Self(&mut data[info.raw_index.0..(info.raw_index.0 + len)])
+        Self::from_data(&mut data[info.raw_index.0..(info.raw_index.0 + info.rows * info.columns)], info.rows, info.columns)
     }
 
     pub fn matmulv_transposed_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)

@@ -24,7 +24,7 @@ pub use config::Config;
 mod config;
 mod word_vectorizer;
 
-mod neural_network;
+pub mod neural_network;
 
 
 #[derive(Serialize, Deserialize)]

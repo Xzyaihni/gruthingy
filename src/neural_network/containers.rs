@@ -57,7 +57,7 @@ macro_rules! get_disjoint_mut_with
                 }
             };
 
-            ($($target_type::from_data($tmp_name, $name),)+)
+            ($($target_type::from_data($tmp_name, $name.rows, $name.columns),)+)
         }
     }
 }
@@ -4454,8 +4454,6 @@ impl OperationsRecorder
             self.scan_out_loop_gradients(&mut assigned_gradients, &mut selectors);
             self.calculate_kept_inside();
 
-            let mut intermediate_selectors = Vec::new();
-
             let mut used_stack_values = Vec::new();
 
             for op_index in (0..self.recording_operations.len()).rev()
@@ -4465,7 +4463,7 @@ impl OperationsRecorder
                 self.calculate_gradient(
                     &mut assigned_gradients,
                     &mut selectors,
-                    &mut intermediate_selectors,
+                    &mut None,
                     &mut used_stack_values,
                     &[],
                     op,
@@ -4491,7 +4489,7 @@ impl OperationsRecorder
         &mut self,
         assigned_gradients: &mut Vec<AssignedInfo>,
         selectors: &mut Vec<LoopSelectorInfo>,
-        intermediate_selectors: &mut Vec<PhiOtherSelectorIndex>,
+        intermediate_selector: &mut Option<PhiOtherSelectorIndex>,
         used_stack_values: &mut Vec<UsedStackValueInfo>,
         loop_inputs: &[(InputTypePtr, InputTypePtr)],
         op: Op,
@@ -4588,15 +4586,18 @@ impl OperationsRecorder
 
             let mut add_selector = |this: &mut Self| -> PhiOtherSelectorIndex
             {
-                let selector_index = PhiOtherSelectorIndex(this.memory.phi_other_selectors_values.len());
-                this.memory.phi_other_selectors_values.push(PhiOtherSelectorValue{
-                    loop_index: inside_loop.expect("must only be called inside a loop"),
-                    is_set: false
-                });
+                intermediate_selector.unwrap_or_else(||
+                {
+                    let selector_index = PhiOtherSelectorIndex(this.memory.phi_other_selectors_values.len());
+                    this.memory.phi_other_selectors_values.push(PhiOtherSelectorValue{
+                        loop_index: inside_loop.expect("must only be called inside a loop"),
+                        is_set: false
+                    });
 
-                intermediate_selectors.push(selector_index);
+                    *intermediate_selector = Some(selector_index);
 
-                selector_index
+                    selector_index
+                })
             };
 
             let gradient_op = if let Some(this_selector) = selectors.iter().find(|info|
@@ -5322,7 +5323,7 @@ impl OperationsRecorder
                     self.calculate_gradient(
                         assigned_gradients,
                         selectors,
-                        intermediate_selectors,
+                        intermediate_selector,
                         used_stack_values,
                         &input_replacements,
                         op,
@@ -5359,10 +5360,10 @@ impl OperationsRecorder
                     });
                 }
 
-                intermediate_selectors.iter().for_each(|intermediate_selector_index|
+                if let Some(intermediate_selector_index) = intermediate_selector.take()
                 {
-                    self.gradient_operations.push(GradientOp::SetOtherSelector(*intermediate_selector_index));
-                });
+                    self.gradient_operations.push(GradientOp::SetOtherSelector(intermediate_selector_index));
+                }
 
                 self.gradient_operations.push(GradientOp::Jump(JumpInfo::JumpFrom(gradient_loop_index)));
             }
