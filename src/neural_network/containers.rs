@@ -340,7 +340,6 @@ struct LoopInfo
     live_range: LiveRange,
     loops_gradient: Option<LoopIndex>,
     gradient_of_loop: Option<LoopIndex>,
-    selector_others: Vec<DiffValue>,
     kept_inside: Vec<DiffValue>,
     defined_values: Vec<DiffValue>,
     used_values: Vec<DiffValue>,
@@ -369,7 +368,6 @@ impl Debug for LoopInfoDebug<'_>
             ForceNoPretty(values.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>())
         };
 
-        let selector_others = fmd(&info.selector_others);
         let kept_inside = fmd(&info.kept_inside);
         let defined_values = fmd(&info.defined_values);
         let used_values = fmd(&info.used_values);
@@ -382,7 +380,6 @@ impl Debug for LoopInfoDebug<'_>
             .field("live_range", &ForceNoPretty(&info.live_range))
             .field("loops_gradient", &ForceNoPretty(&info.loops_gradient))
             .field("gradient_of_loop", &ForceNoPretty(&info.gradient_of_loop))
-            .field("selector_others", &selector_others)
             .field("kept_inside", &kept_inside)
             .field("defined_values", &defined_values)
             .field("used_values", &used_values)
@@ -1979,7 +1976,6 @@ impl OperationsRecorder
             live_range: LiveRange::default(),
             loops_gradient: None,
             gradient_of_loop: None,
-            selector_others: Vec::new(),
             kept_inside: Vec::new(),
             defined_values: Vec::new(),
             used_values: Vec::new(),
@@ -3175,7 +3171,6 @@ impl OperationsRecorder
     fn is_ptr_output(&self, ptr: TensorPtr) -> bool
     {
         self.memory.tensor_live_ranges[ptr.0].end == Some(i32::MAX)
-            || self.loops.iter().any(|l| l.used_values.iter().any(|used_value| *used_value == DiffValue::Tensor(ptr)))
     }
 
     fn remove_unused_pushes(&mut self)
@@ -3233,14 +3228,12 @@ impl OperationsRecorder
 
                     if !overlaps_args
                     {
-                        for (_, check_op) in self.gradient_operations.iter_mut().enumerate().filter(|(x_index, _)| *x_index != i)
+                        for check_index in 0..self.gradient_operations.len()
                         {
-                            *check_op = check_op.clone().map_args_with_state(
-                                (),
-                                |_s, arg| if arg == dst { src } else { arg },
-                                |_s, x| x,
-                                |_s, x| x
-                            );
+                            if check_index != i
+                            {
+                                self.replace_op_args(check_index, dst.into(), src.into())
+                            }
                         }
 
                         self.gradient_operations.remove(i);
@@ -3822,16 +3815,11 @@ impl OperationsRecorder
         {
             let operation_index = GradientOperationIndex(self.raw_operations.len());
 
-            let map_push_stack = |loop_index: LoopIndex, value: DiffValue, gradient_op: StandardGradientOp| -> Option<_>
+            let map_push_stack = |loop_index: LoopIndex, value: DiffValue, gradient_op: StandardGradientOp|
             {
-                let current_loop = &self.loops[loop_index.0];
-                if current_loop.used_values.contains(&value)
-                {
-                    Some(gradient_op.map(&access_tensor, convert::identity, |_| unreachable!(), convert::identity))
-                } else
-                {
-                    None
-                }
+                debug_assert!(&self.loops[loop_index.0].used_values.contains(&value));
+
+                gradient_op.map(&access_tensor, convert::identity, |_| unreachable!(), convert::identity)
             };
 
             let new_op = match gradient_op
@@ -3843,8 +3831,8 @@ impl OperationsRecorder
 
                     None
                 },
-                GradientOp::PushStackValue{loop_index, value} => map_push_stack(loop_index, value.into(), gradient_op),
-                GradientOp::PushStackTensor{loop_index, tensor} => map_push_stack(loop_index, tensor.into(), gradient_op),
+                GradientOp::PushStackValue{loop_index, value} => Some(map_push_stack(loop_index, value.into(), gradient_op)),
+                GradientOp::PushStackTensor{loop_index, tensor} => Some(map_push_stack(loop_index, tensor.into(), gradient_op)),
                 x =>
                 {
                     let mut ignore_output = false;
@@ -3900,20 +3888,55 @@ impl OperationsRecorder
         }
     }
 
+    fn replace_op_args(&mut self, i: usize, src: DiffValue, dst: DiffValue)
+    {
+        let op = &mut self.gradient_operations[i];
+
+        let mut replace_stack_push = |loop_index: LoopIndex|
+        {
+            let this_loop = &mut self.loops[loop_index.0];
+
+            if let Some(used_value) = this_loop.used_values.iter_mut().find(|x| **x == src)
+            {
+                *used_value = dst;
+
+                this_loop.used_values.dedup();
+            }
+
+            if let Some(defined_value) = this_loop.defined_values.iter_mut().find(|x| **x == src)
+            {
+                *defined_value = dst;
+
+                this_loop.defined_values.dedup();
+            }
+        };
+
+        match op
+        {
+            GradientOp::PushStackTensor{loop_index, ..} => replace_stack_push(*loop_index),
+            GradientOp::PushStackValue{loop_index, ..} => replace_stack_push(*loop_index),
+            _ => ()
+        }
+
+        *op = op.clone().map_args(|arg|
+        {
+            if arg == src
+            {
+                dst
+            } else
+            {
+                arg
+            }
+        });
+    }
+
     fn swap_assignment(&mut self, before: usize, src: DiffValue, dst: DiffValue)
     {
-        self.gradient_operations[..before].iter_mut().for_each(|op|
+        for i in 0..before
         {
-            *op = op.clone().map_args(|arg|
-            {
-                if arg == src
-                {
-                    dst
-                } else
-                {
-                    arg
-                }
-            });
+            self.replace_op_args(i, src, dst);
+
+            let op = &mut self.gradient_operations[i];
 
             *op = op.clone().map_outputs(|output|
             {
@@ -3925,7 +3948,7 @@ impl OperationsRecorder
                     output
                 }
             });
-        });
+        }
     }
 
     fn combine_inplace_assignments(&mut self)
@@ -4165,8 +4188,6 @@ impl OperationsRecorder
 
         self.remove_unused_pushes();
 
-        self.add_loop_selectors_info();
-
         self.copy_coalesce();
 
         self.recording_operations = Vec::new();
@@ -4205,35 +4226,6 @@ impl OperationsRecorder
                         }
                     });
                 });
-            }
-        });
-    }
-
-    fn add_loop_selectors_info(&mut self)
-    {
-        let mut inside_loop = None;
-        self.gradient_operations.iter().for_each(|op|
-        {
-            let mut add_loop_selected = |inside_loop: Option<LoopIndex>, other: DiffValue|
-            {
-                self.loops[inside_loop.unwrap().0].selector_others.push(other);
-            };
-
-            match op
-            {
-                GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
-                {
-                    inside_loop = Some(*index);
-                },
-                GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
-                {
-                    debug_assert!(inside_loop.is_some());
-
-                    inside_loop = None;
-                },
-                GradientOp::GetOtherSelectorTensor{other, ..} => add_loop_selected(inside_loop, (*other).into()),
-                GradientOp::GetOtherSelectorValue{other, ..} => add_loop_selected(inside_loop, (*other).into()),
-                _ => ()
             }
         });
     }
@@ -4533,8 +4525,6 @@ impl OperationsRecorder
         }
 
         self.remove_unused_pushes();
-
-        self.add_loop_selectors_info();
 
         self.copy_coalesce();
 

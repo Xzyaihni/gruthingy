@@ -145,8 +145,7 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
             {
-                let mm = recorder.matmulv(hidden.weight_dropped, *previous_state);
-                *gate = recorder.add(*gate, mm);
+                *gate = recorder.matmulv_add(hidden.weight_dropped, *previous_state, *gate);
             };
 
             do_gate(&mut update_gate, self.hidden_update);

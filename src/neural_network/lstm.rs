@@ -170,8 +170,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
-                let mm = recorder.matmulv(hidden.weight_dropped, previous_hidden);
-                *gate = recorder.add(*gate, mm);
+                *gate = recorder.matmulv_add(hidden.weight_dropped, previous_hidden, *gate);
             };
 
             do_gate(&mut forget_gate_inner, self.hidden_forget, previous_state.hidden);
