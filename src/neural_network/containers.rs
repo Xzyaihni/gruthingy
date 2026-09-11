@@ -3834,7 +3834,11 @@ impl OperationsRecorder
 
             let map_push_stack = |loop_index: LoopIndex, value: DiffValue, gradient_op: StandardGradientOp|
             {
-                debug_assert!(&self.loops[loop_index.0].used_values.contains(&value));
+                debug_assert!(
+                    &self.loops[loop_index.0].used_values.contains(&value),
+                    "{} is an unused push",
+                    self.memory.format_variable(value)
+                );
 
                 gradient_op.map(&access_tensor, convert::identity, |_| unreachable!(), convert::identity)
             };
@@ -3909,32 +3913,6 @@ impl OperationsRecorder
     {
         let op = &mut self.gradient_operations[i];
 
-        let mut replace_stack_push = |loop_index: LoopIndex|
-        {
-            let this_loop = &mut self.loops[loop_index.0];
-
-            if let Some(used_value) = this_loop.used_values.iter_mut().find(|x| **x == src)
-            {
-                *used_value = dst;
-
-                this_loop.used_values.dedup();
-            }
-
-            if let Some(defined_value) = this_loop.defined_values.iter_mut().find(|x| **x == src)
-            {
-                *defined_value = dst;
-
-                this_loop.defined_values.dedup();
-            }
-        };
-
-        match op
-        {
-            GradientOp::PushStackTensor{loop_index, ..} => replace_stack_push(*loop_index),
-            GradientOp::PushStackValue{loop_index, ..} => replace_stack_push(*loop_index),
-            _ => ()
-        }
-
         *op = op.clone().map_args(|arg|
         {
             if arg == src
@@ -3944,6 +3922,42 @@ impl OperationsRecorder
             {
                 arg
             }
+        });
+
+        #[cfg(debug_assertions)]
+        {
+            self.loops.iter_mut().for_each(|loop_info|
+            {
+                loop_info.expected_pairs.iter_mut().for_each(|(source, destination)|
+                {
+                    if *source == src
+                    {
+                        *source = dst;
+                    }
+
+                    if *destination == src
+                    {
+                        *destination = dst;
+                    }
+                });
+            });
+        }
+
+        self.loops.iter_mut().for_each(|loop_info|
+        {
+            let update_list = |lst: &mut Vec<DiffValue>|
+            {
+                if let Some(used_value) = lst.iter_mut().find(|x| **x == src)
+                {
+                    *used_value = dst;
+
+                    lst.dedup();
+                }
+            };
+
+            update_list(&mut loop_info.kept_inside);
+            update_list(&mut loop_info.used_values);
+            update_list(&mut loop_info.defined_values);
         });
     }
 
@@ -4266,6 +4280,48 @@ impl OperationsRecorder
         });
     }
 
+    fn combine_zero_outs(&mut self)
+    {
+        let mut zero_outs_tensor = Vec::new();
+        let mut zero_outs_value = Vec::new();
+
+        self.gradient_operations.iter().for_each(|op|
+        {
+            match op
+            {
+                GradientOp::ZeroTensor(x) => zero_outs_tensor.push(*x),
+                GradientOp::ZeroValue(x) => zero_outs_value.push(*x),
+                _ => ()
+            }
+        });
+
+        fn replace_zero_outs<T: Copy + Eq + Into<DiffValue>>(
+            this: &mut OperationsRecorder,
+            zero_outs: Vec<T>,
+            is_same_size: impl Fn(&OperationsRecorder, T, T) -> bool
+        )
+        {
+            let replace_value_for: Vec<_> = zero_outs.iter().map(|x|
+            {
+                zero_outs.iter().find(|y| is_same_size(this, *x, **y)).expect("self must always be the same size")
+            }).copied().collect();
+
+            for i in 0..this.gradient_operations.len()
+            {
+                zero_outs.iter().zip(replace_value_for.iter()).for_each(|(zero_out, replace_value)|
+                {
+                    if *zero_out != *replace_value
+                    {
+                        this.replace_op_args(i, (*zero_out).into(), (*replace_value).into());
+                    }
+                });
+            }
+        }
+
+        replace_zero_outs(self, zero_outs_tensor, |this, a, b| this.tensor_shape(a) == this.tensor_shape(b));
+        replace_zero_outs(self, zero_outs_value, |_, _, _| true);
+    }
+
     fn scan_out_loop_gradients(
         &mut self,
         assigned_gradients: &mut Vec<AssignedInfo>,
@@ -4559,6 +4615,8 @@ impl OperationsRecorder
 
             self.resolve_stack_values(used_stack_values);
         }
+
+        self.combine_zero_outs();
 
         self.remove_unused_pushes();
 
