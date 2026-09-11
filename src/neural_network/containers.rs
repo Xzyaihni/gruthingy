@@ -5629,7 +5629,7 @@ impl OperationsRecorder
 
                     gradient_ops.iter().for_each(|op|
                     {
-                        op.for_args(|arg|
+                        let mut handle_arg = |arg: DiffValue|
                         {
                             if !defined_values.contains(&arg)
                             {
@@ -5640,7 +5640,14 @@ impl OperationsRecorder
                                     kept_inside.push(arg);
                                 }
                             }
-                        });
+                        };
+
+                        match op
+                        {
+                            GradientOp::GetOtherSelectorTensor{other, ..} => handle_arg((*other).into()),
+                            GradientOp::GetOtherSelectorValue{other, ..} => handle_arg((*other).into()),
+                            op => op.for_args(handle_arg)
+                        }
                     });
                 }
 
