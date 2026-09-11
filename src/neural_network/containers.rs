@@ -2379,6 +2379,9 @@ impl OperationsRecorder
                 {
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
+                    debug_assert_ne!(first, output);
+                    debug_assert_ne!(other, output);
+
                     let src = if this_selector.is_set
                     {
                         debug_calculate_values!(GetOtherSelectorValue, (),(other));
@@ -2398,6 +2401,9 @@ impl OperationsRecorder
                 GradientOp::GetOtherSelectorTensor{info: index, first, other, output} =>
                 {
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
+
+                    debug_assert_ne!(first, output);
+                    debug_assert_ne!(other, output);
 
                     let src = if this_selector.is_set
                     {
@@ -4093,6 +4099,10 @@ impl OperationsRecorder
                         added: combined_output_add,
                         output: combined_output_add
                     };
+                },
+                GradientOp::GetOtherSelectorTensor{info, first, other, output} if other == output =>
+                {
+                    self.gradient_operations[i] = GradientOp::IfNotSetTensor{index: info, src: first, dst: output};
                 },
                 _ => ()
             }
