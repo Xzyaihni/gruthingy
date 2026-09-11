@@ -2908,6 +2908,24 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
+                GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+                {
+                    debug_calculate_values!(MatmulvTransposedAdd, (lhs, rhs, added),());
+
+                    debug_assert_eq!(added, output);
+
+                    {
+                        let (output, lhs, rhs) = get_disjoint_mut!(
+                            (LayerTypeVectorMut, output, x0),
+                            (LayerTypeRef, lhs, x1),
+                            (LayerTypeVectorRef, rhs, x2)
+                        );
+
+                        output.matmulv_transposed_add_inplace(lhs, rhs);
+                    }
+
+                    debug_calculate_values_result!((output),());
+                },
                 GradientOp::OuterProduct{lhs, rhs, output} =>
                 {
                     debug_calculate_values!(OuterProduct, (lhs, rhs),());
@@ -4043,6 +4061,17 @@ impl OperationsRecorder
 
             match self.gradient_operations[i]
             {
+                GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+                {
+                    let combined_output_add = combine_arg_output_tensors(self, added, output);
+
+                    self.gradient_operations[i] = GradientOp::MatmulvTransposedAdd{
+                        lhs,
+                        rhs,
+                        added: combined_output_add,
+                        output: combined_output_add
+                    };
+                },
                 GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
                 {
                     let combined_output_add = combine_arg_output_tensors(self, added, output);
@@ -4165,6 +4194,7 @@ impl OperationsRecorder
                     op,
                     GradientOp::GetOtherSelectorValue{..}
                     | GradientOp::GetOtherSelectorTensor{..}
+                    | GradientOp::MatmulvTransposedAdd{..}
                     | GradientOp::OuterProductAdd{..}
                     | GradientOp::OuterProductOneHotAdd{..}
                 );
@@ -4976,6 +5006,19 @@ impl OperationsRecorder
 
                 let new_id = match new_op
                 {
+                    GradientOp::MatmulvTransposed{lhs, rhs, output: output_temp} =>
+                    {
+                        debug_assert_eq!(output_temp, add_rhs.into_tensor());
+
+                        this.gradient_operations.push(GradientOp::MatmulvTransposedAdd{
+                            lhs,
+                            rhs,
+                            added: add_lhs.into_tensor(),
+                            output: output.into_tensor()
+                        });
+
+                        new_id
+                    },
                     GradientOp::OuterProduct{lhs, rhs, output: output_temp} =>
                     {
                         debug_assert_eq!(output_temp, add_rhs.into_tensor());
@@ -6017,13 +6060,18 @@ impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<T, V, J, PhiOthe
             GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊙ {rhs:?} + {added:?}"),
             GradientOp::Tanh{value, output} => write!(f, "{output:?} ← tanh({value:?})"),
             GradientOp::TanhDiff{value, gradient, output} => write!(f, "{output:?} ← tanh'({value:?}) ⊙ {gradient:?}"),
+            GradientOp::Sigmoid{value, output} => write!(f, "{output:?} ← σ({value:?})"),
+            GradientOp::SigmoidDiff{value, gradient, output} => write!(f, "{output:?} ← σ'({value:?}) ⊙ {gradient:?}"),
             GradientOp::MulScalar{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
             GradientOp::Matmulv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
             GradientOp::MatmulvTransposed{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?}"),
+            GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?} + {added:?}"),
             GradientOp::MatmulvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
             GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
             GradientOp::OuterProduct{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
+            GradientOp::OuterProductAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
             GradientOp::OuterProductOneHot{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
+            GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
             GradientOp::SumTensor{value, output} => write!(f, "{output:?} ← ∑{value:?}"),
             GradientOp::GetOtherSelectorValue{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),
             GradientOp::GetOtherSelectorTensor{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),
@@ -6089,6 +6137,7 @@ pub enum GradientOp<T, V, J, S>
     MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
     MatmulOneHotvAdd{lhs: T, rhs: OneHotIndex, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
+    MatmulvTransposedAdd{lhs: T, rhs: T, added: T, output: T},
     OuterProduct{lhs: T, rhs: T, output: T},
     OuterProductAdd{lhs: T, rhs: T, added: T, output: T},
     OuterProductOneHot{lhs: T, rhs: OneHotIndex, output: T},
@@ -6182,6 +6231,10 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
                 GradientOp::MatmulOneHotvAdd{lhs: tf(lhs), rhs, added: tf(added), output: tf(output)}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
+            Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::MatmulvTransposedAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+            },
             Self::OuterProduct{lhs, rhs, output} => GradientOp::OuterProduct{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::OuterProductAdd{lhs, rhs, added, output} =>
             {
@@ -6307,6 +6360,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             Self::MatmulvAdd{output, lhs, rhs, added} => Self::MatmulvAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulOneHotvAdd{output, lhs, rhs, added} => Self::MatmulOneHotvAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(&mut state, output), lhs, rhs},
+            Self::MatmulvTransposedAdd{output, lhs, rhs, added} => Self::MatmulvTransposedAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::OuterProduct{output, lhs, rhs} => Self::OuterProduct{output: tf(&mut state, output), lhs, rhs},
             Self::OuterProductAdd{output, lhs, rhs, added} => Self::OuterProductAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::OuterProductOneHot{output, lhs, rhs} => Self::OuterProductOneHot{output: tf(&mut state, output), lhs, rhs},
@@ -6424,6 +6478,10 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
                 Self::MatmulOneHotvAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
+            Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+            {
+                Self::MatmulvTransposedAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+            },
             Self::OuterProduct{lhs, rhs, output} => Self::OuterProduct{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::OuterProductAdd{lhs, rhs, added, output} =>
             {

@@ -682,6 +682,23 @@ impl<'a> YVectorWrapperMut<'a>
         }
     }
 
+    pub fn matmulv_transposed_add_inplace(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+    {
+        debug_assert_eq!(self.len(), lhs.columns());
+        debug_assert_eq!(lhs.rows(), rhs.len());
+
+        let rows = lhs.rows;
+        let columns = lhs.columns;
+
+        for i in 0..columns
+        {
+            let lhs_column_start = i * rows;
+            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+
+            *(unsafe{ self.0.get_unchecked_mut(i) }) += oxiblas_blas::level1::dot_f32(lhs_column, rhs.0);
+        }
+    }
+
     pub fn matmulv_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
     {
         debug_assert_eq!(self.len(), lhs.rows());
