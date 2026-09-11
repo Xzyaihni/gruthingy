@@ -4346,12 +4346,9 @@ impl OperationsRecorder
     {
         self.recording_operations.iter().for_each(|op|
         {
-            if let Op::Loop{ops, index: loop_index, inputs} = op
+            if let Op::Loop{ops, index: loop_index, inputs: _} = op
             {
-                let mut defined_values: Vec<_> = inputs.iter().map(|input|
-                {
-                    DiffValue::from(*input)
-                }).collect();
+                let mut defined_values = Vec::new();
 
                 ops.iter().for_each(|op|
                 {
@@ -5622,10 +5619,7 @@ impl OperationsRecorder
                 });
 
                 {
-                    let mut defined_values: Vec<_> = gradient_inputs.iter().map(|input|
-                    {
-                        DiffValue::from(*input)
-                    }).collect();
+                    let mut defined_values: Vec<_> = used_stack_values.iter().map(|x| x.target).collect();
 
                     let gradient_ops = &self.gradient_operations[gradient_operations_start..];
                     gradient_ops.iter().for_each(|op|
