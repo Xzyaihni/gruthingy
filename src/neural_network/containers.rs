@@ -3902,23 +3902,18 @@ impl OperationsRecorder
 
     fn swap_assignment(&mut self, before: usize, src: DiffValue, dst: DiffValue)
     {
-        let is_selector_other = self.loops.iter().any(|loop_info| loop_info.selector_others.contains(&src));
-
         self.gradient_operations[..before].iter_mut().for_each(|op|
         {
-            if is_selector_other
+            *op = op.clone().map_args(|arg|
             {
-                *op = op.clone().map_args(|arg|
+                if arg == src
                 {
-                    if arg == src
-                    {
-                        dst
-                    } else
-                    {
-                        arg
-                    }
-                });
-            }
+                    dst
+                } else
+                {
+                    arg
+                }
+            });
 
             *op = op.clone().map_outputs(|output|
             {
