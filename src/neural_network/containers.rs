@@ -340,6 +340,7 @@ struct LoopInfo
     live_range: LiveRange,
     loops_gradient: Option<LoopIndex>,
     gradient_of_loop: Option<LoopIndex>,
+    selector_others: Vec<DiffValue>,
     kept_inside: Vec<DiffValue>,
     defined_values: Vec<DiffValue>,
     used_values: Vec<DiffValue>,
@@ -363,9 +364,15 @@ impl Debug for LoopInfoDebug<'_>
     {
         let info = self.info;
 
-        let kept_inside = ForceNoPretty(info.kept_inside.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>());
-        let defined_values = ForceNoPretty(info.defined_values.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>());
-        let used_values = ForceNoPretty(info.used_values.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>());
+        let fmd = |values: &[DiffValue]| -> ForceNoPretty<Vec<DebugStringRaw>>
+        {
+            ForceNoPretty(values.iter().map(|x| DebugStringRaw(self.memory.format_variable(*x))).collect::<Vec<_>>())
+        };
+
+        let selector_others = fmd(&info.selector_others);
+        let kept_inside = fmd(&info.kept_inside);
+        let defined_values = fmd(&info.defined_values);
+        let used_values = fmd(&info.used_values);
 
         let mut struct_info = f.debug_struct("LoopInfo");
 
@@ -375,6 +382,7 @@ impl Debug for LoopInfoDebug<'_>
             .field("live_range", &ForceNoPretty(&info.live_range))
             .field("loops_gradient", &ForceNoPretty(&info.loops_gradient))
             .field("gradient_of_loop", &ForceNoPretty(&info.gradient_of_loop))
+            .field("selector_others", &selector_others)
             .field("kept_inside", &kept_inside)
             .field("defined_values", &defined_values)
             .field("used_values", &used_values)
@@ -1971,6 +1979,7 @@ impl OperationsRecorder
             live_range: LiveRange::default(),
             loops_gradient: None,
             gradient_of_loop: None,
+            selector_others: Vec::new(),
             kept_inside: Vec::new(),
             defined_values: Vec::new(),
             used_values: Vec::new(),
@@ -2912,6 +2921,24 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
+                GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
+                {
+                    debug_calculate_values!(OuterProductAdd, (lhs, rhs, added),());
+
+                    debug_assert_eq!(added, output);
+
+                    {
+                        let (output, lhs, rhs) = get_disjoint_mut!(
+                            (LayerTypeMut, output, x0),
+                            (LayerTypeVectorRef, lhs, x1),
+                            (LayerTypeVectorRef, rhs, x2)
+                        );
+
+                        output.outer_product_add_inplace(lhs, rhs);
+                    }
+
+                    debug_calculate_values_result!((output),());
+                },
                 GradientOp::OuterProductOneHot{lhs, rhs, output} =>
                 {
                     debug_calculate_values!(OuterProductOneHot, (lhs),());
@@ -3227,67 +3254,6 @@ impl OperationsRecorder
         }
     }
 
-    fn combine_ops(&mut self)
-    {
-        let mut i = 1;
-        while i < self.gradient_operations.len()
-        {
-            let previous_i = i - 1;
-
-            let previous = self.gradient_operations[previous_i].clone();
-            let this = self.gradient_operations[i].clone();
-            match (previous, this)
-            {
-                (
-                    GradientOp::MulComponentwise{output, lhs: mul_lhs, rhs: mul_rhs},
-                    GradientOp::Add{lhs, rhs, output: add_output}
-                ) if ((output == lhs && mul_lhs != rhs && mul_rhs != rhs) || (output == rhs && mul_lhs != lhs && mul_rhs != lhs))
-                    && !self.is_ptr_output(output) =>
-                {
-                    let mut used_after = false;
-
-                    for check_op in &self.gradient_operations[(i + 1)..]
-                    {
-                        check_op.for_args(|v| if v == DiffValue::Tensor(output) { used_after = true });
-
-                        if used_after
-                        {
-                            break;
-                        }
-                    }
-
-                    if !used_after
-                    {
-                        let added = if output == lhs
-                        {
-                            rhs
-                        } else if output == rhs
-                        {
-                            lhs
-                        } else
-                        {
-                            unreachable!()
-                        };
-
-                        self.gradient_operations[previous_i] = GradientOp::MulComponentwiseAdd{
-                            lhs: mul_lhs,
-                            rhs: mul_rhs,
-                            added,
-                            output: add_output
-                        };
-
-                        self.gradient_operations.remove(i);
-
-                        continue;
-                    }
-                },
-                _ => ()
-            }
-
-            i += 1;
-        }
-    }
-
     pub fn is_ready(&self) -> bool
     {
         self.state == RecorderState::Ready
@@ -3329,6 +3295,8 @@ impl OperationsRecorder
                     },
                     GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
                     {
+                        debug_assert!(inside_loop.is_some());
+
                         inside_loop = None;
                     },
                     GradientOp::GetOtherSelectorValue{..}
@@ -3932,11 +3900,72 @@ impl OperationsRecorder
         }
     }
 
+    fn swap_assignment(&mut self, before: usize, src: DiffValue, dst: DiffValue)
+    {
+        let is_selector_other = self.loops.iter().any(|loop_info| loop_info.selector_others.contains(&src));
+
+        self.gradient_operations[..before].iter_mut().for_each(|op|
+        {
+            if is_selector_other
+            {
+                *op = op.clone().map_args(|arg|
+                {
+                    if arg == src
+                    {
+                        dst
+                    } else
+                    {
+                        arg
+                    }
+                });
+            }
+
+            *op = op.clone().map_outputs(|output|
+            {
+                if output == src
+                {
+                    dst
+                } else
+                {
+                    output
+                }
+            });
+        });
+    }
+
+    fn combine_inplace_assignments(&mut self)
+    {
+        for i in (0..self.gradient_operations.len()).rev()
+        {
+            match self.gradient_operations[i]
+            {
+                GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
+                {
+                    let combined_output_add = output;
+
+                    self.memory.tensor_live_ranges[combined_output_add.0].start = self.memory.tensor_live_ranges[added.0].start;
+
+                    self.gradient_operations[i] = GradientOp::OuterProductAdd{
+                        lhs,
+                        rhs,
+                        added: combined_output_add,
+                        output: combined_output_add
+                    };
+
+                    self.swap_assignment(i, added.into(), output.into());
+                },
+                _ => ()
+            }
+        }
+    }
+
     pub fn resolve_memory(&mut self)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
 
         self.calculate_live_ranges();
+
+        self.combine_inplace_assignments();
 
         let mut memory_assignments = Vec::new();
         self.greedy_graph_color(&mut memory_assignments);
@@ -3998,7 +4027,12 @@ impl OperationsRecorder
         {
             self.raw_operations.iter().for_each(|op|
             {
-                let allow_overlap = matches!(op, GradientOp::GetOtherSelectorValue{..} | GradientOp::GetOtherSelectorTensor{..});
+                let allow_overlap = matches!(
+                    op,
+                    GradientOp::GetOtherSelectorValue{..}
+                    | GradientOp::GetOtherSelectorTensor{..}
+                    | GradientOp::OuterProductAdd{..}
+                );
 
                 if allow_overlap
                 {
@@ -4136,9 +4170,9 @@ impl OperationsRecorder
 
         self.remove_unused_pushes();
 
-        self.copy_coalesce();
+        self.add_loop_selectors_info();
 
-        self.combine_ops();
+        self.copy_coalesce();
 
         self.recording_operations = Vec::new();
 
@@ -4176,6 +4210,35 @@ impl OperationsRecorder
                         }
                     });
                 });
+            }
+        });
+    }
+
+    fn add_loop_selectors_info(&mut self)
+    {
+        let mut inside_loop = None;
+        self.gradient_operations.iter().for_each(|op|
+        {
+            let mut add_loop_selected = |inside_loop: Option<LoopIndex>, other: DiffValue|
+            {
+                self.loops[inside_loop.unwrap().0].selector_others.push(other);
+            };
+
+            match op
+            {
+                GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
+                {
+                    inside_loop = Some(*index);
+                },
+                GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
+                {
+                    debug_assert!(inside_loop.is_some());
+
+                    inside_loop = None;
+                },
+                GradientOp::GetOtherSelectorTensor{other, ..} => add_loop_selected(inside_loop, (*other).into()),
+                GradientOp::GetOtherSelectorValue{other, ..} => add_loop_selected(inside_loop, (*other).into()),
+                _ => ()
             }
         });
     }
@@ -4476,9 +4539,9 @@ impl OperationsRecorder
 
         self.remove_unused_pushes();
 
-        self.copy_coalesce();
+        self.add_loop_selectors_info();
 
-        self.combine_ops();
+        self.copy_coalesce();
 
         self.recording_operations = Vec::new();
 
@@ -4731,13 +4794,15 @@ impl OperationsRecorder
                     new_output
                 });
 
-                let (add_lhs, add_rhs) = if needs_to_add_selector
+                let add_lhs = if needs_to_add_selector
                 {
-                    (rhs.unwrap(), selector_rhs.unwrap())
+                    selector_rhs.unwrap()
                 } else
                 {
-                    (lhs.unwrap(), rhs.unwrap())
+                    lhs.unwrap()
                 };
+
+                let add_rhs = rhs.unwrap();
 
                 if let Some(extra_operation_index) = info.extra_operation_index
                 {
@@ -4760,24 +4825,47 @@ impl OperationsRecorder
                 }
 
                 this.gradient_operations[info.operation_index.0] = new_previous_op;
-                this.gradient_operations.push(new_op);
 
                 let new_id = this.gradient_operations.len();
 
-                let add_op = match output
+                let new_id = match new_op
                 {
-                    DiffValue::Tensor(output) =>
+                    GradientOp::OuterProduct{lhs, rhs, output: output_temp} =>
                     {
-                        GradientOp::Add{lhs: add_lhs.into_tensor(), rhs: add_rhs.into_tensor(), output}
-                    },
-                    DiffValue::Value(output) =>
-                    {
-                        GradientOp::AddScalars{lhs: add_lhs.into_value(), rhs: add_rhs.into_value(), output}
-                    },
-                    DiffValue::OneHot(_) => unimplemented!()
-                };
+                        debug_assert_eq!(output_temp, add_rhs.into_tensor());
 
-                this.gradient_operations.push(add_op);
+                        this.gradient_operations.push(GradientOp::OuterProductAdd{
+                            lhs,
+                            rhs,
+                            added: add_lhs.into_tensor(),
+                            output: output.into_tensor()
+                        });
+
+                        new_id
+                    },
+                    new_op => {
+                        this.gradient_operations.push(new_op);
+
+                        let new_id = this.gradient_operations.len();
+
+                        let add_op = match output
+                        {
+                            DiffValue::Tensor(output) =>
+                            {
+                                GradientOp::Add{lhs: add_lhs.into_tensor(), rhs: add_rhs.into_tensor(), output}
+                            },
+                            DiffValue::Value(output) =>
+                            {
+                                GradientOp::AddScalars{lhs: add_lhs.into_value(), rhs: add_rhs.into_value(), output}
+                            },
+                            DiffValue::OneHot(_) => unimplemented!()
+                        };
+
+                        this.gradient_operations.push(add_op);
+
+                        new_id
+                    }
+                };
 
                 info.operation_index = GradientOperationIndex(new_id);
                 info.extra_operation_index = new_extra_operation_index;
@@ -5843,6 +5931,7 @@ pub enum GradientOp<T, V, J, S>
     MatmulOneHotvAdd{lhs: T, rhs: OneHotIndex, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
     OuterProduct{lhs: T, rhs: T, output: T},
+    OuterProductAdd{lhs: T, rhs: T, added: T, output: T},
     OuterProductOneHot{lhs: T, rhs: OneHotIndex, output: T}
 }
 
@@ -5934,6 +6023,10 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             },
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::OuterProduct{lhs, rhs, output} => GradientOp::OuterProduct{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
+            Self::OuterProductAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::OuterProductAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+            },
             Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: tf(lhs), rhs, output: tf(output)},
             Self::Jump(x) => GradientOp::Jump(jump_f(x)),
             Self::SetInputs(x) => GradientOp::SetInputs(x),
@@ -6051,6 +6144,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             Self::MatmulOneHotvAdd{output, lhs, rhs, added} => Self::MatmulOneHotvAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(&mut state, output), lhs, rhs},
             Self::OuterProduct{output, lhs, rhs} => Self::OuterProduct{output: tf(&mut state, output), lhs, rhs},
+            Self::OuterProductAdd{output, lhs, rhs, added} => Self::OuterProductAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::OuterProductOneHot{output, lhs, rhs} => Self::OuterProductOneHot{output: tf(&mut state, output), lhs, rhs},
             Self::CopyScalar{dst, src} => Self::CopyScalar{dst: vf(&mut state, dst), src},
             Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(&mut state, output), lhs, rhs},
@@ -6166,6 +6260,10 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             },
             Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::OuterProduct{lhs, rhs, output} => Self::OuterProduct{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
+            Self::OuterProductAdd{lhs, rhs, added, output} =>
+            {
+                Self::OuterProductAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+            },
             Self::OuterProductOneHot{lhs, rhs, output} => Self::OuterProductOneHot{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output},
             Self::CopyScalar{src, dst} => Self::CopyScalar{src: vf(&mut state, src), dst},
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},

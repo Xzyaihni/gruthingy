@@ -522,6 +522,18 @@ impl<'a> YWrapperMut<'a>
         out.ger(1.0, &lhs, &rhs, 0.0);
     }
 
+    pub fn outer_product_add_inplace(self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
+    {
+        debug_assert_eq!(self.rows(), lhs.len());
+        debug_assert_eq!(self.columns(), rhs.len());
+
+        let mut out = nalgebra::DMatrixViewMut::from_slice(self.values, self.rows, self.columns);
+        let lhs = nalgebra::DVectorView::from(lhs.0);
+        let rhs = nalgebra::DVectorView::from(rhs.0);
+
+        out.ger(1.0, &lhs, &rhs, 1.0);
+    }
+
     pub fn outer_product_one_hot_into(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
     {
         debug_assert_eq!(self.rows(), lhs.len());
