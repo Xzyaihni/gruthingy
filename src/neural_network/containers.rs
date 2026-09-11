@@ -2949,6 +2949,23 @@ impl OperationsRecorder
                     }
 
                     debug_calculate_values_result!((output),());
+                },
+                GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+                {
+                    debug_calculate_values!(OuterProductOneHotAdd, (lhs, added),());
+
+                    debug_assert_eq!(added, output);
+
+                    {
+                        let (output, lhs) = get_disjoint_mut!(
+                            (LayerTypeMut, output, x0),
+                            (LayerTypeVectorRef, lhs, x1)
+                        );
+
+                        output.outer_product_one_hot_add_inplace(lhs, &self.memory.one_hot_layers[rhs.0]);
+                    }
+
+                    debug_calculate_values_result!((output),());
                 }
             }
 
@@ -3955,13 +3972,22 @@ impl OperationsRecorder
     {
         for i in (0..self.gradient_operations.len()).rev()
         {
+            let combine_arg_output_tensors = |this: &mut Self, arg: TensorPtr, output: TensorPtr| -> TensorPtr
+            {
+                let combined_output = output;
+
+                this.memory.tensor_live_ranges[combined_output.0].start = this.memory.tensor_live_ranges[arg.0].start;
+
+                this.swap_assignment(i, arg.into(), output.into());
+
+                combined_output
+            };
+
             match self.gradient_operations[i]
             {
                 GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
                 {
-                    let combined_output_add = output;
-
-                    self.memory.tensor_live_ranges[combined_output_add.0].start = self.memory.tensor_live_ranges[added.0].start;
+                    let combined_output_add = combine_arg_output_tensors(self, added, output);
 
                     self.gradient_operations[i] = GradientOp::OuterProductAdd{
                         lhs,
@@ -3969,8 +3995,17 @@ impl OperationsRecorder
                         added: combined_output_add,
                         output: combined_output_add
                     };
+                },
+                GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+                {
+                    let combined_output_add = combine_arg_output_tensors(self, added, output);
 
-                    self.swap_assignment(i, added.into(), output.into());
+                    self.gradient_operations[i] = GradientOp::OuterProductOneHotAdd{
+                        lhs,
+                        rhs,
+                        added: combined_output_add,
+                        output: combined_output_add
+                    };
                 },
                 _ => ()
             }
@@ -4050,6 +4085,7 @@ impl OperationsRecorder
                     GradientOp::GetOtherSelectorValue{..}
                     | GradientOp::GetOtherSelectorTensor{..}
                     | GradientOp::OuterProductAdd{..}
+                    | GradientOp::OuterProductOneHotAdd{..}
                 );
 
                 if allow_overlap
@@ -4820,6 +4856,19 @@ impl OperationsRecorder
                         debug_assert_eq!(output_temp, add_rhs.into_tensor());
 
                         this.gradient_operations.push(GradientOp::OuterProductAdd{
+                            lhs,
+                            rhs,
+                            added: add_lhs.into_tensor(),
+                            output: output.into_tensor()
+                        });
+
+                        new_id
+                    },
+                    GradientOp::OuterProductOneHot{lhs, rhs, output: output_temp} =>
+                    {
+                        debug_assert_eq!(output_temp, add_rhs.into_tensor());
+
+                        this.gradient_operations.push(GradientOp::OuterProductOneHotAdd{
                             lhs,
                             rhs,
                             added: add_lhs.into_tensor(),
@@ -5917,7 +5966,8 @@ pub enum GradientOp<T, V, J, S>
     MatmulvTransposed{lhs: T, rhs: T, output: T},
     OuterProduct{lhs: T, rhs: T, output: T},
     OuterProductAdd{lhs: T, rhs: T, added: T, output: T},
-    OuterProductOneHot{lhs: T, rhs: OneHotIndex, output: T}
+    OuterProductOneHot{lhs: T, rhs: OneHotIndex, output: T},
+    OuterProductOneHotAdd{lhs: T, rhs: OneHotIndex, added: T, output: T}
 }
 
 impl<T, V, J, S> GradientOp<T, V, J, S>
@@ -6013,6 +6063,10 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
                 GradientOp::OuterProductAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
             Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: tf(lhs), rhs, output: tf(output)},
+            Self::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::OuterProductOneHotAdd{lhs: tf(lhs), rhs, added: tf(added), output: tf(output)}
+            },
             Self::Jump(x) => GradientOp::Jump(jump_f(x)),
             Self::SetInputs(x) => GradientOp::SetInputs(x),
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
@@ -6131,6 +6185,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             Self::OuterProduct{output, lhs, rhs} => Self::OuterProduct{output: tf(&mut state, output), lhs, rhs},
             Self::OuterProductAdd{output, lhs, rhs, added} => Self::OuterProductAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::OuterProductOneHot{output, lhs, rhs} => Self::OuterProductOneHot{output: tf(&mut state, output), lhs, rhs},
+            Self::OuterProductOneHotAdd{output, lhs, rhs, added} => Self::OuterProductOneHotAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::CopyScalar{dst, src} => Self::CopyScalar{dst: vf(&mut state, dst), src},
             Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(&mut state, output), lhs, rhs},
             Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(&mut state, output), lhs, rhs},
@@ -6250,6 +6305,10 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
                 Self::OuterProductAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::OuterProductOneHot{lhs, rhs, output} => Self::OuterProductOneHot{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output},
+            Self::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+            {
+                Self::OuterProductOneHotAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
+            },
             Self::CopyScalar{src, dst} => Self::CopyScalar{src: vf(&mut state, src), dst},
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},

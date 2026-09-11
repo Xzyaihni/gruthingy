@@ -552,6 +552,21 @@ impl<'a> YWrapperMut<'a>
         })
     }
 
+    pub fn outer_product_one_hot_add_inplace(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
+    {
+        debug_assert_eq!(self.rows(), lhs.len());
+        debug_assert_eq!(self.columns(), rhs.size);
+
+        let rows = self.rows();
+
+        rhs.positions.iter().for_each(|column|
+        {
+            let start = column * rows;
+
+            oxiblas_blas::level1::axpy_f32(1.0, lhs.0, &mut self.values[start..(start + rows)]);
+        })
+    }
+
     pub fn softmax_cross_entropy_inplace(&mut self, targets: &OneHotLayer) -> f32
     {
         debug_assert_eq!(self.rows(), targets.size);
