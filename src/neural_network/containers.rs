@@ -3789,8 +3789,22 @@ impl OperationsRecorder
             .map(|x| (TensorIndex(x), 0, Vec::new()))
             .collect();
 
+        let mut inside_loop: Option<LoopIndex> = None;
+
         self.gradient_operations.iter().for_each(|op|
         {
+            match op
+            {
+                GradientOp::Jump(JumpInfo::JumpTo{index, ..}) => inside_loop = Some(*index),
+                GradientOp::Jump(JumpInfo::JumpFrom(_)) =>
+                {
+                    debug_assert!(inside_loop.is_some());
+
+                    inside_loop = None;
+                },
+                _ => ()
+            }
+
             let mut local = Vec::new();
 
             let mut f_local = |ptr: TensorPtr|
@@ -3804,21 +3818,23 @@ impl OperationsRecorder
             op.for_args(|arg| if let DiffValue::Tensor(t_arg) = arg { f_local(t_arg) });
             op.for_outputs(|out| if let DiffValue::Tensor(t_out) = out { f_local(t_out) });
 
+            let usage_count = if inside_loop.is_some() { 10 } else { 1 };
+
             let mut f = |ptr: TensorPtr|
             {
                 if let Some(this_index) = self.memory.tensors_memory[ptr.0].memory
                 {
-                    usage_counts[this_index.0].1 += 1;
+                    usage_counts[this_index.0].1 += usage_count;
                     let this_local = &mut usage_counts[this_index.0].2;
 
                     local.iter().for_each(|local|
                     {
                         if let Some(local_total) = this_local.iter_mut().find(|x| x.0 == *local)
                         {
-                            local_total.1 += 1;
+                            local_total.1 += usage_count;
                         } else
                         {
-                            this_local.push((*local, 1));
+                            this_local.push((*local, usage_count));
                         }
                     });
                 }
