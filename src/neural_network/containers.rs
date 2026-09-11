@@ -3844,7 +3844,19 @@ impl OperationsRecorder
             op.for_outputs(|out| if let DiffValue::Tensor(t_out) = out { f(t_out) });
         });
 
-        usage_counts.sort_by_key(|x| x.1);
+        let mut usage_ordered: Vec<(TensorIndex, usize)> = Vec::new();
+
+        usage_counts.into_iter().rev().for_each(|(this_index, this_count, local)|
+        {
+            usage_ordered.push((this_index, this_count));
+
+            local.iter().map(|(a, b)| (*a, *b)).filter(|(x, _)| *x != this_index).for_each(|(index, other_count)|
+            {
+                usage_ordered.push((index, other_count));
+            });
+        });
+
+        usage_ordered.sort_by_key(|x| x.1);
 
         let mut create_tensor = |this_index: TensorIndex|
         {
@@ -3884,15 +3896,7 @@ impl OperationsRecorder
             }
         };
 
-        usage_counts.into_iter().rev().for_each(|(this_index, _, local)|
-        {
-            create_tensor(this_index);
-
-            let mut local_sorted: Vec<(TensorIndex, usize)> = local.iter().map(|(a, b)| (*a, *b)).filter(|(x, _)| *x != this_index).collect();
-            local_sorted.sort_by_key(|x| x.1);
-
-            local_sorted.into_iter().rev().map(|(x, _)| x).for_each(&mut create_tensor)
-        });
+        usage_ordered.into_iter().rev().for_each(|(index, _count)| create_tensor(index));
 
         let access_tensor = |ptr: TensorPtr| -> TensorRawDataPointer
         {
