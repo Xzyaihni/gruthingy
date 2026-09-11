@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<head>
+  <title>live range viewer</title>
+  <style>
+    p
+    {
+      margin: 0px;
+    }
+  </style>
+  <script defer>
+    window.onload = function()
+    {
+      const data = document.getElementById("data");
+
+      const live_range_selector = document.getElementById("live_range_selector");
+
+      const text_container = document.getElementById("text_container");
+
+      let info = undefined;
+
+      data.addEventListener("input", display_live_ranges);
+      live_range_selector.addEventListener("input", display_text);
+
+      function display_live_ranges()
+      {
+        info = JSON.parse(data.value);
+
+        live_range_selector.replaceChildren();
+
+        for (const [i, [variable, live_range]] of info.variables.entries())
+        {
+          const v = document.createElement("option");
+          v.value = i;
+          v.textContent = variable;
+
+          live_range_selector.appendChild(v);
+        }
+
+        display_text();
+      }
+
+      function display_text()
+      {
+        const live_range = info.variables[parseInt(live_range_selector.value)][1];
+
+        text_container.replaceChildren();
+
+        let current_index = -1;
+
+        function color_if_live(value)
+        {
+          if (current_index >= live_range.start && current_index <= live_range.end)
+          {
+            value.style.backgroundColor = "red";
+          }
+        }
+
+        const start = document.createElement("div");
+        start.style.height = "20px";
+        color_if_live(start);
+
+        text_container.appendChild(start);
+
+        for (const op of info.operations)
+        {
+          current_index += 1;
+
+          const l = document.createElement("p");
+          l.textContent = op;
+          color_if_live(l);
+
+          text_container.appendChild(l);
+        }
+
+        current_index += 1;
+
+        const end = document.createElement("div");
+        end.style.height = "20px";
+        color_if_live(end);
+
+        text_container.appendChild(end);
+      }
+    };
+  </script>
+</head>
+<body>
+  <div>
+    <textarea id="data"></textarea>
+    <select id="live_range_selector"></select>
+  </div>
+  <div id="text_container"></div>
+</body>

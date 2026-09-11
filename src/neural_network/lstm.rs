@@ -346,7 +346,7 @@ mod tests
 
         recorder.gradient(output.output.into());
 
-        recorder.resolve_memory();
+        recorder.resolve_memory(false);
 
         let memory = recorder.resolve_tensor_ptr(memory);
         let hidden = recorder.resolve_tensor_ptr(hidden);

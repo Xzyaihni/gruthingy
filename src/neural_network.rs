@@ -47,7 +47,7 @@ pub use network_unit::{
     OptimizerUnit
 };
 
-pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed};
+pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed, NetworkConfigInfo};
 pub use containers::{
     PhiOtherSelectorRecordingIndex,
     OperationsRecorder,
@@ -1031,7 +1031,7 @@ where
     pub fn new(
         dictionary: D,
         sizes: LayerSizes,
-        is_multistep: bool,
+        config: NetworkConfigInfo,
         dropout_probability: f32,
         gradient_clip: Option<f32>
     ) -> Self
@@ -1040,7 +1040,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        let network = Network::new(sizes, dropout_probability, is_multistep, D::is_input_one_hot());
+        let network = Network::new(sizes, dropout_probability, config);
 
         let optimizer = O::new();
 
@@ -1069,7 +1069,7 @@ where
         SaveFormat::serialize(BufWriter::new(writer), self).unwrap();
     }
 
-    pub fn load<P: AsRef<Path>>(is_multistep: bool, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
+    pub fn load<P: AsRef<Path>>(config: NetworkConfigInfo, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
     where
         for<'de> O: Deserialize<'de>,
         for<'de> D: Deserialize<'de>,
@@ -1084,7 +1084,7 @@ where
 
         let mut this: Self = SaveFormat::deserialize(BufReader::new(reader))?;
 
-        this.network.initialize_with_params(is_multistep, D::is_input_one_hot());
+        this.network.initialize_with_params(config);
 
         Ok(this)
     }

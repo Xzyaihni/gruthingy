@@ -793,6 +793,14 @@ enum NetworkMode
     Train
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetworkConfigInfo
+{
+    pub print_optional_info: bool,
+    pub is_multistep: bool,
+    pub is_input_one_hot: bool
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
@@ -804,8 +812,7 @@ where
     recorder: OperationsRecorder,
     network_mode: Option<NetworkMode>,
     sizes: LayerSizes,
-    is_multistep: Option<bool>,
-    is_input_one_hot: Option<bool>,
+    config: Option<NetworkConfigInfo>,
     dropouts: NetworkDropoutData,
     inputs: NetworkInputsData,
     outputs: NetworkOutputsData,
@@ -828,8 +835,7 @@ where
             recorder: self.recorder.clone(),
             network_mode: self.network_mode,
             sizes: self.sizes,
-            is_multistep: self.is_multistep,
-            is_input_one_hot: self.is_input_one_hot,
+            config: self.config.clone(),
             dropouts: self.dropouts.clone(),
             inputs: self.inputs.clone(),
             outputs: self.outputs.clone(),
@@ -874,8 +880,7 @@ where
         let mut this = Self{
             sizes: x.sizes,
             network_mode: None,
-            is_multistep: None,
-            is_input_one_hot: None,
+            config: None,
             optimizer_info: x.optimizer_info,
             weights_ptr: Some(WeightsFullContainer{
                 output: weight_info_from(&mut recorder, x.weights.output),
@@ -927,7 +932,7 @@ where
 
         self.recorder.no_gradient();
 
-        self.recorder.resolve_memory();
+        self.recorder.resolve_memory(false);
     }
 
     pub fn sizes(&self) -> &LayerSizes
@@ -950,8 +955,7 @@ where
     pub fn new(
         sizes: LayerSizes,
         dropout_probability: f32,
-        is_multistep: bool,
-        is_input_one_hot: bool
+        config: NetworkConfigInfo
     ) -> Self
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
@@ -1002,8 +1006,7 @@ where
             optimizer_info,
             weights_ptr: Some(weights_ptr),
             weights,
-            is_multistep: Some(is_multistep),
-            is_input_one_hot: Some(is_input_one_hot)
+            config: Some(config)
         };
 
         this.initialize();
@@ -1025,13 +1028,12 @@ where
         self.network_mode = Some(NetworkMode::Predict);
     }
 
-    pub fn initialize_with_params(&mut self, is_multistep: bool, is_input_one_hot: bool)
+    pub fn initialize_with_params(&mut self, config: NetworkConfigInfo)
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.is_multistep = Some(is_multistep);
-        self.is_input_one_hot = Some(is_input_one_hot);
+        self.config = Some(config);
 
         self.initialize();
     }
@@ -1085,6 +1087,8 @@ where
     {
         if !self.recorder.is_ready()
         {
+            self.recorder.disable_reassign_checks();
+
             self.record_feedforward(store_gradient);
 
             self.prepare_setup_shared();
@@ -1137,7 +1141,7 @@ where
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
-        self.recorder.resolve_memory();
+        self.recorder.resolve_memory(self.config.as_ref().unwrap().print_optional_info);
 
         {
             let input_ptr = self.inputs.input_ptr.take().expect("input ptr must be set");
@@ -1193,10 +1197,12 @@ where
     {
         debug_assert!(self.network_mode.is_some());
 
+        let config = self.config.clone().unwrap();
+
         let dropout_masks_ptrs = self.create_dropout_masks_ptrs();
 
         let create_input = {
-            let is_input_one_hot = self.is_input_one_hot.unwrap();
+            let is_input_one_hot = config.is_input_one_hot;
             let input_size = self.sizes.input;
 
             move |recorder: &mut OperationsRecorder| -> InputTypePtr
@@ -1257,7 +1263,7 @@ where
 
         self.outputs.first_output_value_ptr = Some(no_state_output.output.0.as_value());
 
-        let (final_output, final_loss) = if self.is_multistep.unwrap()
+        let (final_output, final_loss) = if config.is_multistep
         {
             let this_input_loop = create_input(&mut self.recorder);
 
@@ -1861,8 +1867,7 @@ where
             recorder: self.recorder,
             network_mode: self.network_mode,
             sizes: self.sizes,
-            is_multistep: self.is_multistep,
-            is_input_one_hot: self.is_input_one_hot,
+            config: self.config,
             optimizer_info: None,
             weights_ptr: self.weights_ptr,
             weights: self.weights,
@@ -1965,7 +1970,13 @@ mod tests
 
         let input_outputs = inputs.iter().cloned().zip(outputs);
 
-        let mut at_once: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, false, IS_INPUT_ONE_HOT);
+        let network_config = NetworkConfigInfo{
+            is_multistep: false,
+            is_input_one_hot: IS_INPUT_ONE_HOT,
+            print_optional_info: false
+        };
+
+        let mut at_once: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, network_config);
         at_once.set_train_mode();
 
         let dropout_masks_ptrs = at_once.create_dropout_masks_ptrs();
@@ -2031,7 +2042,7 @@ mod tests
 
         at_once.recorder.gradient(output.unwrap().into());
 
-        at_once.recorder.resolve_memory();
+        at_once.recorder.resolve_memory(false);
 
         at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
         {
@@ -2100,7 +2111,13 @@ mod tests
 
         let input_outputs = inputs.iter().cloned().zip(outputs);
 
-        let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, is_multistep, IS_INPUT_ONE_HOT);
+        let network_config = NetworkConfigInfo{
+            is_multistep,
+            is_input_one_hot: IS_INPUT_ONE_HOT,
+            print_optional_info: true
+        };
+
+        let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, network_config);
         with_steps.set_train_mode();
 
         with_steps.prepare(true);

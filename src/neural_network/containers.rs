@@ -6,7 +6,7 @@ use std::{
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
-    ops::Range
+    ops::{Range, RangeInclusive}
 };
 
 #[allow(unused_imports)]
@@ -30,12 +30,8 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const OPT_INFO: bool = false;
 const NO_COLORING: bool = false;
-const _REASSIGN_CHECKS: bool = true;
-
-#[allow(dead_code)]
-const PRINT_CALCULATE_VALUES: bool = false;
+const _PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -678,6 +674,7 @@ impl VariableNames
 #[derive(Clone)]
 struct SetTensorMemoryChecks
 {
+    reassign_checks_enabled: bool,
     set_ptrs: Vec<TensorPtr>,
     read_memory: Vec<TensorIndex>,
     set_memory: Vec<TensorIndex>
@@ -706,6 +703,7 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
         };
 
         f.debug_struct("SetTensorMemoryChecks")
+            .field("reassign_checks_enabled", &self.info.reassign_checks_enabled)
             .field("set_ptrs", &self.info.set_ptrs.iter().map(|x| self.memory.format_variable(*x)).collect::<Vec<_>>())
             .field("read_memory", &fv(&self.info.read_memory))
             .field("set_memory", &fv(&self.info.set_memory))
@@ -719,6 +717,7 @@ impl SetTensorMemoryChecks
     fn new() -> Self
     {
         Self{
+            reassign_checks_enabled: true,
             set_ptrs: Vec::new(),
             read_memory: Vec::new(),
             set_memory: Vec::new()
@@ -1075,11 +1074,11 @@ impl OperationsRecorderMemory
         {
             let is_no_read_reassigned = set_tensor_memory.set_memory.contains(&memory_index);
 
-            if _REASSIGN_CHECKS
+            if set_tensor_memory.reassign_checks_enabled
             {
                 if is_no_read_reassigned
                 {
-                    eprintln!("{} was reassigned without being read", self.format_tensor_index(memory_index));
+                    panic!("{} was reassigned without being read", self.format_tensor_index(memory_index));
                 }
             }
         }
@@ -1303,6 +1302,14 @@ impl OperationsRecorder
         #[cfg(debug_assertions)]
         {
             self.memory.allow_discard.push(_index);
+        }
+    }
+
+    pub fn disable_reassign_checks(&mut self)
+    {
+        #[cfg(debug_assertions)]
+        {
+            self.memory.set_tensor_memory.borrow_mut().reassign_checks_enabled = false;
         }
     }
 
@@ -2154,7 +2161,7 @@ impl OperationsRecorder
                     #[cfg(debug_assertions)]
                     {
                         #[allow(unused_assignments)]
-                        if PRINT_CALCULATE_VALUES
+                        if _PRINT_CALCULATE_VALUES
                         {
                             #[allow(unused_variables, unused_mut)]
                             let mut is_first = true;
@@ -2193,7 +2200,7 @@ impl OperationsRecorder
                             self.memory.verify_raw_ptr_use(*$t_name);
                         )*
 
-                        if PRINT_CALCULATE_VALUES
+                        if _PRINT_CALCULATE_VALUES
                         {
                             eprint!("{}", stringify!($name));
 
@@ -2210,7 +2217,7 @@ impl OperationsRecorder
 
                     #[cfg(debug_assertions)]
                     {
-                        if PRINT_CALCULATE_VALUES
+                        if _PRINT_CALCULATE_VALUES
                         {
                             if _counter.len() > 0
                             {
@@ -2234,7 +2241,7 @@ impl OperationsRecorder
 
                     #[cfg(debug_assertions)]
                     {
-                        if PRINT_CALCULATE_VALUES
+                        if _PRINT_CALCULATE_VALUES
                         {
                             eprintln!(")");
                         }
@@ -2252,7 +2259,7 @@ impl OperationsRecorder
                 {
                     #[cfg(debug_assertions)]
                     {
-                        if PRINT_CALCULATE_VALUES
+                        if _PRINT_CALCULATE_VALUES
                         {
                             eprintln!("{:?}", $x);
                         }
@@ -3291,9 +3298,16 @@ impl OperationsRecorder
                     {
                         let loop_range = self.loops[loop_index.0].live_range.clone();
 
-                        *live_range = loop_range;
+                        let loop_start = loop_range.start.unwrap();
+                        let loop_end = loop_range.end.unwrap();
 
-                        inside_loop_values.push(value);
+                        live_range.start = Some(live_range.start.map(|x| x.min(loop_start)).unwrap_or(loop_start));
+                        live_range.end = Some(live_range.end.map(|x| x.max(loop_end)).unwrap_or(loop_end));
+
+                        if !inside_loop_values.contains(&value)
+                        {
+                            inside_loop_values.push(value);
+                        }
                     }
                 };
 
@@ -3588,15 +3602,11 @@ impl OperationsRecorder
         }
     }
 
-    fn greedy_graph_color(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
+    fn graph_color(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
     {
         let nodes_count = self.memory.tensor_live_ranges.len();
 
-        let mut graph_connections: Vec<Vec<usize>> = iter::from_fn(|| Some(Vec::new()))
-            .take(nodes_count)
-            .collect();
-
-        let verify_range = |range: &LiveRange, index|
+        let verify_range = |range: &LiveRange, index: TensorPtr|
         {
             if let Some(end) = range.end
             {
@@ -3604,23 +3614,57 @@ impl OperationsRecorder
                 {
                     panic!(
                         "{} was used at OperationIndex({end}) but never set",
-                        self.memory.format_variable(TensorPtr(index))
+                        self.memory.format_variable(index)
                     );
                 }
             }
 
             if range.start.is_some() && range.end.is_some()
             {
-                debug_assert!(range.valid_range(), "{} has an invalid range: {range:?}", self.memory.format_variable(TensorPtr(index)));
+                debug_assert!(range.valid_range(), "{} has an invalid range: {range:?}", self.memory.format_variable(index));
             }
         };
 
-        (0..nodes_count).for_each(|node_index|
+        let tensor_shape = |this: &Self, ptr: TensorPtr|
         {
-            let this_range = &self.memory.tensor_live_ranges[node_index];
+            this.memory.tensors_memory[ptr.0].value.tensor_shape()
+        };
+
+        let mut size_buckets: Vec<((usize, usize), Vec<TensorPtr>)> = Vec::new();
+
+        (0..nodes_count).for_each(|a|
+        {
+            let a = TensorPtr(a);
+
+            let this_shape = tensor_shape(self, a);
+
+            if let Some(bucket) = size_buckets.iter_mut().find(|(bucket_shape, _)| *bucket_shape == this_shape)
+            {
+                bucket.1.push(a);
+            } else
+            {
+                size_buckets.push((this_shape, vec![a]));
+            }
+        });
+
+        size_buckets.iter_mut().for_each(|(_shape, bucket)|
+        {
+            bucket.sort_by_key(|x| self.memory.tensor_live_ranges[x.0].start);
+        });
+
+        let mut graph_connections: Vec<Vec<TensorPtr>> = iter::repeat_with(Vec::new)
+            .take(nodes_count)
+            .collect();
+
+        (0..nodes_count).for_each(|a_index|
+        {
+            let a = TensorPtr(a_index);
+            let a_shape = tensor_shape(self, a);
+
+            let this_range = &self.memory.tensor_live_ranges[a.0];
 
             {
-                verify_range(&this_range, node_index);
+                verify_range(&this_range, a);
 
                 if this_range.end.is_none()
                 {
@@ -3628,90 +3672,90 @@ impl OperationsRecorder
                 }
             }
 
-            ((node_index + 1)..nodes_count).for_each(|check_index|
+            ((a_index + 1)..nodes_count).for_each(|b_index|
             {
-                let is_overlap = {
-                    let other_range = &self.memory.tensor_live_ranges[check_index];
+                let b = TensorPtr(b_index);
+                let b_shape = tensor_shape(self, b);
 
-                    verify_range(&other_range, check_index);
+                if a_shape != b_shape
+                {
+                    return;
+                }
+
+                let other_range = &self.memory.tensor_live_ranges[b.0];
+
+                {
+                    verify_range(&other_range, b);
 
                     if other_range.end.is_none()
                     {
                         return;
                     }
+                }
 
-                    this_range.overlaps(other_range)
-                };
-
-                if is_overlap
+                if this_range.overlaps(other_range)
                 {
-                    graph_connections[node_index].push(check_index);
-                    graph_connections[check_index].push(node_index);
+                    graph_connections[a_index].push(b);
+                    graph_connections[b_index].push(a);
                 }
             });
         });
 
-        let mut connections_count_sorted: Vec<usize> = (0..nodes_count).collect();
-
-        let kf = |node_index: &usize| graph_connections[*node_index].len();
-
-        #[cfg(debug_assertions)]
+        size_buckets.into_iter().for_each(|(_shape, bucket)|
         {
-            connections_count_sorted.sort_by_key(kf);
-        }
+            let first_color = memory_assignments.len();
 
-        #[cfg(not(debug_assertions))]
-        {
-            connections_count_sorted.sort_unstable_by_key(kf);
-        }
-
-        connections_count_sorted.reverse();
-
-        connections_count_sorted.into_iter().for_each(|node_index|
-        {
-            if self.memory.tensors_memory[node_index].memory.is_some()
+            bucket.into_iter().for_each(|ptr|
             {
-                return;
-            }
-
-            if self.memory.tensor_live_ranges[node_index].end.is_none()
-            {
-                return;
-            }
-
-            let this_color = if NO_COLORING
-            {
-                memory_assignments.len()
-            } else
-            {
-                (0..).find(|color|
+                if self.memory.tensor_live_ranges[ptr.0].end.is_none()
                 {
-                    let all_connected_unconflicted = graph_connections[node_index].iter().all(|connected_node_index|
+                    return;
+                }
+
+                let this_color = if NO_COLORING
+                {
+                    memory_assignments.len()
+                } else
+                {
+                    (first_color..).find(|color|
                     {
-                        let connected_node_color: Option<usize> = self.memory.tensors_memory[*connected_node_index].memory.map(|x| x.0);
+                        graph_connections[ptr.0].iter().all(|connected_node|
+                        {
+                            let connected_node_color: Option<usize> = self.memory.tensors_memory[connected_node.0].memory.map(|x| x.0);
 
-                        connected_node_color != Some(*color)
-                    });
+                            #[cfg(debug_assertions)]
+                            {
+                                let connected_shape = tensor_shape(self, *connected_node);
 
-                    let spot_size_matches = memory_assignments.get(*color).map(|spot_tensor|
-                    {
-                        spot_tensor.tensor_shape() == self.memory.tensors_memory[node_index].value.tensor_shape()
-                    }).unwrap_or(true);
+                                assert_eq!(tensor_shape(self, ptr), connected_shape);
 
-                    all_connected_unconflicted && spot_size_matches
-                }).unwrap()
-            };
+                                if let Some(spot_tensor) = memory_assignments.get(*color)
+                                {
+                                    assert_eq!(spot_tensor.tensor_shape(), connected_shape);
+                                }
+                            }
 
-            if this_color == memory_assignments.len()
-            {
-                memory_assignments.push(self.memory.tensors_memory[node_index].value.clone());
-            } else if let TensorMemoryValue::Value(x) = &self.memory.tensors_memory[node_index].value
-            {
-                memory_assignments[this_color] = TensorMemoryValue::Value(x.clone());
-            }
+                            connected_node_color != Some(*color)
+                        })
+                    }).unwrap()
+                };
 
-            debug_assert!(self.memory.tensors_memory[node_index].memory.is_none(), "tried to replace slot of TensorPtr({node_index})");
-            self.memory.tensors_memory[node_index].memory = Some(TensorIndex(this_color));
+                if this_color == memory_assignments.len()
+                {
+                    memory_assignments.push(self.memory.tensors_memory[ptr.0].value.clone());
+                } else if let TensorMemoryValue::Value(x) = &self.memory.tensors_memory[ptr.0].value
+                {
+                    memory_assignments[this_color] = TensorMemoryValue::Value(x.clone());
+                }
+
+                debug_assert!(
+                    self.memory.tensors_memory[ptr.0].memory.is_none(),
+                    "tried to replace slot of {}",
+                    self.memory.format_variable(ptr)
+                );
+
+                self.memory.tensors_memory[ptr.0].memory = Some(TensorIndex(this_color));
+            });
         });
     }
 
@@ -4026,25 +4070,25 @@ impl OperationsRecorder
         }
     }
 
-    pub fn resolve_memory(&mut self)
+    fn print_live_ranges_info(&self)
     {
-        debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
-
-        self.calculate_live_ranges();
-
-        self.combine_inplace_assignments();
-
-        let mut memory_assignments = Vec::new();
-        self.greedy_graph_color(&mut memory_assignments);
-
-        self.memory.tensors.resize(memory_assignments.len(), TensorRawDataPointer::undefined());
-
-        if OPT_INFO
+        #[derive(Serialize)]
+        struct LiveRangeInfos
         {
-            self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
-            {
-                let tensor_ptr = TensorPtr(tensor_ptr_index);
+            operations: Vec<String>,
+            variables: Vec<(String, RangeInclusive<i32>)>
+        }
 
+        let mut variables = Vec::new();
+
+        self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
+        {
+            let tensor_ptr = TensorPtr(tensor_ptr_index);
+
+            let tensor_name = self.memory.format_variable(tensor_ptr);
+
+            if live_range.start.is_none() && live_range.end.is_some()
+            {
                 let f_live = |x: Option<i32>| -> String
                 {
                     x.map(|x|
@@ -4058,19 +4102,42 @@ impl OperationsRecorder
                     }).unwrap()
                 };
 
-                let tensor_name = self.memory.format_variable(tensor_ptr);
+                panic!("{tensor_name} is malformed, no start but ends at {}", f_live(live_range.end));
+            }
 
-                if live_range.start.is_none() && live_range.end.is_some()
-                {
-                    eprintln!("{tensor_name} is malformed, no start but ends at {}", f_live(live_range.end));
-                } else if live_range.end.is_none()
-                {
-                    eprintln!("{tensor_name} is unused");
-                } else
-                {
-                    eprintln!("{tensor_name} has live range {} to {}", f_live(live_range.start), f_live(live_range.end));
-                }
-            });
+            if !live_range.end.is_none()
+            {
+                let live_range = live_range.start.unwrap()..=live_range.end.unwrap();
+
+                variables.push((tensor_name, live_range));
+            }
+        });
+
+        eprintln!("{}", serde_json::to_string_pretty(&LiveRangeInfos{
+            operations: self.gradient_operations.iter().map(|op|
+            {
+                format!("{:?}", NotationGradientOp::from_nameable(&self.memory, op.clone()))
+            }).collect(),
+            variables
+        }).unwrap());
+    }
+
+    pub fn resolve_memory(&mut self, optional_info: bool)
+    {
+        debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
+
+        self.calculate_live_ranges();
+
+        self.combine_inplace_assignments();
+
+        let mut memory_assignments = Vec::new();
+        self.graph_color(&mut memory_assignments);
+
+        self.memory.tensors.resize(memory_assignments.len(), TensorRawDataPointer::undefined());
+
+        if optional_info
+        {
+            self.print_live_ranges_info();
 
             (0..self.memory.tensors.len()).for_each(|tensor_index|
             {
@@ -6790,7 +6857,7 @@ mod tests
 
         recorder.gradient(out.into());
 
-        recorder.resolve_memory();
+        recorder.resolve_memory(true);
 
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
         let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
@@ -6816,7 +6883,7 @@ mod tests
         new_recorder.finish();
         new_recorder.no_gradient();
 
-        new_recorder.resolve_memory();
+        new_recorder.resolve_memory(false);
 
         let output_value = new_recorder.resolve_tensor_ptr(output_value);
 
@@ -7284,6 +7351,8 @@ mod tests
 
         check_tensor(|recorder, a, b|
         {
+            recorder.disable_reassign_checks();
+
             let (rows, columns) = recorder.tensor_shape(a.as_value());
 
             let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
@@ -7566,6 +7635,8 @@ mod tests
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
         {
+            recorder.disable_reassign_checks();
+
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
                 let input = recorder.set_new_tensor(input.into_normal());
@@ -7758,6 +7829,8 @@ mod tests
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
         {
+            recorder.disable_reassign_checks();
+
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
                 let input = recorder.set_new_tensor(input.into_normal());

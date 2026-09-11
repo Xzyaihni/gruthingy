@@ -19,6 +19,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 #[allow(unused_imports)]
 use neural_network::{
+    NetworkConfigInfo,
     PhiOtherSelectorRecordingIndex,
     NetworkStateSelectable,
     NetworkStateGettable,
@@ -156,9 +157,15 @@ where
     for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
     for<'de> D: NetworkDictionary + Deserialize<'de>
 {
+    let network_config = NetworkConfigInfo{
+        is_multistep,
+        is_input_one_hot: D::is_input_one_hot(),
+        print_optional_info: config.as_ref().map(|x| x.optional_info).unwrap_or(false)
+    };
+
     if path.exists()
     {
-        NeuralNetwork::load(is_multistep, path).unwrap_or_else(|err|
+        NeuralNetwork::load(network_config, path).unwrap_or_else(|err|
         {
             complain(format!("could not load network at {} ({err})", path.display()))
         })
@@ -197,7 +204,7 @@ where
             layers: sizes.layers
         };
 
-        NeuralNetwork::new(dictionary, sizes, is_multistep, config.dropout_probability, config.gradient_clip)
+        NeuralNetwork::new(dictionary, sizes, network_config, config.dropout_probability, config.gradient_clip)
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))

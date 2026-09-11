@@ -7,6 +7,7 @@ use std::{process, io::Cursor, path::Path};
 use serde::{Serialize, Deserialize};
 
 use neural_network::{
+    NetworkConfigInfo,
     NeuralNetwork,
     NUnit,
     NOptimizer,
@@ -17,7 +18,7 @@ use neural_network::{
     NewableLayer
 };
 
-use word_vectorizer::WordDictionary;
+use word_vectorizer::{NetworkDictionary, WordDictionary};
 
 pub use config::Config;
 
@@ -68,8 +69,14 @@ pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature:
 {
     let path = path.as_ref();
 
+    let network_config = NetworkConfigInfo{
+        is_multistep: true,
+        is_input_one_hot: NDictionary::is_input_one_hot(),
+        print_optional_info: false
+    };
+
     let mut network: NeuralNetwork<NUnitFactory, NOptimizer, NDictionary> =
-        NeuralNetwork::load(true, path).unwrap_or_else(|err|
+        NeuralNetwork::load(network_config, path).unwrap_or_else(|err|
         {
             complain(format!("could not load network at {} ({err})", path.display()))
         });

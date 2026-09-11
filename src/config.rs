@@ -579,6 +579,7 @@ pub struct Config
     pub gradient_clip: Option<f32>,
     pub replace_invalid: bool,
     pub less_info: bool,
+    pub optional_info: bool,
     pub certainty: bool,
     pub top_guesses: bool,
     pub infinite_loop: bool,
@@ -613,6 +614,7 @@ impl Config
         let mut replace_invalid = true;
         let mut dictionary_path = "dictionary.txt".into();
         let mut less_info = false;
+        let mut optional_info = false;
         let mut certainty = false;
         let mut top_guesses = false;
         let mut infinite_loop = false;
@@ -642,6 +644,7 @@ impl Config
         parser.push(&mut gradient_clip, None, "gradient-clip", "magnitude at which gradient vectors get clipped");
         parser.push_flag(&mut replace_invalid, 'r', "raw", "dont replace invalid utf8", false);
         parser.push_flag(&mut less_info, None, "less-info", "display less info when training", true);
+        parser.push_flag(&mut optional_info, None, "optional-info", "display additional info", true);
         parser.push_flag(&mut certainty, None, "certainty", "show certainty instead of bool in accuracy_data mode", true);
         parser.push_flag(&mut top_guesses, None, "top-guesses", "show guess place from the top instead of bool in accuracy_data mode", true);
         parser.push_flag(&mut infinite_loop, None, "loop", "training never stops, instead saves the network every -I iterations", true);
@@ -684,6 +687,7 @@ impl Config
             replace_invalid,
             dictionary_path,
             less_info,
+            optional_info,
             certainty,
             top_guesses,
             infinite_loop,
