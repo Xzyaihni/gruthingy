@@ -3470,10 +3470,11 @@ impl OperationsRecorder
                     DiffValue::OneHot(_) => return
                 };
 
-                if live_range.end.map(|x| x < loop_info.live_range.end.unwrap()).unwrap_or(false)
-                {
-                    live_range.end = loop_info.live_range.end;
-                }
+                let loop_start = loop_info.live_range.start.unwrap();
+                let loop_end = loop_info.live_range.end.unwrap();
+
+                live_range.start = Some(live_range.start.map(|x| x.min(loop_start)).unwrap_or(loop_start));
+                live_range.end = Some(live_range.end.map(|x| x.max(loop_end)).unwrap_or(loop_end));
             });
         });
 
@@ -4078,7 +4079,18 @@ impl OperationsRecorder
             {
                 let combined_output = output;
 
-                this.memory.tensor_live_ranges[combined_output.0].start = this.memory.tensor_live_ranges[arg.0].start;
+                {
+                    let arg_start = this.memory.tensor_live_ranges[arg.0].start;
+                    let combined_start = &mut this.memory.tensor_live_ranges[combined_output.0].start;
+
+                    *combined_start = if let Some(x) = *combined_start
+                    {
+                        Some(arg_start.map(|y| x.min(y)).unwrap_or(x))
+                    } else
+                    {
+                        arg_start
+                    };
+                }
 
                 this.swap_assignment(i, arg.into(), output.into());
 
@@ -4223,7 +4235,6 @@ impl OperationsRecorder
                 let allow_overlap = matches!(
                     op,
                     GradientOp::GetOtherSelectorValue{..}
-                    | GradientOp::GetOtherSelectorTensor{..}
                     | GradientOp::MatmulvTransposedAdd{..}
                     | GradientOp::OuterProductAdd{..}
                     | GradientOp::OuterProductOneHotAdd{..}
