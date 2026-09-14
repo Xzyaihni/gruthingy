@@ -363,6 +363,7 @@ impl KahanSum
     }
 }
 
+#[derive(Debug)]
 pub struct InputOutput<'a, const EMBEDDINGS: bool, D>
 {
     dictionary: &'a D,
@@ -1040,6 +1041,8 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
+        debug_assert_eq!(sizes.input, dictionary.words_amount());
+
         let network = Network::new(sizes, dropout_probability, config);
 
         let optimizer = O::new();
@@ -1054,7 +1057,7 @@ where
         (self.dictionary, self.network)
     }
 
-    pub fn save<P: AsRef<Path>>(&self, path: P)
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()>
     where
         O: Serialize,
         D: Serialize,
@@ -1064,9 +1067,9 @@ where
         N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<O::WeightParam>: Serialize + Clone
     {
-        let writer = File::create(path).unwrap();
+        let writer = File::create(path)?;
 
-        SaveFormat::serialize(BufWriter::new(writer), self).unwrap();
+        Ok(SaveFormat::serialize(BufWriter::new(writer), self).unwrap())
     }
 
     pub fn load<P: AsRef<Path>>(config: NetworkConfigInfo, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
@@ -1349,6 +1352,8 @@ where
                 let max_batch_start = inputs.len()
                     .saturating_sub(steps_num + (InputOutput::<EMBEDDINGS, D>::min_len() - 1));
 
+                self.network.feedforward_setup_dropout();
+
                 let mut gradients = (0..info.batch_size).map(|_|
                 {
                     let batch_start = if max_batch_start == 0
@@ -1486,7 +1491,12 @@ where
 #[cfg(test)]
 mod tests
 {
+    use std::iter;
+
     use super::*;
+
+    use network::WeightsFullContainer;
+
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -1517,5 +1527,112 @@ mod tests
                     *correct
                 );
             });
+    }
+
+    struct LstmUnitFactory;
+
+    impl UnitFactory for LstmUnitFactory
+    {
+        type Unit<T> = Lstm<T>;
+    }
+
+    type Unit = LstmUnitFactory;
+
+    fn gradient_with_batch_size(
+        network: &mut NeuralNetwork<Unit, (), ByteDictionary>,
+        inputs: &[VectorWord],
+        batch_size: usize,
+        steps_num: usize
+    ) -> WeightsFullContainer<Unit, LayerType>
+    {
+        let mut gradients = (0..batch_size).map(|batch_step|
+        {
+            let count = steps_num + 1;
+            let start = batch_step * count;
+
+            let values = InputOutput::<false, _>::values_slice(
+                &network.dictionary,
+                inputs,
+                start,
+                steps_num
+            );
+
+            network.network.gradients(values.iter()).1
+        }).reduce(|mut acc, this|
+        {
+            acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
+            {
+                acc.add_inplace(this.as_ref());
+            });
+
+            acc
+        }).expect("batch size must not be 0");
+
+        gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
+
+        gradients
+    }
+
+    #[test]
+    fn batch_equivalent()
+    {
+        let inputs_amount = 3;
+        let batch_size = 64;
+
+        let vector_word_size = ByteDictionary.words_amount();
+
+        fastrand::seed(333);
+
+        let inputs: Vec<_> = iter::repeat_with(||
+        {
+            VectorWord::from_raw(fastrand::usize(0..vector_word_size))
+        }).take(batch_size * (inputs_amount + 1)).collect();
+
+        let mut network = NeuralNetwork::new(
+            ByteDictionary,
+            LayerSizes{
+                hidden: 32,
+                layers: 3,
+                input: vector_word_size,
+                output: vector_word_size
+            },
+            NetworkConfigInfo{
+                is_input_one_hot: true,
+                is_multistep: true,
+                print_optional_info: false
+            },
+            0.5,
+            Some(1.0)
+        );
+
+        network.network.set_train_mode();
+
+        network.network.prepare(true);
+
+        fastrand::seed(111);
+
+        network.network.feedforward_setup_dropout();
+
+        let mut single_added_gradients = (0..batch_size).map(|batch_step|
+        {
+            let count = inputs_amount + 1;
+            let start = batch_step * count;
+
+            gradient_with_batch_size(&mut network, &inputs[start..(start + count)], 1, inputs_amount)
+        }).reduce(|mut acc, this|
+        {
+            acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
+            {
+                acc.add_inplace(this.as_ref());
+            });
+
+            acc
+        }).expect("batch size must not be 0");
+
+        single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
+
+        let batched_gradients = gradient_with_batch_size(&mut network, &inputs, batch_size, inputs_amount);
+
+        assert_eq!(single_added_gradients, batched_gradients);
     }
 }

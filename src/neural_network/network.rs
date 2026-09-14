@@ -1070,7 +1070,7 @@ where
                         {
                             self.recorder.name_diff_tensor(weight_dropped, _debug_info.name.to_owned() + "_dropped");
 
-                            self.recorder.allow_discard(weights_size.weights.dropconnect_mask.unwrap());
+                            self.recorder.store_tensor_until_end(weights_size.weights.dropconnect_mask.unwrap());
                         }
 
                         weights_size.weights.weight_dropped = weight_dropped;
@@ -1181,7 +1181,7 @@ where
             let ptr = self.recorder.new_tensor_no_gradient(self.sizes.hidden, 1).as_value();
             self.recorder.name_tensor(ptr, "dropout_mask");
 
-            self.recorder.allow_discard(ptr);
+            self.recorder.store_tensor_until_end(ptr);
 
             ptr
         }).collect();
@@ -1527,8 +1527,6 @@ where
     ) -> f32
     {
         debug_assert_eq!(self.network_mode, Some(NetworkMode::Train));
-
-        self.feedforward_setup_dropout();
 
         let inputs_count = input.len();
         let mut inputs = input.flat_map(|(input, target)| [input, OwnedInputType::OneHot(target)]);
@@ -2119,6 +2117,9 @@ mod tests
         with_steps.set_train_mode();
 
         with_steps.prepare(true);
+
+        with_steps.feedforward_setup_dropout();
+
         let with_steps_gradient = with_steps.gradients(input_outputs.clone());
 
         let (mut at_once, at_once_gradient) = run_unrolled();

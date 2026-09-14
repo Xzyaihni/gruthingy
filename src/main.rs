@@ -232,7 +232,7 @@ fn train(config: Config)
 
         network.train::<false, _, _>(training_info, test_file, text_file);
 
-        network.save(&config.network_path);
+        try_save_network(&network, &config.network_path);
     };
 
     let training_info = TrainingInfo::from(&config);
@@ -502,6 +502,34 @@ impl UnitFactory for EmbeddingsUnitFactory
     type Unit<T> = EmbeddingUnit<T>;
 }
 
+fn try_save_network<N, O, D>(
+    network: &NeuralNetwork<N, O, D>,
+    path: &PathBuf
+)
+where
+    N: UnitFactory,
+    O: Optimizer + Serialize,
+    D: NetworkDictionary + Serialize,
+    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
+    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
+    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
+    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
+    O::WeightParam: Serialize + Clone,
+    N::Unit<SaveWeightType>: Serialize,
+    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+    N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+    N::Unit<O::WeightParam>: Serialize + Clone
+{
+    if let Err(err) = network.save(path)
+    {
+        complain(format!("couldnt save to {}: {err}", path.display()));
+    }
+}
+
 fn train_embeddings(mut config: Config)
 {
     let mut network = load_embeddings::<NOptimizer>(
@@ -518,7 +546,7 @@ fn train_embeddings(mut config: Config)
 
         network.train::<true, _, _>(training_info, test_file, text_file);
 
-        network.save(&config.network_path);
+        try_save_network(network, &config.network_path);
     };
 
     let training_info = TrainingInfo{
@@ -532,13 +560,13 @@ fn train_embeddings(mut config: Config)
         {
             run_this(&mut network, training_info.clone());
 
-            network.clone().without_optimizer().save(&config.embeddings_path);
+            try_save_network(&network.clone().without_optimizer(), &config.embeddings_path);
         }
     } else
     {
         run_this(&mut network, training_info);
 
-        network.without_optimizer().save(&config.embeddings_path);
+        try_save_network(&network.clone().without_optimizer(), &config.embeddings_path);
     }
 }
 
