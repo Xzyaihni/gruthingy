@@ -29,8 +29,8 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = true;
-const _PRINT_CALCULATE_VALUES: bool = true;
+const NO_COLORING: bool = false;
+const _PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -699,6 +699,7 @@ struct SetTensorMemoryChecks
 {
     set_ptrs: Vec<TensorPtr>,
     allow_unread: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
+    allow_reassign: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     unread_memory: Vec<TensorIndex>,
     read_memory: Vec<TensorIndex>,
     set_memory: Vec<TensorIndex>
@@ -723,21 +724,25 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
 
         let fv = |x: &[TensorIndex]| -> Vec<_>
         {
-            x.iter().map(fm).collect::<Vec<_>>()
+            x.iter().map(fm).collect()
         };
 
-        let allow_unread = self.info.allow_unread.iter().map(|x|
+        let fsck = |x: &[_]| -> Vec<_>
         {
-            DebugStringRaw(match *x
+            x.iter().map(|x|
             {
-                StoreCheckKey::PreResolve(x) => self.memory.format_variable(x),
-                StoreCheckKey::Resolved(x) => self.memory.format_tensor_index(x)
-            })
-        }).collect::<Vec<_>>();
+                DebugStringRaw(match *x
+                {
+                    StoreCheckKey::PreResolve(x) => self.memory.format_variable(x),
+                    StoreCheckKey::Resolved(x) => self.memory.format_tensor_index(x)
+                })
+            }).collect()
+        };
 
         f.debug_struct("SetTensorMemoryChecks")
             .field("set_ptrs", &self.info.set_ptrs.iter().map(|x| self.memory.format_variable(*x)).collect::<Vec<_>>())
-            .field("allow_unread", &allow_unread)
+            .field("allow_unread", &fsck(&self.info.allow_unread))
+            .field("allow_reassign", &fsck(&self.info.allow_reassign))
             .field("unread_memory", &fv(&self.info.unread_memory))
             .field("read_memory", &fv(&self.info.read_memory))
             .field("set_memory", &fv(&self.info.set_memory))
@@ -753,6 +758,7 @@ impl SetTensorMemoryChecks
         Self{
             set_ptrs: Vec::new(),
             allow_unread: Vec::new(),
+            allow_reassign: Vec::new(),
             unread_memory: Vec::new(),
             read_memory: Vec::new(),
             set_memory: Vec::new()
@@ -1144,7 +1150,7 @@ impl OperationsRecorderMemory
         {
             let is_no_read_reassigned = set_tensor_memory.set_memory.contains(&memory_index);
 
-            if is_no_read_reassigned
+            if is_no_read_reassigned && !set_tensor_memory.allow_reassign.contains(&StoreCheckKey::Resolved(memory_index))
             {
                 panic!("{} was reassigned without being read", self.format_tensor_index(memory_index));
             }
@@ -1382,6 +1388,14 @@ impl OperationsRecorder
         #[cfg(debug_assertions)]
         {
             self.memory.set_tensor_memory.borrow_mut().allow_unread.push(StoreCheckKey::PreResolve(_index));
+        }
+    }
+
+    pub fn allow_reassign(&mut self, _index: TensorPtr)
+    {
+        #[cfg(debug_assertions)]
+        {
+            self.memory.set_tensor_memory.borrow_mut().allow_reassign.push(StoreCheckKey::PreResolve(_index));
         }
     }
 
@@ -3500,7 +3514,6 @@ impl OperationsRecorder
                 break;
             }
 
-            eprintln!("{op_actions:?}");
             for i in 0..self.gradient_operations.len()
             {
                 let (selector_index, output): (PhiOtherSelectorIndex, DiffValue) = match self.gradient_operations[i]
@@ -3853,6 +3866,31 @@ impl OperationsRecorder
             });
         });
 
+        self.gradient_operations.iter().for_each(|op|
+        {
+            match op
+            {
+                GradientOp::Jump(JumpInfo::JumpTo{index, inputs}) =>
+                {
+                    inputs.iter().for_each(|input|
+                    {
+                        if let InputTypePtr::Normal(tensor) = input
+                        {
+                            let live_range = &mut self.memory.tensor_live_ranges[tensor.0];
+
+                            live_range.start = None;
+
+                            if live_range.end.is_some()
+                            {
+                                *live_range = self.loops[index.0].live_range.clone();
+                            }
+                        }
+                    });
+                },
+                _ => ()
+            }
+        });
+
         self.loops.iter().for_each(|loop_info|
         {
             loop_info.kept_inside.iter().for_each(|kept_inside|
@@ -3976,24 +4014,6 @@ impl OperationsRecorder
                 GradientOp::Jump(JumpInfo::JumpFrom(index)) =>
                 {
                     self.loops[index.0].live_range.end = Some(operation_index as i32 - 1);
-                },
-                _ => ()
-            }
-        });
-
-        self.gradient_operations.iter().for_each(|op|
-        {
-            match op
-            {
-                GradientOp::Jump(JumpInfo::JumpTo{index, inputs}) =>
-                {
-                    inputs.iter().for_each(|input|
-                    {
-                        if let InputTypePtr::Normal(tensor) = input
-                        {
-                            self.memory.tensor_live_ranges[tensor.0] = self.loops[index.0].live_range.clone();
-                        }
-                    });
                 },
                 _ => ()
             }
@@ -4629,7 +4649,6 @@ impl OperationsRecorder
         self.skip_last_selectors();
 
         self.load_live_ranges(start_live_ranges);
-
         self.calculate_live_ranges();
 
         self.combine_inplace_assignments();
@@ -4796,6 +4815,7 @@ impl OperationsRecorder
                 let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
 
                 resolve_check_tensors(&mut set_tensor_memory.allow_unread, false);
+                resolve_check_tensors(&mut set_tensor_memory.allow_reassign, true);
             }
 
             self.memory.store_values_check = self.memory.store_values_check.iter().map(|k|
@@ -8092,6 +8112,8 @@ mod tests
 
             let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
             recorder.name_tensor(i, "i");
+
+            recorder.allow_reassign(i);
 
             let final_state_selector = recorder.phi_other_selector(a_sum);
 
