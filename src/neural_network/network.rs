@@ -1087,8 +1087,6 @@ where
     {
         if !self.recorder.is_ready()
         {
-            self.recorder.disable_reassign_checks();
-
             self.record_feedforward(store_gradient);
 
             self.prepare_setup_shared();
