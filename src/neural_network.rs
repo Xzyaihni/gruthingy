@@ -1588,37 +1588,45 @@ mod tests
             VectorWord::from_raw(fastrand::usize(0..vector_word_size))
         }).take(batch_size * (inputs_amount + 1)).collect();
 
-        let mut network = NeuralNetwork::new(
+        let layer_sizes = LayerSizes{
+            hidden: 32,
+            layers: 3,
+            input: vector_word_size,
+            output: vector_word_size
+        };
+
+        let dropout_probability = 0.5;
+        let gradient_clip = Some(1.0);
+
+        fastrand::seed(222);
+
+        let mut network_single = NeuralNetwork::new(
             ByteDictionary,
-            LayerSizes{
-                hidden: 32,
-                layers: 3,
-                input: vector_word_size,
-                output: vector_word_size
-            },
+            layer_sizes,
             NetworkConfigInfo{
                 is_input_one_hot: true,
                 is_multistep: true,
-                print_optional_info: false
+                print_optional_info: false,
+                batch_size: 1
             },
-            0.5,
-            Some(1.0)
+            dropout_probability,
+            gradient_clip
         );
 
-        network.network.set_train_mode();
+        network_single.network.set_train_mode();
 
-        network.network.prepare(true);
+        network_single.network.prepare(true);
 
         fastrand::seed(111);
 
-        network.network.feedforward_setup_dropout();
+        network_single.network.feedforward_setup_dropout();
 
         let mut single_added_gradients = (0..batch_size).map(|batch_step|
         {
             let count = inputs_amount + 1;
             let start = batch_step * count;
 
-            gradient_with_batch_size(&mut network, &inputs[start..(start + count)], 1, inputs_amount)
+            gradient_with_batch_size(&mut network_single, &inputs[start..(start + count)], 1, inputs_amount)
         }).reduce(|mut acc, this|
         {
             acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
@@ -1631,7 +1639,30 @@ mod tests
 
         single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
 
-        let batched_gradients = gradient_with_batch_size(&mut network, &inputs, batch_size, inputs_amount);
+        fastrand::seed(222);
+
+        let mut network_batched = NeuralNetwork::new(
+            ByteDictionary,
+            layer_sizes,
+            NetworkConfigInfo{
+                is_input_one_hot: true,
+                is_multistep: true,
+                print_optional_info: false,
+                batch_size
+            },
+            dropout_probability,
+            gradient_clip
+        );
+
+        network_batched.network.set_train_mode();
+
+        network_batched.network.prepare(true);
+
+        fastrand::seed(111);
+
+        network_batched.network.feedforward_setup_dropout();
+
+        let batched_gradients = gradient_with_batch_size(&mut network_batched, &inputs, batch_size, inputs_amount);
 
         assert_eq!(single_added_gradients, batched_gradients);
     }

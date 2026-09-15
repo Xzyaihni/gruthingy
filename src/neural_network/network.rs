@@ -798,7 +798,8 @@ pub struct NetworkConfigInfo
 {
     pub print_optional_info: bool,
     pub is_multistep: bool,
-    pub is_input_one_hot: bool
+    pub is_input_one_hot: bool,
+    pub batch_size: usize
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1475,9 +1476,9 @@ where
         optimizer.advance_time();
     }
 
-    pub fn gradients(
+    pub fn gradients<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>>(
         &mut self,
-        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+        input: I
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
@@ -1969,7 +1970,8 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_multistep: false,
             is_input_one_hot: IS_INPUT_ONE_HOT,
-            print_optional_info: false
+            print_optional_info: false,
+            batch_size: 1
         };
 
         let mut at_once: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, network_config);
@@ -2110,7 +2112,8 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_multistep,
             is_input_one_hot: IS_INPUT_ONE_HOT,
-            print_optional_info: true
+            print_optional_info: true,
+            batch_size: 1
         };
 
         let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, network_config);

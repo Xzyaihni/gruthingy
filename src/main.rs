@@ -160,7 +160,8 @@ where
     let network_config = NetworkConfigInfo{
         is_multistep,
         is_input_one_hot: D::is_input_one_hot(),
-        print_optional_info: config.as_ref().map(|x| x.optional_info).unwrap_or(false)
+        print_optional_info: config.as_ref().map(|x| x.optional_info).unwrap_or(false),
+        batch_size: config.as_ref().map(|x| x.batch_size).unwrap_or(1)
     };
 
     if path.exists()

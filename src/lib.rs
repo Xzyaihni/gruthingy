@@ -72,7 +72,8 @@ pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature:
     let network_config = NetworkConfigInfo{
         is_multistep: true,
         is_input_one_hot: NDictionary::is_input_one_hot(),
-        print_optional_info: false
+        print_optional_info: false,
+        batch_size: 1
     };
 
     let mut network: NeuralNetwork<NUnitFactory, NOptimizer, NDictionary> =
