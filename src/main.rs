@@ -43,6 +43,7 @@ use neural_network::{
     NUnit,
     EmbeddingUnit,
     NewableLayer,
+    NEmbeddings,
     NOptimizer,
     NDictionary,
     LayerSizes
@@ -231,7 +232,7 @@ fn train(config: Config)
 
         let test_file = config.test_file();
 
-        network.train::<false, _, _>(training_info, test_file, text_file);
+        network.train::<NEmbeddings, _, _>(training_info, test_file, text_file);
 
         try_save_network(&network, &config.network_path);
     };
@@ -545,7 +546,7 @@ fn train_embeddings(mut config: Config)
 
         let test_file = config.test_file();
 
-        network.train::<true, _, _>(training_info, test_file, text_file);
+        network.train::<NEmbeddings, _, _>(training_info, test_file, text_file);
 
         try_save_network(network, &config.network_path);
     };

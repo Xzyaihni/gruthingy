@@ -29,8 +29,8 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = false;
-const _PRINT_CALCULATE_VALUES: bool = false;
+const NO_COLORING: bool = true; const put_me: () = ();
+const _PRINT_CALCULATE_VALUES: bool = true;
 
 
 macro_rules! get_disjoint_mut_with
@@ -52,7 +52,7 @@ macro_rules! get_disjoint_mut_with
                 }
             };
 
-            ($($target_type::from_data($tmp_name, $name.rows, $name.columns),)+)
+            ($($target_type::from_data($tmp_name, $name.shape),)+)
         }
     }
 }
@@ -66,6 +66,39 @@ pub fn leaky_relu_d(value: f32) -> f32
     } else
     {
         LEAKY_SLOPE
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TensorShape
+{
+    pub rows: usize,
+    pub columns: usize,
+    pub batch_size: usize
+}
+
+impl TensorShape
+{
+    pub fn size(&self) -> usize
+    {
+        self.rows * self.columns * self.batch_size
+    }
+
+    pub fn single_size(&self) -> usize
+    {
+        self.rows * self.columns
+    }
+
+    pub fn is_batched_scalar(&self) -> bool
+    {
+        self.rows == 1 && self.columns == 1
+    }
+
+    pub fn batch_range(&self, batch_index: usize) -> Range<usize>
+    {
+        let size = self.single_size();
+
+        (batch_index * size)..((batch_index + 1) * size)
     }
 }
 
@@ -204,7 +237,16 @@ impl Debug for LayerNoLong<'_>
     {
         if self.1.total_len() > self.0
         {
-            write!(f, "{{rows: {}, columns: {}, values: (has {} values)}}", self.1.rows(), self.1.columns(), self.1.total_len())
+            let shape = self.1.shape();
+
+            write!(
+                f,
+                "{{rows: {}, columns: {}, batch_size: {}, values: (has {} values)}}",
+                shape.rows,
+                shape.columns,
+                shape.batch_size,
+                self.1.total_len()
+            )
         } else
         {
             LayerType::fmt(self.1, f)
@@ -216,17 +258,17 @@ impl Debug for LayerNoLong<'_>
 enum TensorMemoryValue
 {
     Value(LayerType),
-    Size{rows: usize, columns: usize}
+    Size{rows: usize, columns: usize, batch_size: usize}
 }
 
 impl TensorMemoryValue
 {
-    fn tensor_shape(&self) -> (usize, usize)
+    fn tensor_shape(&self) -> TensorShape
     {
         match self
         {
             Self::Value(tensor) => tensor.shape(),
-            Self::Size{rows, columns} => (*rows, *columns)
+            Self::Size{rows, columns, batch_size} => TensorShape{rows: *rows, columns: *columns, batch_size: *batch_size}
         }
     }
 }
@@ -291,15 +333,14 @@ fn verify_store_check<T: Eq, K: Eq + Debug + Copy>(
 pub struct TensorRawDataPointer
 {
     raw_index: TensorIndexRaw,
-    rows: usize,
-    columns: usize
+    shape: TensorShape
 }
 
 impl Debug for TensorRawDataPointer
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
-        write!(f, "{{({},{}) {:?}}}", self.rows, self.columns, self.raw_index)
+        write!(f, "{{[{}x{}; {}] {:?}}}", self.shape.rows, self.shape.columns, self.shape.batch_size, self.raw_index)
     }
 }
 
@@ -308,20 +349,28 @@ impl TensorRawDataPointer
     fn undefined() -> Self
     {
         Self{
-            raw_index: TensorIndexRaw(usize::MAX),
-            rows: 0,
-            columns: 0
+            raw_index: TensorIndexRaw::undefined(),
+            shape: TensorShape{
+                rows: 0,
+                columns: 0,
+                batch_size: 0
+            }
         }
+    }
+
+    fn to_linear_pointer(self) -> LinearRawDataPointer
+    {
+        LinearRawDataPointer{raw_index: self.raw_index, size: self.shape.size()}
     }
 
     pub fn range(&self) -> Range<usize>
     {
-        self.raw_index.0..(self.raw_index.0 + self.size())
+        self.raw_index.0..(self.raw_index.0 + self.shape.size())
     }
 
     pub fn size(&self) -> usize
     {
-        self.rows * self.columns
+        self.shape.size()
     }
 }
 
@@ -451,7 +500,7 @@ impl Targettable for TensorRawDataPointer
 {
     fn convert(self, recorder: &OperationsRecorder) -> Option<DiffValue>
     {
-        recorder.memory.raw_ptr_to_ptr(self).map(DiffValue::Tensor)
+        recorder.memory.raw_ptr_to_ptr(self.to_linear_pointer()).map(DiffValue::Tensor)
     }
 }
 
@@ -766,11 +815,46 @@ impl SetTensorMemoryChecks
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LinearRawDataPointer
+{
+    raw_index: TensorIndexRaw,
+    size: usize
+}
+
+impl From<TensorRawDataPointer> for LinearRawDataPointer
+{
+    fn from(ptr: TensorRawDataPointer) -> Self
+    {
+        ptr.to_linear_pointer()
+    }
+}
+
+impl LinearRawDataPointer
+{
+    fn undefined() -> Self
+    {
+        Self{raw_index: TensorIndexRaw::undefined(), size: 0}
+    }
+
+    fn with_shape(self, shape: TensorShape) -> TensorRawDataPointer
+    {
+        debug_assert_eq!(shape.size(), self.size);
+
+        TensorRawDataPointer{raw_index: self.raw_index, shape}
+    }
+
+    fn range(&self) -> Range<usize>
+    {
+        self.raw_index.0..(self.raw_index.0 + self.size)
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationsRecorderMemory
 {
     values: Vec<f32>,
-    tensors: Vec<TensorRawDataPointer>,
+    tensors: Vec<LinearRawDataPointer>,
     value_live_ranges: Vec<LiveRange>,
     tensor_live_ranges: Vec<LiveRange>,
     tensors_memory: Vec<TensorMemorySlot>,
@@ -934,9 +1018,9 @@ impl OperationsRecorderMemory
 
     fn new_tensor(&mut self, has_gradient: bool, value: TensorMemoryValue) -> DiffTensorPtr
     {
-        let (rows, columns) = value.tensor_shape();
+        let TensorShape{rows, columns, batch_size} = value.tensor_shape();
 
-        let size_value = TensorMemoryValue::Size{rows, columns};
+        let size_value = TensorMemoryValue::Size{rows, columns, batch_size};
 
         DiffTensorPtr{
             index: self.new_tensor_index(value),
@@ -956,7 +1040,7 @@ impl OperationsRecorderMemory
     {
         match input
         {
-            InputType::Normal(input) => self.set_tensor(input, value.into_ref_normal()),
+            InputType::Normal(input) => self.set_tensor(input.into(), value.into_ref_normal()),
             InputType::OneHot(input) => self.set_one_hot(input, value.into_one_hot())
         }
     }
@@ -973,13 +1057,9 @@ impl OperationsRecorderMemory
         self.set_tensor_raw(self.tensors[index.0], value);
     }
 
-    fn set_tensor_raw(&mut self, index: TensorRawDataPointer, value: &LayerType)
+    fn set_tensor_raw(&mut self, index: LinearRawDataPointer, value: &LayerType)
     {
-        let dst = LayerTypeMut::from_data_with_start(&mut self.tensors_raw_data, index);
-
-        let src = LayerTypeRef::from(value);
-
-        dst.copy_from(src);
+        self.tensors_raw_data[index.range()].copy_from_slice(value.as_slice())
     }
 
     fn set_value(&mut self, index: ValueIndex, value: f32)
@@ -989,6 +1069,8 @@ impl OperationsRecorderMemory
 
     fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
     {
+        debug_assert_eq!(self.one_hot_layers[index.0].batch_size(), value.batch_size());
+
         self.one_hot_layers[index.0] = value;
     }
 
@@ -1002,33 +1084,38 @@ impl OperationsRecorderMemory
         scalar
     }
 
-    pub fn get_tensor(&self, index: TensorIndex) -> LayerTypeRef<'_>
+    pub fn get_tensor(&self, index: ShapedTensorIndex) -> LayerTypeRef<'_>
     {
-        debug_assert_ne!(index, TensorIndex::undefined());
+        debug_assert_ne!(index, ShapedTensorIndex::undefined());
 
         #[cfg(debug_assertions)]
         {
-            verify_store_check(&self.store_tensors_check, index, "tensor");
+            verify_store_check(&self.store_tensors_check, index.index, "tensor");
 
-            self.verify_raw_ptr_use_index(index);
+            self.verify_raw_ptr_use_index(index.index);
         }
 
-        let info = self.tensors[index.0];
+        let info = self.tensors[index.index.0].with_shape(index.shape);
         debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
 
         LayerTypeRef::from_data_with_start(&self.tensors_raw_data, info)
     }
 
-    fn tensor_shape(&self, tensor: TensorPtr) -> (usize, usize)
+    fn tensor_shape(&self, tensor: TensorPtr) -> TensorShape
     {
         self.tensors_memory[tensor.0].value.tensor_shape()
     }
 
+    fn one_hot_batch_size(&self, index: OneHotIndex) -> usize
+    {
+        self.one_hot_layers[index.0].batch_size()
+    }
+
     fn tensor_shape_value(&self, tensor: TensorPtr) -> TensorMemoryValue
     {
-        let (rows, columns) = self.tensor_shape(tensor);
+        let TensorShape{rows, columns, batch_size} = self.tensor_shape(tensor);
 
-        TensorMemoryValue::Size{rows, columns}
+        TensorMemoryValue::Size{rows, columns, batch_size}
     }
 
     fn get_live_range(&self, value: DiffValue) -> Option<&LiveRange>
@@ -1046,12 +1133,12 @@ impl OperationsRecorderMemory
         self.phi_other_selectors_values[selector_index.0].loop_index
     }
 
-    fn raw_ptr_to_memory(&self, raw_ptr: TensorRawDataPointer) -> TensorIndex
+    fn raw_ptr_to_memory(&self, raw_ptr: LinearRawDataPointer) -> TensorIndex
     {
         TensorIndex(self.tensors.iter().position(|x| *x == raw_ptr).expect("must be a real ptr"))
     }
 
-    fn raw_ptr_to_ptr(&self, raw_ptr: TensorRawDataPointer) -> Option<TensorPtr>
+    fn raw_ptr_to_ptr(&self, raw_ptr: LinearRawDataPointer) -> Option<TensorPtr>
     {
         let tensor_index = self.raw_ptr_to_memory(raw_ptr);
 
@@ -1091,7 +1178,7 @@ impl OperationsRecorderMemory
 
     fn format_tensor_raw_ptr(&self, raw_ptr: TensorRawDataPointer) -> String
     {
-        if let Some(tensor_ptr) = self.raw_ptr_to_ptr(raw_ptr)
+        if let Some(tensor_ptr) = self.raw_ptr_to_ptr(raw_ptr.to_linear_pointer())
         {
             self.format_variable(tensor_ptr)
         } else
@@ -1103,7 +1190,7 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_use(&self, raw_ptr: TensorRawDataPointer)
     {
-        let memory_index = self.raw_ptr_to_memory(raw_ptr);
+        let memory_index = self.raw_ptr_to_memory(raw_ptr.to_linear_pointer());
 
         self.verify_raw_ptr_use_index(memory_index)
     }
@@ -1133,7 +1220,7 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_assign(&mut self, raw_ptr: TensorRawDataPointer)
     {
-        let memory_index = self.raw_ptr_to_memory(raw_ptr);
+        let memory_index = self.raw_ptr_to_memory(raw_ptr.to_linear_pointer());
 
         self.verify_raw_ptr_assign_index(memory_index)
     }
@@ -1262,12 +1349,28 @@ macro_rules! impl_pair_tensor_op
     ($this:expr, $a:expr, $b:expr, $name:ident) =>
     {
         {
-            let a_shape@(a_rows, a_columns) = $this.tensor_shape($a.as_value());
+            let a_shape = $this.tensor_shape($a.as_value());
             let b_shape = $this.tensor_shape($b.as_value());
 
-            debug_assert_eq!(a_shape, b_shape);
+            debug_assert_eq!(a_shape.batch_size, b_shape.batch_size);
 
-            let output = $this.new_tensor_op(a_rows, a_columns);
+            #[cfg(debug_assertions)]
+            {
+                if !a_shape.is_batched_scalar() && !b_shape.is_batched_scalar()
+                {
+                    debug_assert_eq!(a_shape, b_shape);
+                }
+            }
+
+            let shape = if a_shape.is_batched_scalar()
+            {
+                b_shape
+            } else
+            {
+                a_shape
+            };
+
+            let output = $this.new_tensor_op(shape);
 
             $this.add_recording_operation(Op::$name{lhs: $a, rhs: $b, output});
 
@@ -1281,9 +1384,9 @@ macro_rules! impl_map_tensor_op
     ($this:expr, $a:expr, $name:ident) =>
     {
         {
-            let (rows, columns) = $this.tensor_shape($a.as_value());
+            let shape = $this.tensor_shape($a.as_value());
 
-            let output = $this.new_tensor_op(rows, columns);
+            let output = $this.new_tensor_op(shape);
 
             $this.add_recording_operation(Op::$name{value: $a, output});
 
@@ -1313,7 +1416,7 @@ impl OperationsRecorder
 
     pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
-        let input = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns});
+        let input = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size: 1});
         self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
@@ -1321,7 +1424,15 @@ impl OperationsRecorder
 
     pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
-        let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns});
+        let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size: 1});
+        self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
+
+        input
+    }
+
+    pub fn new_tensor_batched_no_gradient(&mut self, TensorShape{rows, columns, batch_size}: TensorShape) -> DiffTensorPtr
+    {
+        let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
         self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
@@ -1337,20 +1448,28 @@ impl OperationsRecorder
 
     pub fn new_one_hot(&mut self) -> OneHotIndex
     {
+        self.new_one_hot_batched(1)
+    }
+
+    pub fn new_one_hot_batched(&mut self, batch_size: usize) -> OneHotIndex
+    {
         let id = self.memory.one_hot_layers.len();
 
-        self.memory.one_hot_layers.push(OneHotLayer::empty());
+        self.memory.one_hot_layers.push(OneHotLayer::empty_batched(batch_size));
 
         OneHotIndex(id)
     }
 
     fn new_tensor_op(
         &mut self,
-        rows: usize,
-        columns: usize
+        TensorShape{
+            rows,
+            columns,
+            batch_size
+        }: TensorShape
     ) -> DiffTensorPtr
     {
-        self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns})
+        self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size})
     }
 
     fn new_value_op(&mut self) -> DiffScalar
@@ -1358,11 +1477,11 @@ impl OperationsRecorder
         self.memory.new_value(true)
     }
 
-    pub fn set_tensor(&mut self, index: TensorIndex, value: &LayerType)
+    pub fn set_tensor(&mut self, index: impl Into<TensorIndex>, value: &LayerType)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.memory.set_tensor(index, value)
+        self.memory.set_tensor(index.into(), value)
     }
 
     pub fn set_tensor_ptr_zeroed(&mut self, _index: TensorPtr)
@@ -1411,9 +1530,9 @@ impl OperationsRecorder
         let dst = self.memory.tensors[index.0];
         let src = self.memory.tensors[src.0];
 
-        let (dst, src) = get_disjoint_mut_with!(self, (LayerTypeMut, dst, x0), (LayerTypeRef, src, x1));
+        debug_assert_eq!(src.size, dst.size);
 
-        dst.copy_from(src);
+        self.memory.tensors_raw_data.copy_within(src.range(), dst.raw_index.0);
     }
 
     pub fn set_value(&mut self, index: ValueIndex, value: f32)
@@ -1490,8 +1609,11 @@ impl OperationsRecorder
 
         match (&selector.first, &new_other)
         {
-            (DiffWrapper::Value(_), DiffWrapper::Value(_))
-            | (DiffWrapper::Tensor(_), DiffWrapper::Tensor(_)) => (),
+            (DiffWrapper::Value(_), DiffWrapper::Value(_)) => (),
+            (DiffWrapper::Tensor(first), DiffWrapper::Tensor(other)) =>
+            {
+                debug_assert_eq!(self.memory.tensor_shape(first.index), self.memory.tensor_shape(other.index));
+            },
             x => panic!("phi selector type mismatch: {x:#?}")
         }
 
@@ -1529,8 +1651,8 @@ impl OperationsRecorder
 
         if let DiffWrapper::Tensor(first_tensor) = this_selector.first
         {
-            let (rows, columns) = self.tensor_shape(first_tensor.as_value());
-            let output = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns});
+            let TensorShape{rows, columns, batch_size} = self.tensor_shape(first_tensor.as_value());
+            let output = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size});
 
             self.add_recording_operation(Op::GetOtherSelectorTensor{index, output});
 
@@ -1547,9 +1669,9 @@ impl OperationsRecorder
         {
             DiffWrapper::Tensor(DiffTensorPtr{index, gradient, ..}) =>
             {
-                let (rows, columns) = self.memory.tensor_shape(index);
+                let shape = self.memory.tensor_shape(index);
 
-                let new_value = TensorMemoryValue::Value(LayerType::repeat(rows, columns, 1.0));
+                let new_value = TensorMemoryValue::Value(LayerType::repeat_full(shape, 1.0));
 
                 let gradient_ptr: TensorPtr = gradient.expect("gradient must exist");
 
@@ -1587,25 +1709,27 @@ impl OperationsRecorder
         }
     }
 
-    pub fn is_undefined_location(&self, index: TensorIndex) -> bool
+    pub fn is_undefined_location(&self, index: impl Into<TensorIndex>) -> bool
     {
-        self.memory.tensors[index.0] == TensorRawDataPointer::undefined()
+        self.memory.tensors[index.into().0] == LinearRawDataPointer::undefined()
     }
 
-    pub fn get_tensor(&self, index: TensorIndex) -> LayerTypeRef<'_>
+    pub fn get_tensor(&self, index: ShapedTensorIndex) -> LayerTypeRef<'_>
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
         self.memory.get_tensor(index)
     }
 
-    pub fn get_tensor_mut<const USES_VALUE: bool>(&mut self, index: TensorIndex) -> LayerTypeMut<'_>
+    pub fn get_tensor_mut<const USES_VALUE: bool>(&mut self, index: ShapedTensorIndex) -> LayerTypeMut<'_>
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
-        debug_assert_ne!(index, TensorIndex::undefined());
+        debug_assert_ne!(index, ShapedTensorIndex::undefined());
 
         #[cfg(debug_assertions)]
         {
+            let index: TensorIndex = index.into();
+
             if USES_VALUE
             {
                 verify_store_check(&self.memory.store_tensors_check, index, "tensor");
@@ -1619,8 +1743,10 @@ impl OperationsRecorder
             }
         }
 
-        let info = self.memory.tensors[index.0];
-        debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
+        let info = self.memory.tensors[index.index.0];
+        debug_assert_ne!(info, LinearRawDataPointer::undefined(), "{index:?} location is undefined");
+
+        let info = info.with_shape(index.shape);
 
         LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, info)
     }
@@ -1790,8 +1916,8 @@ impl OperationsRecorder
 
     pub fn copy(&mut self, src: DiffTensorPtr) -> DiffTensorPtr
     {
-        let (rows, columns) = self.tensor_shape(src.as_value());
-        let dst = self.new_tensor_op(rows, columns);
+        let shape = self.tensor_shape(src.as_value());
+        let dst = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Copy{src, dst});
 
@@ -1809,9 +1935,9 @@ impl OperationsRecorder
 
     pub fn add_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
-        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
+        let shape = self.tensor_shape(a.as_value());
 
-        let output = self.new_tensor_op(a_rows, a_columns);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::AddScalar{lhs: a, rhs: b, output});
 
@@ -1830,9 +1956,9 @@ impl OperationsRecorder
 
     pub fn sub_from_scalar(&mut self, a: DiffScalar, b: DiffTensorPtr) -> DiffTensorPtr
     {
-        let (a_rows, a_columns) = self.tensor_shape(b.as_value());
+        let shape = self.tensor_shape(b.as_value());
 
-        let output = self.new_tensor_op(a_rows, a_columns);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::SubFromScalar{lhs: a, rhs: b, output});
 
@@ -1850,9 +1976,9 @@ impl OperationsRecorder
 
     pub fn mul_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
-        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
+        let shape = self.tensor_shape(a.as_value());
 
-        let output = self.new_tensor_op(a_rows, a_columns);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::MulScalar{lhs: a, rhs: b, output});
 
@@ -1866,12 +1992,14 @@ impl OperationsRecorder
 
     pub fn matmulv(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
-        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
-        let (b_rows, b_columns) = self.tensor_shape(b.as_value());
+        let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
+        let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
 
         debug_assert_eq!(a_columns, b_rows);
 
-        let output = self.new_tensor_op(a_rows, b_columns);
+        let output_batch_size = a_batch_size.max(b_batch_size);
+
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: output_batch_size});
 
         self.add_recording_operation(Op::Matmulv{lhs: a, rhs: b, output});
 
@@ -1880,17 +2008,19 @@ impl OperationsRecorder
 
     pub fn matmulv_add(&mut self, a: DiffTensorPtr, b: DiffTensorPtr, added: DiffTensorPtr) -> DiffTensorPtr
     {
-        let (a_rows, a_columns) = self.tensor_shape(a.as_value());
-        let (b_rows, b_columns) = self.tensor_shape(b.as_value());
+        let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
+        let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
 
-        let (rows, columns) = self.tensor_shape(added.as_value());
+        let TensorShape{rows: added_rows, columns: added_columns, batch_size: added_batch_size} = self.tensor_shape(added.as_value());
 
         debug_assert_eq!(a_columns, b_rows);
 
-        debug_assert_eq!(a_rows, rows);
-        debug_assert_eq!(b_columns, columns);
+        debug_assert_eq!(a_rows, added_rows);
+        debug_assert_eq!(b_columns, added_columns);
 
-        let output = self.new_tensor_op(rows, columns);
+        let output_batch_size = a_batch_size.max(b_batch_size).max(added_batch_size);
+
+        let output = self.new_tensor_op(TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size});
 
         self.add_recording_operation(Op::MatmulvAdd{lhs: a, rhs: b, added, output});
 
@@ -1899,35 +2029,41 @@ impl OperationsRecorder
 
     pub fn matmul_onehotv_add(&mut self, a: DiffTensorPtr, b: OneHotIndex, added: DiffTensorPtr) -> DiffTensorPtr
     {
-        let (a_rows, _a_columns) = self.tensor_shape(a.as_value());
+        let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
         let b_columns = 1;
 
-        let (rows, columns) = self.tensor_shape(added.as_value());
+        let TensorShape{rows: added_rows, columns: added_columns, batch_size: added_batch_size} = self.tensor_shape(added.as_value());
 
-        debug_assert_eq!(a_rows, rows);
-        debug_assert_eq!(b_columns, columns);
+        debug_assert_eq!(a_rows, added_rows);
+        debug_assert_eq!(b_columns, added_columns);
 
-        let output = self.new_tensor_op(rows, columns);
+        let output_batch_size = a_batch_size.max(self.one_hot_batch_size(b)).max(added_batch_size);
+
+        let output = self.new_tensor_op(TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size});
 
         self.add_recording_operation(Op::MatmulOneHotvAdd{lhs: a, rhs: b, added, output});
 
         output
     }
 
-    pub fn sum_tensor(&mut self, a: DiffTensorPtr) -> DiffScalar
+    pub fn sum_tensor(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
-        let output = self.new_value_op();
+        let batch_size = self.tensor_shape(a.as_value()).batch_size;
+
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
 
         self.add_recording_operation(Op::SumTensor{value: a, output});
 
         output
     }
 
-    pub fn dot(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffScalar
+    pub fn dot(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
-        debug_assert_eq!(self.tensor_shape(a.as_value()), self.tensor_shape(b.as_value()));
+        let shape = self.tensor_shape(a.as_value());
 
-        let output = self.new_value_op();
+        debug_assert_eq!(shape, self.tensor_shape(b.as_value()));
+
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size: shape.batch_size});
 
         self.add_recording_operation(Op::Dot{lhs: a, rhs: b, output});
 
@@ -1936,9 +2072,9 @@ impl OperationsRecorder
 
     pub fn pow(&mut self, a: DiffTensorPtr, power: i32) -> DiffTensorPtr
     {
-        let (rows, columns) = self.tensor_shape(a.as_value());
+        let shape = self.tensor_shape(a.as_value());
 
-        let output = self.new_tensor_op(rows, columns);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Pow{lhs: a, power, output});
 
@@ -1960,33 +2096,42 @@ impl OperationsRecorder
         impl_map_tensor_op!(self, a, LeakyRelu)
     }
 
-    pub fn softmax_cross_entropy(&mut self, values: DiffTensorPtr, targets: OneHotIndex) -> (DiffTensorPtr, DiffScalar)
+    pub fn softmax_cross_entropy(&mut self, values: DiffTensorPtr, targets: OneHotIndex) -> (DiffTensorPtr, DiffTensorPtr)
     {
-        let (rows, columns) = self.tensor_shape(values.as_value());
+        let TensorShape{rows, columns, batch_size} = self.tensor_shape(values.as_value());
 
         debug_assert_eq!(columns, 1);
 
-        let softmaxed_output = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns});
-        let output = self.new_value_op();
+        let softmaxed_output = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
 
         self.add_recording_operation(Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output});
 
         (softmaxed_output, output)
     }
 
-    pub fn tensor_shape(&self, tensor: TensorPtr) -> (usize, usize)
+    pub fn tensor_shape(&self, tensor: TensorPtr) -> TensorShape
     {
         self.memory.tensor_shape(tensor)
     }
 
-    pub fn resolve_tensor_ptr(&self, index_ptr: TensorPtr) -> TensorIndex
+    pub fn one_hot_batch_size(&self, index: OneHotIndex) -> usize
+    {
+        self.memory.one_hot_batch_size(index)
+    }
+
+    pub fn resolve_tensor_ptr(&self, index_ptr: TensorPtr) -> ShapedTensorIndex
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.memory.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
+        let shape = self.memory.tensor_shape(index_ptr);
+
+        let index = self.memory.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
         {
             panic!("{} must be resolved", self.memory.format_variable(index_ptr))
-        })
+        });
+
+        ShapedTensorIndex{index, shape}
     }
 
     pub fn resolve_diff_tensor_ptr(&self, diff: DiffTensorPtr) -> DiffTensor
@@ -2166,7 +2311,14 @@ impl OperationsRecorder
                     {
                         let input_values_amount = input_values.len();
 
-                        debug_assert_eq!(loop_info.times_total * loop_info.inputs.len(), input_values_amount);
+                        debug_assert_eq!(
+                            loop_info.times_total * loop_info.inputs.len(),
+                            input_values_amount,
+                            "loop with {} iterations, {} inputs each, must have {} input values, got {input_values_amount}",
+                            loop_info.times_total,
+                            loop_info.inputs.len(),
+                            loop_info.times_total * loop_info.inputs.len()
+                        );
 
                         if loop_info.reversed
                         {
@@ -2223,6 +2375,8 @@ impl OperationsRecorder
             {
                 ($src:expr, $dst:expr) =>
                 {
+                    debug_assert_eq!($src.shape, $dst.shape);
+
                     self.memory.tensors_raw_data.copy_within($src.range(), $dst.raw_index.0)
                 }
             }
@@ -2423,7 +2577,7 @@ impl OperationsRecorder
 
                     let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
 
-                    self.memory.set_tensor_raw(*output, &tensor);
+                    self.memory.set_tensor_raw(output.to_linear_pointer(), &tensor);
 
                     debug_calculate_values_result!((output),());
                 },
@@ -2798,22 +2952,47 @@ impl OperationsRecorder
                 GradientOp::SumTensor{value, output} =>
                 {
                     debug_calculate_values!(SumTensor, (value),());
-                    self.memory.values[output.0] = self.memory.tensors_raw_data[value.range()].iter().sum();
-                    debug_calculate_values_result!((),(output));
+
+                    {
+                        let (output, value) = get_disjoint_mut!(
+                            (LayerTypeMut, output, x0),
+                            (LayerTypeRef, value, x1)
+                        );
+
+                        output.sum_tensor_into(value);
+                    }
+
+                    debug_calculate_values_result!((output),());
                 },
                 GradientOp::Dot{lhs, rhs, output} =>
                 {
                     debug_calculate_values!(Dot, (lhs, rhs),());
-                    let lhs = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *lhs);
-                    let rhs = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *rhs);
 
-                    self.memory.values[output.0] = lhs.dot(rhs);
-                    debug_calculate_values_result!((),(output));
+                    {
+                        let (output, lhs, rhs) = get_disjoint_mut!(
+                            (LayerTypeMut, output, x0),
+                            (LayerTypeRef, lhs, x1),
+                            (LayerTypeRef, rhs, x2)
+                        );
+
+                        output.dot_into(lhs, rhs);
+                    }
+
+                    debug_calculate_values_result!((output),());
                 },
                 GradientOp::Fill{value, output} =>
                 {
-                    debug_calculate_values!(Fill, (),(value));
-                    self.memory.tensors_raw_data[output.range()].fill(self.memory.values[value.0]);
+                    debug_calculate_values!(Fill, (value),());
+
+                    {
+                        let (output, value) = get_disjoint_mut!(
+                            (LayerTypeMut, output, x0),
+                            (LayerTypeRef, value, x1)
+                        );
+
+                        output.fill_into(value);
+                    }
+
                     debug_calculate_values_result!((output),());
                 },
                 GradientOp::Pow{lhs, power, output} =>
@@ -2903,39 +3082,74 @@ impl OperationsRecorder
                     {
                         copy_tensor!(values, softmaxed_output);
 
-                        let mut softmaxed_output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *softmaxed_output);
+                        let (output, softmaxed_output) = get_disjoint_mut!(
+                            (LayerTypeMut, output, x0),
+                            (LayerTypeMut, softmaxed_output, x1)
+                        );
 
-                        self.memory.values[output.0] = softmaxed_output.softmax_cross_entropy_inplace(&self.memory.one_hot_layers[targets.0]);
+                        output.softmax_cross_entropy_into(softmaxed_output, &self.memory.one_hot_layers[targets.0]);
                     }
 
-                    debug_calculate_values_result!((softmaxed_output),(output));
+                    debug_calculate_values_result!((softmaxed_output, output),());
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
                     debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),());
-                    let values = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *values);
 
-                    self.memory.values[output.0] = values.softmax_cross_entropy(&self.memory.one_hot_layers[targets.0]);
-                    debug_calculate_values_result!((),(output));
+                    {
+                        let mut values = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *values).clone_owned();
+                        let output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output);
+
+                        output.softmax_cross_entropy_into(values.as_mut(), &self.memory.one_hot_layers[targets.0]);
+                    }
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output} =>
+                {
+                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),());
+
+                    {
+                        copy_tensor!(values, softmaxed_output);
+
+                        let mut output = {
+                            let batch_size = softmaxed_output.shape.batch_size;
+
+                            LayerType::from_raw(vec![0.0; batch_size].into_boxed_slice(), TensorShape{rows: 1, columns: 1, batch_size})
+                        };
+
+                        let softmaxed_output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *softmaxed_output);
+
+                        output.as_mut().softmax_cross_entropy_into(softmaxed_output, &self.memory.one_hot_layers[targets.0]);
+                    }
+
+                    debug_calculate_values_result!((softmaxed_output),());
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values),(gradient));
+                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values, gradient),());
 
                     {
-                        debug_assert_eq!(
-                            (softmaxed_values.rows, softmaxed_values.columns), (self.memory.one_hot_layers[targets.0].size, 1),
-                            "softmaxed: {softmaxed_values:?}, targets: {targets:?}"
-                        );
+                        {
+                            let targets = &self.memory.one_hot_layers[targets.0];
 
-                        let (mut output, softmaxed_values) = get_disjoint_mut!(
+                            debug_assert_eq!(softmaxed_values.shape.batch_size, targets.batch_size());
+
+                            debug_assert_eq!(
+                                (softmaxed_values.shape.rows, softmaxed_values.shape.columns), (targets.size, 1),
+                                "softmaxed: {softmaxed_values:?}, targets: {targets:?}"
+                            );
+                        }
+
+                        let (mut output, softmaxed_values, gradient) = get_disjoint_mut!(
                             (LayerTypeMut, output, x0),
-                            (LayerTypeRef, softmaxed_values, x1)
+                            (LayerTypeRef, softmaxed_values, x1),
+                            (LayerTypeRef, gradient, x2)
                         );
 
                         output.sub_to(softmaxed_values, LayerTypeRef::from(&self.memory.one_hot_layers[targets.0].clone().into_layer()));
 
-                        output.mul_scalar_inplace(self.memory.values[gradient.0]);
+                        output.mul_batched_scalar_inplace(gradient);
                     }
 
                     debug_calculate_values_result!((output),());
@@ -3102,9 +3316,25 @@ impl OperationsRecorder
 
             let unread_memory: Vec<_> = set_tensor_memory.unread_memory.iter().copied().filter(|x: &TensorIndex|
             {
-                !self.memory.store_tensors_check.contains(&StoreCheckKey::Resolved(*x))
-                    && !self.loops.iter().any(|loop_info| loop_info.inputs.contains(&Some(InputType::Normal(*x))))
-                    && !set_tensor_memory.allow_unread.contains(&StoreCheckKey::Resolved(*x))
+                if self.memory.store_tensors_check.contains(&StoreCheckKey::Resolved(*x))
+                {
+                    return false;
+                }
+
+                if set_tensor_memory.allow_unread.contains(&StoreCheckKey::Resolved(*x))
+                {
+                    return false;
+                }
+
+                let is_input = self.loops.iter().any(|loop_info|
+                {
+                    loop_info.inputs.iter().cloned().filter_map(convert::identity).any(|input|
+                    {
+                        input.tensor_index() == Some(*x)
+                    })
+                });
+
+                !is_input
             }).collect();
 
             debug_assert!(
@@ -3950,10 +4180,10 @@ impl OperationsRecorder
                 any_unused = true;
             } else if any_unused_single
             {
-                /*let is_value_unused = |value_index: ValueIndex| -> bool
+                let _is_value_unused = |value_index: ValueIndex| -> bool
                 {
                     self.memory.value_live_ranges[value_index.0].end.is_none()
-                };*/
+                };
 
                 let is_tensor_unused = |tensor_ptr: TensorPtr| -> bool
                 {
@@ -3972,6 +4202,15 @@ impl OperationsRecorder
                     } if is_tensor_unused(softmaxed_output) =>
                     {
                         GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output}
+                    },
+                    GradientOp::SoftmaxCrossEntropy{
+                        values,
+                        targets,
+                        softmaxed_output,
+                        output
+                    } if is_tensor_unused(output) =>
+                    {
+                        GradientOp::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output}
                     },
                     GradientOp::SoftmaxCrossEntropy{..} => op_cloned,
                     GradientOp::OtherSelectorValueGradient{..} => op_cloned,
@@ -4078,20 +4317,20 @@ impl OperationsRecorder
             this.memory.tensors_memory[ptr.0].value.tensor_shape()
         };
 
-        let mut size_buckets: Vec<((usize, usize), Vec<TensorPtr>)> = Vec::new();
+        let mut size_buckets: Vec<(usize, Vec<TensorPtr>)> = Vec::new();
 
         (0..nodes_count).for_each(|a|
         {
             let a = TensorPtr(a);
 
-            let this_shape = tensor_shape(self, a);
+            let this_size = tensor_shape(self, a).size();
 
-            if let Some(bucket) = size_buckets.iter_mut().find(|(bucket_shape, _)| *bucket_shape == this_shape)
+            if let Some(bucket) = size_buckets.iter_mut().find(|(bucket_shape, _)| *bucket_shape == this_size)
             {
                 bucket.1.push(a);
             } else
             {
-                size_buckets.push((this_shape, vec![a]));
+                size_buckets.push((this_size, vec![a]));
             }
         });
 
@@ -4175,11 +4414,11 @@ impl OperationsRecorder
                             {
                                 let connected_shape = tensor_shape(self, *connected_node);
 
-                                assert_eq!(tensor_shape(self, ptr), connected_shape);
+                                assert_eq!(tensor_shape(self, ptr).size(), connected_shape.size());
 
                                 if let Some(spot_tensor) = memory_assignments.get(*color)
                                 {
-                                    assert_eq!(spot_tensor.tensor_shape(), connected_shape);
+                                    assert_eq!(spot_tensor.tensor_shape().size(), connected_shape.size());
                                 }
                             }
 
@@ -4274,25 +4513,24 @@ impl OperationsRecorder
 
         let mut create_tensor = |this_index: TensorIndex|
         {
-            if self.memory.tensors[this_index.0] != TensorRawDataPointer::undefined()
+            if self.memory.tensors[this_index.0] != LinearRawDataPointer::undefined()
             {
                 return;
             }
 
             let this_tensor: &TensorMemoryValue = &memory_assignments[this_index.0];
 
-            let (rows, columns) = this_tensor.tensor_shape();
-            let size = rows * columns;
+            let shape = this_tensor.tensor_shape();
+            let size = shape.size();
 
             let id = TensorIndexRaw(self.memory.tensors_raw_data.len());
 
-            let this_tensor_raw_ptr = TensorRawDataPointer{
+            let this_tensor_raw_ptr = LinearRawDataPointer{
                 raw_index: id,
-                rows,
-                columns
+                size
             };
 
-            debug_assert_eq!(self.memory.tensors[this_index.0], TensorRawDataPointer::undefined());
+            debug_assert_eq!(self.memory.tensors[this_index.0], LinearRawDataPointer::undefined());
             self.memory.tensors[this_index.0] = this_tensor_raw_ptr;
 
             match this_tensor
@@ -4301,7 +4539,7 @@ impl OperationsRecorder
                 {
                     #[cfg(debug_assertions)]
                     {
-                        self.memory.verify_raw_ptr_assign(this_tensor_raw_ptr);
+                        self.memory.verify_raw_ptr_assign(this_tensor_raw_ptr.with_shape(shape));
                     }
 
                     self.memory.tensors_raw_data.extend(x.as_slice())
@@ -4319,11 +4557,12 @@ impl OperationsRecorder
                 panic!("{} was used but not resolved", self.memory.variable_names.format_variable(ptr))
             });
 
+            let shape = self.memory.tensor_shape(ptr);
             let current_value = self.memory.tensors[this_index.0];
 
-            debug_assert_ne!(current_value, TensorRawDataPointer::undefined());
+            debug_assert_ne!(current_value, LinearRawDataPointer::undefined());
 
-            current_value
+            current_value.with_shape(shape)
         };
 
         let mut next_must_exist: bool = false;
@@ -4378,7 +4617,12 @@ impl OperationsRecorder
                                     {
                                         InputTypePtr::Normal(x) =>
                                         {
-                                            self.memory.tensors_memory[x.0].memory.map(InputType::Normal)
+                                            let shape = self.memory.tensor_shape(x);
+
+                                            self.memory.tensors_memory[x.0].memory.map(|index|
+                                            {
+                                                InputType::Normal(ShapedTensorIndex{index, shape})
+                                            })
                                         },
                                         InputTypePtr::OneHot(x) => Some(InputType::OneHot(x))
                                     }
@@ -4656,7 +4900,7 @@ impl OperationsRecorder
         let mut memory_assignments = Vec::new();
         self.graph_color(&mut memory_assignments);
 
-        self.memory.tensors.resize(memory_assignments.len(), TensorRawDataPointer::undefined());
+        self.memory.tensors.resize(memory_assignments.len(), LinearRawDataPointer::undefined());
 
         if optional_info
         {
@@ -4725,7 +4969,7 @@ impl OperationsRecorder
 
                 op.clone().map_outputs_with_state((), |_s, t_out|
                 {
-                    let t_out_index = self.memory.raw_ptr_to_memory(t_out);
+                    let t_out_index = self.memory.raw_ptr_to_memory(t_out.to_linear_pointer());
 
                     debug_assert!(
                         !tensor_args.contains(&t_out),
@@ -4851,7 +5095,7 @@ impl OperationsRecorder
 
                 let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
 
-                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter());
+                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter().map(TensorIndex::from));
             }
         }
 
@@ -5398,7 +5642,7 @@ impl OperationsRecorder
                             output: dst
                         }
                     },
-                    _ => unimplemented!("only add selectors work rn")
+                    x => unimplemented!("only add selectors work rn: {x:?}")
                 };
 
                 let mut outputs_count = 0;
@@ -5770,13 +6014,26 @@ impl OperationsRecorder
                 {
                     if let Some(rhs_gradient) = rhs.as_gradient()
                     {
-                        add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: rhs_gradient});
+                        if self.memory.tensor_shape(rhs_gradient).is_batched_scalar()
+                        {
+                            if self.memory.tensor_shape(gradient).is_batched_scalar()
+                            {
+                                add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: rhs_gradient});
+                            } else
+                            {
+                                add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: rhs_gradient});
+                            }
+                        } else
+                        {
+                            add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: rhs_gradient});
+                        }
                     }
                 } else if let Op::AddScalar{rhs, ..} = op
                 {
                     if let Some(rhs_gradient) = rhs.as_gradient()
                     {
-                        add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: rhs_gradient});
+                        todo!()
+                        // GradientOp::SumTensor{value: gradient, output: rhs_gradient}
                     }
                 } else
                 {
@@ -5806,13 +6063,26 @@ impl OperationsRecorder
                 {
                     if let Some(lhs_gradient) = lhs.as_gradient()
                     {
-                        add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: lhs_gradient});
+                        if self.memory.tensor_shape(lhs_gradient).is_batched_scalar()
+                        {
+                            if self.memory.tensor_shape(gradient).is_batched_scalar()
+                            {
+                                add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: lhs_gradient});
+                            } else
+                            {
+                                add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: lhs_gradient});
+                            }
+                        } else
+                        {
+                            add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: lhs_gradient});
+                        }
                     }
                 } else if let Op::SubFromScalar{lhs, ..} = op
                 {
                     if let Some(lhs_gradient) = lhs.as_gradient()
                     {
-                        add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: lhs_gradient});
+                        todo!()
+                        // add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: lhs_gradient});
                     }
                 } else
                 {
@@ -5865,7 +6135,17 @@ impl OperationsRecorder
                 {
                     if let Some(rhs_gradient) = rhs.as_gradient()
                     {
-                        add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                        if self.memory.tensor_shape(rhs_gradient).is_batched_scalar()
+                        {
+                            add_gradient_operation(self, selectors, GradientOp::Dot{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                        } else
+                        {
+                            add_gradient_operation(
+                                self,
+                                selectors,
+                                GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient}
+                            );
+                        }
                     }
                 } else if let Op::MulScalar{rhs, ..} = op
                 {
@@ -5874,7 +6154,8 @@ impl OperationsRecorder
                         let pre_fold = self.memory.new_tensor_index(shape);
                         self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: pre_fold});
 
-                        add_gradient_operation(self, selectors, GradientOp::SumTensor{value: pre_fold, output: rhs_gradient});
+                        todo!()
+                        // add_gradient_operation(self, selectors, GradientOp::SumTensor{value: pre_fold, output: rhs_gradient});
                     }
                 } else
                 {
@@ -5896,12 +6177,12 @@ impl OperationsRecorder
 
                 if let Some(lhs_gradient) = lhs.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                    add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
                 }
 
                 if let Some(rhs_gradient) = rhs.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                    add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
                 }
             },
             Op::Pow{lhs, power, output} =>
@@ -6114,9 +6395,9 @@ impl OperationsRecorder
                     {
                         InputTypePtr::Normal(tensor) =>
                         {
-                            let (rows, columns) = self.memory.tensor_shape(*tensor);
+                            let shape = self.memory.tensor_shape(*tensor);
 
-                            let gradient_input = self.new_tensor_no_gradient(rows, columns).as_value();
+                            let gradient_input = self.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
                             self.name_tensor_suffix(gradient_input, *tensor, "_grad");
 
                             #[cfg(debug_assertions)]
@@ -6126,7 +6407,11 @@ impl OperationsRecorder
 
                             InputTypePtr::Normal(gradient_input)
                         },
-                        InputTypePtr::OneHot(_) => InputTypePtr::OneHot(self.new_one_hot())
+                        InputTypePtr::OneHot(one_hot) =>
+                        {
+                            let one_hot = &self.memory.one_hot_layers[one_hot.0];
+                            InputTypePtr::OneHot(self.new_one_hot_batched(one_hot.batch_size()))
+                        }
                     }
                 }).collect();
 
@@ -6213,7 +6498,33 @@ impl TensorPtr
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ShapedTensorIndex
+{
+    index: TensorIndex,
+    shape: TensorShape
+}
+
+impl ShapedTensorIndex
+{
+    pub fn undefined() -> Self
+    {
+        Self{
+            index: TensorIndex::undefined(),
+            shape: TensorShape{rows: 0, columns: 0, batch_size: 0}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TensorIndex(usize);
+
+impl From<ShapedTensorIndex> for TensorIndex
+{
+    fn from(index: ShapedTensorIndex) -> Self
+    {
+        index.index
+    }
+}
 
 #[allow(dead_code)]
 impl TensorIndex
@@ -6225,6 +6536,11 @@ impl TensorIndex
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct TensorIndexRaw(usize);
+
+impl TensorIndexRaw
+{
+    fn undefined() -> Self { TensorIndexRaw(usize::MAX) }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ValueIndex(usize);
@@ -6377,14 +6693,14 @@ impl DiffTensorPtr
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffTensor
 {
-    index: TensorIndex,
-    gradient: Option<TensorIndex>
+    index: ShapedTensorIndex,
+    gradient: Option<ShapedTensorIndex>
 }
 
 #[allow(dead_code)]
 impl DiffTensor
 {
-    pub fn no_gradient(index: TensorIndex) -> Self
+    pub fn no_gradient(index: ShapedTensorIndex) -> Self
     {
         Self{
             index,
@@ -6395,19 +6711,19 @@ impl DiffTensor
     pub fn undefined() -> Self
     {
         Self{
-            index: TensorIndex::undefined(),
+            index: ShapedTensorIndex::undefined(),
             gradient: None
         }
     }
 
-    pub fn as_value(&self) -> TensorIndex
+    pub fn as_value(&self) -> ShapedTensorIndex
     {
-        debug_assert_ne!(self.index, TensorIndex::undefined());
+        debug_assert_ne!(self.index, ShapedTensorIndex::undefined());
 
         self.index
     }
 
-    pub fn as_gradient(&self) -> Option<TensorIndex>
+    pub fn as_gradient(&self) -> Option<ShapedTensorIndex>
     {
         self.gradient
     }
@@ -6655,8 +6971,8 @@ pub enum GradientOp<T, V, J, S>
     MulScalars{lhs: V, rhs: V, output: V},
     MulComponentwise{lhs: T, rhs: T, output: T},
     MulComponentwiseAdd{lhs: T, rhs: T, added: T, output: T},
-    SumTensor{value: T, output: V},
-    Fill{value: V, output: T},
+    SumTensor{value: T, output: T},
+    Fill{value: T, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -6664,10 +6980,11 @@ pub enum GradientOp<T, V, J, S>
     SigmoidDiff{value: T, gradient: T, output: T},
     Tanh{value: T, output: T},
     TanhDiff{value: T, gradient: T, output: T},
-    Dot{lhs: T, rhs: T, output: V},
-    SoftmaxCrossEntropy{values: T, targets: OneHotIndex, softmaxed_output: T, output: V},
-    SoftmaxCrossEntropyNoSoftmaxed{values: T, targets: OneHotIndex, output: V},
-    SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: V, targets: OneHotIndex, output: T},
+    Dot{lhs: T, rhs: T, output: T},
+    SoftmaxCrossEntropy{values: T, targets: OneHotIndex, softmaxed_output: T, output: T},
+    SoftmaxCrossEntropyNoSoftmaxed{values: T, targets: OneHotIndex, output: T},
+    SoftmaxCrossEntropyNoEntropy{values: T, targets: OneHotIndex, softmaxed_output: T},
+    SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: OneHotIndex, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
     MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
     MatmulOneHotvAdd{lhs: T, rhs: OneHotIndex, added: T, output: T},
@@ -6741,8 +7058,8 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             {
                 GradientOp::MulComponentwiseAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
-            Self::SumTensor{value, output} => GradientOp::SumTensor{value: tf(value), output: vf(output)},
-            Self::Fill{value, output} => GradientOp::Fill{value: vf(value), output: tf(output)},
+            Self::SumTensor{value, output} => GradientOp::SumTensor{value: tf(value), output: tf(output)},
+            Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
             Self::LeakyReluDiff{value, gradient, output} => GradientOp::LeakyReluDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
@@ -6750,14 +7067,14 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             Self::SigmoidDiff{value, gradient, output} => GradientOp::SigmoidDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
             Self::Tanh{value, output} => GradientOp::Tanh{value: tf(value), output: tf(output)},
             Self::TanhDiff{value, gradient, output} => GradientOp::TanhDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
-            Self::Dot{lhs, rhs, output} => GradientOp::Dot{lhs: tf(lhs), rhs: tf(rhs), output: vf(output)},
+            Self::Dot{lhs, rhs, output} => GradientOp::Dot{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
             {
-                GradientOp::SoftmaxCrossEntropy{values: tf(values), targets, softmaxed_output: tf(softmaxed_output), output: vf(output)}
+                GradientOp::SoftmaxCrossEntropy{values: tf(values), targets, softmaxed_output: tf(softmaxed_output), output: tf(output)}
             },
             Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
             {
-                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values: tf(softmaxed_values), gradient: vf(gradient), targets, output: tf(output)}
+                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values: tf(softmaxed_values), gradient: tf(gradient), targets, output: tf(output)}
             },
             Self::Matmulv{lhs, rhs, output} => GradientOp::Matmulv{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::MatmulvAdd{lhs, rhs, added, output} => GradientOp::MatmulvAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)},
@@ -6785,7 +7102,11 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             Self::SetInputs(x) => GradientOp::SetInputs(x),
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
-                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: tf(values), targets, output: vf(output)}
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: tf(values), targets, output: tf(output)}
+            },
+            Self::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output} =>
+            {
+                GradientOp::SoftmaxCrossEntropyNoEntropy{values: tf(values), targets, softmaxed_output: tf(softmaxed_output)}
             }
         }
     }
@@ -6904,15 +7225,19 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             Self::CopyScalar{dst, src} => Self::CopyScalar{dst: vf(&mut state, dst), src},
             Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(&mut state, output), lhs, rhs},
             Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(&mut state, output), lhs, rhs},
-            Self::SumTensor{output, value} => Self::SumTensor{output: vf(&mut state, output), value},
-            Self::Dot{output, lhs, rhs} => Self::Dot{output: vf(&mut state, output), lhs, rhs},
+            Self::SumTensor{output, value} => Self::SumTensor{output: tf(&mut state, output), value},
+            Self::Dot{output, lhs, rhs} => Self::Dot{output: tf(&mut state, output), lhs, rhs},
             Self::SoftmaxCrossEntropy{softmaxed_output, output, targets, values} =>
             {
-                Self::SoftmaxCrossEntropy{softmaxed_output: tf(&mut state, softmaxed_output), output: vf(&mut state, output), targets, values}
+                Self::SoftmaxCrossEntropy{softmaxed_output: tf(&mut state, softmaxed_output), output: tf(&mut state, output), targets, values}
             },
             Self::SoftmaxCrossEntropyNoSoftmaxed{output, targets, values} =>
             {
-                Self::SoftmaxCrossEntropyNoSoftmaxed{output: vf(&mut state, output), targets, values}
+                Self::SoftmaxCrossEntropyNoSoftmaxed{output: tf(&mut state, output), targets, values}
+            },
+            Self::SoftmaxCrossEntropyNoEntropy{softmaxed_output, targets, values} =>
+            {
+                Self::SoftmaxCrossEntropyNoEntropy{softmaxed_output: tf(&mut state, softmaxed_output), targets, values}
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
@@ -6997,7 +7322,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             {
                 Self::SoftmaxCrossEntropyDiff{
                     softmaxed_values: tf(&mut state, softmaxed_values),
-                    gradient: vf(&mut state, gradient),
+                    gradient: tf(&mut state, gradient),
                     targets: of(&mut state, targets),
                     output
                 }
@@ -7032,10 +7357,14 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             Self::CopyScalar{src, dst} => Self::CopyScalar{src: vf(&mut state, src), dst},
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
-            Self::Fill{value, output} => Self::Fill{value: vf(&mut state, value), output},
+            Self::Fill{value, output} => Self::Fill{value: tf(&mut state, value), output},
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets, output}
+            },
+            Self::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output} =>
+            {
+                Self::SoftmaxCrossEntropyNoEntropy{values: tf(&mut state, values), targets, softmaxed_output}
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
@@ -7087,13 +7416,13 @@ pub enum Op
     MulScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     MulScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     MulComponentwise{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
-    SumTensor{value: DiffTensorPtr, output: DiffScalar},
+    SumTensor{value: DiffTensorPtr, output: DiffTensorPtr},
     Pow{lhs: DiffTensorPtr, power: i32, output: DiffTensorPtr},
     LeakyRelu{value: DiffTensorPtr, output: DiffTensorPtr},
     Sigmoid{value: DiffTensorPtr, output: DiffTensorPtr},
     Tanh{value: DiffTensorPtr, output: DiffTensorPtr},
-    Dot{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffScalar},
-    SoftmaxCrossEntropy{values: DiffTensorPtr, targets: OneHotIndex, softmaxed_output: DiffTensorPtr, output: DiffScalar},
+    Dot{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    SoftmaxCrossEntropy{values: DiffTensorPtr, targets: OneHotIndex, softmaxed_output: DiffTensorPtr, output: DiffTensorPtr},
     Matmulv{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     MatmulvAdd{lhs: DiffTensorPtr, rhs: DiffTensorPtr, added: DiffTensorPtr, output: DiffTensorPtr},
     MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr},
@@ -7172,15 +7501,16 @@ impl Op
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneHotLayer
 {
-    pub positions: Box<[usize]>,
-    pub size: usize
+    pub positions: Box<[Box<[usize]>]>,
+    pub size: usize,
+    pub batch_size: usize
 }
 
 impl OneHotLayer
 {
-    pub fn new(positions: impl Into<Box<[usize]>>, size: usize) -> Self
+    pub fn new(positions: Box<[Box<[usize]>]>, size: usize, batch_size: usize) -> Self
     {
-        let this = Self{positions: positions.into(), size};
+        let this = Self{positions: positions.into(), size, batch_size};
 
         debug_assert!(
         {
@@ -7194,20 +7524,35 @@ impl OneHotLayer
 
     pub fn empty() -> Self
     {
-        Self::new([], 0)
+        Self::new([].into(), 0, 0)
+    }
+
+    pub fn empty_batched(batch_size: usize) -> Self
+    {
+        Self::new([].into(), 0, batch_size)
+    }
+
+    pub fn batch_size(&self) -> usize
+    {
+        self.batch_size
     }
 
     pub fn into_layer(self) -> LayerType
     {
         let size = self.size;
-        let mut layer = vec![0.0; size];
+        let batch_size = self.positions.len();
 
-        for position in self.positions.iter()
+        let mut layer = vec![0.0; size].into_boxed_slice();
+
+        for (batch_index, batch_positions) in self.positions.iter().enumerate()
         {
-            layer[*position] = 1.0;
+            for position in batch_positions.iter()
+            {
+                layer[batch_index * size + *position] = 1.0;
+            }
         }
 
-        LayerType::from_raw(layer, size, 1)
+        LayerType::from_raw(layer, TensorShape{rows: size, columns: 1, batch_size})
     }
 }
 
@@ -7248,19 +7593,24 @@ impl InputTypePtr
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType
 {
-    Normal(TensorIndex),
+    Normal(ShapedTensorIndex),
     OneHot(OneHotIndex)
 }
 
 #[allow(dead_code)]
 impl InputType
 {
-    pub fn undefined() -> Self { Self::Normal(TensorIndex::undefined()) }
+    pub fn undefined() -> Self { Self::Normal(ShapedTensorIndex::undefined()) }
+
+    fn tensor_index(&self) -> Option<TensorIndex>
+    {
+        if let Self::Normal(x) = self { Some(x.index) } else { None }
+    }
 }
 
-impl From<TensorIndex> for InputType
+impl From<ShapedTensorIndex> for InputType
 {
-    fn from(value: TensorIndex) -> Self
+    fn from(value: ShapedTensorIndex) -> Self
     {
         Self::Normal(value)
     }
@@ -7531,15 +7881,15 @@ mod tests
             b_fg[index] = this_fg;
         }
 
-        let vec_to_layer = |v, mut layer: LayerType|
+        let vec_to_layer = |v: Box<[f32]>, mut layer: LayerType|
         {
             layer.swap_raw_values(v);
 
             layer
         };
 
-        let a_fg = vec_to_layer(a_fg, a_value);
-        let b_fg = vec_to_layer(b_fg, b_value);
+        let a_fg = vec_to_layer(a_fg.into(), a_value);
+        let b_fg = vec_to_layer(b_fg.into(), b_value);
 
         eprintln!("derivative of a ({a_fg:?} vs {a_g:?})");
         eprintln!("derivative of b ({b_fg:?} vs {b_g:?})");
@@ -7567,7 +7917,7 @@ mod tests
             {
                 d_value
             }
-        }).collect::<Vec<_>>();
+        }).collect::<Box<[_]>>();
 
         let mut layer = dimensions_match.clone();
         layer.swap_raw_values(values);
@@ -7653,7 +8003,7 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
 
-            recorder.mul_scalar(a, s)
+            recorder.mul_componentwise(a, s)
         })
     }
 
@@ -7664,7 +8014,7 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
 
-            recorder.add_scalar(a, s)
+            recorder.add(a, s)
         })
     }
 
@@ -7676,9 +8026,9 @@ mod tests
             let s = recorder.sum_tensor(b);
 
             let m1 = recorder.set_new_value(-1.0);
-            let sn = recorder.mul_scalars(s, m1);
+            let sn = recorder.mul_scalar(s, m1);
 
-            recorder.mul_scalar(a, sn)
+            recorder.mul_componentwise(a, sn)
         })
     }
 
@@ -7688,7 +8038,7 @@ mod tests
         check_vector(|recorder, a, b|
         {
             let a_dot_b = recorder.dot(a, b);
-            recorder.add_scalar(a, a_dot_b)
+            recorder.add(a, a_dot_b)
         })
     }
 
@@ -7698,7 +8048,7 @@ mod tests
         check_tensor(|recorder, a, b|
         {
             let s = recorder.sum_tensor(a);
-            recorder.sub_from_scalar(s, b)
+            recorder.sub(s, b)
         })
     }
 
@@ -7708,7 +8058,7 @@ mod tests
         check_tensor(|recorder, a, b|
         {
             let s = recorder.sum_tensor(a);
-            let right = recorder.sub_from_scalar(s, b);
+            let right = recorder.sub(s, b);
 
             let two = recorder.set_new_value(2.0);
 
@@ -7765,7 +8115,7 @@ mod tests
             let s = recorder.sum_tensor(b);
             let mm = recorder.matmulv(a, b);
 
-            recorder.add_scalar(mm, s)
+            recorder.add(mm, s)
         })
     }
 
@@ -7776,7 +8126,7 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
             let mm = recorder.matmulv(a, b);
-            let left = recorder.add_scalar(mm, s);
+            let left = recorder.add(mm, s);
 
             let k = recorder.matmulv(a, b);
             let l = recorder.matmulv(a, b);
@@ -7794,7 +8144,7 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
             let mm = recorder.matmulv(a, b);
-            let left = recorder.add_scalar(mm, s);
+            let left = recorder.add(mm, s);
 
             let k = recorder.matmulv(a, b);
             let right = recorder.matmulv_add(a, b, k);
@@ -7812,7 +8162,7 @@ mod tests
     {
         let pos = fastrand::usize(0..size);
 
-        OneHotLayer::new([pos], size)
+        OneHotLayer::new([[pos].into()].into(), size, 1)
     }
 
     #[test]
@@ -7827,7 +8177,7 @@ mod tests
 
             let s = recorder.sum_tensor(b);
             let mm = recorder.matmulv(a, b);
-            let left = recorder.add_scalar(mm, s);
+            let left = recorder.add(mm, s);
 
             let k = recorder.matmulv(a, b);
             let right = recorder.matmul_onehotv_add(a, targets_index, k);
@@ -7846,7 +8196,7 @@ mod tests
             recorder.set_one_hot(targets_index, targets.clone());
 
             let sm = recorder.softmax_cross_entropy(a, targets_index).1;
-            recorder.add_scalar(b, sm)
+            recorder.add(b, sm)
         })
     }
 
@@ -7864,7 +8214,7 @@ mod tests
 
             let sm = recorder.softmax_cross_entropy(btwo, targets_index).1;
 
-            recorder.add_scalar(a, sm)
+            recorder.add(a, sm)
         })
     }
 
@@ -7875,9 +8225,9 @@ mod tests
         {
             let a_sum = recorder.sum_tensor(a);
 
-            let a_sum_copy = recorder.copy_scalar(a_sum);
+            let a_sum_copy = recorder.copy(a_sum);
 
-            recorder.add_scalar(b, a_sum_copy)
+            recorder.add(b, a_sum_copy)
         })
     }
 
@@ -7907,11 +8257,11 @@ mod tests
             recorder.allow_unread(a.as_value());
 
             let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_scalar(a_sum, "a_sum");
+            recorder.name_diff_tensor(a_sum, "a_sum");
 
-            let (rows, columns) = recorder.tensor_shape(a.as_value());
+            let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(i, "i");
 
             let final_state_selector = recorder.phi_other_selector(a_sum);
@@ -7922,13 +8272,13 @@ mod tests
             recorder.name_diff_tensor(ai, "ai");
 
             let ai_sum = recorder.sum_tensor(ai);
-            recorder.name_diff_scalar(ai_sum, "ai_sum");
+            recorder.name_diff_tensor(ai_sum, "ai_sum");
 
-            let final_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_selected, "final_selected");
+            let final_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let final_state = recorder.add_scalars(final_selected, ai_sum);
-            recorder.name_diff_scalar(final_state, "final_state");
+            let final_state = recorder.add(final_selected, ai_sum);
+            recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
 
@@ -7937,7 +8287,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
-            recorder.add_scalar(b, final_state)
+            recorder.add(b, final_state)
         })
     }
 
@@ -7953,9 +8303,9 @@ mod tests
         {
             recorder.allow_unread(b.as_value());
 
-            let (rows, columns) = recorder.tensor_shape(a.as_value());
+            let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(i, "i");
 
             let zeros = recorder.set_new_tensor_gradientable(zeros.clone());
@@ -7969,14 +8319,14 @@ mod tests
 
             let bc = {
                 let is = recorder.sum_tensor(DiffTensorPtr::no_gradient(i));
-                recorder.name_diff_scalar(is, "is");
+                recorder.name_diff_tensor(is, "is");
 
                 let bc_selected = recorder.select_tensor(bc_selector);
 
                 let bc_added = recorder.add(bc_selected, b);
                 recorder.name_diff_tensor(bc_added, "bc_added");
 
-                let bis = recorder.mul_scalar(bc_added, is);
+                let bis = recorder.mul_componentwise(bc_added, is);
                 recorder.name_diff_tensor(bis, "bis");
 
                 recorder.add(bis, b)
@@ -8002,12 +8352,15 @@ mod tests
 
         let output_size = LAYER_CURR;
 
-        let targets: Vec<OneHotLayer> = (0..loops_count).map(|_| OneHotLayer::new([fastrand::usize(0..output_size)], output_size)).collect();
+        let targets: Vec<OneHotLayer> = (0..loops_count).map(|_|
+        {
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+        }).collect();
 
         check_tensor_with_dims((1, LAYER_CURR), (1, LAYER_CURR), |recorder, a, b|
         {
             let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_scalar(a_sum, "a_sum");
+            recorder.name_diff_tensor(a_sum, "a_sum");
 
             let t = recorder.new_one_hot();
             recorder.name_one_hot(t, "t");
@@ -8018,16 +8371,16 @@ mod tests
 
             let (at, a_loss) = recorder.softmax_cross_entropy(a, t);
             recorder.name_diff_tensor(at, "at");
-            recorder.name_diff_scalar(a_loss, "a_loss");
+            recorder.name_diff_tensor(a_loss, "a_loss");
 
             let at_sum = recorder.sum_tensor(at);
-            let ata = recorder.add_scalars(at_sum, a_loss);
+            let ata = recorder.add(a_loss, at_sum);
 
-            let final_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_selected, "final_selected");
+            let final_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let final_state = recorder.add_scalars(final_selected, ata);
-            recorder.name_diff_scalar(final_state, "final_state");
+            let final_state = recorder.add(final_selected, ata);
+            recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
 
@@ -8036,7 +8389,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, targets.iter().cloned().map(OwnedInputType::OneHot).collect::<Vec<_>>());
 
-            recorder.add_scalar(b, final_state)
+            recorder.add(b, final_state)
         })
     }
 
@@ -8052,14 +8405,14 @@ mod tests
             recorder.allow_unread(a.as_value());
 
             let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_scalar(a_sum, "a_sum");
+            recorder.name_diff_tensor(a_sum, "a_sum");
 
-            let (rows, columns) = recorder.tensor_shape(a.as_value());
+            let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(i, "i");
 
-            let m = recorder.new_tensor_no_gradient(rows, columns).as_value();
+            let m = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(m, "m");
 
             let final_state_selector = recorder.phi_other_selector(a_sum);
@@ -8073,13 +8426,13 @@ mod tests
             recorder.name_diff_tensor(aim, "aim");
 
             let aim_sum = recorder.sum_tensor(aim);
-            recorder.name_diff_scalar(aim_sum, "aim_sum");
+            recorder.name_diff_tensor(aim_sum, "aim_sum");
 
-            let final_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_selected, "final_selected");
+            let final_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let final_state = recorder.add_scalars(final_selected, aim_sum);
-            recorder.name_diff_scalar(final_state, "final_state");
+            let final_state = recorder.add(final_selected, aim_sum);
+            recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
 
@@ -8093,7 +8446,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs);
 
-            recorder.add_scalar(b, final_state)
+            recorder.add(b, final_state)
         })
     }
 
@@ -8106,11 +8459,11 @@ mod tests
         check_tensor(|recorder, a, b|
         {
             let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_scalar(a_sum, "a_sum");
+            recorder.name_diff_tensor(a_sum, "a_sum");
 
-            let (rows, columns) = recorder.tensor_shape(a.as_value());
+            let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(i, "i");
 
             recorder.allow_reassign(i);
@@ -8123,19 +8476,19 @@ mod tests
             recorder.name_diff_tensor(ai, "ai");
 
             let ai_sum = recorder.sum_tensor(ai);
-            recorder.name_diff_scalar(ai_sum, "ai_sum");
+            recorder.name_diff_tensor(ai_sum, "ai_sum");
 
-            let final_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_selected, "final_selected");
+            let final_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let intermediate = recorder.mul_scalar(b, final_selected);
+            let intermediate = recorder.mul_componentwise(b, final_selected);
             recorder.name_diff_tensor(intermediate, "intermediate");
 
             let intermediate_sum = recorder.sum_tensor(intermediate);
-            recorder.name_diff_scalar(intermediate_sum, "intermediate_sum");
+            recorder.name_diff_tensor(intermediate_sum, "intermediate_sum");
 
-            let final_state = recorder.add_scalars(intermediate_sum, ai_sum);
-            recorder.name_diff_scalar(final_state, "final_state");
+            let final_state = recorder.add(intermediate_sum, ai_sum);
+            recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
 
@@ -8144,7 +8497,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
-            recorder.add_scalar(b, final_state)
+            recorder.add(b, final_state)
         })
     }
 
@@ -8168,7 +8521,7 @@ mod tests
             recorder.name_diff_tensor(s0, "s0");
 
             let ss0 = recorder.sum_tensor(s0);
-            recorder.name_diff_scalar(ss0, "ss0");
+            recorder.name_diff_tensor(ss0, "ss0");
 
             let s1 = {
                 let s1i = recorder.set_new_tensor(is[1].clone().into_normal()).as_value();
@@ -8185,15 +8538,15 @@ mod tests
             recorder.name_diff_tensor(s1, "s1");
 
             let ss1 = recorder.sum_tensor(s1);
-            recorder.name_diff_scalar(ss1, "ss1");
+            recorder.name_diff_tensor(ss1, "ss1");
 
-            let combined_state = recorder.add_scalars(ss0, ss1);
+            let combined_state = recorder.add(ss0, ss1);
 
-            recorder.name_diff_scalar(combined_state, "combined_state");
+            recorder.name_diff_tensor(combined_state, "combined_state");
 
-            let (rows, columns) = recorder.tensor_shape(a.as_value());
+            let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(rows, columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(i, "i");
 
             let final_state_selector = recorder.phi_other_selector(combined_state);
@@ -8207,13 +8560,13 @@ mod tests
             recorder.name_diff_tensor(s2, "s2");
 
             let ss2 = recorder.sum_tensor(s2);
-            recorder.name_diff_scalar(ss2, "ss2");
+            recorder.name_diff_tensor(ss2, "ss2");
 
-            let final_combined_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_combined_selected, "final_combined_selected");
+            let final_combined_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_combined_selected, "final_combined_selected");
 
-            let final_combined_state = recorder.add_scalars(final_combined_selected, ss2);
-            recorder.name_diff_scalar(final_combined_state, "final_combined_state");
+            let final_combined_state = recorder.add(final_combined_selected, ss2);
+            recorder.name_diff_tensor(final_combined_state, "final_combined_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_combined_state);
 
@@ -8222,7 +8575,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().skip(2).collect::<Vec<_>>());
 
-            recorder.add_scalar(b, final_combined_state)
+            recorder.add(b, final_combined_state)
         })
     }
 
@@ -8302,7 +8655,7 @@ mod tests
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
             let f_sum = recorder.sum_tensor(s2);
-            recorder.add_scalar(b, f_sum)
+            recorder.add(b, f_sum)
         })
     }
 
@@ -8316,7 +8669,10 @@ mod tests
         let output_size = 2;
 
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
-        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_| OneHotLayer::new([fastrand::usize(0..output_size)], output_size)).collect();
+        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
+        {
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+        }).collect();
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
         {
@@ -8351,7 +8707,7 @@ mod tests
                 state: Option<DiffTensorPtr>,
                 input: TensorPtr,
                 targets: OneHotIndex
-            | -> (DiffTensorPtr, DiffScalar)
+            | -> (DiffTensorPtr, DiffTensorPtr)
             {
                 let mut gate = recorder.matmulv(a, DiffTensorPtr::no_gradient(input));
                 recorder.name_diff_tensor(gate, "gate");
@@ -8366,14 +8722,14 @@ mod tests
 
             let (s0, s0_loss) = do_one(recorder, None, i0, t0);
             recorder.name_diff_tensor(s0, "s0");
-            recorder.name_diff_scalar(s0_loss, "s0_loss");
+            recorder.name_diff_tensor(s0_loss, "s0_loss");
 
             let (s1, s1_loss) = do_one(recorder, Some(s0), i1, t1);
             recorder.name_diff_tensor(s1, "s1");
-            recorder.name_diff_scalar(s1_loss, "s1_loss");
+            recorder.name_diff_tensor(s1_loss, "s1_loss");
 
-            let compound_loss = recorder.add_scalars(s0_loss, s1_loss);
-            recorder.name_diff_scalar(compound_loss, "compound_loss");
+            let compound_loss = recorder.add(s0_loss, s1_loss);
+            recorder.name_diff_tensor(compound_loss, "compound_loss");
 
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
@@ -8390,15 +8746,15 @@ mod tests
 
             let (s2, s2_loss) = do_one(recorder, Some(previous_state_selected), i, target);
             recorder.name_diff_tensor(s2, "s2");
-            recorder.name_diff_scalar(s2_loss, "s2_loss");
+            recorder.name_diff_tensor(s2_loss, "s2_loss");
 
             recorder.set_phi_other_selector(previous_state_selector, s2);
 
-            let final_combined_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_combined_selected, "final_combined_selected");
+            let final_combined_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_combined_selected, "final_combined_selected");
 
-            let final_combined_state = recorder.add_scalars(final_combined_selected, s2_loss);
-            recorder.name_diff_scalar(final_combined_state, "final_combined_state");
+            let final_combined_state = recorder.add(final_combined_selected, s2_loss);
+            recorder.name_diff_tensor(final_combined_state, "final_combined_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_combined_state);
 
@@ -8412,7 +8768,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add_scalar(b, final_combined_state)
+            recorder.add(b, final_combined_state)
         })
     }
 
@@ -8427,7 +8783,10 @@ mod tests
 
         let zeros = LayerType::new(hidden_size, output_size);
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
-        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_| OneHotLayer::new([fastrand::usize(0..output_size)], output_size)).collect();
+        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
+        {
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+        }).collect();
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
         {
@@ -8462,7 +8821,7 @@ mod tests
                 state: Option<DiffTensorPtr>,
                 input: TensorPtr,
                 targets: OneHotIndex
-            | -> (DiffTensorPtr, DiffScalar)
+            | -> (DiffTensorPtr, DiffTensorPtr)
             {
                 let mut gate = recorder.matmulv(a, DiffTensorPtr::no_gradient(input));
                 recorder.name_diff_tensor(gate, "gate");
@@ -8477,14 +8836,14 @@ mod tests
 
             let (s0, s0_loss) = do_one(recorder, None, i0, t0);
             recorder.name_diff_tensor(s0, "s0");
-            recorder.name_diff_scalar(s0_loss, "s0_loss");
+            recorder.name_diff_tensor(s0_loss, "s0_loss");
 
             let (s1, s1_loss) = do_one(recorder, Some(s0), i1, t1);
             recorder.name_diff_tensor(s1, "s1");
-            recorder.name_diff_scalar(s1_loss, "s1_loss");
+            recorder.name_diff_tensor(s1_loss, "s1_loss");
 
-            let compound_loss = recorder.add_scalars(s0_loss, s1_loss);
-            recorder.name_diff_scalar(compound_loss, "compound_loss");
+            let compound_loss = recorder.add(s0_loss, s1_loss);
+            recorder.name_diff_tensor(compound_loss, "compound_loss");
 
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
@@ -8506,7 +8865,7 @@ mod tests
 
             let bc = {
                 let is = recorder.sum_tensor(DiffTensorPtr::no_gradient(i));
-                recorder.name_diff_scalar(is, "is");
+                recorder.name_diff_tensor(is, "is");
 
                 let bc_selected = recorder.select_tensor(bc_selector);
                 recorder.name_diff_tensor(bc_selected, "bc_selected");
@@ -8514,7 +8873,7 @@ mod tests
                 let bc_added = recorder.add(bc_selected, b);
                 recorder.name_diff_tensor(bc_added, "bc_added");
 
-                let bis = recorder.mul_scalar(bc_added, is);
+                let bis = recorder.mul_componentwise(bc_added, is);
                 recorder.name_diff_tensor(bis, "bis");
 
                 recorder.add(bis, b)
@@ -8528,15 +8887,15 @@ mod tests
 
             let (s2, s2_loss) = do_one(recorder, Some(previous_state_selected), i, target);
             recorder.name_diff_tensor(s2, "s2");
-            recorder.name_diff_scalar(s2_loss, "s2_loss");
+            recorder.name_diff_tensor(s2_loss, "s2_loss");
 
             recorder.set_phi_other_selector(previous_state_selector, s2);
 
-            let final_combined_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_combined_selected, "final_combined_selected");
+            let final_combined_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_combined_selected, "final_combined_selected");
 
-            let final_combined_state = recorder.add_scalars(final_combined_selected, s2_loss);
-            recorder.name_diff_scalar(final_combined_state, "final_combined_state");
+            let final_combined_state = recorder.add(final_combined_selected, s2_loss);
+            recorder.name_diff_tensor(final_combined_state, "final_combined_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_combined_state);
 
@@ -8550,7 +8909,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add_scalar(bc, final_combined_state)
+            recorder.add(bc, final_combined_state)
         })
     }
 
@@ -8565,7 +8924,10 @@ mod tests
 
         let zeros = LayerType::new(output_size, 1);
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
-        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_| OneHotLayer::new([fastrand::usize(0..output_size)], output_size)).collect();
+        let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
+        {
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+        }).collect();
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
         {
@@ -8600,7 +8962,7 @@ mod tests
                 state: Option<DiffTensorPtr>,
                 input: TensorPtr,
                 targets: OneHotIndex
-            | -> (DiffTensorPtr, DiffScalar)
+            | -> (DiffTensorPtr, DiffTensorPtr)
             {
                 let mut gate = recorder.matmulv(a, DiffTensorPtr::no_gradient(input));
                 recorder.name_diff_tensor(gate, "gate");
@@ -8623,14 +8985,14 @@ mod tests
 
             let (s0, s0_loss) = do_one(recorder, None, i0, t0);
             recorder.name_diff_tensor(s0, "s0");
-            recorder.name_diff_scalar(s0_loss, "s0_loss");
+            recorder.name_diff_tensor(s0_loss, "s0_loss");
 
             let (s1, s1_loss) = do_one(recorder, Some(s0), i1, t1);
             recorder.name_diff_tensor(s1, "s1");
-            recorder.name_diff_scalar(s1_loss, "s1_loss");
+            recorder.name_diff_tensor(s1_loss, "s1_loss");
 
-            let compound_loss = recorder.add_scalars(s0_loss, s1_loss);
-            recorder.name_diff_scalar(compound_loss, "compound_loss");
+            let compound_loss = recorder.add(s0_loss, s1_loss);
+            recorder.name_diff_tensor(compound_loss, "compound_loss");
 
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
@@ -8647,15 +9009,15 @@ mod tests
 
             let (s2, s2_loss) = do_one(recorder, Some(previous_state_selected), i, target);
             recorder.name_diff_tensor(s2, "s2");
-            recorder.name_diff_scalar(s2_loss, "s2_loss");
+            recorder.name_diff_tensor(s2_loss, "s2_loss");
 
             recorder.set_phi_other_selector(previous_state_selector, s2);
 
-            let final_combined_selected = recorder.select_value(final_state_selector);
-            recorder.name_diff_scalar(final_combined_selected, "final_combined_selected");
+            let final_combined_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_combined_selected, "final_combined_selected");
 
-            let final_combined_state = recorder.add_scalars(final_combined_selected, s2_loss);
-            recorder.name_diff_scalar(final_combined_state, "final_combined_state");
+            let final_combined_state = recorder.add(final_combined_selected, s2_loss);
+            recorder.name_diff_tensor(final_combined_state, "final_combined_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_combined_state);
 
@@ -8669,12 +9031,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            let zeros = recorder.set_new_tensor(zeros.clone());
-            recorder.name_diff_tensor(zeros, "zeros");
-
-            recorder.store_tensor_until_end(zeros.as_value());
-
-            recorder.add_scalar(zeros, final_combined_state)
+            final_combined_state
         })
     }
 }

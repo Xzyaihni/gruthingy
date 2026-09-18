@@ -1,13 +1,11 @@
 use std::{
     f32,
     fmt,
-    slice,
     cell::RefCell,
     marker::PhantomData,
     io::{self, Read, Write, BufReader, BufWriter},
     fs::File,
     path::Path,
-    collections::VecDeque,
     ops::Range
 };
 
@@ -52,6 +50,7 @@ pub use containers::{
     PhiOtherSelectorRecordingIndex,
     OperationsRecorder,
     OperationsRecorderMemory,
+    TensorShape,
     LayerType,
     LayerTypeRef,
     LayerTypeMut,
@@ -60,7 +59,7 @@ pub use containers::{
     DiffScalar,
     LoopIndex,
     LoopInputs,
-    TensorIndex,
+    ShapedTensorIndex,
     TensorPtr,
     OneHotIndex,
     InputType,
@@ -295,11 +294,23 @@ pub enum AFType
     LeakyRelu
 }
 
-#[allow(dead_code)]
-pub enum EMType
+pub struct OneHotEmbeddings;
+
+pub struct BagOfWordsEmbeddings;
+
+pub trait EmbeddingsTypeable
 {
-    BagOfWords(usize),
-    SkipGram(usize)
+    fn min_len() -> usize;
+}
+
+impl EmbeddingsTypeable for OneHotEmbeddings
+{
+    fn min_len() -> usize { 0 }
+}
+
+impl EmbeddingsTypeable for BagOfWordsEmbeddings
+{
+    fn min_len() -> usize { BAG_OF_WORDS_EMBEDDINGS_COUNT * 2 }
 }
 
 macro_rules! time_debug
@@ -364,216 +375,90 @@ impl KahanSum
 }
 
 #[derive(Debug)]
-pub struct InputOutput<'a, const EMBEDDINGS: bool, D>
+pub struct InputOutput<'a, D>
 {
     dictionary: &'a D,
-    values: &'a [VectorWord]
+    values: &'a [VectorWord],
+    batch_size: usize
 }
 
-impl<'a, const EMBEDDINGS: bool, D> InputOutput<'a, EMBEDDINGS, D>
+impl<'a, D> InputOutput<'a, D>
 {
-    #[allow(dead_code)]
-    pub fn values_slice(
+    pub fn values_slice<EmbeddingsType: EmbeddingsTypeable>(
         dictionary: &'a D,
         values: &'a [VectorWord],
-        start: usize,
-        size: usize
+        inputs_count: usize
     ) -> Self
     {
-        let min_slice_len = Self::min_len();
+        let min_slice_len = EmbeddingsType::min_len();
 
-        let slice_end = (start + size + min_slice_len).min(values.len());
-        let this_slice = &values[start..slice_end];
+        // +1 for target output of last input
+        let inputs_block = inputs_count + min_slice_len + 1;
 
-        assert!(this_slice.len() > min_slice_len);
+        debug_assert!(values.len() >= inputs_block);
+        debug_assert!(values.len() % inputs_block == 0, "values: (len {}) must be evenly divisible into blocks of len {inputs_block}", values.len());
 
-        Self::new(dictionary, this_slice)
+        let batch_size = values.len() / inputs_block;
+
+        Self::new(dictionary, values, batch_size)
     }
 
-    pub fn new(dictionary: &'a D, values: &'a [VectorWord]) -> Self
+    pub fn new(dictionary: &'a D, values: &'a [VectorWord], batch_size: usize) -> Self
     {
         Self{
             dictionary,
-            values
+            values,
+            batch_size
         }
     }
 
-    pub const fn min_len() -> usize
+    pub fn iter<EmbeddingsType>(&self) -> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
     {
-        if EMBEDDINGS
-        {
-            let amount = match EMBEDDINGS_TYPE
-            {
-                EMType::BagOfWords(amount) => amount,
-                EMType::SkipGram(amount) => amount
-            };
-
-            amount * 2
-        } else
-        {
-            1
-        }
+        InputOutputEmbeddingsIter::new(self.dictionary, self.values, self.batch_size)
     }
 }
 
-pub trait InputOutputable
-{
-    type Iter<'a>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
-    where
-        Self: 'a;
-
-    fn iter(&self) -> Self::Iter<'_>;
-}
-
-impl<'a, D> InputOutputable for InputOutput<'a, false, D>
-where
-    D: NetworkDictionary
-{
-    type Iter<'b> = InputOutputIter<'b, D, slice::Iter<'b, VectorWord>>
-    where
-        Self: 'b,
-        D: 'b;
-
-    fn iter(&self) -> Self::Iter<'_>
-    {
-        InputOutputIter::new(self.dictionary, self.values.iter())
-    }
-}
-
-impl<'a, D> InputOutputable for InputOutput<'a, true, D>
-where
-    D: NetworkDictionary
-{
-    type Iter<'b> = InputOutputEmbeddingsIter<'b, D, slice::Iter<'b, VectorWord>>
-    where
-        Self: 'b,
-        D: 'b;
-
-    fn iter(&self) -> Self::Iter<'_>
-    {
-        InputOutputEmbeddingsIter::new(self.dictionary, self.values.iter())
-    }
-}
-
-pub struct InputOutputIter<'a, D, I>
+pub struct InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
 {
     dictionary: &'a D,
-    inputs: I,
-    previous: &'a VectorWord
+    inputs: &'a [VectorWord],
+    index: usize,
+    batch_size: usize,
+    _embeddings: PhantomData<EmbeddingsType>
 }
 
-impl<'a, D, I> Clone for InputOutputIter<'a, D, I>
-where
-    I: Clone
+impl<'a, EmbeddingsType, D> Clone for InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
 {
     fn clone(&self) -> Self
     {
         Self{
             dictionary: self.dictionary,
-            inputs: self.inputs.clone(),
-            previous: self.previous
+            inputs: self.inputs,
+            index: self.index,
+            batch_size: self.batch_size,
+            _embeddings: PhantomData
         }
     }
 }
 
-impl<'a, D, I> InputOutputIter<'a, D, I>
-where
-    I: Iterator<Item=&'a VectorWord>
+impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
 {
-    pub fn new(dictionary: &'a D, mut inputs: I) -> Self
+    pub fn new(dictionary: &'a D, inputs: &'a [VectorWord], batch_size: usize) -> Self
     {
         Self{
             dictionary,
-            previous: inputs.next().expect("input must not be empty"),
-            inputs
-        }
-    }
-}
-
-impl<'a, D, I> Iterator for InputOutputIter<'a, D, I>
-where
-    D: NetworkDictionary,
-    I: Iterator<Item=&'a VectorWord>
-{
-    type Item = (OwnedInputType, OneHotLayer);
-
-    fn next(&mut self) -> Option<Self::Item>
-    {
-        match self.inputs.next()
-        {
-            None => None,
-            Some(input) =>
-            {
-                let out = Some(
-                    (
-                        self.dictionary.words_to_layer([*self.previous]),
-                        self.dictionary.words_to_onehot([*input])
-                    )
-                );
-
-                self.previous = input;
-
-                out
-            }
-        }
-    }
-}
-
-impl<'a, D, I> ExactSizeIterator for InputOutputIter<'a, D, I>
-where
-    D: NetworkDictionary,
-    I: ExactSizeIterator<Item=&'a VectorWord>
-{
-    fn len(&self) -> usize
-    {
-        self.inputs.len()
-    }
-}
-
-pub struct InputOutputEmbeddingsIter<'a, D, I>
-{
-    dictionary: &'a D,
-    inputs: I,
-    context: VecDeque<&'a VectorWord>
-}
-
-impl<'a, D, I> Clone for InputOutputEmbeddingsIter<'a, D, I>
-where
-    I: Clone
-{
-    fn clone(&self) -> Self
-    {
-        Self{
-            dictionary: self.dictionary,
-            inputs: self.inputs.clone(),
-            context: self.context.clone()
-        }
-    }
-}
-
-impl<'a, D, I> InputOutputEmbeddingsIter<'a, D, I>
-where
-    I: Iterator<Item=&'a VectorWord>
-{
-    pub fn new(dictionary: &'a D, mut inputs: I) -> Self
-    {
-        let context_len = InputOutput::<true, D>::min_len();
-        let context: VecDeque<_> = inputs.by_ref().take(context_len).collect();
-
-        assert_eq!(context.len(), context_len);
-
-        Self{
-            dictionary,
-            context,
-            inputs
+            inputs,
+            index: 0,
+            batch_size,
+            _embeddings: PhantomData
         }
     }
 
-    fn around_window(&self, amount: usize) -> Vec<VectorWord>
+    fn around_window(context: &[VectorWord], amount: usize) -> Vec<VectorWord>
     {
-        let mut words = self.context.iter().take(amount)
-            .chain(self.context.iter().rev().take(amount))
-            .map(|v| **v)
+        let mut words = context.iter().take(amount)
+            .chain(context.iter().rev().take(amount))
+            .copied()
             .collect::<Vec<_>>();
 
         words.sort_unstable();
@@ -582,76 +467,110 @@ where
         words
     }
 
-    fn middle_word(&self, amount: usize) -> VectorWord
-    {
-        *self.context[amount]
-    }
-
-    fn next_bag_of_words(&mut self, amount: usize) -> (OwnedInputType, OneHotLayer)
+    fn next_single(&mut self) -> Option<(OwnedInputType, OneHotLayer)>
     where
         D: NetworkDictionary
     {
-        let this_input = self.dictionary.words_to_layer(self.around_window(amount));
-        let this_output = self.dictionary.words_to_onehot([self.middle_word(amount)]);
+        let inputs_per_batch = self.inputs.len() / self.batch_size;
 
-        (this_input, this_output)
+        if (self.index + 1) == inputs_per_batch
+        {
+            return None;
+        }
+
+        let words_amount = self.dictionary.words_amount();
+
+        let this_input = {
+            let words = (0..self.batch_size).map(|batch_index|
+            {
+                [self.inputs[batch_index * inputs_per_batch + self.index].index()].into()
+            }).collect::<Box<[_]>>();
+
+            OneHotLayer::new(words, words_amount, self.batch_size)
+        };
+
+        let this_input: OwnedInputType = this_input.into();
+
+        let this_output = {
+            let words = (0..self.batch_size).map(|batch_index|
+            {
+                [self.inputs[batch_index * inputs_per_batch + self.index + 1].index()].into()
+            }).collect::<Box<[_]>>();
+
+            OneHotLayer::new(words, words_amount, self.batch_size)
+        };
+
+        self.index += 1;
+
+        Some((this_input, this_output))
     }
 
-    fn next_skip_gram(&mut self, amount: usize) -> (OwnedInputType, OneHotLayer)
+    fn next_bag_of_words(&mut self, amount: usize) -> Option<(OwnedInputType, OneHotLayer)>
     where
         D: NetworkDictionary
     {
-        let this_input = self.dictionary.words_to_layer([self.middle_word(amount)]);
-        let this_output = self.dictionary.words_to_onehot(self.around_window(amount));
+        let context = todo!();
+        let middle_word = todo!();
 
-        (this_input, this_output)
+        self.index += 1;
+
+        let this_input = self.dictionary.words_to_layer(Self::around_window(context, amount));
+        let this_output = self.dictionary.words_to_onehot([middle_word]);
+
+        Some((this_input, this_output))
     }
 }
 
-impl<'a, D, I> Iterator for InputOutputEmbeddingsIter<'a, D, I>
+impl<'a, D> Iterator for InputOutputEmbeddingsIter<'a, OneHotEmbeddings, D>
 where
-    D: NetworkDictionary,
-    I: Iterator<Item=&'a VectorWord>
+    D: NetworkDictionary
 {
     type Item = (OwnedInputType, OneHotLayer);
 
     fn next(&mut self) -> Option<Self::Item>
     {
-        match self.inputs.next()
-        {
-            None => None,
-            Some(input) =>
-            {
-                self.context.push_back(input);
-
-                let output = match EMBEDDINGS_TYPE
-                {
-                    EMType::BagOfWords(amount) =>
-                    {
-                        self.next_bag_of_words(amount)
-                    },
-                    EMType::SkipGram(amount) =>
-                    {
-                        self.next_skip_gram(amount)
-                    }
-                };
-
-                let _ = self.context.pop_front();
-
-                Some(output)
-            }
-        }
+        self.next_single()
     }
 }
 
-impl<'a, D, I> ExactSizeIterator for InputOutputEmbeddingsIter<'a, D, I>
+impl<'a, D> Iterator for InputOutputEmbeddingsIter<'a, BagOfWordsEmbeddings, D>
 where
-    D: NetworkDictionary,
-    I: ExactSizeIterator<Item=&'a VectorWord>
+    D: NetworkDictionary
+{
+    type Item = (OwnedInputType, OneHotLayer);
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.next_bag_of_words(BAG_OF_WORDS_EMBEDDINGS_COUNT)
+    }
+}
+
+fn input_output_embeddings_iter_len<EmbeddingsType: EmbeddingsTypeable, D>(
+    iter: &InputOutputEmbeddingsIter<'_, EmbeddingsType, D>
+) -> usize
+{
+    let inputs_per_batch = iter.inputs.len() / iter.batch_size;
+
+    inputs_per_batch - iter.index - (EmbeddingsType::min_len() + 1)
+}
+
+impl<'a, D> ExactSizeIterator for InputOutputEmbeddingsIter<'a, OneHotEmbeddings, D>
+where
+    D: NetworkDictionary
 {
     fn len(&self) -> usize
     {
-        self.inputs.len()
+        input_output_embeddings_iter_len(self)
+    }
+}
+
+impl<'a, D> ExactSizeIterator for InputOutputEmbeddingsIter<'a, BagOfWordsEmbeddings, D>
+where
+    D: NetworkDictionary
+{
+    fn len(&self) -> usize
+    {
+        input_output_embeddings_iter_len(self)
     }
 }
 
@@ -1115,7 +1034,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        let inputs = self.vectorized(reader);
+        /*let inputs = self.vectorized(reader);
 
         let input_outputs = InputOutputIter::new(
             &self.dictionary,
@@ -1136,7 +1055,7 @@ where
             *previous_word = Some(word);
 
             output
-        })).map(|(a, (b, c))| (a, b, c)).collect()
+        })).map(|(a, (b, c))| (a, b, c)).collect()*/todo!()
     }
 
     pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool, Box<[u8]>)>
@@ -1194,12 +1113,10 @@ where
     )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
+        for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
-        let input_outputs = InputOutputIter::new(
-            &self.dictionary,
-            inputs.iter()
-        );
+        let input_outputs = InputOutputEmbeddingsIter::new(&self.dictionary, inputs, 1);
 
         if calculate_accuracy
         {
@@ -1247,14 +1164,14 @@ where
         self.vectorizer(reader).collect()
     }
 
-    // these trait bounds make me angry and i cant make them disappear cuz TRAITS SUCK
-    pub fn train<const EMBEDDINGS: bool, RT, R>(
+    pub fn train<EmbeddingType, RT, R>(
         &mut self,
         info: TrainingInfo,
         testing_reader: Option<RT>,
         reader: R
     )
     where
+        EmbeddingType: EmbeddingsTypeable,
         RT: Read,
         R: Read,
         for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
@@ -1269,7 +1186,7 @@ where
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
         for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
-        for<'b> InputOutput<'b, EMBEDDINGS, D>: InputOutputable
+        for<'b> InputOutputEmbeddingsIter<'b, EmbeddingType, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         self.network.set_train_mode();
 
@@ -1350,43 +1267,27 @@ where
                 let mut kahan_sum = KahanSum::new();
 
                 let max_batch_start = inputs.len()
-                    .saturating_sub(steps_num + (InputOutput::<EMBEDDINGS, D>::min_len() - 1));
+                    .saturating_sub(steps_num + EmbeddingType::min_len() - 1);
 
                 self.network.feedforward_setup_dropout();
 
-                let mut gradients = (0..info.batch_size).map(|_|
+                let batch_start = if max_batch_start == 0
                 {
-                    let batch_start = if max_batch_start == 0
-                    {
-                        0
-                    } else
-                    {
-                        fastrand::usize(0..max_batch_start)
-                    };
-
-                    let values = InputOutput::<EMBEDDINGS, _>::values_slice(
-                        &self.dictionary,
-                        &inputs,
-                        batch_start,
-                        steps_num
-                    );
-
-                    let (loss, gradients): (f32, _) = self.network.gradients(values.iter());
-
-                    kahan_sum.add(loss as f64 / info.batch_size as f64);
-
-                    gradients
-                }).reduce(|mut acc, this|
+                    0
+                } else
                 {
-                    acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
-                    {
-                        acc.add_inplace(this.as_ref());
-                    });
+                    fastrand::usize(0..max_batch_start)
+                };
 
-                    acc
-                }).expect("batch size must not be 0");
+                let values = InputOutput::values_slice::<EmbeddingType>(
+                    &self.dictionary,
+                    &inputs[batch_start..],
+                    steps_num
+                );
 
-                gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((info.batch_size as f32).recip()));
+                let (loss, gradients): (f32, _) = self.network.gradients(values.iter());
+
+                kahan_sum.add(loss as f64 / info.batch_size as f64);
 
                 let batch_loss = kahan_sum.value() / steps_num as f64;
 
@@ -1511,7 +1412,7 @@ mod tests
     #[test]
     fn softmax()
     {
-        let mut test_layer = LayerType::from_raw([1.0, 2.0, 8.0], 3, 1);
+        let mut test_layer = LayerType::from_boxed([1.0, 2.0, 8.0].into(), 3, 1);
 
         Softmaxer::softmax(&mut test_layer);
 
@@ -1541,43 +1442,24 @@ mod tests
     fn gradient_with_batch_size(
         network: &mut NeuralNetwork<Unit, (), ByteDictionary>,
         inputs: &[VectorWord],
-        batch_size: usize,
         steps_num: usize
     ) -> WeightsFullContainer<Unit, LayerType>
     {
-        let mut gradients = (0..batch_size).map(|batch_step|
-        {
-            let count = steps_num + 1;
-            let start = batch_step * count;
+        let values = InputOutput::values_slice::<OneHotEmbeddings>(
+            &network.dictionary,
+            inputs,
+            steps_num
+        );
 
-            let values = InputOutput::<false, _>::values_slice(
-                &network.dictionary,
-                inputs,
-                start,
-                steps_num
-            );
-
-            network.network.gradients(values.iter()).1
-        }).reduce(|mut acc, this|
-        {
-            acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
-            {
-                acc.add_inplace(this.as_ref());
-            });
-
-            acc
-        }).expect("batch size must not be 0");
-
-        gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
-
-        gradients
+        network.network.gradients(values.iter::<OneHotEmbeddings>()).1
     }
 
     #[test]
     fn batch_equivalent()
     {
+        let put_me_batch_size_64 = ();
         let inputs_amount = 3;
-        let batch_size = 64;
+        let batch_size = 2;
 
         let vector_word_size = ByteDictionary.words_amount();
 
@@ -1588,9 +1470,11 @@ mod tests
             VectorWord::from_raw(fastrand::usize(0..vector_word_size))
         }).take(batch_size * (inputs_amount + 1)).collect();
 
+        let put_me_to_hidden_32 = ();
+        let put_me_to_layers_3 = ();
         let layer_sizes = LayerSizes{
-            hidden: 32,
-            layers: 3,
+            hidden: 1,
+            layers: 1,
             input: vector_word_size,
             output: vector_word_size
         };
@@ -1626,7 +1510,7 @@ mod tests
             let count = inputs_amount + 1;
             let start = batch_step * count;
 
-            gradient_with_batch_size(&mut network_single, &inputs[start..(start + count)], 1, inputs_amount)
+            gradient_with_batch_size(&mut network_single, &inputs[start..(start + count)], inputs_amount)
         }).reduce(|mut acc, this|
         {
             acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
@@ -1638,6 +1522,8 @@ mod tests
         }).expect("batch size must not be 0");
 
         single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
+
+        eprintln!("calculated single_added_gradients");
 
         fastrand::seed(222);
 
@@ -1662,7 +1548,14 @@ mod tests
 
         network_batched.network.feedforward_setup_dropout();
 
-        let batched_gradients = gradient_with_batch_size(&mut network_batched, &inputs, batch_size, inputs_amount);
+        dbg!(&network_batched.network.recorder);
+
+        let batched_gradients = gradient_with_batch_size(&mut network_batched, &inputs, inputs_amount);
+
+        eprintln!("calculated batched_gradients");
+
+        // eprintln!("single_added_gradients: {single_added_gradients:?}");
+        // eprintln!("batched_gradients: {batched_gradients:?}");
 
         assert_eq!(single_added_gradients, batched_gradients);
     }

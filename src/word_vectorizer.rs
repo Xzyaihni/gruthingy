@@ -166,8 +166,9 @@ pub trait NetworkDictionary
     fn words_to_onehot(&self, words: impl IntoIterator<Item=VectorWord>) -> OneHotLayer
     {
         OneHotLayer::new(
-            words.into_iter().map(|word| word.index()).collect::<Box<[_]>>(),
-            self.words_amount()
+            [words.into_iter().map(|word| word.index()).collect::<Box<[_]>>()].into(),
+            self.words_amount(),
+            1
         )
     }
 

@@ -365,11 +365,11 @@ mod tests
 
             let adam_g = {
                 let mut gradient_info = AdamGradientInfo{
-                    m: LayerType::from_raw(m.clone().into_boxed_slice(), 2, 1),
-                    v: LayerType::from_raw(v.clone().into_boxed_slice(), 2, 1)
+                    m: LayerType::from_boxed(m.clone().into_boxed_slice(), 2, 1),
+                    v: LayerType::from_boxed(v.clone().into_boxed_slice(), 2, 1)
                 };
 
-                let gradient = LayerType::from_raw(g.clone().into_boxed_slice(), 2, 1);
+                let gradient = LayerType::from_boxed(g.clone().into_boxed_slice(), 2, 1);
 
                 let adam = Adam{
                     a,
@@ -384,7 +384,7 @@ mod tests
                     gradient.clone()
                 );
 
-                LayerType::from_raw(old_weight.clone().into_boxed_slice(), 2, 1).add(change.as_ref())
+                LayerType::from_boxed(old_weight.clone().into_boxed_slice(), 2, 1).add(change.as_ref())
             };
 
             m = vec![

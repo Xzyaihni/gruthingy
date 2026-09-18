@@ -238,7 +238,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::{TensorIndex, LayerType, LayerSizes};
+    use crate::neural_network::{ShapedTensorIndex, LayerType, LayerSizes};
 
     fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
     {
@@ -264,7 +264,7 @@ mod tests
 
         let mut one_weight = |value: f32|
         {
-            let w = recorder.set_new_tensor_gradientable(LayerType::from_raw([value], 1, 1).into());
+            let w = recorder.set_new_tensor_gradientable(LayerType::from_boxed([value].into(), 1, 1).into());
 
             recorder.allow_discard(w.as_value());
 
@@ -353,7 +353,7 @@ mod tests
 
         recorder.calculate();
 
-        let single_value = |l: TensorIndex|
+        let single_value = |l: ShapedTensorIndex|
         {
             recorder.get_tensor(l).as_vec()[0]
         };

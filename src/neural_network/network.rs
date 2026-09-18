@@ -15,6 +15,7 @@ use crate::{
     neural_network::{
         OperationsRecorder,
         OperationsRecorderMemory,
+        TensorShape,
         Softmaxer,
         PhiOtherSelectorRecordingIndex,
         NetworkStateSelectable,
@@ -25,7 +26,7 @@ use crate::{
         DiffScalar,
         LoopIndex,
         LoopInputs,
-        TensorIndex,
+        ShapedTensorIndex,
         TensorPtr,
         OneHotLayer,
         OneHotIndex,
@@ -674,7 +675,7 @@ pub type WeightInfoPtr = WeightInfoGeneric<DiffTensorPtr, TensorPtr>;
 pub struct WeightInfo
 {
     pub weight: DiffTensor,
-    pub dropconnect_mask: Option<TensorIndex>
+    pub dropconnect_mask: Option<ShapedTensorIndex>
 }
 
 pub type SaveWeightType = LayerType;
@@ -725,7 +726,7 @@ struct NetworkDropoutData
 {
     dropout_probability: f32,
     dropout_masks_ptrs: Vec<TensorPtr>,
-    dropout_masks: Vec<TensorIndex>
+    dropout_masks: Vec<ShapedTensorIndex>
 }
 
 impl NetworkDropoutData
@@ -768,7 +769,7 @@ struct NetworkOutputsData
     output_ptr: Option<DiffTensorPtr>,
     output: DiffTensor,
     first_output_value_ptr: Option<TensorPtr>,
-    first_output_value: TensorIndex,
+    first_output_value: ShapedTensorIndex,
     loss: DiffScalar
 }
 
@@ -780,7 +781,7 @@ impl Default for NetworkOutputsData
             output_ptr: None,
             output: DiffTensor::undefined(),
             first_output_value_ptr: None,
-            first_output_value: TensorIndex::undefined(),
+            first_output_value: ShapedTensorIndex::undefined(),
             loss: DiffScalar::undefined()
         }
     }
@@ -802,6 +803,7 @@ pub struct NetworkConfigInfo
     pub batch_size: usize
 }
 
+const unpublic_me: () = ();
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
@@ -810,7 +812,7 @@ pub struct Network<N: UnitFactory, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
 {
-    recorder: OperationsRecorder,
+    pub recorder: OperationsRecorder,
     network_mode: Option<NetworkMode>,
     sizes: LayerSizes,
     config: Option<NetworkConfigInfo>,
@@ -1200,6 +1202,8 @@ where
 
         let dropout_masks_ptrs = self.create_dropout_masks_ptrs();
 
+        let batch_size = config.batch_size;
+
         let create_input = {
             let is_input_one_hot = config.is_input_one_hot;
             let input_size = self.sizes.input;
@@ -1208,10 +1212,10 @@ where
             {
                 if is_input_one_hot
                 {
-                    InputTypePtr::OneHot(recorder.new_one_hot())
+                    InputTypePtr::OneHot(recorder.new_one_hot_batched(batch_size))
                 } else
                 {
-                    InputTypePtr::Normal(recorder.new_tensor_no_gradient(input_size, 1).as_value())
+                    InputTypePtr::Normal(recorder.new_tensor_batched_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size}).as_value())
                 }
             }
         };
@@ -1231,7 +1235,7 @@ where
 
         let this_target_first = if has_target
         {
-            let this_target_first = self.recorder.new_one_hot();
+            let this_target_first = self.recorder.new_one_hot_batched(batch_size);
 
             self.recorder.name_one_hot(this_target_first, "target_first");
 
@@ -1257,7 +1261,7 @@ where
 
         if let Some(no_state_loss) = no_state_loss
         {
-            self.recorder.name_diff_scalar(no_state_loss, "no_state_loss");
+            self.recorder.name_diff_tensor(no_state_loss, "no_state_loss");
         }
 
         self.outputs.first_output_value_ptr = Some(no_state_output.output.0.as_value());
@@ -1266,7 +1270,7 @@ where
         {
             let this_input_loop = create_input(&mut self.recorder);
 
-            let this_target_loop = has_target.then(|| self.recorder.new_one_hot());
+            let this_target_loop = has_target.then(|| self.recorder.new_one_hot_batched(batch_size));
 
             let final_loss_selector = no_state_loss.map(|no_state_loss| self.recorder.phi_other_selector(no_state_loss));
 
@@ -1300,16 +1304,16 @@ where
 
             if let Some(final_output_loss) = final_output_loss
             {
-                self.recorder.name_diff_scalar(final_output_loss, "final_output_loss");
+                self.recorder.name_diff_tensor(final_output_loss, "final_output_loss");
             }
 
             let new_combined = final_output_loss.map(|final_output_loss|
             {
                 let final_loss_selector = final_loss_selector.expect("must be set");
 
-                let final_loss_selected = self.recorder.select_value(final_loss_selector);
+                let final_loss_selected = self.recorder.select_tensor(final_loss_selector);
 
-                let new_combined = self.recorder.add_scalars(final_loss_selected, final_output_loss);
+                let new_combined = self.recorder.add(final_loss_selected, final_output_loss);
 
                 self.recorder.set_phi_other_selector(final_loss_selector, new_combined);
 
@@ -1335,7 +1339,8 @@ where
 
         if let Some(final_loss) = final_loss
         {
-            self.outputs.loss = final_loss;
+            todo!()
+            // self.outputs.loss = final_loss;
         }
     }
 
@@ -1346,7 +1351,7 @@ where
         input: InputTypePtr,
         targets: Option<OneHotIndex>,
         store_gradient: bool
-    ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, Option<DiffScalar>)>
+    ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, Option<DiffTensorPtr>)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
         {
@@ -1605,7 +1610,9 @@ where
 
         self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted, target)|
         {
-            let positions = &target.positions;
+            assert_eq!(target.batch_size(), 1);
+
+            let positions = &target.positions[0];
             assert_eq!(positions.len(), 1);
 
             let target_index = positions[0];
@@ -1938,20 +1945,22 @@ mod tests
 
     fn inputs_outputs() -> (Vec<OwnedInputType>, Vec<OneHotLayer>)
     {
+        let oh = |v: usize| OneHotLayer::new([[v].into()].into(), 2, 1);
+
         let inputs = vec![
-            OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
-            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
-            OwnedInputType::OneHot(OneHotLayer::new([0], 2)),
-            OwnedInputType::OneHot(OneHotLayer::new([1], 2)),
-            OwnedInputType::OneHot(OneHotLayer::new([0], 2))
+            OwnedInputType::OneHot(oh(0)),
+            OwnedInputType::OneHot(oh(1)),
+            OwnedInputType::OneHot(oh(0)),
+            OwnedInputType::OneHot(oh(1)),
+            OwnedInputType::OneHot(oh(0))
         ];
 
         let outputs = vec![
-            OneHotLayer::new([1], 2),
-            OneHotLayer::new([0], 2),
-            OneHotLayer::new([0], 2),
-            OneHotLayer::new([1], 2),
-            OneHotLayer::new([1], 2)
+            oh(1),
+            oh(0),
+            oh(0),
+            oh(1),
+            oh(1)
         ];
 
         assert_eq!(inputs.len(), outputs.len());
@@ -1997,15 +2006,15 @@ mod tests
             } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, Some(*this_target), true);
 
             at_once.recorder.name_diff_tensor(this_output, "output");
-            at_once.recorder.name_diff_scalar(loss.unwrap(), "loss");
+            at_once.recorder.name_diff_tensor(loss.unwrap(), "loss");
 
             previous_state = Some(next_state_ptr);
 
             if let Some(output) = output.as_mut()
             {
-                *output = at_once.recorder.add_scalars(*output, loss.unwrap());
+                *output = at_once.recorder.add(*output, loss.unwrap());
 
-                at_once.recorder.name_diff_scalar(*output, "loss_combined");
+                at_once.recorder.name_diff_tensor(*output, "loss_combined");
             } else
             {
                 output = Some(loss.unwrap());
@@ -2025,7 +2034,7 @@ mod tests
 
         at_once.recorder.finish();
 
-        at_once.recorder.store_value_until_end(output.unwrap().as_value());
+        at_once.recorder.store_tensor_until_end(output.unwrap().as_value());
 
         at_once.weights_ptr.as_ref().unwrap().iter().for_each(|x|
         {
@@ -2052,11 +2061,14 @@ mod tests
 
         at_once.resolve_dropout_masks();
 
+        let output_value = at_once.recorder.resolve_tensor_ptr(output.unwrap().as_value());
+
         at_once.feedforward_setup_dropout();
 
         at_once.recorder.calculate();
 
-        let loss = at_once.recorder.get_value(output.unwrap().as_value());
+        let loss_batch = at_once.recorder.get_tensor(output_value);
+        let loss = todo!();
 
         let gradients = {
             let weights = at_once.weights.clone().unwrap();
