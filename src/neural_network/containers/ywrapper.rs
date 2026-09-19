@@ -321,6 +321,8 @@ impl<'a> YWrapperRef<'a>
 
     pub fn matmul_onehotv_add(self, rhs: &OneHotLayer, added: YVectorWrapperRef) -> YWrapper
     {
+        debug_assert_eq!(self.shape.batch_size, 1);
+
         let mut output = YWrapper::new(self.shape.rows, 1);
 
         output.as_mut().as_vector_mut().matmul_onehotv_add_into(self, rhs, added);
@@ -445,7 +447,15 @@ impl<'a> YWrapperMut<'a>
 
                     for i in 0..self.shape.single_size()
                     {
-                        self.values[i] = lhs.values[i] + rhs;
+                        let s = lhs.values[i] + rhs;
+
+                        if batch_index == 0
+                        {
+                            self.values[i] = s;
+                        } else
+                        {
+                            self.values[i] += s;
+                        }
                     }
                 }
             } else
@@ -511,7 +521,7 @@ impl<'a> YWrapperMut<'a>
 
     pub fn sub_from_scalar(self, lhs: f32, rhs: YWrapperRef)
     {
-        debug_assert_eq!(self.shape(), rhs.shape());
+        debug_assert_eq!(self.shape, rhs.shape);
 
         for i in 0..self.values.len()
         {
@@ -523,14 +533,14 @@ impl<'a> YWrapperMut<'a>
 
     pub fn sub_inplace(self, rhs: YWrapperRef)
     {
-        debug_assert_eq!(self.shape(), rhs.shape());
+        debug_assert_eq!(self.shape, rhs.shape);
 
         oxiblas_blas::level1::axpy_f32(-1.0, rhs.values, self.values)
     }
 
     pub fn add_inplace(self, rhs: YWrapperRef)
     {
-        debug_assert_eq!(self.shape(), rhs.shape());
+        debug_assert_eq!(self.shape, rhs.shape);
 
         oxiblas_blas::level1::axpy_f32(1.0, rhs.values, self.values)
     }
@@ -815,16 +825,21 @@ impl<'a> YWrapperMut<'a>
         debug_assert_eq!(values.shape.batch_size, targets.batch_size());
 
         values.apply(|x| x.exp());
-        let s = values.values.iter().copied().sum::<f32>();
-
-        debug_assert!(s.classify() != FpCategory::Zero);
-        debug_assert!(s.classify() != FpCategory::Infinite);
-
-        values.mul_scalar_inplace(s.recip());
 
         for batch_index in 0..self.shape.batch_size
         {
-            let entropy = -targets.positions[batch_index].iter().map(|position| values.values[*position].ln()).sum::<f32>();
+            let batch_range = values.shape.batch_range(batch_index);
+
+            let s = values.values[batch_range.clone()].iter().copied().sum::<f32>();
+
+            debug_assert!(s.classify() != FpCategory::Zero);
+            debug_assert!(s.classify() != FpCategory::Infinite);
+
+            values.batch_slice_mut(batch_index).mul_scalar_inplace(s.recip());
+
+            let batch_start = batch_range.start;
+
+            let entropy = -targets.positions[batch_index].iter().map(|position| values.values[batch_start + *position].ln()).sum::<f32>();
 
             self.values[batch_index] = entropy;
         }

@@ -1673,7 +1673,7 @@ impl OperationsRecorder
                 {
                     self.memory.set_tensors_check.push(gradient_ptr.into());
 
-                    self.allow_discard(gradient_ptr);
+                    self.store_tensor_until_end(gradient_ptr);
                 }
 
                 self.memory.tensor_live_ranges[gradient_ptr.0].start = Some(-1);
@@ -2420,7 +2420,7 @@ impl OperationsRecorder
             {
                 ($name:ident, ($($t_name:ident),*),($($v_name:ident),*)) =>
                 {
-                    let _counter: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*];
+                    let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
 
                     #[cfg(debug_assertions)]
                     {
@@ -2432,7 +2432,7 @@ impl OperationsRecorder
                         {
                             eprint!("{}", stringify!($name));
 
-                            if _counter.len() > 0
+                            if _count > 0
                             {
                                 eprint!(" (BEFORE ");
                             }
@@ -2447,12 +2447,9 @@ impl OperationsRecorder
                     {
                         if _PRINT_CALCULATE_VALUES
                         {
-                            if _counter.len() > 0
+                            if _count > 0
                             {
-                                eprint!(") (AFTER ");
-                            } else
-                            {
-                                eprint!(" (");
+                                eprint!(")");
                             }
                         }
                     }
@@ -2463,6 +2460,13 @@ impl OperationsRecorder
             {
                 (($($t_name:ident),*),($($v_name:ident),*)) =>
                 {
+                    let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
+
+                    if _count > 0
+                    {
+                        eprint!(" (AFTER ");
+                    }
+
                     {
                         debug_calculate_common!(($($t_name,)*),($($v_name,)*));
                     }
@@ -2471,7 +2475,12 @@ impl OperationsRecorder
                     {
                         if _PRINT_CALCULATE_VALUES
                         {
-                            eprintln!(")");
+                            if _count > 0
+                            {
+                                eprint!(")");
+                            }
+
+                            eprintln!();
                         }
 
                         $(
