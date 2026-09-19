@@ -29,7 +29,7 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = true; const put_me: () = ();
+const NO_COLORING: bool = false;
 const _PRINT_CALCULATE_VALUES: bool = true;
 
 
@@ -3891,10 +3891,7 @@ impl OperationsRecorder
                 });
             } else if let Some(loops_gradient_index) = loop_info.loops_gradient
             {
-                let gradient_loop = &self.loops[loops_gradient_index.0];
-
-                let gradient_used_values = gradient_loop.used_values.clone();
-                let expected_pairs = gradient_loop.expected_pairs.clone();
+                let gradient_used_values = self.loops[loops_gradient_index.0].used_values.clone();
 
                 self.loops[loop_index].used_values.retain(|x|
                 {
@@ -4337,7 +4334,7 @@ impl OperationsRecorder
         }
     }
 
-    fn graph_color(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
+    fn graph_color(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>, optional_info: bool)
     {
         let nodes_count = self.memory.tensor_live_ranges.len();
 
@@ -4360,9 +4357,14 @@ impl OperationsRecorder
             }
         };
 
-        let tensor_shape = |this: &Self, ptr: TensorPtr|
+        let tensor_shape = |this: &Self, ptr: TensorPtr| -> TensorShape
         {
             this.memory.tensors_memory[ptr.0].value.tensor_shape()
+        };
+
+        let tensor_size = |this: &Self, ptr: TensorPtr| -> usize
+        {
+            tensor_shape(this, ptr).size()
         };
 
         let mut size_buckets: Vec<(usize, Vec<TensorPtr>)> = Vec::new();
@@ -4371,7 +4373,7 @@ impl OperationsRecorder
         {
             let a = TensorPtr(a);
 
-            let this_size = tensor_shape(self, a).size();
+            let this_size = tensor_size(self, a);
 
             if let Some(bucket) = size_buckets.iter_mut().find(|(bucket_shape, _)| *bucket_shape == this_size)
             {
@@ -4394,7 +4396,7 @@ impl OperationsRecorder
         (0..nodes_count).for_each(|a_index|
         {
             let a = TensorPtr(a_index);
-            let a_shape = tensor_shape(self, a);
+            let a_size = tensor_size(self, a);
 
             let this_range = &self.memory.tensor_live_ranges[a.0];
 
@@ -4410,9 +4412,9 @@ impl OperationsRecorder
             ((a_index + 1)..nodes_count).for_each(|b_index|
             {
                 let b = TensorPtr(b_index);
-                let b_shape = tensor_shape(self, b);
+                let b_size = tensor_size(self, b);
 
-                if a_shape != b_shape
+                if a_size != b_size
                 {
                     return;
                 }
@@ -4435,6 +4437,35 @@ impl OperationsRecorder
                 }
             });
         });
+
+        if optional_info
+        {
+            size_buckets.iter().enumerate().for_each(|(bucket_index, (bucket_size, bucket))|
+            {
+                eprintln!("bucket {bucket_index} size {bucket_size}:");
+
+                bucket.iter().for_each(|ptr|
+                {
+                    eprintln!("  {}", self.memory.format_variable(*ptr));
+                });
+
+                eprintln!();
+            });
+
+            graph_connections.iter().enumerate().for_each(|(source_ptr_index, connections)|
+            {
+                let source_ptr = TensorPtr(source_ptr_index);
+
+                eprintln!("{} connections:", self.memory.format_variable(source_ptr));
+
+                connections.iter().for_each(|ptr|
+                {
+                    eprintln!("  {}", self.memory.format_variable(*ptr));
+                });
+
+                eprintln!();
+            });
+        }
 
         size_buckets.into_iter().for_each(|(_shape, bucket)|
         {
@@ -4943,7 +4974,7 @@ impl OperationsRecorder
         self.combine_inplace_assignments();
 
         let mut memory_assignments = Vec::new();
-        self.graph_color(&mut memory_assignments);
+        self.graph_color(&mut memory_assignments, optional_info);
 
         self.memory.tensors.resize(memory_assignments.len(), LinearRawDataPointer::undefined());
 
@@ -6077,10 +6108,9 @@ impl OperationsRecorder
                     }
                 } else if let Op::AddScalar{rhs, ..} = op
                 {
-                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    if let Some(_rhs_gradient) = rhs.as_gradient()
                     {
-                        todo!()
-                        // GradientOp::SumTensor{value: gradient, output: rhs_gradient}
+                        unimplemented!()
                     }
                 } else
                 {
@@ -6126,10 +6156,9 @@ impl OperationsRecorder
                     }
                 } else if let Op::SubFromScalar{lhs, ..} = op
                 {
-                    if let Some(lhs_gradient) = lhs.as_gradient()
+                    if let Some(_lhs_gradient) = lhs.as_gradient()
                     {
-                        todo!()
-                        // add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: lhs_gradient});
+                        unimplemented!()
                     }
                 } else
                 {
@@ -6196,13 +6225,12 @@ impl OperationsRecorder
                     }
                 } else if let Op::MulScalar{rhs, ..} = op
                 {
-                    if let Some(rhs_gradient) = rhs.as_gradient()
+                    if let Some(_rhs_gradient) = rhs.as_gradient()
                     {
                         let pre_fold = self.memory.new_tensor_index(shape);
                         self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: pre_fold});
 
-                        todo!()
-                        // add_gradient_operation(self, selectors, GradientOp::SumTensor{value: pre_fold, output: rhs_gradient});
+                        unimplemented!()
                     }
                 } else
                 {
@@ -7586,20 +7614,20 @@ impl OneHotLayer
 
     pub fn into_layer(self) -> LayerType
     {
-        let size = self.size;
+        let total_size = self.size * self.batch_size;
         let batch_size = self.positions.len();
 
-        let mut layer = vec![0.0; size].into_boxed_slice();
+        let mut layer = vec![0.0; total_size].into_boxed_slice();
 
         for (batch_index, batch_positions) in self.positions.iter().enumerate()
         {
             for position in batch_positions.iter()
             {
-                layer[batch_index * size + *position] = 1.0;
+                layer[batch_index * self.size + *position] = 1.0;
             }
         }
 
-        LayerType::from_raw(layer, TensorShape{rows: size, columns: 1, batch_size})
+        LayerType::from_raw(layer, TensorShape{rows: self.size, columns: 1, batch_size})
     }
 }
 

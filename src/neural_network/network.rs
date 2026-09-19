@@ -23,7 +23,6 @@ use crate::{
         NetworkUnitNewable,
         DiffTensor,
         DiffTensorPtr,
-        DiffScalar,
         LoopIndex,
         LoopInputs,
         ShapedTensorIndex,
@@ -770,7 +769,8 @@ struct NetworkOutputsData
     output: DiffTensor,
     first_output_value_ptr: Option<TensorPtr>,
     first_output_value: ShapedTensorIndex,
-    loss: DiffScalar
+    loss_ptr: Option<DiffTensorPtr>,
+    loss: DiffTensor
 }
 
 impl Default for NetworkOutputsData
@@ -782,7 +782,8 @@ impl Default for NetworkOutputsData
             output: DiffTensor::undefined(),
             first_output_value_ptr: None,
             first_output_value: ShapedTensorIndex::undefined(),
-            loss: DiffScalar::undefined()
+            loss_ptr: None,
+            loss: DiffTensor::undefined()
         }
     }
 }
@@ -1102,7 +1103,7 @@ where
                     self.recorder.store_tensor_until_end(weight.weight_original.as_gradient().unwrap());
                 });
 
-                self.recorder.gradient(self.outputs.loss.into());
+                self.recorder.gradient(self.outputs.loss_ptr.expect("must be initialized").into());
             } else
             {
                 self.recorder.store_tensor_until_end(self.outputs.first_output_value_ptr.unwrap());
@@ -1113,10 +1114,13 @@ where
 
             self.prepare_shared(store_gradient);
 
-            if !store_gradient
+            if store_gradient
+            {
+                let loss_ptr = DiffTensorPtr::no_gradient(self.outputs.loss_ptr.unwrap().as_value());
+                self.outputs.loss = self.recorder.resolve_diff_tensor_ptr(loss_ptr);
+            } else
             {
                 let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
-
                 self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
 
                 self.outputs.first_output_value = self.recorder.resolve_tensor_ptr(self.outputs.first_output_value_ptr.unwrap());
@@ -1132,9 +1136,7 @@ where
 
         if self.network_mode == Some(NetworkMode::Train)
         {
-            debug_assert_ne!(self.outputs.loss, DiffScalar::undefined());
-
-            self.recorder.store_value_until_end(self.outputs.loss.as_value());
+            self.recorder.store_tensor_until_end(self.outputs.loss_ptr.expect("must be initialized").as_value());
         }
     }
 
@@ -1336,12 +1338,7 @@ where
         };
 
         self.outputs.output_ptr = Some(final_output);
-
-        if let Some(final_loss) = final_loss
-        {
-            todo!()
-            // self.outputs.loss = final_loss;
-        }
+        self.outputs.loss_ptr = final_loss;
     }
 
     fn record_feedforward_single_input(
@@ -1553,7 +1550,7 @@ where
 
         calculate_function(&mut self.recorder);
 
-        self.recorder.get_value(self.outputs.loss.as_value())
+        self.recorder.get_tensor(self.outputs.loss.as_value()).average()
     }
 
     pub fn weights_info<'b, 'c>(

@@ -437,26 +437,43 @@ impl<'a> YWrapperMut<'a>
 
         if rhs.shape.is_batched_scalar()
         {
-            debug_assert_eq!(self.shape.batch_size, rhs.shape.batch_size);
-
-            let size = self.shape.single_size();
-
-            for batch_index in 0..rhs.shape.batch_size
+            if self.shape.batch_size != rhs.shape.batch_size
             {
-                let rhs_value = rhs.values[batch_index];
-
-                let batch_start = batch_index * size;
-
-                for i in 0..size
+                for batch_index in 0..self.shape.batch_size
                 {
-                    self.values[batch_start + i] = lhs.values[batch_start + i] + rhs_value;
+                    let rhs = rhs.values[batch_index];
+
+                    for i in 0..self.shape.single_size()
+                    {
+                        self.values[i] = lhs.values[i] + rhs;
+                    }
+                }
+            } else
+            {
+                for batch_index in 0..self.shape.batch_size
+                {
+                    let rhs = rhs.values[batch_index];
+
+                    let batch_start = self.shape.batch_range(batch_index).start;
+
+                    for i in 0..self.shape.single_size()
+                    {
+                        let index = batch_start + i;
+
+                        self.values[index] = lhs.values[index] + rhs;
+                    }
                 }
             }
 
             return;
         }
 
-        debug_assert_eq!(lhs.shape, rhs.shape);
+        debug_assert_eq!(lhs.shape.rows, rhs.shape.rows);
+        debug_assert_eq!(lhs.shape.columns, rhs.shape.columns);
+
+        debug_assert_eq!(self.shape.batch_size, 1);
+        debug_assert_eq!(lhs.shape.batch_size, 1);
+        debug_assert_eq!(rhs.shape.batch_size, 1);
 
         for i in 0..self.values.len()
         {
@@ -694,21 +711,38 @@ impl<'a> YWrapperMut<'a>
         out.ger(1.0, &lhs, &rhs, 0.0);
     }
 
-    pub fn outer_product_add_inplace(self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
+    pub fn outer_product_add_inplace(mut self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
     {
+        fn inner_single_batch(output: &mut YWrapperMut, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
+        {
+            debug_assert_eq!(output.shape.batch_size, 1);
+            debug_assert_eq!(lhs.batch_size, 1);
+            debug_assert_eq!(rhs.batch_size, 1);
+
+            let mut out = nalgebra::DMatrixViewMut::from_slice(output.values, output.shape.rows, output.shape.columns);
+            let lhs = nalgebra::DVectorView::from(lhs.values);
+            let rhs = nalgebra::DVectorView::from(rhs.values);
+
+            out.ger(1.0, &lhs, &rhs, 1.0);
+        }
+
         debug_assert_eq!(self.shape.rows, lhs.rows);
         debug_assert_eq!(self.shape.columns, rhs.rows);
 
-        debug_assert_eq!(self.shape.batch_size, lhs.batch_size);
-        debug_assert_eq!(self.shape.batch_size, rhs.batch_size);
+        if self.shape.batch_size != lhs.batch_size
+        {
+            debug_assert_eq!(self.shape.batch_size, 1);
+            debug_assert_eq!(lhs.batch_size, rhs.batch_size);
 
-        debug_assert_eq!(self.shape.batch_size, 1);
+            for batch_index in 0..lhs.batch_size
+            {
+                inner_single_batch(&mut self, lhs.batch_slice_ref(batch_index), rhs.batch_slice_ref(batch_index));
+            }
 
-        let mut out = nalgebra::DMatrixViewMut::from_slice(self.values, self.shape.rows, self.shape.columns);
-        let lhs = nalgebra::DVectorView::from(lhs.values);
-        let rhs = nalgebra::DVectorView::from(rhs.values);
+            return;
+        }
 
-        out.ger(1.0, &lhs, &rhs, 1.0);
+        inner_single_batch(&mut self, lhs, rhs);
     }
 
     pub fn outer_product_one_hot_into(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
@@ -734,24 +768,44 @@ impl<'a> YWrapperMut<'a>
         })
     }
 
-    pub fn outer_product_one_hot_add_inplace(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
+    pub fn outer_product_one_hot_add_inplace(mut self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
     {
+        fn inner_single_batch(output: &mut YWrapperMut, lhs: YVectorWrapperRef, rhs: &[usize])
+        {
+            debug_assert_eq!(output.shape.batch_size, 1);
+            debug_assert_eq!(lhs.batch_size, 1);
+
+            let rows = output.shape.rows;
+
+            rhs.iter().for_each(|column|
+            {
+                let start = column * rows;
+
+                oxiblas_blas::level1::axpy_f32(1.0, lhs.values, &mut output.values[start..(start + rows)]);
+            });
+        }
+
         debug_assert_eq!(self.shape.rows, lhs.rows);
         debug_assert_eq!(self.shape.columns, rhs.size);
 
-        debug_assert_eq!(self.shape.batch_size, lhs.batch_size);
+        if self.shape.batch_size != lhs.batch_size
+        {
+            debug_assert_eq!(self.shape.batch_size, 1);
+            debug_assert_eq!(lhs.batch_size, rhs.batch_size());
+
+            for batch_index in 0..lhs.batch_size
+            {
+                inner_single_batch(&mut self, lhs.batch_slice_ref(batch_index), &rhs.positions[batch_index]);
+            }
+
+            return;
+        }
+
         debug_assert_eq!(self.shape.batch_size, rhs.batch_size());
 
-        debug_assert_eq!(self.shape.batch_size, 1);
+        debug_assert_eq!(rhs.batch_size(), 1);
 
-        let rows = self.shape.rows;
-
-        rhs.positions[0].iter().for_each(|column|
-        {
-            let start = column * rows;
-
-            oxiblas_blas::level1::axpy_f32(1.0, lhs.values, &mut self.values[start..(start + rows)]);
-        })
+        inner_single_batch(&mut self, lhs, &rhs.positions[0]);
     }
 
     pub fn softmax_cross_entropy_into(self, mut values: YWrapperMut, targets: &OneHotLayer)
@@ -849,6 +903,17 @@ impl<'a> YVectorWrapperRef<'a>
         Self::from_data(&data[info.raw_index.0..(info.raw_index.0 + info.shape.size())], info.shape)
     }
 
+    fn batch_slice_ref(&self, batch_index: usize) -> YVectorWrapperRef<'_>
+    {
+        let shape = TensorShape{rows: self.rows, columns: 1, batch_size: self.batch_size};
+
+        YVectorWrapperRef{
+            values: &self.values[shape.batch_range(batch_index)],
+            rows: self.rows,
+            batch_size: 1
+        }
+    }
+
     pub fn len(&self) -> usize
     {
         self.values.len()
@@ -874,58 +939,167 @@ impl<'a> YVectorWrapperMut<'a>
         Self::from_data(&mut data[info.raw_index.0..(info.raw_index.0 + info.shape.size())], info.shape)
     }
 
-    pub fn matmulv_transposed_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+    pub fn matmulv_transposed_into(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
     {
+        fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+        {
+            debug_assert_eq!(output.batch_size, 1);
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(rhs.batch_size, 1);
+
+            let rows = lhs.shape.rows;
+            let columns = lhs.shape.columns;
+
+            for i in 0..columns
+            {
+                let lhs_column_start = i * rows;
+                let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+
+                *(unsafe{ output.values.get_unchecked_mut(i) }) = dot(lhs_column, rhs.values);
+            }
+        }
+
         debug_assert_eq!(self.rows, lhs.shape.columns);
         debug_assert_eq!(lhs.shape.rows, rhs.rows);
-
-        debug_assert_eq!(self.batch_size, lhs.shape.batch_size);
-        debug_assert_eq!(self.batch_size, rhs.batch_size);
-
-        debug_assert_eq!(self.batch_size, 1);
-
-        let rows = lhs.shape.rows;
-        let columns = lhs.shape.columns;
-
-        for i in 0..columns
-        {
-            let lhs_column_start = i * rows;
-            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
-
-            *(unsafe{ self.values.get_unchecked_mut(i) }) = dot(lhs_column, rhs.values);
-        }
-    }
-
-    pub fn matmulv_transposed_add_inplace(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
-    {
-        debug_assert_eq!(self.rows, lhs.shape.columns);
-        debug_assert_eq!(lhs.shape.rows, rhs.rows);
-
-        debug_assert_eq!(self.batch_size, lhs.shape.batch_size);
-        debug_assert_eq!(self.batch_size, rhs.batch_size);
-
-        debug_assert_eq!(self.batch_size, 1);
-
-        let rows = lhs.shape.rows;
-        let columns = lhs.shape.columns;
-
-        for i in 0..columns
-        {
-            let lhs_column_start = i * rows;
-            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
-
-            *(unsafe{ self.values.get_unchecked_mut(i) }) += dot(lhs_column, rhs.values);
-        }
-    }
-
-    pub fn matmulv_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
-    {
-        debug_assert_eq!(self.rows, lhs.shape.rows);
-        debug_assert_eq!(lhs.shape.columns, rhs.rows);
 
         if self.batch_size != lhs.shape.batch_size
         {
-            eprintln!("yaya"); let remove_me = ();
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(self.batch_size, rhs.batch_size);
+
+            for batch_index in 0..self.batch_size
+            {
+                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index));
+            }
+
+            return;
+        }
+
+        debug_assert_eq!(self.batch_size, rhs.batch_size);
+
+        inner_single_batch(self, lhs, rhs);
+    }
+
+    pub fn matmulv_transposed_add_inplace(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+    {
+        fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+        {
+            let rows = lhs.shape.rows;
+            let columns = lhs.shape.columns;
+
+            for i in 0..columns
+            {
+                let lhs_column_start = i * rows;
+                let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+
+                *(unsafe{ output.values.get_unchecked_mut(i) }) += dot(lhs_column, rhs.values);
+            }
+        }
+
+        debug_assert_eq!(self.rows, lhs.shape.columns);
+        debug_assert_eq!(lhs.shape.rows, rhs.rows);
+
+        if self.batch_size != lhs.shape.batch_size
+        {
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(self.batch_size, rhs.batch_size);
+
+            for batch_index in 0..self.batch_size
+            {
+                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index));
+            }
+
+            return;
+        }
+
+        debug_assert_eq!(self.batch_size, rhs.batch_size);
+
+        inner_single_batch(self, lhs, rhs);
+    }
+
+    pub fn matmulv_into(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+    {
+        fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: YVectorWrapperRef)
+        {
+            debug_assert_eq!(output.batch_size, 1);
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(rhs.batch_size, 1);
+
+            let rows = lhs.shape.rows;
+            let columns = lhs.shape.columns;
+
+            output.values.fill(0.0);
+
+            for i in 0..columns
+            {
+                let lhs_column_start = i * rows;
+                let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+
+                oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.values.get_unchecked(i) }, lhs_column, output.values);
+            }
+        }
+
+        debug_assert_eq!(self.rows, lhs.shape.rows);
+        debug_assert_eq!(lhs.shape.columns, rhs.rows);
+
+        debug_assert_eq!(self.batch_size, rhs.batch_size);
+
+        if self.batch_size != lhs.shape.batch_size
+        {
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(self.batch_size, rhs.batch_size);
+
+            for batch_index in 0..self.batch_size
+            {
+                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index));
+            }
+
+            return;
+        }
+
+        debug_assert_eq!(self.batch_size, 1);
+
+        inner_single_batch(self, lhs, rhs);
+    }
+
+    pub fn matmulv_add_into(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef, added: YVectorWrapperRef)
+    {
+        fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: YVectorWrapperRef, added: YVectorWrapperRef)
+        {
+            debug_assert_eq!(output.batch_size, 1);
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(rhs.batch_size, 1);
+            debug_assert_eq!(added.batch_size, 1);
+
+            let rows = lhs.shape.rows;
+            let columns = lhs.shape.columns;
+
+            output.values.copy_from_slice(added.values);
+
+            for i in 0..columns
+            {
+                let lhs_column_start = i * rows;
+                let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+
+                oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.values.get_unchecked(i) }, lhs_column, output.values);
+            }
+        }
+
+        debug_assert_eq!(self.rows, lhs.shape.rows);
+        debug_assert_eq!(lhs.shape.columns, rhs.rows);
+        debug_assert_eq!(self.rows, added.rows);
+
+        if self.batch_size != lhs.shape.batch_size
+        {
+            debug_assert_eq!(self.batch_size, rhs.batch_size);
+            debug_assert_eq!(self.batch_size, added.batch_size);
+
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+
+            for batch_index in 0..self.batch_size
+            {
+                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index), added.batch_slice_ref(batch_index));
+            }
 
             return;
         }
@@ -934,73 +1108,63 @@ impl<'a> YVectorWrapperMut<'a>
 
         debug_assert_eq!(self.batch_size, 1);
 
-        let rows = lhs.shape.rows;
-        let columns = lhs.shape.columns;
-
-        self.values.fill(0.0);
-
-        for i in 0..columns
-        {
-            let lhs_column_start = i * rows;
-            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
-
-            oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.values.get_unchecked(i) }, lhs_column, self.values);
-        }
+        inner_single_batch(self, lhs, rhs, added);
     }
 
-    pub fn matmulv_add_into(self, lhs: YWrapperRef, rhs: YVectorWrapperRef, added: YVectorWrapperRef)
+    pub fn matmul_onehotv_add_into(mut self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YVectorWrapperRef)
     {
-        debug_assert_eq!(self.rows, lhs.shape.rows);
-        debug_assert_eq!(lhs.shape.columns, rhs.rows);
-        debug_assert_eq!(self.rows, added.rows);
-
-        debug_assert_eq!(self.batch_size, lhs.shape.batch_size);
-        debug_assert_eq!(self.batch_size, rhs.batch_size);
-
-        debug_assert_eq!(self.batch_size, 1);
-
-        let rows = lhs.shape.rows;
-        let columns = lhs.shape.columns;
-
-        self.values.copy_from_slice(added.values);
-
-        for i in 0..columns
+        fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: &[usize], added: YVectorWrapperRef)
         {
-            let lhs_column_start = i * rows;
-            let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+            debug_assert_eq!(output.batch_size, 1);
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(added.batch_size, 1);
 
-            oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.values.get_unchecked(i) }, lhs_column, self.values);
+            let o_size = output.len();
+
+            (0..o_size).for_each(|r|
+            {
+                output.values[r] = added.values[r];
+
+                rhs.iter().for_each(|m|
+                {
+                    output.values[r] += lhs.values[m * o_size + r];
+                });
+            });
         }
-    }
 
-    pub fn matmul_onehotv_add_into(self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YVectorWrapperRef)
-    {
         debug_assert_eq!(self.rows, lhs.shape.rows);
         debug_assert_eq!(lhs.shape.columns, rhs.size);
         debug_assert_eq!(self.rows, added.rows);
 
         if self.batch_size != lhs.shape.batch_size
         {
-            eprintln!("yeye"); let remove_me = ();
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(added.batch_size, 1);
+
+            debug_assert_eq!(self.batch_size, rhs.batch_size());
+
+            for batch_index in 0..self.batch_size
+            {
+                inner_single_batch(self.batch_slice_mut(batch_index), lhs, &rhs.positions[batch_index], added);
+            }
 
             return;
         }
 
-        debug_assert_eq!(self.batch_size, rhs.batch_size());
+        debug_assert_eq!(rhs.batch_size(), 1);
 
-        debug_assert_eq!(self.batch_size, 1);
+        inner_single_batch(self, lhs, &rhs.positions[0], added);
+    }
 
-        let o_size = self.len();
+    fn batch_slice_mut(&mut self, batch_index: usize) -> YVectorWrapperMut<'_>
+    {
+        let shape = TensorShape{rows: self.rows, columns: 1, batch_size: self.batch_size};
 
-        (0..o_size).for_each(|r|
-        {
-            self.values[r] = added.values[r];
-
-            rhs.positions[0].iter().for_each(|m|
-            {
-                self.values[r] += lhs.values[m * o_size + r];
-            });
-        });
+        YVectorWrapperMut{
+            values: &mut self.values[shape.batch_range(batch_index)],
+            rows: self.rows,
+            batch_size: 1
+        }
     }
 
     pub fn len(&self) -> usize

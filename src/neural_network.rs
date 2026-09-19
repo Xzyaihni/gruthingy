@@ -1490,7 +1490,7 @@ mod tests
             NetworkConfigInfo{
                 is_input_one_hot: true,
                 is_multistep: true,
-                print_optional_info: false,
+                print_optional_info: true,
                 batch_size: 1
             },
             dropout_probability,
@@ -1504,6 +1504,8 @@ mod tests
         fastrand::seed(111);
 
         network_single.network.feedforward_setup_dropout();
+
+        dbg!(&network_single.network.recorder);
 
         let mut single_added_gradients = (0..batch_size).map(|batch_step|
         {
@@ -1521,7 +1523,8 @@ mod tests
             acc
         }).expect("batch size must not be 0");
 
-        single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
+        let add_me_back = ();
+        // single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
 
         eprintln!("calculated single_added_gradients");
 
