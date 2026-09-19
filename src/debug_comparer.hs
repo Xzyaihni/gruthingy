@@ -1,4 +1,7 @@
 import Data.Maybe;
+import Data.List;
+import Control.Monad;
+import Debug.Trace;
 
 
 data DebugOperand = DebugOperand String String [Float] deriving Show;
@@ -39,7 +42,7 @@ parseOperands operands = let operandsSplit = splitByUnless (ignoreInsideBrackets
                          in map parseOperand $ map (dropWhile (\c -> c == ' ')) operandsSplit
 
 beforeOperandsState :: (Bool, Bool) -> Char -> (Bool, Bool)
-beforeOperandsState (aState, bState) c = (if (c == '=') then True else (if (c == ')') then False else aState), ((ignoreInsideBrackets '{' '}') bState c))
+beforeOperandsState (aState, bState) c = (if (c == '=') then True else (if (c == ')') || (c == '(') then False else aState), ((ignoreInsideBrackets '{' '}') bState c))
 
 beforeOperandsDecide :: (Bool, Bool) -> Bool
 beforeOperandsDecide (a, b) = a && b
@@ -79,18 +82,60 @@ operationLineIndex (DebugOperation lineIndex name inputs outputs) = lineIndex
 isOutputMatch :: [Float] -> [Float] -> Bool
 isOutputMatch a b = a == b
 
-isOutputsMatch :: ([Float] -> [Float] -> Bool) -> [[Float]] -> [[Float]] -> Bool
+type OutputsValues = [[Float]]
+
+isOutputsMatch :: ([Float] -> [Float] -> Bool) -> OutputsValues -> OutputsValues -> Bool
 isOutputsMatch matcher a b = if (length a) /= (length b)
                         then False
                         else all id $ map (\(ai, bi) -> matcher ai bi) $ zip a b
 
-operandsWithLine :: String -> [([[Float]], DebugOperation)]
-operandsWithLine s = map (\x -> ((map operandValues) $ operationOutputs x, x)) $ parseOperations s
+type OutputsValuesWithOp = (OutputsValues, DebugOperation)
 
-findMismatchOutputWith :: ([Float] -> [Float] -> Bool) -> String -> String -> Maybe (DebugOperation, DebugOperation)
-findMismatchOutputWith matcher aInput bInput = let f = operandsWithLine
-                                                   p = lines
-                                               in fmap (\((_, a), (_, b)) -> (a, b)) $ listToMaybe $ filter (\((a, _), (b, _)) -> not (isOutputsMatch matcher a b)) $ zip (f aInput) (f bInput)
+operandsWithOp :: (DebugOperation -> [DebugOperand]) -> [String] -> [[OutputsValuesWithOp]]
+operandsWithOp inputs s = map (\operations -> map (\x -> ((map operandValues) $ inputs x, x)) operations) $ (map parseOperations s)
+
+zipOperationInfos :: (DebugOperation -> [DebugOperand]) -> [String] -> String -> [([OutputsValuesWithOp], OutputsValuesWithOp)]
+zipOperationInfos inputs aInput bInput = zip (transpose $ operandsWithOp inputs aInput) (head $ operandsWithOp inputs [bInput])
+
+type MatcherType = ([OutputsValuesWithOp], OutputsValuesWithOp) -> Bool
+
+oneToOneMatcher :: MatcherType
+oneToOneMatcher = undefined
+
+keepUnmatching :: MatcherType -> [([OutputsValuesWithOp], OutputsValuesWithOp)] -> [([OutputsValuesWithOp], OutputsValuesWithOp)]
+keepUnmatching matcher = filter (not . matcher)
+
+findMismatchWith :: (DebugOperation -> [DebugOperand]) -> MatcherType -> [String] -> String -> [([DebugOperation], DebugOperation)]
+findMismatchWith inputs matcher aInput bInput = map (\(a, (_, b)) -> (map snd a, b))
+                                                 $ keepUnmatching matcher
+                                                 $ zipOperationInfos inputs aInput bInput
 
 findMismatchOutput :: String -> String -> Maybe (DebugOperation, DebugOperation)
-findMismatchOutput a b = findMismatchOutputWith isOutputMatch a b
+findMismatchOutput a b = listToMaybe $ fmap (\(a, b) -> (head a, b)) $ findMismatchWith operationOutputs oneToOneMatcher [a] b
+
+batchMatchSingleOutput :: ([Float], [Float]) -> [Float] -> Bool
+batchMatchSingleOutput (firstA, secondA) b = if (length firstA) == (length b)
+                                                then (map (\(a, b) -> a + b) $ zip firstA secondA) == b
+                                                else (firstA == (take (length firstA) b)) && (secondA == (drop (length firstA) b))
+
+batchMatcher :: MatcherType
+batchMatcher (aPair, (b, _)) = if (length b) /= (length $ fst $ head aPair)
+                                  then error ("outputs amount doesnt match: " ++ (show $ length $ fst $ head aPair) ++ " vs " ++ (show $ length b))
+                                  else let firstA = (aPair !! 0)
+                                           secondA = (aPair !! 1)
+                                           f = fst
+                                       in all id $ map (\(a, b) -> batchMatchSingleOutput a b) $ zip (zip (f firstA) (f secondA)) b
+
+writeUnmatchingBatchesContents :: String -> String -> String
+writeUnmatchingBatchesContents unbatched batched = let batchedLines = length $ lines batched
+                                                   in unlines
+                                                       $ map (\(a, b) -> unlines $ (map (\x -> "  " ++ x) $ [show (a !! 0), show (a !! 1)]) ++ [show b])
+                                                       $ findMismatchWith
+                                                          operationOutputs
+                                                          batchMatcher
+                                                          [(unlines $ take batchedLines $ lines unbatched), (unlines $ drop batchedLines $ lines unbatched)]
+                                                          batched
+
+writeUnmatchingBatches :: String -> String -> String -> IO ()
+writeUnmatchingBatches unbatchedPath batchedPath outputPath = (readFile batchedPath) >>=
+    \batched -> join $ fmap (\unbatched -> (writeFile outputPath (writeUnmatchingBatchesContents unbatched batched))) (readFile unbatchedPath)

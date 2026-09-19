@@ -29,7 +29,7 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = false;
+const NO_COLORING: bool = true; const put_me: () = ();
 const _PRINT_CALCULATE_VALUES: bool = true;
 
 

@@ -441,7 +441,9 @@ impl<'a> YWrapperMut<'a>
         {
             if self.shape.batch_size != rhs.shape.batch_size
             {
-                for batch_index in 0..self.shape.batch_size
+                debug_assert_eq!(self.shape.batch_size, 1);
+
+                for batch_index in 0..rhs.shape.batch_size
                 {
                     let rhs = rhs.values[batch_index];
 
