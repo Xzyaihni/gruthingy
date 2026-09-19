@@ -390,7 +390,6 @@ struct LoopInfo
     input_values: LoopValuesIndex,
     stack_values: LoopStackIndex,
     inputs: Vec<Option<InputType>>,
-    #[cfg(debug_assertions)]
     expected_pairs: Vec<(DiffValue, DiffValue)>
 }
 
@@ -418,6 +417,11 @@ impl Debug for LoopInfoDebug<'_>
 
         let mut struct_info = f.debug_struct("LoopInfo");
 
+        let expected_pairs = info.expected_pairs.iter().map(|(source, target)|
+        {
+            ForceNoPretty((DebugStringRaw(self.memory.format_variable(*source)), DebugStringRaw(self.memory.format_variable(*target))))
+        }).collect::<Vec<_>>();
+
         struct_info.field("times", &DebugStringRaw(format!("{}/{}", info.times, info.times_total)))
             .field("current_index", &info.current_index)
             .field("reversed", &info.reversed)
@@ -428,19 +432,9 @@ impl Debug for LoopInfoDebug<'_>
             .field("defined_values", &defined_values)
             .field("used_values", &used_values)
             .field("input_values", &ForceNoPretty(&info.input_values))
-            .field("inputs", &info.inputs);
-
-        #[cfg(debug_assertions)]
-        {
-            let expected_pairs = info.expected_pairs.iter().map(|(source, target)|
-            {
-                ForceNoPretty((DebugStringRaw(self.memory.format_variable(*source)), DebugStringRaw(self.memory.format_variable(*target))))
-            }).collect::<Vec<_>>();
-
-            struct_info.field("expected_pairs", &expected_pairs);
-        }
-
-        struct_info.finish()
+            .field("inputs", &info.inputs)
+            .field("expected_pairs", &expected_pairs)
+            .finish()
     }
 }
 
@@ -2215,7 +2209,6 @@ impl OperationsRecorder
             input_values: loops_values_index,
             stack_values: loops_stack_index,
             inputs: Vec::new(),
-            #[cfg(debug_assertions)]
             expected_pairs: Vec::new()
         });
 
@@ -3860,8 +3853,61 @@ impl OperationsRecorder
         });
     }
 
+    fn recalculate_stack_used_values(&mut self)
+    {
+        let mut inside_loop: Option<LoopIndex> = None;
+
+        let mut confirmed_used = vec![HashSet::new(); self.loops.len()];
+
+        for i in 0..self.gradient_operations.len()
+        {
+            let gradient_op = &self.gradient_operations[i];
+
+            set_inside_loop_context(&mut inside_loop, gradient_op);
+
+            if let Some(inside_loop) = inside_loop
+            {
+                gradient_op.for_args(|arg|
+                {
+                    confirmed_used[inside_loop.0].insert(arg);
+                });
+            }
+        }
+
+        for loop_index in (0..self.loops.len()).rev()
+        {
+            let loop_info = &mut self.loops[loop_index];
+
+            if loop_info.gradient_of_loop.is_some()
+            {
+                loop_info.used_values.retain(|x|
+                {
+                    let target_value = loop_info.expected_pairs.iter().find(|y|
+                    {
+                        y.0 == *x
+                    }).map(|x| &x.1).unwrap_or(x);
+
+                    confirmed_used[loop_index].contains(target_value)
+                });
+            } else if let Some(loops_gradient_index) = loop_info.loops_gradient
+            {
+                let gradient_loop = &self.loops[loops_gradient_index.0];
+
+                let gradient_used_values = gradient_loop.used_values.clone();
+                let expected_pairs = gradient_loop.expected_pairs.clone();
+
+                self.loops[loop_index].used_values.retain(|x|
+                {
+                    gradient_used_values.contains(x)
+                });
+            }
+        }
+    }
+
     fn remove_unused_pushes(&mut self)
     {
+        self.recalculate_stack_used_values();
+
         self.gradient_operations.retain(|op|
         {
             let is_stack_used = |loop_index: LoopIndex, value: DiffValue|
@@ -4285,6 +4331,8 @@ impl OperationsRecorder
                 break;
             }
 
+            self.remove_unused_pushes();
+
             self.load_live_ranges(start_live_ranges.clone());
         }
     }
@@ -4701,24 +4749,21 @@ impl OperationsRecorder
             }
         });
 
-        #[cfg(debug_assertions)]
+        self.loops.iter_mut().for_each(|loop_info|
         {
-            self.loops.iter_mut().for_each(|loop_info|
+            loop_info.expected_pairs.iter_mut().for_each(|(source, destination)|
             {
-                loop_info.expected_pairs.iter_mut().for_each(|(source, destination)|
+                if *source == src
                 {
-                    if *source == src
-                    {
-                        *source = dst;
-                    }
+                    *source = dst;
+                }
 
-                    if *destination == src
-                    {
-                        *destination = dst;
-                    }
-                });
+                if *destination == src
+                {
+                    *destination = dst;
+                }
             });
-        }
+        });
 
         self.loops.iter_mut().for_each(|loop_info|
         {
@@ -5142,7 +5187,12 @@ impl OperationsRecorder
 
                         if !defined_values.contains(&arg)
                         {
-                            self.loops[loop_index.0].kept_inside.push(arg);
+                            let this_loop = &mut self.loops[loop_index.0];
+
+                            if !this_loop.kept_inside.contains(&arg)
+                            {
+                                this_loop.kept_inside.push(arg);
+                            }
                         }
                     });
                 });
@@ -5406,12 +5456,9 @@ impl OperationsRecorder
 
             popped.push(source);
 
-            #[cfg(debug_assertions)]
-            {
-                let this_pair = (source, target);
+            let this_pair = (source, target);
 
-                this.loops[loop_index.0].expected_pairs.push(this_pair);
-            }
+            this.loops[loop_index.0].expected_pairs.push(this_pair);
         }
 
         let mut current_used_index = 0;
