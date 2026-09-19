@@ -2068,7 +2068,7 @@ mod tests
         at_once.recorder.calculate();
 
         let loss_batch = at_once.recorder.get_tensor(output_value);
-        let loss = todo!();
+        let loss = loss_batch.average();
 
         let gradients = {
             let weights = at_once.weights.clone().unwrap();

@@ -342,6 +342,13 @@ impl<'a> YWrapperRef<'a>
         oxiblas_blas::level1::nrm2_f32(self.values)
     }
 
+    pub fn average(&self) -> f32
+    {
+        debug_assert!(self.shape.is_batched_scalar());
+
+        self.values.iter().copied().sum::<f32>() / self.shape.batch_size as f32
+    }
+
     pub fn as_vector_ref(&self) -> YVectorWrapperRef<'_>
     {
         debug_assert_eq!(self.shape.columns, 1);
