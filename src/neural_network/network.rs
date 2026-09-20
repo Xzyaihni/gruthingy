@@ -832,7 +832,6 @@ pub struct NetworkConfigInfo
     pub is_input_one_hot: bool
 }
 
-const unpublic_me: () = ();
 #[derive(Serialize, Deserialize)]
 #[serde(from = "SaveNetwork<N, O>")]
 #[serde(into = "SaveNetwork<N, O>")]
@@ -841,7 +840,7 @@ pub struct Network<N: UnitFactory, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
 {
-    pub recorder: OperationsRecorder,
+    recorder: OperationsRecorder,
     network_mode: Option<NetworkMode>,
     sizes: LayerSizes,
     config: Option<NetworkConfigInfo>,

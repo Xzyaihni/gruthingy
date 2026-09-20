@@ -29,8 +29,8 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = true; const put_me: () = ();
-const _PRINT_CALCULATE_VALUES: bool = true;
+const NO_COLORING: bool = false;
+const _PRINT_CALCULATE_VALUES: bool = false;
 
 
 macro_rules! get_disjoint_mut_with
@@ -1358,11 +1358,19 @@ macro_rules! impl_pair_tensor_op
 
             let output_batch_size = a_shape.batch_size.max(b_shape.batch_size);
 
+            let gradient_batch_size_of = |x: &DiffTensorPtr|
+            {
+                $this.gradient_batch_size_of(x).unwrap_or(output_batch_size)
+            };
+
+            let gradient_batch_size = gradient_batch_size_of(&$a).max(gradient_batch_size_of(&$b));
+
             #[cfg(debug_assertions)]
             {
                 if !a_shape.is_batched_scalar() && !b_shape.is_batched_scalar()
                 {
-                    debug_assert_eq!(a_shape, b_shape);
+                    debug_assert_eq!(a_shape.rows, b_shape.rows);
+                    debug_assert_eq!(a_shape.columns, b_shape.columns);
                 }
             }
 
@@ -1374,7 +1382,7 @@ macro_rules! impl_pair_tensor_op
                 a_shape
             };
 
-            let output = $this.new_tensor_op(TensorShape{batch_size: output_batch_size, ..shape});
+            let output = $this.new_tensor_op(TensorShape{batch_size: output_batch_size, ..shape}, gradient_batch_size);
 
             $this.add_recording_operation(Op::$name{lhs: $a, rhs: $b, output});
 
@@ -1389,8 +1397,9 @@ macro_rules! impl_map_tensor_op
     {
         {
             let shape = $this.tensor_shape($a.as_value());
+            let gradient_batch_size = $this.gradient_batch_size_of(&$a).unwrap_or(shape.batch_size);
 
-            let output = $this.new_tensor_op(shape);
+            let output = $this.new_tensor_op(shape, gradient_batch_size);
 
             $this.add_recording_operation(Op::$name{value: $a, output});
 
@@ -1473,10 +1482,15 @@ impl OperationsRecorder
             rows,
             columns,
             batch_size
-        }: TensorShape
+        }: TensorShape,
+        gradient_batch_size: usize
     ) -> DiffTensorPtr
     {
-        self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size})
+        self.memory.new_tensor_separate_gradient(
+            true,
+            TensorMemoryValue::Size{rows, columns, batch_size},
+            TensorMemoryValue::Size{rows, columns, batch_size: gradient_batch_size}
+        )
     }
 
     fn new_value_op(&mut self) -> DiffScalar
@@ -1930,7 +1944,9 @@ impl OperationsRecorder
     pub fn copy(&mut self, src: DiffTensorPtr) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(src.as_value());
-        let dst = self.new_tensor_op(shape);
+        let gradient_batch_size = self.gradient_batch_size_of(&src).unwrap_or(shape.batch_size);
+
+        let dst = self.new_tensor_op(shape, gradient_batch_size);
 
         self.add_recording_operation(Op::Copy{src, dst});
 
@@ -1949,8 +1965,9 @@ impl OperationsRecorder
     pub fn add_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
+        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape);
+        let output = self.new_tensor_op(shape, gradient_batch_size);
 
         self.add_recording_operation(Op::AddScalar{lhs: a, rhs: b, output});
 
@@ -1970,8 +1987,9 @@ impl OperationsRecorder
     pub fn sub_from_scalar(&mut self, a: DiffScalar, b: DiffTensorPtr) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(b.as_value());
+        let gradient_batch_size = self.gradient_batch_size_of(&b).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape);
+        let output = self.new_tensor_op(shape, gradient_batch_size);
 
         self.add_recording_operation(Op::SubFromScalar{lhs: a, rhs: b, output});
 
@@ -1990,8 +2008,9 @@ impl OperationsRecorder
     pub fn mul_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
+        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape);
+        let output = self.new_tensor_op(shape, gradient_batch_size);
 
         self.add_recording_operation(Op::MulScalar{lhs: a, rhs: b, output});
 
@@ -2012,7 +2031,17 @@ impl OperationsRecorder
 
         let output_batch_size = a_batch_size.max(b_batch_size);
 
-        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: output_batch_size});
+        let gradient_batch_size_of = |x: &DiffTensorPtr|
+        {
+            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
+        };
+
+        let gradient_batch_size = gradient_batch_size_of(&a).max(gradient_batch_size_of(&b));
+
+        let output = self.new_tensor_op(
+            TensorShape{rows: a_rows, columns: b_columns, batch_size: output_batch_size},
+            gradient_batch_size
+        );
 
         self.add_recording_operation(Op::Matmulv{lhs: a, rhs: b, output});
 
@@ -2033,7 +2062,17 @@ impl OperationsRecorder
 
         let output_batch_size = a_batch_size.max(b_batch_size).max(added_batch_size);
 
-        let output = self.new_tensor_op(TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size});
+        let gradient_batch_size_of = |x: &DiffTensorPtr|
+        {
+            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
+        };
+
+        let gradient_batch_size = gradient_batch_size_of(&a).max(gradient_batch_size_of(&b)).max(gradient_batch_size_of(&added));
+
+        let output = self.new_tensor_op(
+            TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size},
+            gradient_batch_size
+        );
 
         self.add_recording_operation(Op::MatmulvAdd{lhs: a, rhs: b, added, output});
 
@@ -2052,18 +2091,37 @@ impl OperationsRecorder
 
         let output_batch_size = a_batch_size.max(self.one_hot_batch_size(b)).max(added_batch_size);
 
-        let output = self.new_tensor_op(TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size});
+        let gradient_batch_size_of = |x: &DiffTensorPtr|
+        {
+            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
+        };
+
+        let gradient_batch_size = gradient_batch_size_of(&a).max(gradient_batch_size_of(&added));
+
+        let output = self.new_tensor_op(
+            TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size},
+            gradient_batch_size
+        );
 
         self.add_recording_operation(Op::MatmulOneHotvAdd{lhs: a, rhs: b, added, output});
 
         output
     }
 
+    fn gradient_batch_size_of(&self, x: &DiffTensorPtr) -> Option<usize>
+    {
+        x.as_gradient().map(|gradient| self.tensor_shape(gradient).batch_size)
+    }
+
     pub fn sum_tensor(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
         let batch_size = self.tensor_shape(a.as_value()).batch_size;
+        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(batch_size);
 
-        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
+        let output = self.new_tensor_op(
+            TensorShape{rows: 1, columns: 1, batch_size},
+            gradient_batch_size
+        );
 
         self.add_recording_operation(Op::SumTensor{value: a, output});
 
@@ -2073,10 +2131,14 @@ impl OperationsRecorder
     pub fn dot(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
+        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
         debug_assert_eq!(shape, self.tensor_shape(b.as_value()));
 
-        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size: shape.batch_size});
+        let output = self.new_tensor_op(
+            TensorShape{rows: 1, columns: 1, batch_size: shape.batch_size},
+            gradient_batch_size
+        );
 
         self.add_recording_operation(Op::Dot{lhs: a, rhs: b, output});
 
@@ -2086,8 +2148,9 @@ impl OperationsRecorder
     pub fn pow(&mut self, a: DiffTensorPtr, power: i32) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
+        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape);
+        let output = self.new_tensor_op(shape, gradient_batch_size);
 
         self.add_recording_operation(Op::Pow{lhs: a, power, output});
 
@@ -2112,11 +2175,16 @@ impl OperationsRecorder
     pub fn softmax_cross_entropy(&mut self, values: DiffTensorPtr, targets: OneHotIndex) -> (DiffTensorPtr, DiffTensorPtr)
     {
         let TensorShape{rows, columns, batch_size} = self.tensor_shape(values.as_value());
+        let gradient_batch_size = self.gradient_batch_size_of(&values).unwrap_or(batch_size);
 
         debug_assert_eq!(columns, 1);
 
         let softmaxed_output = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
-        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
+
+        let output = self.new_tensor_op(
+            TensorShape{rows: 1, columns: 1, batch_size},
+            gradient_batch_size
+        );
 
         self.add_recording_operation(Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output});
 
@@ -2481,9 +2549,15 @@ impl OperationsRecorder
                 {
                     let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
 
-                    if _count > 0
+                    #[cfg(debug_assertions)]
                     {
-                        eprint!(" (AFTER ");
+                        if _PRINT_CALCULATE_VALUES
+                        {
+                            if _count > 0
+                            {
+                                eprint!(" (AFTER ");
+                            }
+                        }
                     }
 
                     {
@@ -7615,12 +7689,15 @@ impl OneHotLayer
     {
         let this = Self{positions: positions.into(), size, batch_size};
 
-        debug_assert!(
+        #[cfg(debug_assertions)]
         {
-            let s: HashSet<_> = this.positions.iter().collect();
+            this.positions.iter().for_each(|batch_positions|
+            {
+                let s: HashSet<_> = batch_positions.iter().collect();
 
-            s.len() == this.positions.len()
-        }, "positions must be unique: {:?}", this.positions.iter().collect::<Vec<_>>());
+                debug_assert!(s.len() == batch_positions.len(), "positions must be unique: {:?}", this.positions.iter().collect::<Vec<_>>());
+            });
+        }
 
         this
     }
@@ -9025,7 +9102,6 @@ mod tests
         let hidden_size = LAYER_CURR;
         let output_size = 2;
 
-        let zeros = LayerType::new(output_size, 1);
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
         let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
         {

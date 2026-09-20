@@ -1458,9 +1458,8 @@ mod tests
     #[test]
     fn batch_equivalent()
     {
-        let put_me_batch_size_64 = ();
         let inputs_amount = 3;
-        let batch_size = 2;
+        let batch_size = 64;
 
         let vector_word_size = ByteDictionary.words_amount();
 
@@ -1471,9 +1470,8 @@ mod tests
             VectorWord::from_raw(fastrand::usize(0..vector_word_size))
         }).take(batch_size * (inputs_amount + 1)).collect();
 
-        let put_me_to_hidden_32 = ();
         let layer_sizes = LayerSizes{
-            hidden: 1,
+            hidden: 32,
             layers: 3,
             input: vector_word_size,
             output: vector_word_size,
@@ -1507,8 +1505,6 @@ mod tests
         fastrand::seed(111);
 
         network_single.network.feedforward_setup_dropout();
-
-        dbg!(&network_single.network.recorder);
 
         let mut single_added_gradients = (0..batch_size).map(|batch_step|
         {
@@ -1551,8 +1547,6 @@ mod tests
         fastrand::seed(111);
 
         network_batched.network.feedforward_setup_dropout();
-
-        dbg!(&network_batched.network.recorder);
 
         let batched_gradients_batch = gradient_with_batch_size(&mut network_batched, &inputs, inputs_amount);
         let batched_gradients = batched_gradients_batch.average_batch();

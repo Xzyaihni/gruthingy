@@ -360,6 +360,8 @@ impl<'a> YWrapperRef<'a>
 
     pub fn batch_slice_ref(&self, batch_index: usize) -> YWrapperRef<'_>
     {
+        debug_assert!(batch_index < self.shape.batch_size);
+
         YWrapperRef{
             values: &self.values[self.shape.batch_range(batch_index)],
             shape: TensorShape{batch_size: 1, ..self.shape}
@@ -435,64 +437,7 @@ impl<'a> YWrapperMut<'a>
 
     pub fn add_to(self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
-        debug_assert_eq!(self.shape, lhs.shape);
-
-        if rhs.shape.is_batched_scalar()
-        {
-            if self.shape.batch_size != rhs.shape.batch_size
-            {
-                debug_assert_eq!(self.shape.batch_size, 1);
-
-                for batch_index in 0..rhs.shape.batch_size
-                {
-                    let rhs = rhs.values[batch_index];
-
-                    for i in 0..self.shape.single_size()
-                    {
-                        let s = lhs.values[i] + rhs;
-
-                        if batch_index == 0
-                        {
-                            self.values[i] = s;
-                        } else
-                        {
-                            self.values[i] += s;
-                        }
-                    }
-                }
-            } else
-            {
-                for batch_index in 0..self.shape.batch_size
-                {
-                    let rhs = rhs.values[batch_index];
-
-                    let batch_start = self.shape.batch_range(batch_index).start;
-
-                    for i in 0..self.shape.single_size()
-                    {
-                        let index = batch_start + i;
-
-                        self.values[index] = lhs.values[index] + rhs;
-                    }
-                }
-            }
-
-            return;
-        }
-
-        debug_assert_eq!(lhs.shape.rows, rhs.shape.rows);
-        debug_assert_eq!(lhs.shape.columns, rhs.shape.columns);
-
-        debug_assert_eq!(self.shape.batch_size, 1);
-        debug_assert_eq!(lhs.shape.batch_size, 1);
-        debug_assert_eq!(rhs.shape.batch_size, 1);
-
-        for i in 0..self.values.len()
-        {
-            unsafe{
-                *self.values.get_unchecked_mut(i) = *lhs.values.get_unchecked(i) + *rhs.values.get_unchecked(i);
-            }
-        }
+        self.batched_or_scalar_pair_op(lhs, rhs, |a, b| a + b, |a, b| a.add_scalar_inplace(b));
     }
 
     pub fn sub_to(&mut self, lhs: YWrapperRef, rhs: YWrapperRef)
@@ -547,7 +492,7 @@ impl<'a> YWrapperMut<'a>
         oxiblas_blas::level1::axpy_f32(1.0, rhs.values, self.values)
     }
 
-    pub fn add_scalar_inplace(mut self, other: f32)
+    pub fn add_scalar_inplace(&mut self, other: f32)
     {
         self.apply(|x| x + other)
     }
@@ -662,77 +607,93 @@ impl<'a> YWrapperMut<'a>
         (0..self.values.len()).for_each(|i| self.values[i] = leaky_relu_d(value.values[i]) * gradient.values[i])
     }
 
-    pub fn component_mul_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef)
+    pub fn component_mul_into(self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
-        let (lhs, rhs) = if lhs.shape.is_batched_scalar()
-        {
-            (rhs, lhs)
-        } else
-        {
-            (lhs, rhs)
-        };
+        self.batched_or_scalar_pair_op(lhs, rhs, |a, b| a * b, |a, b| a.mul_scalar_inplace(b));
+    }
 
-        if rhs.shape.is_batched_scalar()
+    fn batched_or_scalar_pair_op(
+        mut self,
+        lhs: YWrapperRef,
+        rhs: YWrapperRef,
+        scalar_op: fn(f32, f32) -> f32,
+        tensor_scalar_op: impl Fn(&mut YWrapperMut, f32)
+    )
+    {
+        fn inner_same_shape(output: YWrapperMut, lhs: YWrapperRef, rhs: YWrapperRef, scalar_op: fn(f32, f32) -> f32)
         {
-            let (values, scalar) = (lhs, rhs);
+            debug_assert_eq!(output.shape, lhs.shape);
+            debug_assert_eq!(lhs.shape, rhs.shape);
 
-            if (self.shape != values.shape) && (values.shape.batch_size == scalar.shape.batch_size)
+            (0..output.values.len()).for_each(|i| output.values[i] = scalar_op(lhs.values[i], rhs.values[i]));
+        }
+
+        if (self.shape != lhs.shape) || (lhs.shape != rhs.shape)
+        {
+            debug_assert!(self.shape.batch_size >= lhs.shape.batch_size);
+            debug_assert!(self.shape.batch_size >= rhs.shape.batch_size);
+
+            let (values, scalar) = if lhs.shape.is_batched_scalar()
             {
-                debug_assert_eq!(values.shape.batch_size, 1);
-
-                let single_size = self.shape.single_size();
-                self.values[..single_size].copy_from_slice(values.values);
-
-                self.batch_slice_mut(0).mul_scalar_inplace(scalar.values[0]);
-
-                for batch_index in 1..scalar.shape.batch_size
-                {
-                    self.values[self.shape.batch_range(batch_index)].copy_within(0..single_size, batch_index * single_size);
-                }
+                (rhs, lhs)
+            } else if rhs.shape.is_batched_scalar()
+            {
+                (lhs, rhs)
             } else
             {
-                debug_assert_eq!(self.shape.rows, values.shape.rows);
-                debug_assert_eq!(self.shape.columns, values.shape.columns);
+                debug_assert_ne!(self.shape.batch_size, 1);
 
-                if self.shape.batch_size == values.shape.batch_size
+                for batch_index in 0..self.shape.batch_size
                 {
-                    self.values.copy_from_slice(values.values);
-
-                    for batch_index in 0..self.shape.batch_size
+                    let lhs = if lhs.shape.batch_size != 1
                     {
-                        let value = if self.shape.batch_size == scalar.shape.batch_size
-                        {
-                            scalar.values[batch_index]
-                        } else
-                        {
-                            scalar.values[0]
-                        };
+                        lhs.batch_slice_ref(batch_index)
+                    } else
+                    {
+                        lhs
+                    };
 
-                        self.batch_slice_mut(batch_index).mul_scalar_inplace(value);
-                    }
+                    let rhs = if rhs.shape.batch_size != 1
+                    {
+                        rhs.batch_slice_ref(batch_index)
+                    } else
+                    {
+                        rhs
+                    };
+
+                    inner_same_shape(self.batch_slice_mut(batch_index), lhs, rhs, scalar_op);
+                }
+
+                return;
+            };
+
+            for batch_index in 0..self.shape.batch_size
+            {
+                let values = if values.shape.batch_size != 1
+                {
+                    values.batch_slice_ref(batch_index)
                 } else
                 {
-                    debug_assert_eq!(self.shape.batch_size, scalar.shape.batch_size);
-                    debug_assert_eq!(values.shape.batch_size, 1);
+                    values
+                };
 
-                    for batch_index in 0..scalar.shape.batch_size
-                    {
-                        let mut output = self.batch_slice_mut(batch_index);
+                self.values.copy_from_slice(values.values);
 
-                        output.values.copy_from_slice(&values.values);
+                let value = if scalar.shape.batch_size != 1
+                {
+                    scalar.values[batch_index]
+                } else
+                {
+                    scalar.values[0]
+                };
 
-                        output.mul_scalar_inplace(scalar.values[batch_index]);
-                    }
-                }
+                tensor_scalar_op(&mut self.batch_slice_mut(batch_index), value);
             }
 
             return;
         }
 
-        debug_assert_eq!(self.shape, lhs.shape);
-        debug_assert_eq!(lhs.shape, rhs.shape);
-
-        (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] * rhs.values[i]);
+        inner_same_shape(self, lhs, rhs, scalar_op)
     }
 
     pub fn component_mul_add_into(self, lhs: YWrapperRef, rhs: YWrapperRef, added: YWrapperRef)
@@ -916,6 +877,8 @@ impl<'a> YWrapperMut<'a>
 
     fn batch_slice_mut(&mut self, batch_index: usize) -> YWrapperMut<'_>
     {
+        debug_assert!(batch_index < self.shape.batch_size);
+
         YWrapperMut{
             values: &mut self.values[self.shape.batch_range(batch_index)],
             shape: TensorShape{batch_size: 1, ..self.shape}
@@ -977,6 +940,8 @@ impl<'a> YVectorWrapperRef<'a>
 
     fn batch_slice_ref(&self, batch_index: usize) -> YVectorWrapperRef<'_>
     {
+        debug_assert!(batch_index < self.batch_size);
+
         let shape = TensorShape{rows: self.rows, columns: 1, batch_size: self.batch_size};
 
         YVectorWrapperRef{
@@ -1239,6 +1204,8 @@ impl<'a> YVectorWrapperMut<'a>
 
     fn batch_slice_mut(&mut self, batch_index: usize) -> YVectorWrapperMut<'_>
     {
+        debug_assert!(batch_index < self.batch_size);
+
         let shape = TensorShape{rows: self.rows, columns: 1, batch_size: self.batch_size};
 
         YVectorWrapperMut{
