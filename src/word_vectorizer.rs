@@ -158,6 +158,11 @@ pub trait NetworkDictionary
         self.words_amount()
     }
 
+    fn one_hot_to_input(&self, layer: OneHotLayer) -> OwnedInputType
+    {
+        layer.into()
+    }
+
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OwnedInputType
     {
         self.words_to_onehot(words).into()
@@ -647,9 +652,14 @@ impl NetworkDictionary for EmbeddingsDictionary
         InputDataType::Path
     }
 
+    fn one_hot_to_input(&self, layer: OneHotLayer) -> OwnedInputType
+    {
+        self.network.embeddings(&layer).into()
+    }
+
     fn words_to_layer(&self, words: impl IntoIterator<Item=VectorWord>) -> OwnedInputType
     {
-        self.network.embeddings(&self.words_to_onehot(words)).into()
+        self.one_hot_to_input(self.words_to_onehot(words))
     }
 
     fn word_to_bytes(&self, previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>

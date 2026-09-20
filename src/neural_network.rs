@@ -493,7 +493,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
             OneHotLayer::new(words, words_amount, self.batch_size)
         };
 
-        let this_input: OwnedInputType = this_input.into();
+        let this_input: OwnedInputType = self.dictionary.one_hot_to_input(this_input);
 
         let this_output = {
             let words = (0..self.batch_size).map(|batch_index|
@@ -534,7 +534,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
             OneHotLayer::new(words, words_amount, self.batch_size)
         };
 
-        let this_input: OwnedInputType = this_input.into();
+        let this_input: OwnedInputType = self.dictionary.one_hot_to_input(this_input);
 
         let this_output = {
             let words = (0..self.batch_size).map(|batch_index|
@@ -990,7 +990,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        debug_assert_eq!(sizes.input, dictionary.words_amount());
+        debug_assert_eq!(sizes.input, dictionary.input_amount());
 
         let network = Network::new(sizes, dropout_probability, config);
 
@@ -1294,8 +1294,6 @@ where
                     output_loss(self);
                 }
 
-                let mut kahan_sum = KahanSum::new();
-
                 let min_len: usize = EmbeddingType::min_len();
                 let inputs_per_block = (steps_num + min_len) * info.batch_size;
 
@@ -1319,9 +1317,7 @@ where
 
                 let (loss, gradients_batch): (f32, _) = self.network.gradients(values.iter());
 
-                kahan_sum.add(loss as f64 / info.batch_size as f64);
-
-                let batch_loss = kahan_sum.value() / steps_num as f64;
+                let batch_loss = loss as f64 / steps_num as f64;
 
                 if display_inner
                 {

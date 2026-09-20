@@ -705,7 +705,7 @@ impl<'a> YWrapperMut<'a>
         (0..self.values.len()).for_each(|i| self.values[i] = lhs.values[i] * rhs.values[i] + added.values[i]);
     }
 
-    pub fn outer_product_into(self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
+    pub fn outer_product_into(mut self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
     {
         debug_assert_eq!(self.shape.rows, lhs.rows);
         debug_assert_eq!(self.shape.columns, rhs.rows);
@@ -713,13 +713,17 @@ impl<'a> YWrapperMut<'a>
         debug_assert_eq!(self.shape.batch_size, lhs.batch_size);
         debug_assert_eq!(self.shape.batch_size, rhs.batch_size);
 
-        debug_assert_eq!(self.shape.batch_size, 1);
+        let rows = self.shape.rows;
+        let columns = self.shape.columns;
 
-        let mut out = nalgebra::DMatrixViewMut::from_slice(self.values, self.shape.rows, self.shape.columns);
-        let lhs = nalgebra::DVectorView::from(lhs.values);
-        let rhs = nalgebra::DVectorView::from(rhs.values);
+        for batch_index in 0..self.shape.batch_size
+        {
+            let mut out = nalgebra::DMatrixViewMut::from_slice(self.batch_slice_mut(batch_index).values, rows, columns);
+            let lhs = nalgebra::DVectorView::from(lhs.batch_slice_ref(batch_index).values);
+            let rhs = nalgebra::DVectorView::from(rhs.batch_slice_ref(batch_index).values);
 
-        out.ger(1.0, &lhs, &rhs, 0.0);
+            out.ger(1.0, &lhs, &rhs, 0.0);
+        }
     }
 
     pub fn outer_product_add_inplace(mut self, lhs: YVectorWrapperRef, rhs: YVectorWrapperRef)
@@ -772,7 +776,7 @@ impl<'a> YWrapperMut<'a>
         }
     }
 
-    pub fn outer_product_one_hot_into(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
+    pub fn outer_product_one_hot_into(mut self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
     {
         debug_assert_eq!(self.shape.rows, lhs.rows);
         debug_assert_eq!(self.shape.columns, rhs.size);
@@ -780,19 +784,23 @@ impl<'a> YWrapperMut<'a>
         debug_assert_eq!(self.shape.batch_size, lhs.batch_size);
         debug_assert_eq!(self.shape.batch_size, rhs.batch_size());
 
-        debug_assert_eq!(self.shape.batch_size, 1);
-
         let rows = self.shape.rows;
 
         self.values.fill(0.0);
 
-        rhs.positions[0].iter().for_each(|column|
+        for batch_index in 0..self.shape.batch_size
         {
-            (0..rows).for_each(|row|
+            let output = self.batch_slice_mut(batch_index);
+            let lhs = lhs.batch_slice_ref(batch_index);
+
+            rhs.positions[batch_index].iter().for_each(|column|
             {
-                self.values[column * rows + row] = lhs.values[row];
-            })
-        })
+                (0..rows).for_each(|row|
+                {
+                    output.values[column * rows + row] = lhs.values[row];
+                })
+            });
+        }
     }
 
     pub fn outer_product_one_hot_add_inplace(mut self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
@@ -1182,24 +1190,38 @@ impl<'a> YVectorWrapperMut<'a>
         debug_assert_eq!(lhs.shape.columns, rhs.size);
         debug_assert_eq!(self.rows, added.rows);
 
-        if self.batch_size != lhs.shape.batch_size
+        debug_assert!(self.batch_size >= lhs.shape.batch_size);
+        debug_assert!(self.batch_size >= rhs.batch_size());
+        debug_assert!(self.batch_size >= added.batch_size);
+
+        for batch_index in 0..self.batch_size
         {
-            debug_assert_eq!(lhs.shape.batch_size, 1);
-            debug_assert_eq!(added.batch_size, 1);
-
-            debug_assert_eq!(self.batch_size, rhs.batch_size());
-
-            for batch_index in 0..self.batch_size
+            let lhs = if lhs.shape.batch_size != 1
             {
-                inner_single_batch(self.batch_slice_mut(batch_index), lhs, &rhs.positions[batch_index], added);
-            }
+                lhs.batch_slice_ref(batch_index)
+            } else
+            {
+                lhs
+            };
 
-            return;
+            let rhs = if rhs.batch_size() != 1
+            {
+                &rhs.positions[batch_index]
+            } else
+            {
+                &rhs.positions[0]
+            };
+
+            let added = if added.batch_size != 1
+            {
+                added.batch_slice_ref(batch_index)
+            } else
+            {
+                added
+            };
+
+            inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs, added);
         }
-
-        debug_assert_eq!(rhs.batch_size(), 1);
-
-        inner_single_batch(self, lhs, &rhs.positions[0], added);
     }
 
     fn batch_slice_mut(&mut self, batch_index: usize) -> YVectorWrapperMut<'_>
