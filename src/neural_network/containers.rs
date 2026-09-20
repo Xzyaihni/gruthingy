@@ -1356,7 +1356,7 @@ macro_rules! impl_pair_tensor_op
             let a_shape = $this.tensor_shape($a.as_value());
             let b_shape = $this.tensor_shape($b.as_value());
 
-            debug_assert_eq!(a_shape.batch_size, b_shape.batch_size);
+            let output_batch_size = a_shape.batch_size.max(b_shape.batch_size);
 
             #[cfg(debug_assertions)]
             {
@@ -1374,7 +1374,7 @@ macro_rules! impl_pair_tensor_op
                 a_shape
             };
 
-            let output = $this.new_tensor_op(shape);
+            let output = $this.new_tensor_op(TensorShape{batch_size: output_batch_size, ..shape});
 
             $this.add_recording_operation(Op::$name{lhs: $a, rhs: $b, output});
 

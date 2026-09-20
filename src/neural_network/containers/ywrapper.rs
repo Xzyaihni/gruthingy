@@ -676,9 +676,7 @@ impl<'a> YWrapperMut<'a>
         {
             let (values, scalar) = (lhs, rhs);
 
-            debug_assert_eq!(values.shape.batch_size, scalar.shape.batch_size);
-
-            if self.shape != values.shape
+            if (self.shape != values.shape) && (values.shape.batch_size == scalar.shape.batch_size)
             {
                 debug_assert_eq!(values.shape.batch_size, 1);
 
@@ -693,11 +691,38 @@ impl<'a> YWrapperMut<'a>
                 }
             } else
             {
-                self.values.copy_from_slice(values.values);
+                debug_assert_eq!(self.shape.rows, values.shape.rows);
+                debug_assert_eq!(self.shape.columns, values.shape.columns);
 
-                for batch_index in 0..scalar.shape.batch_size
+                if self.shape.batch_size == values.shape.batch_size
                 {
-                    self.batch_slice_mut(batch_index).mul_scalar_inplace(scalar.values[batch_index]);
+                    self.values.copy_from_slice(values.values);
+
+                    for batch_index in 0..self.shape.batch_size
+                    {
+                        let value = if self.shape.batch_size == scalar.shape.batch_size
+                        {
+                            scalar.values[batch_index]
+                        } else
+                        {
+                            scalar.values[0]
+                        };
+
+                        self.batch_slice_mut(batch_index).mul_scalar_inplace(value);
+                    }
+                } else
+                {
+                    debug_assert_eq!(self.shape.batch_size, scalar.shape.batch_size);
+                    debug_assert_eq!(values.shape.batch_size, 1);
+
+                    for batch_index in 0..scalar.shape.batch_size
+                    {
+                        let mut output = self.batch_slice_mut(batch_index);
+
+                        output.values.copy_from_slice(&values.values);
+
+                        output.mul_scalar_inplace(scalar.values[batch_index]);
+                    }
                 }
             }
 
@@ -1139,13 +1164,22 @@ impl<'a> YVectorWrapperMut<'a>
         if self.batch_size != lhs.shape.batch_size
         {
             debug_assert_eq!(self.batch_size, rhs.batch_size);
-            debug_assert_eq!(self.batch_size, added.batch_size);
 
             debug_assert_eq!(lhs.shape.batch_size, 1);
 
             for batch_index in 0..self.batch_size
             {
-                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index), added.batch_slice_ref(batch_index));
+                let added = if self.batch_size == added.batch_size
+                {
+                    added.batch_slice_ref(batch_index)
+                } else
+                {
+                    debug_assert_eq!(added.batch_size, 1);
+
+                    added
+                };
+
+                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index), added);
             }
 
             return;

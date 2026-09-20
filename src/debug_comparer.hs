@@ -117,7 +117,7 @@ findMismatchOutput a b = listToMaybe $ fmap (\(a, b) -> (head a, b)) $ findMisma
 
 batchMatchSingleOutput :: ([Float], [Float]) -> [Float] -> Bool
 batchMatchSingleOutput (firstA, secondA) b = if (length firstA) == (length b)
-                                                then (map (\(a, b) -> a + b) $ zip firstA secondA) == b
+                                                then (if (firstA == secondA) then firstA == b else (map (\(a, b) -> a + b) $ zip firstA secondA) == b)
                                                 else (firstA == (take (length firstA) b)) && (secondA == (drop (length firstA) b))
 
 batchMatcher :: MatcherType

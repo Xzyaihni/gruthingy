@@ -1564,10 +1564,12 @@ mod tests
 
         single_added_gradients.iter().zip(batched_gradients.iter()).for_each(|(single_added_gradient, batched_gradient)|
         {
-            single_added_gradient.iter().zip(batched_gradient.iter()).for_each(|(single, batched)|
+            let all_equal = single_added_gradient.iter().zip(batched_gradient.iter()).all(|(single, batched)|
             {
-                assert!(close_enough(*single, *batched, 0.000001));
+                close_enough(*single, *batched, 0.000001)
             });
+
+            assert!(all_equal, "single:  {single_added_gradient:?}\nnot equal to\nbatched: {batched_gradient:?}");
         });
     }
 }
