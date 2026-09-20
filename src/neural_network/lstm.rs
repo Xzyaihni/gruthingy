@@ -264,7 +264,7 @@ mod tests
 
         let mut one_weight = |value: f32|
         {
-            let w = recorder.set_new_tensor_gradientable(LayerType::from_boxed([value].into(), 1, 1).into());
+            let w = recorder.set_new_tensor_gradientable(LayerType::from_boxed([value].into(), 1, 1).into(), 1);
 
             recorder.allow_discard(w.as_value());
 
@@ -300,7 +300,7 @@ mod tests
 
         let lstm: WeightsContainer<WeightInfoPtr> = WeightsContainer
         {
-            sizes: LayerSizes{hidden: 1, input: 1, output: 1, layers: 1},
+            sizes: LayerSizes{hidden: 1, input: 1, output: 1, layers: 1, batch_size: 1},
 
             input_update: one_weight_info(1.65),
             input_forget: one_weight_info(1.63),

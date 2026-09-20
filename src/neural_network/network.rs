@@ -101,7 +101,8 @@ pub struct LayerSizes
     pub input: usize,
     pub output: usize,
     pub hidden: usize,
-    pub layers: usize
+    pub layers: usize,
+    pub batch_size: usize
 }
 
 pub enum LayerSize
@@ -240,7 +241,7 @@ macro_rules! create_weights_container
                         {
                             LayerSize::One =>
                             {
-                                let bias = recorder.new_tensor(this_size, previous_size);
+                                let bias = recorder.new_tensor(this_size, previous_size, sizes.batch_size);
 
                                 recorder.set_tensor_ptr_zeroed(bias.as_value());
 
@@ -250,12 +251,14 @@ macro_rules! create_weights_container
                             {
                                 let previous_layer = x.into_number(sizes);
 
-                                recorder.set_new_tensor_gradientable(LayerType::new_with(this_size, previous_size, ||
+                                let weights = LayerType::new_with(this_size, previous_size, ||
                                 {
                                     let v = 1.0 / (previous_layer as f32).sqrt();
 
                                     (fastrand::f32() * 2.0 - 1.0) * v
-                                }))
+                                });
+
+                                recorder.set_new_tensor_gradientable(weights, sizes.batch_size)
                             }
                         };
 
@@ -660,6 +663,32 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     }
 }
 
+impl<N: UnitFactory> WeightsFullContainer<N, LayerType>
+{
+    pub fn average_batch(mut self) -> Self
+    where
+        for<'a> &'a mut N::Unit<LayerType>: IntoIterator<Item=&'a mut LayerType>
+    {
+        self.iter_mut().for_each(|gradient|
+        {
+            let batch_size = gradient.shape().batch_size;
+
+            let mut new_gradient = gradient.as_ref().batch_slice_ref(0).clone_owned();
+
+            for batch_index in 1..batch_size
+            {
+                new_gradient.add_inplace(gradient.as_ref().batch_slice_ref(batch_index));
+            }
+
+            new_gradient.mul_scalar_inplace((batch_size as f32).recip());
+
+            *gradient = new_gradient;
+        });
+
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WeightInfoGeneric<D, I>
 {
@@ -800,8 +829,7 @@ pub struct NetworkConfigInfo
 {
     pub print_optional_info: bool,
     pub is_multistep: bool,
-    pub is_input_one_hot: bool,
-    pub batch_size: usize
+    pub is_input_one_hot: bool
 }
 
 const unpublic_me: () = ();
@@ -871,7 +899,7 @@ where
                 recorder.set_new_tensor(value)
             } else
             {
-                recorder.set_new_tensor_gradientable(value)
+                recorder.set_new_tensor_gradientable(value, x.sizes.batch_size)
             };
 
             WeightInfoPtr{
@@ -982,7 +1010,7 @@ where
                 let v = 1.0 / (sizes.hidden as f32).sqrt();
 
                 (fastrand::f32() * 2.0 - 1.0) * v
-            }));
+            }), sizes.batch_size);
 
             recorder.name_diff_tensor(weights, "output_weights");
 
@@ -1204,7 +1232,7 @@ where
 
         let dropout_masks_ptrs = self.create_dropout_masks_ptrs();
 
-        let batch_size = config.batch_size;
+        let batch_size = self.sizes.batch_size;
 
         let create_input = {
             let is_input_one_hot = config.is_input_one_hot;
@@ -1906,7 +1934,8 @@ mod tests
         hidden: 2,
         input: 2,
         layers: 2,
-        output: 2
+        output: 2,
+        batch_size: 1
     };
 
     #[allow(dead_code)]
@@ -1976,8 +2005,7 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_multistep: false,
             is_input_one_hot: IS_INPUT_ONE_HOT,
-            print_optional_info: false,
-            batch_size: 1
+            print_optional_info: false
         };
 
         let mut at_once: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, network_config);
@@ -2121,8 +2149,7 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_multistep,
             is_input_one_hot: IS_INPUT_ONE_HOT,
-            print_optional_info: true,
-            batch_size: 1
+            print_optional_info: true
         };
 
         let mut with_steps: NetworkType = Network::new(SIZES, DROPOUT_PROBABILITY, network_config);

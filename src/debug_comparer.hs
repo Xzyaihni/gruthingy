@@ -70,10 +70,12 @@ parseOperations operations = map (\(x, i) -> parseOperationWithIndex i x) $ filt
 operandValues :: DebugOperand -> [Float]
 operandValues (DebugOperand name variable values) = values
 
-operationInputs :: DebugOperation -> [DebugOperand]
+type OperandsSelector = DebugOperation -> [DebugOperand]
+
+operationInputs :: OperandsSelector
 operationInputs (DebugOperation lineIndex name inputs outputs) = inputs
 
-operationOutputs :: DebugOperation -> [DebugOperand]
+operationOutputs :: OperandsSelector
 operationOutputs (DebugOperation lineIndex name inputs outputs) = outputs
 
 operationLineIndex :: DebugOperation -> Int
@@ -91,10 +93,10 @@ isOutputsMatch matcher a b = if (length a) /= (length b)
 
 type OutputsValuesWithOp = (OutputsValues, DebugOperation)
 
-operandsWithOp :: (DebugOperation -> [DebugOperand]) -> [String] -> [[OutputsValuesWithOp]]
+operandsWithOp :: OperandsSelector -> [String] -> [[OutputsValuesWithOp]]
 operandsWithOp inputs s = map (\operations -> map (\x -> ((map operandValues) $ inputs x, x)) operations) $ (map parseOperations s)
 
-zipOperationInfos :: (DebugOperation -> [DebugOperand]) -> [String] -> String -> [([OutputsValuesWithOp], OutputsValuesWithOp)]
+zipOperationInfos :: OperandsSelector -> [String] -> String -> [([OutputsValuesWithOp], OutputsValuesWithOp)]
 zipOperationInfos inputs aInput bInput = zip (transpose $ operandsWithOp inputs aInput) (head $ operandsWithOp inputs [bInput])
 
 type MatcherType = ([OutputsValuesWithOp], OutputsValuesWithOp) -> Bool
@@ -105,7 +107,7 @@ oneToOneMatcher = undefined
 keepUnmatching :: MatcherType -> [([OutputsValuesWithOp], OutputsValuesWithOp)] -> [([OutputsValuesWithOp], OutputsValuesWithOp)]
 keepUnmatching matcher = filter (not . matcher)
 
-findMismatchWith :: (DebugOperation -> [DebugOperand]) -> MatcherType -> [String] -> String -> [([DebugOperation], DebugOperation)]
+findMismatchWith :: OperandsSelector -> MatcherType -> [String] -> String -> [([DebugOperation], DebugOperation)]
 findMismatchWith inputs matcher aInput bInput = map (\(a, (_, b)) -> (map snd a, b))
                                                  $ keepUnmatching matcher
                                                  $ zipOperationInfos inputs aInput bInput
@@ -126,16 +128,16 @@ batchMatcher (aPair, (b, _)) = if (length b) /= (length $ fst $ head aPair)
                                            f = fst
                                        in all id $ map (\(a, b) -> batchMatchSingleOutput a b) $ zip (zip (f firstA) (f secondA)) b
 
-writeUnmatchingBatchesContents :: String -> String -> String
-writeUnmatchingBatchesContents unbatched batched = let batchedLines = length $ lines batched
+writeUnmatchingBatchesContents :: OperandsSelector -> String -> String -> String
+writeUnmatchingBatchesContents inputs unbatched batched = let batchedLines = length $ lines batched
                                                    in unlines
                                                        $ map (\(a, b) -> unlines $ (map (\x -> "  " ++ x) $ [show (a !! 0), show (a !! 1)]) ++ [show b])
                                                        $ findMismatchWith
-                                                          operationOutputs
+                                                          inputs
                                                           batchMatcher
                                                           [(unlines $ take batchedLines $ lines unbatched), (unlines $ drop batchedLines $ lines unbatched)]
                                                           batched
 
-writeUnmatchingBatches :: String -> String -> String -> IO ()
-writeUnmatchingBatches unbatchedPath batchedPath outputPath = (readFile batchedPath) >>=
-    \batched -> join $ fmap (\unbatched -> (writeFile outputPath (writeUnmatchingBatchesContents unbatched batched))) (readFile unbatchedPath)
+writeUnmatchingBatches :: OperandsSelector -> String -> String -> String -> IO ()
+writeUnmatchingBatches inputs unbatchedPath batchedPath outputPath = (readFile batchedPath) >>=
+    \batched -> join $ fmap (\unbatched -> (writeFile outputPath (writeUnmatchingBatchesContents inputs unbatched batched))) (readFile unbatchedPath)

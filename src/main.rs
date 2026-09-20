@@ -161,8 +161,7 @@ where
     let network_config = NetworkConfigInfo{
         is_multistep,
         is_input_one_hot: D::is_input_one_hot(),
-        print_optional_info: config.as_ref().map(|x| x.optional_info).unwrap_or(false),
-        batch_size: config.as_ref().map(|x| x.batch_size).unwrap_or(1)
+        print_optional_info: config.as_ref().map(|x| x.optional_info).unwrap_or(false)
     };
 
     if path.exists()
@@ -203,7 +202,8 @@ where
             input: dictionary.input_amount(),
             output: dictionary.words_amount(),
             hidden: sizes.hidden,
-            layers: sizes.layers
+            layers: sizes.layers,
+            batch_size: config.batch_size
         };
 
         NeuralNetwork::new(dictionary, sizes, network_config, config.dropout_probability, config.gradient_clip)

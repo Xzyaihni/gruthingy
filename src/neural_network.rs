@@ -1285,7 +1285,7 @@ where
                     steps_num
                 );
 
-                let (loss, gradients): (f32, _) = self.network.gradients(values.iter());
+                let (loss, gradients_batch): (f32, _) = self.network.gradients(values.iter());
 
                 kahan_sum.add(loss as f64 / info.batch_size as f64);
 
@@ -1296,6 +1296,7 @@ where
                     Self::print_loss(false, batch_loss as f32);
                 }
 
+                let gradients = gradients_batch.average_batch();
                 self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
@@ -1471,12 +1472,12 @@ mod tests
         }).take(batch_size * (inputs_amount + 1)).collect();
 
         let put_me_to_hidden_32 = ();
-        let put_me_to_layers_3 = ();
         let layer_sizes = LayerSizes{
             hidden: 1,
-            layers: 1,
+            layers: 3,
             input: vector_word_size,
-            output: vector_word_size
+            output: vector_word_size,
+            batch_size
         };
 
         let dropout_probability = 0.5;
@@ -1486,12 +1487,14 @@ mod tests
 
         let mut network_single = NeuralNetwork::new(
             ByteDictionary,
-            layer_sizes,
+            LayerSizes{
+                batch_size: 1,
+                ..layer_sizes
+            },
             NetworkConfigInfo{
                 is_input_one_hot: true,
                 is_multistep: true,
-                print_optional_info: true,
-                batch_size: 1
+                print_optional_info: true
             },
             dropout_probability,
             gradient_clip
@@ -1523,8 +1526,7 @@ mod tests
             acc
         }).expect("batch size must not be 0");
 
-        let add_me_back = ();
-        // single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
+        single_added_gradients.iter_mut().for_each(|gradient| gradient.mul_scalar_inplace((batch_size as f32).recip()));
 
         eprintln!("calculated single_added_gradients");
 
@@ -1536,8 +1538,7 @@ mod tests
             NetworkConfigInfo{
                 is_input_one_hot: true,
                 is_multistep: true,
-                print_optional_info: false,
-                batch_size
+                print_optional_info: true
             },
             dropout_probability,
             gradient_clip
@@ -1553,13 +1554,20 @@ mod tests
 
         dbg!(&network_batched.network.recorder);
 
-        let batched_gradients = gradient_with_batch_size(&mut network_batched, &inputs, inputs_amount);
+        let batched_gradients_batch = gradient_with_batch_size(&mut network_batched, &inputs, inputs_amount);
+        let batched_gradients = batched_gradients_batch.average_batch();
 
         eprintln!("calculated batched_gradients");
 
         // eprintln!("single_added_gradients: {single_added_gradients:?}");
         // eprintln!("batched_gradients: {batched_gradients:?}");
 
-        assert_eq!(single_added_gradients, batched_gradients);
+        single_added_gradients.iter().zip(batched_gradients.iter()).for_each(|(single_added_gradient, batched_gradient)|
+        {
+            single_added_gradient.iter().zip(batched_gradient.iter()).for_each(|(single, batched)|
+            {
+                assert!(close_enough(*single, *batched, 0.000001));
+            });
+        });
     }
 }

@@ -358,7 +358,7 @@ impl<'a> YWrapperRef<'a>
         YVectorWrapperRef::from_data(&self.values, self.shape)
     }
 
-    fn batch_slice_ref(&self, batch_index: usize) -> YWrapperRef<'_>
+    pub fn batch_slice_ref(&self, batch_index: usize) -> YWrapperRef<'_>
     {
         YWrapperRef{
             values: &self.values[self.shape.batch_range(batch_index)],
@@ -662,31 +662,44 @@ impl<'a> YWrapperMut<'a>
         (0..self.values.len()).for_each(|i| self.values[i] = leaky_relu_d(value.values[i]) * gradient.values[i])
     }
 
-    pub fn component_mul_into(self, lhs: YWrapperRef, rhs: YWrapperRef)
+    pub fn component_mul_into(mut self, lhs: YWrapperRef, rhs: YWrapperRef)
     {
-        fn mul_scalar(mut output: YWrapperMut, values: YWrapperRef, scalar: YWrapperRef)
+        let (lhs, rhs) = if lhs.shape.is_batched_scalar()
         {
-            debug_assert_eq!(output.shape, values.shape);
-            debug_assert_eq!(values.shape.batch_size, scalar.shape.batch_size);
-
-            output.values.copy_from_slice(values.values);
-
-            for batch_index in 0..scalar.shape.batch_size
-            {
-                output.batch_slice_mut(batch_index).mul_scalar_inplace(scalar.values[batch_index]);
-            }
-        }
-
-        if lhs.shape.is_batched_scalar()
+            (rhs, lhs)
+        } else
         {
-            mul_scalar(self, rhs, lhs);
-
-            return;
-        }
+            (lhs, rhs)
+        };
 
         if rhs.shape.is_batched_scalar()
         {
-            mul_scalar(self, lhs, rhs);
+            let (values, scalar) = (lhs, rhs);
+
+            debug_assert_eq!(values.shape.batch_size, scalar.shape.batch_size);
+
+            if self.shape != values.shape
+            {
+                debug_assert_eq!(values.shape.batch_size, 1);
+
+                let single_size = self.shape.single_size();
+                self.values[..single_size].copy_from_slice(values.values);
+
+                self.batch_slice_mut(0).mul_scalar_inplace(scalar.values[0]);
+
+                for batch_index in 1..scalar.shape.batch_size
+                {
+                    self.values[self.shape.batch_range(batch_index)].copy_within(0..single_size, batch_index * single_size);
+                }
+            } else
+            {
+                self.values.copy_from_slice(values.values);
+
+                for batch_index in 0..scalar.shape.batch_size
+                {
+                    self.batch_slice_mut(batch_index).mul_scalar_inplace(scalar.values[batch_index]);
+                }
+            }
 
             return;
         }
@@ -754,7 +767,23 @@ impl<'a> YWrapperMut<'a>
             return;
         }
 
-        inner_single_batch(&mut self, lhs, rhs);
+        if self.shape.batch_size != rhs.batch_size
+        {
+            debug_assert_eq!(rhs.batch_size, 1);
+            debug_assert_eq!(self.shape.batch_size, lhs.batch_size);
+
+            for batch_index in 0..lhs.batch_size
+            {
+                inner_single_batch(&mut self.batch_slice_mut(batch_index), lhs.batch_slice_ref(batch_index), rhs);
+            }
+
+            return;
+        }
+
+        for batch_index in 0..self.shape.batch_size
+        {
+            inner_single_batch(&mut self.batch_slice_mut(batch_index), lhs.batch_slice_ref(batch_index), rhs.batch_slice_ref(batch_index));
+        }
     }
 
     pub fn outer_product_one_hot_into(self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
@@ -815,9 +844,10 @@ impl<'a> YWrapperMut<'a>
 
         debug_assert_eq!(self.shape.batch_size, rhs.batch_size());
 
-        debug_assert_eq!(rhs.batch_size(), 1);
-
-        inner_single_batch(&mut self, lhs, &rhs.positions[0]);
+        for batch_index in 0..self.shape.batch_size
+        {
+            inner_single_batch(&mut self.batch_slice_mut(batch_index), lhs.batch_slice_ref(batch_index), &rhs.positions[batch_index]);
+        }
     }
 
     pub fn softmax_cross_entropy_into(self, mut values: YWrapperMut, targets: &OneHotLayer)

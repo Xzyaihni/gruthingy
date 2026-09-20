@@ -1014,11 +1014,21 @@ impl OperationsRecorderMemory
     {
         let TensorShape{rows, columns, batch_size} = value.tensor_shape();
 
-        let size_value = TensorMemoryValue::Size{rows, columns, batch_size};
+        let gradient_size_value = TensorMemoryValue::Size{rows, columns, batch_size};
 
+        self.new_tensor_separate_gradient(has_gradient, value, gradient_size_value)
+    }
+
+    fn new_tensor_separate_gradient(
+        &mut self,
+        has_gradient: bool,
+        value: TensorMemoryValue,
+        gradient: TensorMemoryValue
+    ) -> DiffTensorPtr
+    {
         DiffTensorPtr{
             index: self.new_tensor_index(value),
-            gradient: has_gradient.then(|| self.new_tensor_index(size_value))
+            gradient: has_gradient.then(|| self.new_tensor_index(gradient))
         }
     }
 
@@ -1408,9 +1418,12 @@ impl OperationsRecorder
         }
     }
 
-    pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
+    pub fn new_tensor(&mut self, rows: usize, columns: usize, gradient_batch_size: usize) -> DiffTensorPtr
     {
-        let input = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size: 1});
+        let value_size = TensorMemoryValue::Size{rows, columns, batch_size: 1};
+        let gradient_size = TensorMemoryValue::Size{rows, columns, batch_size: gradient_batch_size};
+
+        let input = self.memory.new_tensor_separate_gradient(true, value_size, gradient_size);
         self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
 
         input
@@ -1544,9 +1557,15 @@ impl OperationsRecorder
         self.memory.set_input(input, value)
     }
 
-    pub fn set_new_tensor_gradientable(&mut self, value: LayerType) -> DiffTensorPtr
+    pub fn set_new_tensor_gradientable(&mut self, value: LayerType, gradient_batch_size: usize) -> DiffTensorPtr
     {
-        let input = self.memory.new_tensor(true, TensorMemoryValue::Value(value));
+        let gradient_size = {
+            let TensorShape{rows, columns, ..} = value.shape();
+
+            TensorMemoryValue::Size{rows, columns, batch_size: gradient_batch_size}
+        };
+
+        let input = self.memory.new_tensor_separate_gradient(true, TensorMemoryValue::Value(value), gradient_size);
 
         self.set_new_tensor_common(&input);
 
@@ -8018,7 +8037,7 @@ mod tests
     {
         let value = LayerType::new_with(rows, columns, random_value);
 
-        (value.clone(), recorder.set_new_tensor_gradientable(value))
+        (value.clone(), recorder.set_new_tensor_gradientable(value, 1))
     }
 
     #[test]
@@ -8392,7 +8411,7 @@ mod tests
             let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
             recorder.name_tensor(i, "i");
 
-            let zeros = recorder.set_new_tensor_gradientable(zeros.clone());
+            let zeros = recorder.set_new_tensor_gradientable(zeros.clone(), 1);
             recorder.name_diff_tensor(zeros, "zeros");
 
             recorder.store_tensor_until_end(zeros.as_value());
@@ -8938,7 +8957,7 @@ mod tests
             let final_state_selector = recorder.phi_other_selector(compound_loss);
             let previous_state_selector = recorder.phi_other_selector(s1);
 
-            let zeros = recorder.set_new_tensor_gradientable(zeros.clone());
+            let zeros = recorder.set_new_tensor_gradientable(zeros.clone(), 1);
             recorder.name_diff_tensor(zeros, "zeros");
 
             recorder.store_tensor_until_end(zeros.as_value());
