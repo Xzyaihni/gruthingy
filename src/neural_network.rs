@@ -760,7 +760,7 @@ impl StepsNum
         match self
         {
             Self::Steps(x) => *x,
-            Self::StepsRange(range) => fastrand::usize(range.clone())
+            Self::StepsRange(range) => if range.start == range.end { range.start } else { fastrand::usize(range.clone()) }
         }
     }
 
@@ -1064,11 +1064,12 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        /*let inputs = self.vectorized(reader);
+        let inputs = self.vectorized(reader);
 
-        let input_outputs = InputOutputIter::new(
+        let input_outputs = InputOutputEmbeddingsIter::<NEmbeddings, D>::new(
             &self.dictionary,
-            inputs.iter()
+            &inputs,
+            1
         );
 
         // im only getting the guess info on the output, NOT the inputs, therefore skip the first one cuz it has no prediction for it
@@ -1085,7 +1086,7 @@ where
             *previous_word = Some(word);
 
             output
-        })).map(|(a, (b, c))| (a, b, c)).collect()*/todo!()
+        })).map(|(a, (b, c))| (a, b, c)).collect()
     }
 
     pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool, Box<[u8]>)>
@@ -1257,7 +1258,7 @@ where
 
             println!("steps amount: {}", info.steps_num);
 
-            println!("calculate loss every ~{inputs_per_loss} inputs");
+            println!("calculate testing loss every ~{inputs_per_loss} inputs");
         }
 
         let output_loss = |network: &mut NeuralNetwork<_, _, _>|

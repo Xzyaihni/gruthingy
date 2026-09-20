@@ -6574,7 +6574,7 @@ impl OperationsRecorder
                         {
                             let shape = self.memory.tensor_shape(*tensor);
 
-                            let gradient_input = self.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+                            let gradient_input = self.new_tensor_batched_no_gradient(shape).as_value();
                             self.name_tensor_suffix(gradient_input, *tensor, "_grad");
 
                             #[cfg(debug_assertions)]

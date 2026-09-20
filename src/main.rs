@@ -79,14 +79,15 @@ where
 struct SizesInfo
 {
     pub hidden: usize,
-    pub layers: usize
+    pub layers: usize,
+    pub batch_size: usize
 }
 
 impl From<&Config> for SizesInfo
 {
     fn from(value: &Config) -> Self
     {
-        Self{hidden: value.hidden_size, layers: value.layers_amount}
+        Self{hidden: value.hidden_size, layers: value.layers_amount, batch_size: value.batch_size}
     }
 }
 
@@ -118,7 +119,7 @@ where
 {
     let sizes = config.as_mut().map(|config|
     {
-        SizesInfo{hidden: config.embeddings_size, layers: 1}
+        SizesInfo{hidden: config.embeddings_size, layers: 1, batch_size: config.batch_size}
     });
 
     let config = config.map(|x| &*x);
@@ -203,7 +204,7 @@ where
             output: dictionary.words_amount(),
             hidden: sizes.hidden,
             layers: sizes.layers,
-            batch_size: config.batch_size
+            batch_size: sizes.batch_size
         };
 
         NeuralNetwork::new(dictionary, sizes, network_config, config.dropout_probability, config.gradient_clip)

@@ -6,7 +6,8 @@ use super::{
     AdamX,
     PowerSign,
     AFType,
-    EMType,
+    OneHotEmbeddings,
+    BagOfWordsEmbeddings,
     Gru,
     Lstm,
     CharDictionary,
@@ -27,8 +28,11 @@ pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 // options: Tanh, LeakyRelu
 pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
-// options: BagOfWords, SkipGram (its broken cuz im bad)
-pub const EMBEDDINGS_TYPE: EMType = EMType::BagOfWords(2);
+// options: OneHotEmbeddings, BagOfWordsEmbeddings
+pub type NEmbeddings = OneHotEmbeddings;
+
+// only applies to BagOfWordsEmbeddings
+pub const BAG_OF_WORDS_EMBEDDINGS_COUNT: usize = 2;
 
 // options: Lstm, Gru
 pub type NUnit<T> = Lstm<T>;

@@ -321,9 +321,11 @@ impl<'a> YWrapperRef<'a>
 
     pub fn matmul_onehotv_add(self, rhs: &OneHotLayer, added: YVectorWrapperRef) -> YWrapper
     {
-        debug_assert_eq!(self.shape.batch_size, 1);
+        let output_batch_size = self.shape.batch_size.max(rhs.batch_size()).max(added.batch_size);
 
-        let mut output = YWrapper::new(self.shape.rows, 1);
+        let output_shape = TensorShape{rows: self.shape.rows, columns: 1, batch_size: output_batch_size};
+
+        let mut output = YWrapper::from_raw(vec![0.0; output_shape.size()].into_boxed_slice(), output_shape);
 
         output.as_mut().as_vector_mut().matmul_onehotv_add_into(self, rhs, added);
 
