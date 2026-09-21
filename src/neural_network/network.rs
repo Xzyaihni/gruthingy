@@ -757,6 +757,23 @@ pub struct SaveNetwork<N: UnitFactory, O>
     weights: WeightsFullContainer<N, SaveWeightType>
 }
 
+impl<N: UnitFactory, O> Clone for SaveNetwork<N, O>
+where
+    O: Clone,
+    N::Unit<O>: Clone,
+    N::Unit<SaveWeightType>: Clone
+{
+    fn clone(&self) -> Self
+    {
+        Self{
+            sizes: self.sizes.clone(),
+            dropout_probability: self.dropout_probability,
+            optimizer_info: self.optimizer_info.clone(),
+            weights: self.weights.clone()
+        }
+    }
+}
+
 impl<N: UnitFactory, O> From<Network<N, O>> for SaveNetwork<N, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -1189,9 +1206,9 @@ where
                         #[cfg(debug_assertions)]
                         {
                             self.recorder.name_diff_tensor(weight_dropped, _debug_info.name.to_owned() + "_dropped");
-
-                            self.recorder.allow_discard(weights_size.weights.dropconnect_mask.unwrap());
                         }
+
+                        self.recorder.store_tensor_until_end(weights_size.weights.dropconnect_mask.unwrap());
 
                         weights_size.weights.weight_dropped = weight_dropped;
                     }
@@ -1307,7 +1324,7 @@ where
 
             self.recorder.name_tensor(ptr, "dropout_mask");
 
-            self.recorder.allow_discard(ptr);
+            self.recorder.store_tensor_until_end(ptr);
 
             ptr
         }).collect();

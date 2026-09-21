@@ -2,6 +2,8 @@ import Data.Maybe;
 import Data.List;
 import Control.Monad;
 import Debug.Trace;
+import Text.Read;
+import Data.Either;
 
 
 data DebugOperand = DebugOperand String String [Float] deriving Show;
@@ -22,24 +24,29 @@ splitByUnlessStateful splitStateGetter decide state separator (c:text) current =
 splitByUnless :: Eq a => (s -> a -> s) -> (s -> Bool) -> s -> a -> [a] -> [[a]]
 splitByUnless splitStateGetter decide startState separator text = splitByUnlessStateful splitStateGetter decide startState separator text []
 
-parseData :: String -> [Float]
-parseData dataText = read dataText
+parseData :: String -> Either String [Float]
+parseData [] = Left "empty string"
+parseData dataText = fromMaybe (Left ("error parsing " ++ dataText))
+                      $ sequence
+                      $ Right
+                      $ (if (head dataText) /= '[' then (fmap (\x -> [x]) $ readMaybe dataText) else (readMaybe dataText))
 
-parseOperand :: String -> DebugOperand
+parseOperand :: String -> Either String DebugOperand
 parseOperand operand = let (name, afterName) = break (\c -> c == ':') operand
                            (variableNameRaw, dataRaw) = break (\c -> c == '=') afterName
-                       in DebugOperand
+                           values = (parseData (drop 2 dataRaw))
+                       in values >>= \values -> Right $ DebugOperand
                             name
                             (drop 2 (take ((length variableNameRaw) - 1) variableNameRaw))
-                            (parseData (drop 2 dataRaw))
+                            values
 
 ignoreInsideBrackets :: Char -> Char -> (Bool -> Char -> Bool)
 ignoreInsideBrackets start end = (\state c -> if (c == start) then False else (if (c == end) then True else state))
 
-parseOperands :: String -> [DebugOperand]
-parseOperands [] = []
+parseOperands :: String -> Either String [DebugOperand]
+parseOperands [] = Right []
 parseOperands operands = let operandsSplit = splitByUnless (ignoreInsideBrackets '[' ']') id True ',' operands
-                         in map parseOperand $ map (dropWhile (\c -> c == ' ')) operandsSplit
+                         in sequence $ map parseOperand $ map (dropWhile (\c -> c == ' ')) operandsSplit
 
 beforeOperandsState :: (Bool, Bool) -> Char -> (Bool, Bool)
 beforeOperandsState (aState, bState) c = (if (c == '=') then True else (if (c == ')') || (c == '(') then False else aState), ((ignoreInsideBrackets '{' '}') bState c))
@@ -54,9 +61,15 @@ splitUpOperationRaw operation = let nameRaw = takeWhile (\x -> x /= '(') operati
                                     afterOperands = drop (length " AFTER ") (head afterOperandsStart)
                                 in ((take ((length nameRaw) - 1) nameRaw), beforeOperands, afterOperands)
 
+unwrapErrorAt :: Int -> Either String a -> a
+unwrapErrorAt index (Left err) = error ("on line " ++ (show index) ++ ": " ++ err)
+unwrapErrorAt index (Right a) = a
+
 parseOperationWithIndex :: Int -> String -> DebugOperation
 parseOperationWithIndex lineIndex operation = let (name, beforeOperands, afterOperands) = splitUpOperationRaw operation
-                                    in DebugOperation lineIndex name (parseOperands beforeOperands) (parseOperands afterOperands)
+                                                  before = unwrapErrorAt lineIndex (parseOperands beforeOperands)
+                                                  after = unwrapErrorAt lineIndex (parseOperands afterOperands)
+                                              in DebugOperation lineIndex name before after
 
 parseOperation :: String -> DebugOperation
 parseOperation = parseOperationWithIndex 0
@@ -121,8 +134,8 @@ batchMatchSingleOutput (firstA, secondA) b = if (length firstA) == (length b)
                                                 else (firstA == (take (length firstA) b)) && (secondA == (drop (length firstA) b))
 
 batchMatcher :: MatcherType
-batchMatcher (aPair, (b, _)) = if (length b) /= (length $ fst $ head aPair)
-                                  then error ("outputs amount doesnt match: " ++ (show $ length $ fst $ head aPair) ++ " vs " ++ (show $ length b))
+batchMatcher (aPair, (b, bOp)) = if (length b) /= (length $ fst $ head aPair)
+                                  then error ("outputs amount doesnt match (in " ++ (show bOp) ++ " vs " ++ (show aPair) ++ "): " ++ (show $ length $ fst $ head aPair) ++ " vs " ++ (show $ length b))
                                   else let firstA = (aPair !! 0)
                                            secondA = (aPair !! 1)
                                            f = fst

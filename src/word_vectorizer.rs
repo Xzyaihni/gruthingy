@@ -1,5 +1,6 @@
 use std::{
     str,
+    fmt::{self, Debug},
     hash::Hash,
     borrow::Borrow,
     ops::Deref,
@@ -140,7 +141,7 @@ pub enum InputData
     Path(PathBuf)
 }
 
-pub trait NetworkDictionary
+pub trait NetworkDictionary: Debug
 {
     type Adapter<R: Read>: ReaderAdapter<R>;
 
@@ -611,12 +612,23 @@ impl NetworkDictionary for WordDictionary
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
     network: SaveNetwork<EmbeddingsUnitFactory, ()>,
     embeddings_size: usize
+}
+
+impl Debug for EmbeddingsDictionary
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
+        f.debug_struct("EmbeddingsDictionary")
+            .field("word_dictionary", &self.word_dictionary)
+            .field("embeddings_size", &self.embeddings_size)
+            .finish()
+    }
 }
 
 impl NetworkDictionary for EmbeddingsDictionary

@@ -299,16 +299,22 @@ pub struct BagOfWordsEmbeddings;
 pub trait EmbeddingsTypeable
 {
     fn min_len() -> usize;
+
+    fn name() -> &'static str;
 }
 
 impl EmbeddingsTypeable for OneHotEmbeddings
 {
     fn min_len() -> usize { 1 }
+
+    fn name() -> &'static str { "one hot" }
 }
 
 impl EmbeddingsTypeable for BagOfWordsEmbeddings
 {
     fn min_len() -> usize { BAG_OF_WORDS_EMBEDDINGS_COUNT * 2 }
+
+    fn name() -> &'static str { "bag of words" }
 }
 
 macro_rules! time_debug
@@ -456,18 +462,18 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
         }
     }
 
-        fn around_window(context: &[VectorWord], amount: usize) -> Box<[usize]>
-        {
-            let mut words = context.iter().take(amount)
-                .chain(context.iter().rev().take(amount))
-                .map(VectorWord::index)
-                .collect::<Vec<usize>>();
+    fn around_window(context: &[VectorWord], amount: usize) -> Box<[usize]>
+    {
+        let mut words = context.iter().take(amount)
+            .chain(context.iter().rev().take(amount))
+            .map(VectorWord::index)
+            .collect::<Vec<usize>>();
 
-            words.sort_unstable();
-            words.dedup();
+        words.sort_unstable();
+        words.dedup();
 
-            words.into_boxed_slice()
-        }
+        words.into_boxed_slice()
+    }
 
     fn next_single(&mut self) -> Option<(OwnedInputType, OneHotLayer)>
     where
@@ -1268,6 +1274,8 @@ where
             println!("parameters amount: {}", self.network.parameters_amount());
             println!("batch size: {}", info.batch_size);
 
+            println!("using {} inputs", EmbeddingType::name());
+
             println!("steps amount: {}", info.steps_num);
 
             println!("iterations per epoch: ~{iterations_per_epoch}");
@@ -1320,7 +1328,8 @@ where
                     steps_num
                 );
 
-                let (loss, gradients_batch): (f32, _) = self.network.gradients(fastrand::Rng::new(), values.iter());
+                let rng = fastrand::Rng::new();
+                let (loss, gradients_batch): (f32, _) = self.network.gradients(rng, values.iter());
 
                 let batch_loss = loss as f64 / steps_num as f64;
 
@@ -1432,6 +1441,8 @@ mod tests
 
     use super::*;
 
+    use crate::word_vectorizer::InputData;
+
     use network::WeightsFullContainer;
 
 
@@ -1477,9 +1488,11 @@ mod tests
 
     type ThisEmbeddings = BagOfWordsEmbeddings;
 
+    type ThisDictionary = CharDictionary;
+
     fn gradient_with_batch_size(
         rng: PrecomputedRng,
-        network: &mut NeuralNetwork<Network<Unit, ()>, (), ByteDictionary>,
+        network: &mut NeuralNetwork<Network<Unit, ()>, (), ThisDictionary>,
         inputs: &[VectorWord],
         steps_num: usize
     ) -> WeightsFullContainer<Unit, LayerType>
@@ -1496,10 +1509,15 @@ mod tests
     #[test]
     fn batch_equivalent()
     {
-        let inputs_amount = 3;
+        let inputs_amount = 5;
         let batch_size = 64;
 
-        let vector_word_size = ByteDictionary.words_amount();
+        let dictionary = CharDictionary::new(InputData::String("abcde".to_owned()));
+
+        let is_input_one_hot = ThisDictionary::is_input_one_hot();
+
+        let input_size = dictionary.input_amount();
+        let output_size = dictionary.words_amount();
 
         let inputs_per_batch = inputs_amount + ThisEmbeddings::min_len();
 
@@ -1507,7 +1525,7 @@ mod tests
 
         let inputs: Vec<_> = iter::repeat_with(||
         {
-            VectorWord::from_raw(fastrand::usize(0..vector_word_size))
+            VectorWord::from_raw(fastrand::usize(0..output_size))
         }).take(batch_size * inputs_per_batch).collect();
 
         let layers = 3;
@@ -1517,8 +1535,8 @@ mod tests
         let layer_sizes = LayerSizes{
             hidden,
             layers,
-            input: vector_word_size,
-            output: vector_word_size,
+            input: input_size,
+            output: output_size,
             batch_size
         };
 
@@ -1528,13 +1546,13 @@ mod tests
         fastrand::seed(222);
 
         let mut network_single = NeuralNetwork::new(
-            ByteDictionary,
+            dictionary.clone(),
             LayerSizes{
                 batch_size: 1,
                 ..layer_sizes
             },
             NetworkConfigInfo{
-                is_input_one_hot: true,
+                is_input_one_hot,
                 is_multistep: true,
                 print_optional_info: true
             },
@@ -1627,10 +1645,10 @@ mod tests
         fastrand::seed(222);
 
         let mut network_batched = NeuralNetwork::new(
-            ByteDictionary,
+            dictionary,
             layer_sizes,
             NetworkConfigInfo{
-                is_input_one_hot: true,
+                is_input_one_hot,
                 is_multistep: true,
                 print_optional_info: true
             },
@@ -1659,7 +1677,7 @@ mod tests
         {
             let all_equal = single_added_gradient.iter().zip(batched_gradient.iter()).all(|(single, batched)|
             {
-                close_enough(*single, *batched, 0.000001)
+                *single == *batched
             });
 
             assert!(all_equal, "single:  {single_added_gradient:?}\nnot equal to\nbatched: {batched_gradient:?}");
