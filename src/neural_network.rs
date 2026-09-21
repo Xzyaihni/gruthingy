@@ -1182,21 +1182,13 @@ where
         {
             let total_loss = self.network.feedforward_no_gradient(input_outputs);
 
-            Self::print_loss(true, total_loss / inputs.len() as f32);
+            Self::print_loss("testing".to_owned(), total_loss / inputs.len() as f32);
         }
     }
 
-    fn print_loss(testing: bool, loss: f32)
+    fn print_loss(name: String, loss: f32)
     {
-        let loss_type = if testing
-        {
-            "testing"
-        } else
-        {
-            "training"
-        };
-
-        println!("{loss_type} loss: {loss}");
+        println!("{name} loss: {loss}");
     }
 
     fn vectorizer<'a, R: Read>(
@@ -1250,8 +1242,7 @@ where
             self.optimizer.set_learning_rate(learning_rate);
         }
 
-        // i dunno wuts the correct way to handle this stuff
-        let batch_step = info.batch_size * info.steps_num.mid();
+        let average_inputs_per_batch = info.batch_size * info.steps_num.mid();
 
         let inputs: Vec<_> = self.vectorized(reader);
         let testing_inputs: Vec<_> = if !info.calculate_loss && !info.calculate_accuracy
@@ -1264,10 +1255,9 @@ where
                 .unwrap_or_else(Vec::new)
         };
 
-        let inputs_per_loss = info.loss_every.unwrap_or_else(||
-        {
-            (inputs.len() / batch_step).max(1)
-        });
+        let iterations_per_epoch = (inputs.len() / average_inputs_per_batch).max(1);
+
+        let inputs_per_loss = info.loss_every.unwrap_or(iterations_per_epoch);
 
         let display_header = !info.less_info;
         let display_inner = !info.less_info;
@@ -1280,10 +1270,11 @@ where
 
             println!("steps amount: {}", info.steps_num);
 
-            println!("calculate testing loss every ~{inputs_per_loss} inputs");
+            println!("iterations per epoch: ~{iterations_per_epoch}");
+            println!("calculate testing loss every ~{inputs_per_loss} iterations");
         }
 
-        let output_loss = |network: &mut NeuralNetwork<_, _, _>|
+        let output_testing_loss = |network: &mut NeuralNetwork<_, _, _>|
         {
             if testing_inputs.is_empty()
             {
@@ -1299,13 +1290,6 @@ where
 
         for input_index in 0..info.iterations
         {
-            if display_inner
-            {
-                let total_iterations = self.extra_info.iterations;
-
-                eprintln!("total iteration: {total_iterations}, iteration: {input_index}");
-            }
-
             self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
 
             time_debug! {
@@ -1314,7 +1298,7 @@ where
                 let print_loss = (input_index % inputs_per_loss) == inputs_per_loss - 1;
                 if print_loss
                 {
-                    output_loss(self);
+                    output_testing_loss(self);
                 }
 
                 let min_len: usize = EmbeddingType::min_len();
@@ -1344,7 +1328,9 @@ where
 
                 if display_inner
                 {
-                    Self::print_loss(false, batch_loss as f32);
+                    let total_iterations = self.extra_info.iterations;
+
+                    Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
                 }
 
                 let gradients = gradients_batch.average_batch();
@@ -1352,7 +1338,7 @@ where
             }
         }
 
-        output_loss(self);
+        output_testing_loss(self);
     }
 
     pub fn predict_into<R>(
