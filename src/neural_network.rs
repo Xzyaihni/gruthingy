@@ -43,7 +43,7 @@ pub use network_unit::{
     OptimizerUnit
 };
 
-pub use network::{Network, SaveNetwork, UnitState, SaveWeightType, LayerSizes, WeightsNamed, NetworkConfigInfo};
+pub use network::{PrecomputedRng, Network, SaveNetwork, UnitState, SaveWeightType, LayerSizes, WeightsNamed, NetworkConfigInfo};
 pub use containers::{
     PhiOtherSelectorRecordingIndex,
     OperationsRecorder,
@@ -1306,8 +1306,6 @@ where
 
                 let max_batch_start = inputs.len().saturating_sub(inputs_per_block);
 
-                self.network.feedforward_setup_dropout();
-
                 let batch_start = if max_batch_start == 0
                 {
                     0
@@ -1322,7 +1320,7 @@ where
                     steps_num
                 );
 
-                let (loss, gradients_batch): (f32, _) = self.network.gradients(values.iter());
+                let (loss, gradients_batch): (f32, _) = self.network.gradients(fastrand::Rng::new(), values.iter());
 
                 let batch_loss = loss as f64 / steps_num as f64;
 
@@ -1480,6 +1478,7 @@ mod tests
     type ThisEmbeddings = BagOfWordsEmbeddings;
 
     fn gradient_with_batch_size(
+        rng: PrecomputedRng,
         network: &mut NeuralNetwork<Network<Unit, ()>, (), ByteDictionary>,
         inputs: &[VectorWord],
         steps_num: usize
@@ -1491,7 +1490,7 @@ mod tests
             steps_num
         );
 
-        network.network.gradients(values.iter::<ThisEmbeddings>()).1
+        network.network.gradients(rng, values.iter::<ThisEmbeddings>()).1
     }
 
     #[test]
@@ -1511,9 +1510,13 @@ mod tests
             VectorWord::from_raw(fastrand::usize(0..vector_word_size))
         }).take(batch_size * inputs_per_batch).collect();
 
+        let layers = 3;
+
+        let hidden = 32;
+
         let layer_sizes = LayerSizes{
-            hidden: 32,
-            layers: 3,
+            hidden,
+            layers,
             input: vector_word_size,
             output: vector_word_size,
             batch_size
@@ -1545,14 +1548,68 @@ mod tests
 
         fastrand::seed(111);
 
-        network_single.network.feedforward_setup_dropout();
+        let rolls_per_hidden = hidden * hidden;
+        let rolls_per_layer = hidden;
+
+        // hardcoded for lstm
+        let hidden_units = 4;
+
+        let rolls_per_batch = rolls_per_hidden * hidden_units * layers + rolls_per_layer * (layers - 1);
+
+        let dropout_rng_values: Vec<f32> = {
+            let total_rolls = batch_size * rolls_per_batch;
+
+            iter::repeat_with(||
+            {
+                fastrand::f32()
+            }).take(total_rolls).collect()
+        };
 
         let mut single_added_gradients = (0..batch_size).map(|batch_step|
         {
             let count = inputs_per_batch;
             let start = batch_step * count;
 
-            gradient_with_batch_size(&mut network_single, &inputs[start..(start + count)], inputs_amount)
+            let single_rng = {
+                let mut index = 0;
+
+                let mut values: Vec<f32> = Vec::new();
+
+                for _ in 0..(hidden_units * layers)
+                {
+                    for _ in 0..rolls_per_hidden
+                    {
+                        let offset = batch_step * rolls_per_hidden;
+
+                        values.push(dropout_rng_values[index + offset]);
+
+                        index += 1;
+                    }
+
+                    index += (batch_size - 1) * rolls_per_hidden;
+                }
+
+                for _ in 0..(layers - 1)
+                {
+                    for _ in 0..rolls_per_layer
+                    {
+                        let offset = batch_step * rolls_per_layer;
+
+                        values.push(dropout_rng_values[index + offset]);
+
+                        index += 1;
+                    }
+
+                    index += (batch_size - 1) * rolls_per_layer;
+                }
+
+                PrecomputedRng{
+                    index: 0,
+                    values
+                }
+            };
+
+            gradient_with_batch_size(single_rng, &mut network_single, &inputs[start..(start + count)], inputs_amount)
         }).reduce(|mut acc, this|
         {
             acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
@@ -1585,11 +1642,12 @@ mod tests
 
         network_batched.network.prepare(true);
 
-        fastrand::seed(111);
+        let batched_rng = PrecomputedRng{
+            index: 0,
+            values: dropout_rng_values.clone()
+        };
 
-        network_batched.network.feedforward_setup_dropout();
-
-        let batched_gradients_batch = gradient_with_batch_size(&mut network_batched, &inputs, inputs_amount);
+        let batched_gradients_batch = gradient_with_batch_size(batched_rng, &mut network_batched, &inputs, inputs_amount);
         let batched_gradients = batched_gradients_batch.average_batch();
 
         eprintln!("calculated batched_gradients");

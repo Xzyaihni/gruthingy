@@ -48,6 +48,40 @@ use crate::{
 };
 
 
+pub trait DropoutRoll: Debug
+{
+    fn roll(&mut self) -> f32;
+}
+
+impl DropoutRoll for ()
+{
+    fn roll(&mut self) -> f32 { 0.0 }
+}
+
+impl DropoutRoll for fastrand::Rng
+{
+    fn roll(&mut self) -> f32 { self.f32() }
+}
+
+#[derive(Debug, Clone)]
+pub struct PrecomputedRng
+{
+    pub index: usize,
+    pub values: Vec<f32>
+}
+
+impl DropoutRoll for PrecomputedRng
+{
+    fn roll(&mut self) -> f32
+    {
+        let value = self.values[self.index];
+
+        self.index += 1;
+
+        value
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct WeightsSize<T>
 {
@@ -230,7 +264,7 @@ macro_rules! create_weights_container
         {
             pub fn new_randomized(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                use $crate::neural_network::network::LayerSize;
+                use $crate::neural_network::{TensorShape, network::LayerSize};
 
                 Self{sizes, $(
                     $name: {
@@ -268,7 +302,12 @@ macro_rules! create_weights_container
 
                         if $is_hidden
                         {
-                            let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
+                            let dropconnect_mask = recorder.new_tensor_batched_no_gradient(TensorShape{
+                                rows: this_size,
+                                columns: previous_size,
+                                batch_size: sizes.batch_size
+                            });
+
                             recorder.name_diff_tensor(dropconnect_mask, stringify!($name).to_owned() + "_dropconnect_mask");
 
                             WeightInfoPtr{
@@ -936,7 +975,11 @@ where
 
                 if is_hidden
                 {
-                    let dropconnect_mask = recorder.new_tensor_no_gradient(this_size, previous_size);
+                    let dropconnect_mask = recorder.new_tensor_batched_no_gradient(TensorShape{
+                        rows: this_size,
+                        columns: previous_size,
+                        batch_size
+                    });
 
                     WeightInfoPtr{
                         weight_dropped: DiffTensorPtr::undefined(),
@@ -1147,7 +1190,7 @@ where
                         {
                             self.recorder.name_diff_tensor(weight_dropped, _debug_info.name.to_owned() + "_dropped");
 
-                            self.recorder.store_tensor_until_end(weights_size.weights.dropconnect_mask.unwrap());
+                            self.recorder.allow_discard(weights_size.weights.dropconnect_mask.unwrap());
                         }
 
                         weights_size.weights.weight_dropped = weight_dropped;
@@ -1256,10 +1299,15 @@ where
     {
         let ptrs: Vec<TensorPtr> = self.weights_ptr.as_ref().unwrap().layers.iter().skip(1).map(|_|
         {
-            let ptr = self.recorder.new_tensor_no_gradient(self.sizes.hidden, 1).as_value();
+            let ptr = self.recorder.new_tensor_batched_no_gradient(TensorShape{
+                rows: self.sizes.hidden,
+                columns: 1,
+                batch_size: self.sizes.batch_size
+            }).as_value();
+
             self.recorder.name_tensor(ptr, "dropout_mask");
 
-            self.recorder.store_tensor_until_end(ptr);
+            self.recorder.allow_discard(ptr);
 
             ptr
         }).collect();
@@ -1551,8 +1599,9 @@ where
         optimizer.advance_time();
     }
 
-    pub fn gradients<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>>(
+    pub fn gradients<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>, R: DropoutRoll>(
         &mut self,
+        mut rng: R,
         input: I
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
@@ -1561,6 +1610,8 @@ where
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
         let inputs_count = input.len();
+
+        self.feedforward_setup_dropout(&mut rng);
 
         let total_loss = self.feedforward_with(OperationsRecorder::calculate, input);
 
@@ -1766,7 +1817,7 @@ where
         correct_amount as f32 / total as f32
     }
 
-    pub fn feedforward_setup_dropout(&mut self)
+    pub fn inference_setup_dropout(&mut self)
     {
         let weights = self.weights.as_mut().unwrap();
 
@@ -1778,7 +1829,7 @@ where
                 {
                     if let Some(dropconnect_mask) = weight_info.dropconnect_mask
                     {
-                        Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(dropconnect_mask), DROPCONNECT_PROBABILITY);
+                        Self::set_dropout_mask(&mut (), self.recorder.get_tensor_mut::<false>(dropconnect_mask), 0.0);
                     }
                 });
             });
@@ -1786,7 +1837,39 @@ where
 
         self.dropouts.dropout_masks.iter().for_each(|dropout_mask|
         {
-            Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), self.dropouts.dropout_probability);
+            Self::set_dropout_mask(&mut (), self.recorder.get_tensor_mut::<false>(*dropout_mask), 0.0);
+        });
+    }
+
+    pub fn feedforward_setup_dropout<R: DropoutRoll>(&mut self, rng: &mut R)
+    {
+        let weights = self.weights.as_mut().unwrap();
+
+        if N::Unit::<WeightInfo>::dropconnectable()
+        {
+            weights.layers.iter().for_each(|layer|
+            {
+                layer.for_each_weight_ref(|weight_info|
+                {
+                    if let Some(dropconnect_mask) = weight_info.dropconnect_mask
+                    {
+                        let dropconnect_mask = self.recorder.get_tensor_mut::<false>(dropconnect_mask);
+
+                        debug_assert_eq!(dropconnect_mask.shape().batch_size, self.sizes.batch_size);
+
+                        Self::set_dropout_mask(rng, dropconnect_mask, DROPCONNECT_PROBABILITY);
+                    }
+                });
+            });
+        }
+
+        self.dropouts.dropout_masks.iter().for_each(|dropout_mask|
+        {
+            let dropout_mask = self.recorder.get_tensor_mut::<false>(*dropout_mask);
+
+            debug_assert_eq!(dropout_mask.shape().batch_size, self.sizes.batch_size);
+
+            Self::set_dropout_mask(rng, dropout_mask, self.dropouts.dropout_probability);
         });
     }
 
@@ -1799,6 +1882,8 @@ where
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.prepare(false);
+
+        self.inference_setup_dropout();
 
         self.feedforward_with(OperationsRecorder::calculate_feedforward, input)
     }
@@ -1832,26 +1917,7 @@ where
 
         self.prepare(false);
 
-        let weights = self.weights.as_mut().unwrap();
-
-        if N::Unit::<WeightInfo>::dropconnectable()
-        {
-            weights.layers.iter().for_each(|layer|
-            {
-                layer.for_each_weight_ref(|weight_info|
-                {
-                    if let Some(dropconnect_mask) = weight_info.dropconnect_mask
-                    {
-                        Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(dropconnect_mask), 0.0);
-                    }
-                });
-            });
-        }
-
-        self.dropouts.dropout_masks.iter().for_each(|dropout_mask|
-        {
-            Self::set_dropout_mask(self.recorder.get_tensor_mut::<false>(*dropout_mask), 0.0);
-        });
+        self.inference_setup_dropout();
 
         let inputs_count = input.len();
 
@@ -1903,7 +1969,8 @@ where
         f_output(output);
     }
 
-    fn set_dropout_mask(
+    fn set_dropout_mask<R: DropoutRoll>(
+        rng: &mut R,
         target: LayerTypeMut,
         probability: f32
     )
@@ -1915,9 +1982,9 @@ where
             target.fill(1.0);
         } else
         {
-            target.fill_with(||
+            target.fill_with(move ||
             {
-                let roll = fastrand::f32();
+                let roll = rng.roll();
 
                 if roll >= probability
                 {
@@ -2136,7 +2203,7 @@ mod tests
 
         let output_value = at_once.recorder.resolve_tensor_ptr(output.unwrap().as_value());
 
-        at_once.feedforward_setup_dropout();
+        at_once.feedforward_setup_dropout(&mut fastrand::Rng::with_seed(SEED));
 
         at_once.recorder.calculate();
 
@@ -2205,9 +2272,7 @@ mod tests
 
         with_steps.prepare(true);
 
-        with_steps.feedforward_setup_dropout();
-
-        let with_steps_gradient = with_steps.gradients(input_outputs.clone());
+        let with_steps_gradient = with_steps.gradients(fastrand::Rng::with_seed(SEED), input_outputs.clone());
 
         let (mut at_once, at_once_gradient) = run_unrolled();
 

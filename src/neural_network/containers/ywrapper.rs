@@ -432,7 +432,7 @@ impl<'a> YWrapperMut<'a>
         self.values.fill(value);
     }
 
-    pub fn fill_with(self, f: impl Fn() -> f32)
+    pub fn fill_with(self, f: impl FnMut() -> f32)
     {
         self.values.fill_with(f);
     }
@@ -1022,15 +1022,23 @@ impl<'a> YVectorWrapperMut<'a>
             return;
         }
 
+        debug_assert_eq!(self.batch_size, lhs.shape.batch_size);
         debug_assert_eq!(self.batch_size, rhs.batch_size);
 
-        inner_single_batch(self, lhs, rhs);
+        for batch_index in 0..self.batch_size
+        {
+            inner_single_batch(self.batch_slice_mut(batch_index), lhs.batch_slice_ref(batch_index), rhs.batch_slice_ref(batch_index));
+        }
     }
 
     pub fn matmulv_transposed_add_inplace(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
     {
         fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: YVectorWrapperRef)
         {
+            debug_assert_eq!(output.batch_size, 1);
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+            debug_assert_eq!(rhs.batch_size, 1);
+
             let rows = lhs.shape.rows;
             let columns = lhs.shape.columns;
 
@@ -1059,9 +1067,13 @@ impl<'a> YVectorWrapperMut<'a>
             return;
         }
 
+        debug_assert_eq!(self.batch_size, lhs.shape.batch_size);
         debug_assert_eq!(self.batch_size, rhs.batch_size);
 
-        inner_single_batch(self, lhs, rhs);
+        for batch_index in 0..self.batch_size
+        {
+            inner_single_batch(self.batch_slice_mut(batch_index), lhs.batch_slice_ref(batch_index), rhs.batch_slice_ref(batch_index));
+        }
     }
 
     pub fn matmulv_into(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef)
@@ -1162,9 +1174,17 @@ impl<'a> YVectorWrapperMut<'a>
 
         debug_assert_eq!(self.batch_size, rhs.batch_size);
 
-        debug_assert_eq!(self.batch_size, 1);
+        debug_assert!(self.batch_size >= lhs.shape.batch_size);
+        debug_assert!(self.batch_size >= added.batch_size);
 
-        inner_single_batch(self, lhs, rhs, added);
+        for batch_index in 0..self.batch_size
+        {
+            let lhs = lhs.batch_slice_ref(batch_index);
+            let rhs = rhs.batch_slice_ref(batch_index);
+            let added = added.batch_slice_ref(batch_index);
+
+            inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs, added);
+        }
     }
 
     pub fn matmul_onehotv_add_into(mut self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YVectorWrapperRef)
