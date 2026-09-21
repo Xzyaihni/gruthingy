@@ -17,14 +17,14 @@ use unicode_reader::CodePoints;
 
 use serde::{Serialize, Deserialize};
 
-use crate::{load_embeddings, EmbeddingsUnitFactory};
+use crate::{complain, EmbeddingsUnitFactory, NeuralNetwork};
 
 use super::neural_network::{
     LayerType,
     OwnedInputType,
     OneHotLayer,
     LOWERCASE_ONLY,
-    network::Network
+    SaveNetwork
 };
 
 
@@ -615,7 +615,7 @@ impl NetworkDictionary for WordDictionary
 pub struct EmbeddingsDictionary
 {
     word_dictionary: WordDictionary,
-    network: Network<EmbeddingsUnitFactory, ()>,
+    network: SaveNetwork<EmbeddingsUnitFactory, ()>,
     embeddings_size: usize
 }
 
@@ -632,11 +632,10 @@ impl NetworkDictionary for EmbeddingsDictionary
             _ => unreachable!()
         };
 
-        let neural_network = load_embeddings::<()>(
-            Some(path.as_ref()),
-            None,
-            false
-        );
+        let neural_network: NeuralNetwork<SaveNetwork<_, ()>, (), _> = NeuralNetwork::load_data(path.as_ref()).unwrap_or_else(|err|
+        {
+            complain(format!("could not load embeddings at {} ({err})", path.display()))
+        });
 
         let (word_dictionary, network) = neural_network.into_embeddings_info();
 

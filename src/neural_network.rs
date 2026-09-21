@@ -11,8 +11,6 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use network::Network;
-
 #[allow(unused_imports)]
 use crate::{
     Config,
@@ -45,7 +43,7 @@ pub use network_unit::{
     OptimizerUnit
 };
 
-pub use network::{UnitState, SaveWeightType, LayerSizes, WeightsNamed, NetworkConfigInfo};
+pub use network::{Network, SaveNetwork, UnitState, SaveWeightType, LayerSizes, WeightsNamed, NetworkConfigInfo};
 pub use containers::{
     PhiOtherSelectorRecordingIndex,
     OperationsRecorder,
@@ -908,15 +906,10 @@ impl Default for ExtraInfo
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "O: Serialize, O::WeightParam: Serialize + Clone, D: Serialize, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<O::WeightParam>: Serialize + Clone, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, O::WeightParam: Deserialize<'de>, D: Deserialize<'de>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<O::WeightParam>: Deserialize<'de>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
-pub struct NeuralNetwork<N, O, D>
-where
-    N: UnitFactory,
-    O: Optimizer,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
+pub struct NeuralNetwork<NetworkType, O, D>
 {
     dictionary: D,
-    network: Network<N, O::WeightParam>,
+    network: NetworkType,
     optimizer: O,
     gradient_clip: Option<f32>,
     extra_info: ExtraInfo,
@@ -926,7 +919,7 @@ where
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
 // only use this for saving the network, it doesnt fully clone things!!
-impl<O, D> Clone for NeuralNetwork<EmbeddingsUnitFactory, O, D>
+impl<O, D> Clone for NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, D>
 where
     O: Optimizer,
     D: Clone,
@@ -945,11 +938,11 @@ where
     }
 }
 
-impl<O, D> NeuralNetwork<EmbeddingsUnitFactory, O, D>
+impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, D>
 where
     O: Optimizer
 {
-    pub fn without_optimizer(self) -> NeuralNetwork<EmbeddingsUnitFactory, (), D>
+    pub fn without_optimizer(self) -> NeuralNetwork<Network<EmbeddingsUnitFactory, ()>, (), D>
     where
         EN<()>: OptimizerUnit<()>,
     {
@@ -965,6 +958,50 @@ where
 }
 
 impl<N, O, D> NeuralNetwork<N, O, D>
+{
+    #[allow(dead_code)]
+    pub fn inner_network(&self) -> &N
+    {
+        &self.network
+    }
+
+    #[allow(dead_code)]
+    pub fn inner_network_mut(&mut self) -> &mut N
+    {
+        &mut self.network
+    }
+
+    pub fn dictionary(&self) -> &D
+    {
+        &self.dictionary
+    }
+}
+
+impl<N, O, D> NeuralNetwork<SaveNetwork<N, O::WeightParam>, O, D>
+where
+    N: UnitFactory,
+    O: Optimizer
+{
+    pub fn load_data(path: &Path) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
+    where
+        for<'de> O: Deserialize<'de>,
+        for<'de> D: Deserialize<'de>,
+        for<'de> O::WeightParam: Deserialize<'de>,
+        for<'de> N::Unit<O::WeightParam>: Deserialize<'de>,
+        for<'de> N::Unit<SaveWeightType>: Deserialize<'de>
+    {
+        let reader = File::open(path)?;
+
+        SaveFormat::deserialize(BufReader::new(reader))
+    }
+
+    pub fn into_embeddings_info(self) -> (D, SaveNetwork<N, O::WeightParam>)
+    {
+        (self.dictionary, self.network)
+    }
+}
+
+impl<N, O, D> NeuralNetwork<Network<N, O::WeightParam>, O, D>
 where
     N: UnitFactory,
     O: Optimizer,
@@ -1001,11 +1038,6 @@ where
         Self{dictionary, network, optimizer, gradient_clip, extra_info, sizes}
     }
 
-    pub fn into_embeddings_info(self) -> (D, Network<N, O::WeightParam>)
-    {
-        (self.dictionary, self.network)
-    }
-
     pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()>
     where
         O: Serialize,
@@ -1021,7 +1053,11 @@ where
         Ok(SaveFormat::serialize(BufWriter::new(writer), self).unwrap())
     }
 
-    pub fn load<P: AsRef<Path>>(config: NetworkConfigInfo, path: P) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
+    pub fn load<P: AsRef<Path>>(
+        config: NetworkConfigInfo,
+        batch_size: usize,
+        path: P
+    ) -> Result<Self, <SaveFormat as SerializeFormat>::Error>
     where
         for<'de> O: Deserialize<'de>,
         for<'de> D: Deserialize<'de>,
@@ -1032,30 +1068,16 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
     {
-        let reader = File::open(path)?;
+        let this = NeuralNetwork::load_data(path.as_ref())?;
 
-        let mut this: Self = SaveFormat::deserialize(BufReader::new(reader))?;
-
-        this.network.initialize_with_params(config);
-
-        Ok(this)
-    }
-
-    pub fn dictionary(&self) -> &D
-    {
-        &self.dictionary
-    }
-
-    #[allow(dead_code)]
-    pub fn inner_network(&self) -> &Network<N, O::WeightParam>
-    {
-        &self.network
-    }
-
-    #[allow(dead_code)]
-    pub fn inner_network_mut(&mut self) -> &mut Network<N, O::WeightParam>
-    {
-        &mut self.network
+        Ok(Self{
+            dictionary: this.dictionary,
+            network: Network::load(this.network, config, batch_size),
+            optimizer: this.optimizer,
+            gradient_clip: this.gradient_clip,
+            extra_info: this.extra_info,
+            sizes: this.sizes
+        })
     }
 
     fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
@@ -1472,7 +1494,7 @@ mod tests
     type ThisEmbeddings = BagOfWordsEmbeddings;
 
     fn gradient_with_batch_size(
-        network: &mut NeuralNetwork<Unit, (), ByteDictionary>,
+        network: &mut NeuralNetwork<Network<Unit, ()>, (), ByteDictionary>,
         inputs: &[VectorWord],
         steps_num: usize
     ) -> WeightsFullContainer<Unit, LayerType>

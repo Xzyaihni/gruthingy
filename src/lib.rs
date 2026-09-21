@@ -15,7 +15,8 @@ use neural_network::{
     UnitFactory,
     EmbeddingUnit,
     Optimizer,
-    NewableLayer
+    NewableLayer,
+    Network
 };
 
 use word_vectorizer::{NetworkDictionary, WordDictionary};
@@ -75,11 +76,12 @@ pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature:
         print_optional_info: false
     };
 
-    let mut network: NeuralNetwork<NUnitFactory, NOptimizer, NDictionary> =
-        NeuralNetwork::load(network_config, path).unwrap_or_else(|err|
-        {
-            complain(format!("could not load network at {} ({err})", path.display()))
-        });
+    type NeuralNetworkType = NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam>, NOptimizer, NDictionary>;
+
+    let mut network: NeuralNetworkType = NeuralNetwork::load(network_config, 1, path).unwrap_or_else(|err|
+    {
+        complain(format!("could not load network at {} ({err})", path.display()))
+    });
 
     let text = Cursor::new(text.as_bytes());
 

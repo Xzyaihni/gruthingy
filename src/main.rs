@@ -46,6 +46,8 @@ use neural_network::{
     NEmbeddings,
     NOptimizer,
     NDictionary,
+    Network,
+    SaveNetwork,
     LayerSizes
 };
 
@@ -102,7 +104,7 @@ fn load_network(
     config: &Config,
     sizes: Option<SizesInfo>,
     auto_create: bool
-) -> NeuralNetwork<NUnitFactory, NOptimizer, NDictionary>
+) -> NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam>, NOptimizer, NDictionary>
 {
     load_network_with(config.network_path.as_ref(), Some(config), sizes, true, auto_create)
 }
@@ -111,7 +113,7 @@ pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
     auto_create: bool
-) -> NeuralNetwork<EmbeddingsUnitFactory, O, WordDictionary>
+) -> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, WordDictionary>
 where
     O: Optimizer + DeserializeOwned,
     <EmbeddingsUnitFactory as UnitFactory>::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
@@ -140,7 +142,7 @@ fn load_network_with<N, O, D>(
     sizes: Option<SizesInfo>,
     is_multistep: bool,
     auto_create: bool
-) -> NeuralNetwork<N, O, D>
+) -> NeuralNetwork<Network<N, O::WeightParam>, O, D>
 where
     for<'de> O: Optimizer + Deserialize<'de>,
     for<'de> N: UnitFactory,
@@ -167,7 +169,9 @@ where
 
     if path.exists()
     {
-        NeuralNetwork::load(network_config, path).unwrap_or_else(|err|
+        let batch_size = sizes.or_else(|| config.map(|config| SizesInfo::from(config))).map(|x| x.batch_size).unwrap_or(1);
+
+        NeuralNetwork::load(network_config, batch_size, path).unwrap_or_else(|err|
         {
             complain(format!("could not load network at {} ({err})", path.display()))
         })
@@ -252,8 +256,10 @@ fn train(config: Config)
     }
 }
 
-fn run(config: Config)
+fn run(mut config: Config)
 {
+    config.batch_size = 1;
+
     let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
@@ -506,7 +512,7 @@ impl UnitFactory for EmbeddingsUnitFactory
 }
 
 fn try_save_network<N, O, D>(
-    network: &NeuralNetwork<N, O, D>,
+    network: &NeuralNetwork<Network<N, O::WeightParam>, O, D>,
     path: &PathBuf
 )
 where
@@ -541,7 +547,10 @@ fn train_embeddings(mut config: Config)
         true
     );
 
-    let run_this = |network: &mut NeuralNetwork<EmbeddingsUnitFactory, NOptimizer, WordDictionary>, training_info|
+    let run_this = |
+        network: &mut NeuralNetwork<Network<EmbeddingsUnitFactory, <NOptimizer as Optimizer>::WeightParam>, NOptimizer, WordDictionary>,
+        training_info
+    |
     {
         let text_file = config.get_input_file();
 
@@ -573,27 +582,30 @@ fn train_embeddings(mut config: Config)
     }
 }
 
-fn closest_embeddings(mut config: Config)
+fn closest_embeddings(config: Config)
 {
-    let mut network = load_embeddings::<()>(
-        None,
-        Some(&mut config),
-        false
-    );
+    let mut network: NeuralNetwork<SaveNetwork<_, ()>, (), _> = {
+        let path = config.embeddings_path.as_ref();
+
+        NeuralNetwork::load_data(path).unwrap_or_else(|err|
+        {
+            complain(format!("could not load embeddings at {} ({err})", path.display()))
+        })
+    };
 
     let input = config.get_input();
 
-    let to_vector_word = |network: &NeuralNetwork<_, _, WordDictionary>, s|
+    let to_vector_word = |network: &NeuralNetwork<SaveNetwork<_, _>, _, WordDictionary>, s|
     {
         network.dictionary().str_to_word(s)
             .unwrap_or_else(|| complain(format!("\"{input}\" isnt a valid word")))
     };
 
-    let embeddings_of = |network: &mut NeuralNetwork<_, _, WordDictionary>, word|
+    let embeddings_of = |network: &mut NeuralNetwork<SaveNetwork<_, _>, _, WordDictionary>, word|
     {
         let input = network.dictionary().words_to_layer([word]);
 
-        network.inner_network_mut().embeddings(&input.into_one_hot())
+        network.inner_network().embeddings(&input.into_one_hot())
     };
 
     let this_word = to_vector_word(&network, input);

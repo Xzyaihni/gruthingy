@@ -36,7 +36,7 @@ pub trait Embeddingsable
 
 pub trait EmbeddingsableOwned
 {
-    fn embeddings_calculate(&self, recorder: &OperationsRecorder, input: &OneHotLayer) -> LayerType;
+    fn embeddings_calculate(&self, input: &OneHotLayer) -> LayerType;
 }
 
 pub trait GenericUnit<T>
