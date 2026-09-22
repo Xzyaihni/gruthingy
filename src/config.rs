@@ -611,7 +611,7 @@ impl Config
         let mut output = None;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
-        let mut bpe_limit = 1000;
+        let mut bpe_limit = 400;
         let mut dropout_probability = 0.5;
         let mut gradient_clip = Some(1.0);
         let mut replace_invalid = true;
