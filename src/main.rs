@@ -199,6 +199,13 @@ where
             InputDataType::None => InputData::None,
             InputDataType::Path(PathType::Dictionary) =>
             {
+                if !config.dictionary_path.exists()
+                {
+                    eprintln!("bpe dictionary doesnt exist, creating one...");
+
+                    create_bpe(config);
+                }
+
                 InputData::Path(config.dictionary_path.clone())
             },
             InputDataType::Path(PathType::Embeddings) =>
@@ -502,7 +509,7 @@ fn create_word_dictionary(config: Config)
         words.insert(word);
     }
 
-    let mut dictionary_file = File::create(config.dictionary_path).unwrap();
+    let mut dictionary_file = File::create(&config.dictionary_path).unwrap();
     for (index, word) in words.into_iter().enumerate()
     {
         if index != 0
@@ -514,9 +521,11 @@ fn create_word_dictionary(config: Config)
     }
 
     dictionary_file.flush().unwrap();
+
+    eprintln!("created word dictionary at {}", config.dictionary_path.display());
 }
 
-fn create_bpe(config: Config)
+fn create_bpe(config: &Config)
 {
     let mut text_file_reader = BufReader::new(File::open(config.get_input()).unwrap());
 
@@ -585,12 +594,14 @@ fn create_bpe(config: Config)
         });
     }
 
-    let output_file = File::create(config.dictionary_path).unwrap_or_else(|err| handle_io(err));
+    let output_file = File::create(&config.dictionary_path).unwrap_or_else(|err| handle_io(err));
 
     postcard::to_io(&dictionary, output_file).unwrap_or_else(|err|
     {
         complain(format!("bpe serialization error: {err}"));
     });
+
+    eprintln!("created bpe dictionary at {}", config.dictionary_path.display());
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -810,7 +821,7 @@ fn main()
         ProgramMode::Run => run(config),
         ProgramMode::Test => test_loss(config),
         ProgramMode::CreateDictionary => create_word_dictionary(config),
-        ProgramMode::CreateBpe => create_bpe(config),
+        ProgramMode::CreateBpe => create_bpe(&config),
         ProgramMode::ClosestEmbeddings => closest_embeddings(config),
         ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config),

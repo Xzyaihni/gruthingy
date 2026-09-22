@@ -1052,6 +1052,10 @@ where
         N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<O::WeightParam>: Serialize + Clone
     {
+        let path = path.as_ref();
+
+        eprintln!("saved network at {}", path.display());
+
         let writer = File::create(path)?;
 
         Ok(SaveFormat::serialize(BufWriter::new(writer), self).unwrap())
@@ -1072,7 +1076,11 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
     {
-        let this = NeuralNetwork::load_data(path.as_ref())?;
+        let path = path.as_ref();
+
+        eprintln!("loading network from {}", path.display());
+
+        let this = NeuralNetwork::load_data(path)?;
 
         Ok(Self{
             dictionary: this.dictionary,
