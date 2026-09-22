@@ -1329,6 +1329,17 @@ mod tests
     }
 
     #[test]
+    fn bpe_uses_biggest_first()
+    {
+        let text = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut dictionary = bpe_from_bytes(2, true, text.into_iter().copied());
+
+        let encoded = dictionary.vectorized(reader());
+
+        assert_eq!(encoded.len(), 5)
+    }
+
+    #[test]
     fn encodes_decodes_char()
     {
         let s = "h elow / im tsngaCLcdr()lyfk)";
