@@ -9,9 +9,9 @@ use std::{
     iter,
     process,
     path::{PathBuf, Path},
-    io::{self, Write, BufReader, BufWriter, Cursor},
+    io::{self, Read, Write, BufReader, BufWriter, Cursor},
     fs::{self, File},
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ops::{Index, IndexMut}
 };
 
@@ -19,6 +19,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 #[allow(unused_imports)]
 use neural_network::{
+    USE_EMBEDDING_LAYER,
     NetworkConfigInfo,
     PhiOtherSelectorRecordingIndex,
     NetworkStateSelectable,
@@ -58,7 +59,10 @@ use word_vectorizer::{
     ReaderAdapter,
     NetworkDictionary,
     WordDictionary,
+    BpeDictionary,
+    BpeMapping,
     VectorWord,
+    PathType,
     InputDataType,
     InputData
 };
@@ -193,7 +197,11 @@ where
                 }))
             },
             InputDataType::None => InputData::None,
-            InputDataType::Path =>
+            InputDataType::Path(PathType::Dictionary) =>
+            {
+                InputData::Path(config.dictionary_path.clone())
+            },
+            InputDataType::Path(PathType::Embeddings) =>
             {
                 InputData::Path(config.embeddings_path.clone())
             }
@@ -203,9 +211,14 @@ where
 
         let sizes = sizes.unwrap_or_else(|| SizesInfo::from(config));
 
+        let initial_input = dictionary.input_amount();
+        let final_output = dictionary.words_amount();
+
         let sizes = LayerSizes{
-            input: dictionary.input_amount(),
-            output: dictionary.words_amount(),
+            initial_input,
+            input: if USE_EMBEDDING_LAYER { config.embeddings_size } else { initial_input },
+            output: if USE_EMBEDDING_LAYER { config.embeddings_size } else { final_output },
+            final_output,
             hidden: sizes.hidden,
             layers: sizes.layers,
             batch_size: sizes.batch_size
@@ -503,6 +516,83 @@ fn create_word_dictionary(config: Config)
     dictionary_file.flush().unwrap();
 }
 
+fn create_bpe(config: Config)
+{
+    let mut text_file_reader = BufReader::new(File::open(config.get_input()).unwrap());
+
+    fn handle_io(err: io::Error) -> ! { complain(format!("bpe io error: {err}")) }
+
+    let mut text_file: Vec<u8> = Vec::new();
+    text_file_reader.read_to_end(&mut text_file).unwrap_or_else(|err| handle_io(err));
+
+    let mut ngrams: Vec<u32> = text_file.into_iter().map(u32::from).collect();
+
+    if ngrams.is_empty()
+    {
+        complain("the input file is empty, cant create bpe");
+    }
+
+    let mut dictionary = BpeDictionary{pairs: Vec::new()};
+
+    loop
+    {
+        let (most_common_pair, occurred_times) = {
+            let mut pair_frequencies: HashMap<(u32, u32), usize> = HashMap::new();
+
+            ngrams.windows(2).for_each(|x|
+            {
+                let pair = (x[0], x[1]);
+
+                *pair_frequencies.entry(pair).or_insert(0) += 1;
+            });
+
+            pair_frequencies.into_iter().max_by_key(|(_key, value)| *value).expect("must exist")
+        };
+
+        let mapping = BpeMapping{
+            pair: most_common_pair,
+            output: u8::MAX as u32 + 1 + dictionary.pairs.len() as u32
+        };
+
+        dictionary.pairs.push(mapping);
+
+        BpeDictionary::combine_pair(&mut ngrams, mapping);
+
+        if config.optional_info
+        {
+            println!("{}/{} replaced pair that occurs {occurred_times} times", dictionary.pairs.len(), config.bpe_limit);
+        }
+
+        if dictionary.pairs.len() == config.bpe_limit
+        {
+            let ngram = dictionary.word_to_bytes_single(mapping.output);
+            println!("least common ngram occurs {occurred_times} times: {}", String::from_utf8_lossy(&ngram));
+
+            break;
+        }
+    }
+
+    if let Some(longest_ngram) = dictionary.pairs.iter().map(|x| dictionary.word_to_bytes_single(x.output)).max_by_key(|x| x.len())
+    {
+        println!("the longest is a {}-gram: {}", longest_ngram.len(), String::from_utf8_lossy(&longest_ngram));
+    }
+
+    if config.optional_info
+    {
+        dictionary.pairs.iter().for_each(|ngram|
+        {
+            println!("{}", String::from_utf8_lossy(&dictionary.word_to_bytes_single(ngram.output)));
+        });
+    }
+
+    let output_file = File::create(config.dictionary_path).unwrap_or_else(|err| handle_io(err));
+
+    postcard::to_io(&dictionary, output_file).unwrap_or_else(|err|
+    {
+        complain(format!("bpe serialization error: {err}"));
+    });
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EmbeddingsUnitFactory;
 
@@ -720,6 +810,7 @@ fn main()
         ProgramMode::Run => run(config),
         ProgramMode::Test => test_loss(config),
         ProgramMode::CreateDictionary => create_word_dictionary(config),
+        ProgramMode::CreateBpe => create_bpe(config),
         ProgramMode::ClosestEmbeddings => closest_embeddings(config),
         ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config),

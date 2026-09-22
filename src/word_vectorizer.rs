@@ -1,5 +1,6 @@
 use std::{
     str,
+    fs::File,
     fmt::{self, Debug},
     hash::Hash,
     borrow::Borrow,
@@ -25,7 +26,9 @@ use super::neural_network::{
     OwnedInputType,
     OneHotLayer,
     LOWERCASE_ONLY,
-    SaveNetwork
+    SaveNetwork,
+    PostcardFormat,
+    SerializeFormat
 };
 
 
@@ -127,11 +130,17 @@ where
     }
 }
 
+pub enum PathType
+{
+    Dictionary,
+    Embeddings
+}
+
 pub enum InputDataType
 {
     None,
     String,
-    Path
+    Path(PathType)
 }
 
 pub enum InputData
@@ -153,6 +162,13 @@ pub trait NetworkDictionary: Debug
 
     fn is_input_one_hot() -> bool;
     fn input_data() -> InputDataType;
+
+    fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
+    where
+        for<'a> WordVectorizer<Self::Adapter<BufReader<R>>, &'a mut Self>: Iterator<Item=VectorWord>
+    {
+        WordVectorizer::<Self::Adapter<BufReader<R>>, &mut Self>::new(self, reader).collect()
+    }
 
     fn input_amount(&self) -> usize
     {
@@ -612,6 +628,135 @@ impl NetworkDictionary for WordDictionary
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BpeMapping
+{
+    pub pair: (u32, u32),
+    pub output: u32
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BpeDictionary
+{
+    pub pairs: Vec<BpeMapping>
+}
+
+#[allow(dead_code)]
+impl BpeDictionary
+{
+    pub fn word_to_bytes_single(&self, word: u32) -> Box<[u8]>
+    {
+        if word <= u8::MAX as u32
+        {
+            Box::new([word as u8])
+        } else
+        {
+            let pair_index = word - u8::MAX as u32 - 1;
+
+            let pair = self.pairs[pair_index as usize].pair;
+
+            self.word_to_bytes_single(pair.0).into_iter().chain(self.word_to_bytes_single(pair.1)).collect()
+        }
+    }
+
+    pub fn combine_pair(ngrams: &mut Vec<u32>, mapping: BpeMapping)
+    {
+        let mut any_replaced = false;
+
+        let mut new_ngrams = Vec::new();
+
+        let mut i = 0;
+        while i < ngrams.len().saturating_sub(1)
+        {
+            if (ngrams[i], ngrams[i + 1]) == mapping.pair
+            {
+                any_replaced = true;
+
+                new_ngrams.push(mapping.output);
+                i += 1;
+            } else
+            {
+                new_ngrams.push(ngrams[i]);
+            }
+
+            i += 1;
+        }
+
+        if !any_replaced
+        {
+            return;
+        }
+
+        *ngrams = new_ngrams;
+    }
+
+    fn next_word<R: Read>(&mut self, _reader: &mut DefaultAdapter<R>) -> Option<VectorWord>
+    {
+        unreachable!()
+    }
+}
+
+impl NetworkDictionary for BpeDictionary
+{
+    type Adapter<R: Read> = DefaultAdapter<R>;
+
+
+    fn new(data: InputData) -> Self
+    {
+        let path = match data
+        {
+            InputData::Path(value) => value,
+            _ => unreachable!()
+        };
+
+        let file = File::open(&path).unwrap_or_else(|err|
+        {
+            complain(format!("error opening bpe file ({}): {err}", path.display()))
+        });
+
+        PostcardFormat::deserialize(file).unwrap_or_else(|err|
+        {
+            complain(format!("error loading bpe: {err}"))
+        })
+    }
+
+    fn is_input_one_hot() -> bool { true }
+
+    fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
+    {
+        let mut ngrams: Vec<u32> = {
+            let mut reader = BufReader::new(reader);
+
+            let mut bytes: Vec<u8> = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+
+            bytes.into_iter().map(u32::from).collect()
+        };
+
+        self.pairs.iter().for_each(|pair|
+        {
+            Self::combine_pair(&mut ngrams, *pair);
+        });
+
+        ngrams.into_iter().map(|x| VectorWord::new(x as usize)).collect()
+    }
+
+    fn input_data() -> InputDataType
+    {
+        InputDataType::Path(PathType::Dictionary)
+    }
+
+    fn word_to_bytes(&self, _previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>
+    {
+        self.word_to_bytes_single(word.0 as u32)
+    }
+
+    fn words_amount(&self) -> usize
+    {
+        self.pairs.len() + u8::MAX as usize + 1
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EmbeddingsDictionary
 {
@@ -660,7 +805,7 @@ impl NetworkDictionary for EmbeddingsDictionary
 
     fn input_data() -> InputDataType
     {
-        InputDataType::Path
+        InputDataType::Path(PathType::Embeddings)
     }
 
     fn one_hot_to_input(&self, layer: OneHotLayer) -> OwnedInputType
@@ -805,6 +950,16 @@ impl<R: Read> Iterator for WordVectorizer<CharsAdapter<R>, &mut WordDictionary>
     fn next(&mut self) -> Option<Self::Item>
     {
         self.dictionary.next_word(self.adapter.by_ref())
+    }
+}
+
+impl<R: Read> Iterator for WordVectorizer<DefaultAdapter<R>, &mut BpeDictionary>
+{
+    type Item = VectorWord;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        self.dictionary.next_word(&mut self.adapter)
     }
 }
 

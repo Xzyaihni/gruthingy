@@ -20,10 +20,11 @@ use crate::{
         ByteDictionary,
         CharDictionary,
         WordDictionary,
+        BpeDictionary,
         EmbeddingsDictionary,
         NetworkDictionary,
-        WordVectorizer,
         VectorWord,
+        WordVectorizer,
         ReaderAdapter
     }
 };
@@ -339,6 +340,8 @@ macro_rules! time_debug
         }
     }
 }
+
+type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
 
 pub struct KahanSum
 {
@@ -700,8 +703,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         predicted.into_boxed_slice()
     }
 }
-
-type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
 
 #[derive(Clone)]
 pub enum StepsNum
@@ -1086,8 +1087,8 @@ where
     fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
     where
         R: Read,
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
         let inputs = self.vectorized(reader);
 
@@ -1118,9 +1119,9 @@ where
     pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool, Box<[u8]>)>
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_guesses(reader)
     }
@@ -1128,9 +1129,9 @@ where
     pub fn top_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, u32, Box<[u8]>)>
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_guesses(reader)
     }
@@ -1138,9 +1139,9 @@ where
     pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32, Box<[u8]>)>
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_guesses(reader)
     }
@@ -1153,9 +1154,9 @@ where
     )
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let inputs = self.vectorized(reader);
 
@@ -1195,22 +1196,11 @@ where
         println!("{name} loss: {loss}");
     }
 
-    fn vectorizer<'a, R: Read>(
-        &'a mut self,
-        reader: R
-    ) -> impl Iterator<Item=VectorWord> + 'a
-    where
-        D::Adapter<BufReader<R>>: 'a,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
-    {
-        WordVectorizer::new(&mut self.dictionary, reader)
-    }
-
     fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
     where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
-        self.vectorizer(reader).collect()
+        self.dictionary.vectorized(reader)
     }
 
     pub fn train<EmbeddingType, RT, R>(
@@ -1223,8 +1213,8 @@ where
         EmbeddingType: EmbeddingsTypeable,
         RT: Read,
         R: Read,
-        for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
+        for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
         for<'b> &'b mut N::Unit<O::WeightParam>: IntoIterator<Item=&'b mut O::WeightParam>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffTensor>=N::Unit<DiffTensor>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
@@ -1359,9 +1349,9 @@ where
     )
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
         {
@@ -1378,9 +1368,9 @@ where
     ) -> String
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let output = self.predict_inner(reader, amount, temperature, |predictor, network|
         {
@@ -1398,9 +1388,9 @@ where
     ) -> Box<[u8]>
     where
         R: Read,
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.predict_inner(reader, amount, temperature, |predictor, network|
         {
@@ -1539,8 +1529,10 @@ mod tests
         let layer_sizes = LayerSizes{
             hidden,
             layers,
+            initial_input: input_size,
             input: input_size,
             output: output_size,
+            final_output: output_size,
             batch_size
         };
 

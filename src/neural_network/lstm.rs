@@ -300,7 +300,7 @@ mod tests
 
         let lstm: WeightsContainer<WeightInfoPtr> = WeightsContainer
         {
-            sizes: LayerSizes{hidden: 1, input: 1, output: 1, layers: 1, batch_size: 1},
+            sizes: LayerSizes{hidden: 1, initial_input: 1, input: 1, output: 1, final_output: 1, layers: 1, batch_size: 1},
 
             input_update: one_weight_info(1.65),
             input_forget: one_weight_info(1.63),

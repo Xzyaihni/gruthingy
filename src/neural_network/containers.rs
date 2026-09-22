@@ -2079,6 +2079,30 @@ impl OperationsRecorder
         output
     }
 
+    pub fn matmul_onehotv(&mut self, a: DiffTensorPtr, b: OneHotIndex) -> DiffTensorPtr
+    {
+        let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
+        let b_columns = 1;
+
+        let output_batch_size = a_batch_size.max(self.one_hot_batch_size(b));
+
+        let gradient_batch_size_of = |x: &DiffTensorPtr|
+        {
+            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
+        };
+
+        let gradient_batch_size = gradient_batch_size_of(&a);
+
+        let output = self.new_tensor_op(
+            TensorShape{rows: a_rows, columns: b_columns, batch_size: output_batch_size},
+            gradient_batch_size
+        );
+
+        self.add_recording_operation(Op::MatmulOneHotv{lhs: a, rhs: b, output});
+
+        output
+    }
+
     pub fn matmul_onehotv_add(&mut self, a: DiffTensorPtr, b: OneHotIndex, added: DiffTensorPtr) -> DiffTensorPtr
     {
         let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
@@ -3282,6 +3306,21 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
+                GradientOp::MatmulOneHotv{lhs, rhs, output} =>
+                {
+                    debug_calculate_values!(MatmulOneHotv, (lhs),());
+
+                    {
+                        let (output, lhs) = get_disjoint_mut!(
+                            (LayerTypeVectorMut, output, x0),
+                            (LayerTypeRef, lhs, x1)
+                        );
+
+                        output.matmul_onehotv_into(lhs, &self.memory.one_hot_layers[rhs.0]);
+                    }
+
+                    debug_calculate_values_result!((output),());
+                },
                 GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
                     debug_calculate_values!(MatmulOneHotvAdd, (lhs, added),());
@@ -3536,6 +3575,10 @@ impl OperationsRecorder
                 Op::MatmulvAdd{lhs, rhs, added, output} =>
                 {
                     GradientOp::MatmulvAdd{lhs: lhs.as_value(), rhs: rhs.as_value(), added: added.as_value(), output: output.as_value()}
+                },
+                Op::MatmulOneHotv{lhs, rhs, output} =>
+                {
+                    GradientOp::MatmulOneHotv{lhs: lhs.as_value(), rhs: *rhs, output: output.as_value()}
                 },
                 Op::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
@@ -6457,6 +6500,15 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: added_gradient});
                 }
             },
+            Op::MatmulOneHotv{lhs, rhs, output} =>
+            {
+                let gradient = gradient_or_return!(output);
+
+                if let Some(lhs_gradient) = lhs.as_gradient()
+                {
+                    add_gradient_operation(self, selectors, GradientOp::OuterProductOneHot{lhs: gradient, rhs: rhs, output: lhs_gradient});
+                }
+            },
             Op::MatmulOneHotvAdd{lhs, rhs, added, output} =>
             {
                 let gradient = gradient_or_return!(output);
@@ -7094,6 +7146,7 @@ impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<T, V, J, PhiOthe
             GradientOp::MatmulvTransposed{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?}"),
             GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?} + {added:?}"),
             GradientOp::MatmulvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
+            GradientOp::MatmulOneHotv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
             GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
             GradientOp::OuterProduct{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
             GradientOp::OuterProductAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
@@ -7164,6 +7217,7 @@ pub enum GradientOp<T, V, J, S>
     SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: OneHotIndex, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
     MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
+    MatmulOneHotv{lhs: T, rhs: OneHotIndex, output: T},
     MatmulOneHotvAdd{lhs: T, rhs: OneHotIndex, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
     MatmulvTransposedAdd{lhs: T, rhs: T, added: T, output: T},
@@ -7255,6 +7309,10 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             },
             Self::Matmulv{lhs, rhs, output} => GradientOp::Matmulv{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::MatmulvAdd{lhs, rhs, added, output} => GradientOp::MatmulvAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)},
+            Self::MatmulOneHotv{lhs, rhs, output} =>
+            {
+                GradientOp::MatmulOneHotv{lhs: tf(lhs), rhs, output: tf(output)}
+            },
             Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
             {
                 GradientOp::MatmulOneHotvAdd{lhs: tf(lhs), rhs, added: tf(added), output: tf(output)}
@@ -7392,6 +7450,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             },
             Self::Matmulv{output, lhs, rhs} => Self::Matmulv{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulvAdd{output, lhs, rhs, added} => Self::MatmulvAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MatmulOneHotv{output, lhs, rhs} => Self::MatmulOneHotv{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulOneHotvAdd{output, lhs, rhs, added} => Self::MatmulOneHotvAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulvTransposedAdd{output, lhs, rhs, added} => Self::MatmulvTransposedAdd{output: tf(&mut state, output), lhs, rhs, added},
@@ -7512,6 +7571,10 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             {
                 Self::MatmulvAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
+            Self::MatmulOneHotv{lhs, rhs, output} =>
+            {
+                Self::MatmulOneHotv{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output}
+            },
             Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
             {
                 Self::MatmulOneHotvAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
@@ -7602,6 +7665,7 @@ pub enum Op
     SoftmaxCrossEntropy{values: DiffTensorPtr, targets: OneHotIndex, softmaxed_output: DiffTensorPtr, output: DiffTensorPtr},
     Matmulv{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     MatmulvAdd{lhs: DiffTensorPtr, rhs: DiffTensorPtr, added: DiffTensorPtr, output: DiffTensorPtr},
+    MatmulOneHotv{lhs: DiffTensorPtr, rhs: OneHotIndex, output: DiffTensorPtr},
     MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr},
     SetOtherSelector(PhiOtherSelectorRecordingIndex),
     GetOtherSelectorValue{index: PhiOtherSelectorRecordingIndex, output: DiffScalar},
@@ -7634,6 +7698,7 @@ impl Op
             Self::SoftmaxCrossEntropy{softmaxed_output, output, ..} => { f(softmaxed_output.into()); f(output.into()) },
             Self::Matmulv{output, ..} => f(output.into()),
             Self::MatmulvAdd{output, ..} => f(output.into()),
+            Self::MatmulOneHotv{output, ..} => f(output.into()),
             Self::MatmulOneHotvAdd{output, ..} => f(output.into()),
             Self::GetOtherSelectorValue{output, ..} => f(output.into()),
             Self::GetOtherSelectorTensor{output, ..} => f(output.into()),
@@ -7665,6 +7730,7 @@ impl Op
             Self::SoftmaxCrossEntropy{values, ..} => f(values.into()),
             Self::Matmulv{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::MatmulvAdd{lhs, rhs, added, ..} => { f(lhs.into()); f(rhs.into()); f(added.into()) },
+            Self::MatmulOneHotv{lhs, ..} => f(lhs.into()),
             Self::MatmulOneHotvAdd{lhs, added, ..} => { f(lhs.into()); f(added.into()) },
             Self::GetOtherSelectorValue{..}
             | Self::GetOtherSelectorTensor{..}
@@ -7766,6 +7832,11 @@ impl InputTypePtr
     pub fn into_normal(self) -> TensorPtr
     {
         if let Self::Normal(x) = self { x } else { panic!("expected normal") }
+    }
+
+    pub fn into_one_hot(self) -> OneHotIndex
+    {
+        if let Self::OneHot(x) = self { x } else { panic!("expected onehot") }
     }
 }
 

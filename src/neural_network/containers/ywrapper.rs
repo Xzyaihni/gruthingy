@@ -1187,6 +1187,54 @@ impl<'a> YVectorWrapperMut<'a>
         }
     }
 
+    pub fn matmul_onehotv_into(mut self, lhs: YWrapperRef, rhs: &OneHotLayer)
+    {
+        fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: &[usize])
+        {
+            debug_assert_eq!(output.batch_size, 1);
+            debug_assert_eq!(lhs.shape.batch_size, 1);
+
+            let o_size = output.len();
+
+            (0..o_size).for_each(|r|
+            {
+                output.values[r] = 0.0;
+
+                rhs.iter().for_each(|m|
+                {
+                    output.values[r] += lhs.values[m * o_size + r];
+                });
+            });
+        }
+
+        debug_assert_eq!(self.rows, lhs.shape.rows);
+        debug_assert_eq!(lhs.shape.columns, rhs.size);
+
+        debug_assert!(self.batch_size >= lhs.shape.batch_size);
+        debug_assert!(self.batch_size >= rhs.batch_size());
+
+        for batch_index in 0..self.batch_size
+        {
+            let lhs = if lhs.shape.batch_size != 1
+            {
+                lhs.batch_slice_ref(batch_index)
+            } else
+            {
+                lhs
+            };
+
+            let rhs = if rhs.batch_size() != 1
+            {
+                &rhs.positions[batch_index]
+            } else
+            {
+                &rhs.positions[0]
+            };
+
+            inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs);
+        }
+    }
+
     pub fn matmul_onehotv_add_into(mut self, lhs: YWrapperRef, rhs: &OneHotLayer, added: YVectorWrapperRef)
     {
         fn inner_single_batch(output: YVectorWrapperMut, lhs: YWrapperRef, rhs: &[usize], added: YVectorWrapperRef)

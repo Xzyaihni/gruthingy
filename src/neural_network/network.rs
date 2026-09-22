@@ -42,6 +42,7 @@ use crate::{
         Optimizer,
         OptimizerUnit,
         UnitFactory,
+        USE_EMBEDDING_LAYER,
         DROPCONNECT_PROBABILITY,
         network_unit::{EmbeddingsableOwned, NetworkUnitParameterable}
     }
@@ -80,6 +81,13 @@ impl DropoutRoll for PrecomputedRng
 
         value
     }
+}
+
+pub fn with_previous_layer_random(previous_layer: usize) -> f32
+{
+    let v = 1.0 / (previous_layer as f32).sqrt();
+
+    (fastrand::f32() * 2.0 - 1.0) * v
 }
 
 #[derive(Debug, PartialEq)]
@@ -132,8 +140,10 @@ impl<T> WeightsNamed<T>
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LayerSizes
 {
+    pub initial_input: usize,
     pub input: usize,
     pub output: usize,
+    pub final_output: usize,
     pub hidden: usize,
     pub layers: usize,
     pub batch_size: usize
@@ -264,7 +274,7 @@ macro_rules! create_weights_container
         {
             pub fn new_randomized(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                use $crate::neural_network::{TensorShape, network::LayerSize};
+                use $crate::neural_network::{TensorShape, network::{with_previous_layer_random, LayerSize}};
 
                 Self{sizes, $(
                     $name: {
@@ -287,9 +297,7 @@ macro_rules! create_weights_container
 
                                 let weights = LayerType::new_with(this_size, previous_size, ||
                                 {
-                                    let v = 1.0 / (previous_layer as f32).sqrt();
-
-                                    (fastrand::f32() * 2.0 - 1.0) * v
+                                    with_previous_layer_random(previous_layer)
                                 });
 
                                 recorder.set_new_tensor_gradientable(weights, sizes.batch_size)
@@ -579,11 +587,53 @@ impl<State, Output> NetworkOutput<State, Output>
 
 pub type UnitState<N, T> = <<N as UnitFactory>::Unit<WeightInfoPtr> as NetworkUnit>::State<T>;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddingsLayers<T>
+{
+    input: T,
+    output: T
+}
+
+impl<T> EmbeddingsLayers<T>
+{
+    pub fn map<F: FnMut(T) -> U, U>(self, mut f: F) -> EmbeddingsLayers<U>
+    {
+        EmbeddingsLayers{
+            input: f(self.input),
+            output: f(self.output)
+        }
+    }
+
+    pub fn map_ref<F: FnMut(&T) -> U, U>(&self, mut f: F) -> EmbeddingsLayers<U>
+    {
+        EmbeddingsLayers{
+            input: f(&self.input),
+            output: f(&self.output)
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item=&T>
+    {
+        iter::once(&self.input).chain(iter::once(&self.output))
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
+    {
+        iter::once(&mut self.input).chain(iter::once(&mut self.output))
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item=T>
+    {
+        iter::once(self.input).chain(iter::once(self.output))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound(serialize = "T: Serialize, N::Unit<T>: Serialize", deserialize = "T: Deserialize<'de>, N::Unit<T>: Deserialize<'de>"))]
 pub struct WeightsFullContainer<N: UnitFactory, T>
 {
     layers: Vec<N::Unit<T>>,
+    embeddings: Option<EmbeddingsLayers<T>>,
     output: T
 }
 
@@ -594,7 +644,7 @@ where
 {
     fn eq(&self, other: &Self) -> bool
     {
-        self.layers == other.layers && self.output == other.output
+        self.layers == other.layers && self.embeddings == other.embeddings && self.output == other.output
     }
 }
 
@@ -607,6 +657,7 @@ where
     {
         Self{
             layers: self.layers.clone(),
+            embeddings: self.embeddings.clone(),
             output: self.output.clone()
         }
     }
@@ -621,21 +672,9 @@ where
     {
         f.debug_struct("WeightsFullContainer")
             .field("layers", &self.layers)
+            .field("embeddings", &self.embeddings)
             .field("output", &self.output)
             .finish()
-    }
-}
-
-impl<N: UnitFactory, T> IntoIterator for WeightsFullContainer<N, T>
-where
-    N::Unit<T>: IntoIterator<Item=T>
-{
-    type Item = T;
-    type IntoIter = iter::Chain<iter::Flatten<vec::IntoIter<N::Unit<T>>>, iter::Once<T>>;
-
-    fn into_iter(self) -> Self::IntoIter
-    {
-        self.layers.into_iter().flatten().chain(iter::once(self.output))
     }
 }
 
@@ -644,6 +683,7 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     pub fn new(
         sizes: LayerSizes,
         unit_f: impl FnMut(LayerSizes) -> N::Unit<T>,
+        embeddings: Option<EmbeddingsLayers<T>>,
         output: T
     ) -> Self
     {
@@ -661,6 +701,7 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
                     }
                 }
             }).map(unit_f).collect(),
+            embeddings,
             output
         }
     }
@@ -672,6 +713,7 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     {
         WeightsFullContainer{
             output: f(self.output),
+            embeddings: self.embeddings.map(|x| x.map(&mut f)),
             layers: self.layers.into_iter().map(|layer| layer.map(&mut f)).collect()
         }
     }
@@ -683,6 +725,7 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     {
         WeightsFullContainer{
             output: f(&self.output),
+            embeddings: self.embeddings.as_ref().map(|x| x.map_ref(&mut f)),
             layers: self.layers.iter().map(|layer| layer.map_ref(&mut f)).collect()
         }
     }
@@ -691,14 +734,21 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     where
         for<'a> &'a N::Unit<T>: IntoIterator<Item=&'a T>
     {
-        self.layers.iter().flatten().chain(iter::once(&self.output))
+        self.layers.iter().flatten().chain(self.embeddings.iter().map(|x| x.iter()).flatten()).chain(iter::once(&self.output))
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
     where
         for<'a> &'a mut N::Unit<T>: IntoIterator<Item=&'a mut T>
     {
-        self.layers.iter_mut().flatten().chain(iter::once(&mut self.output))
+        self.layers.iter_mut().flatten().chain(self.embeddings.iter_mut().map(|x| x.iter_mut()).flatten()).chain(iter::once(&mut self.output))
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item=T>
+    where
+        N::Unit<T>: IntoIterator<Item=T>
+    {
+        self.layers.into_iter().flatten().chain(self.embeddings.into_iter().map(|x| x.into_iter()).flatten()).chain(iter::once(self.output))
     }
 }
 
@@ -960,6 +1010,12 @@ where
         batch_size: usize
     ) -> Self
     {
+        if !USE_EMBEDDING_LAYER
+        {
+            assert_eq!(x.sizes.initial_input, x.sizes.input);
+            assert_eq!(x.sizes.output, x.sizes.final_output);
+        }
+
         x.sizes.batch_size = batch_size;
 
         let mut recorder = OperationsRecorder::new();
@@ -986,6 +1042,7 @@ where
 
         let weights_ptr = WeightsFullContainer{
             output: weight_info_from(&mut recorder, x.weights.output),
+            embeddings: x.weights.embeddings.map(|embeddings| embeddings.map(|x| weight_info_from(&mut recorder, x))),
             layers: x.weights.layers.into_iter().map(|x| x.map_with_info(|WeightsSize{weights: value, this_size, previous_size, is_hidden, ..}|
             {
                 let info = weight_info_from(&mut recorder, value);
@@ -1089,15 +1146,14 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        let output_weights_ptr_tensor = {
-            let weights = self.recorder.set_new_tensor_gradientable(LayerType::new_with(sizes.output, sizes.hidden, ||
+        let mut create_weights = |name: &'static str, previous: usize, current: usize| -> WeightInfoPtr
+        {
+            let weights = self.recorder.set_new_tensor_gradientable(LayerType::new_with(current, previous, ||
             {
-                let v = 1.0 / (sizes.hidden as f32).sqrt();
-
-                (fastrand::f32() * 2.0 - 1.0) * v
+                with_previous_layer_random(previous)
             }), sizes.batch_size);
 
-            self.recorder.name_diff_tensor(weights, "output_weights");
+            self.recorder.name_diff_tensor(weights, name);
 
             WeightInfoPtr{
                 weight_dropped: weights,
@@ -1106,10 +1162,19 @@ where
             }
         };
 
+        let output_weights_ptr = create_weights("output_weights", sizes.hidden, sizes.output);
+        let embeddings_weights_ptr = USE_EMBEDDING_LAYER.then(||
+        {
+            EmbeddingsLayers{
+                input: create_weights("embeddings_input", sizes.initial_input, sizes.input),
+                output: create_weights("embeddings_output", sizes.output, sizes.final_output)
+            }
+        });
+
         let weights_ptr = WeightsFullContainer::new(sizes, |size|
         {
             N::Unit::new(&mut self.recorder, size)
-        }, output_weights_ptr_tensor);
+        }, embeddings_weights_ptr, output_weights_ptr);
 
         self.weights_ptr = Some(weights_ptr);
 
@@ -1128,13 +1193,16 @@ where
     {
         let recorder = OperationsRecorder::new();
 
-        let optimizer_info: Option<_> =
-            Some(WeightsFullContainer::new(sizes, |size|
-            {
-                N::Unit::new_zeroed(size)
-            }, {
-                O::new(sizes.hidden, sizes.output)
-            }));
+        let optimizer_info: Option<_> = Some({
+            let embeddings = USE_EMBEDDING_LAYER.then(|| EmbeddingsLayers{
+                input: O::new(sizes.initial_input, sizes.input),
+                output: O::new(sizes.output, sizes.final_output)
+            });
+
+            let output = O::new(sizes.hidden, sizes.output);
+
+            WeightsFullContainer::new(sizes, N::Unit::new_zeroed, embeddings, output)
+        });
 
         Self{
             recorder,
@@ -1497,6 +1565,11 @@ where
                 store_gradient
             ).map(|output|
             {
+                let output = this.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
+                {
+                    this.recorder.matmulv(embeddings.output.weight_dropped, output)
+                }).unwrap_or(output);
+
                 (output, targets.map(|targets| this.recorder.softmax_cross_entropy(output, targets).1))
             })
         }, previous_states, dropout_masks, input, store_gradient)
@@ -1516,6 +1589,8 @@ where
         let mut output: Option<T> = None;
         let mut last_output: Option<DiffInputType> = None;
 
+        let weights_ptr = self.weights_ptr.as_ref().unwrap();
+
         let mut states = Vec::with_capacity(self.sizes.layers);
 
         #[allow(clippy::needless_range_loop)]
@@ -1523,6 +1598,11 @@ where
         {
             let input = last_output.unwrap_or_else(||
             {
+                if let Some(embeddings) = weights_ptr.embeddings.as_ref()
+                {
+                    return DiffInputType::Normal(self.recorder.matmul_onehotv(embeddings.input.weight_dropped, input.into_one_hot()));
+                }
+
                 match input
                 {
                     InputTypePtr::Normal(x) => DiffInputType::Normal(DiffTensorPtr::no_gradient(x)),
@@ -1530,7 +1610,7 @@ where
                 }
             });
 
-            let layer = &self.weights_ptr.as_ref().unwrap().layers[l_i];
+            let layer = &weights_ptr.layers[l_i];
 
             let previous_state = previous_states.as_ref().map(|x| &x[l_i]);
 
@@ -1642,6 +1722,7 @@ where
             let weights = self.weights.as_ref().unwrap();
             WeightsFullContainer{
                 output: f(&weights.output),
+                embeddings: weights.embeddings.as_ref().map(|embeddings| embeddings.map_ref(f)),
                 layers: weights.layers.iter().map(|x|
                 {
                     x.map_ref_with_info(|WeightsSize{weights: weight, this_size, previous_size, is_state_reliant, ..}|
@@ -2064,9 +2145,11 @@ mod tests
 
     const SIZES: LayerSizes = LayerSizes{
         hidden: 2,
+        initial_input: 2,
         input: 2,
         layers: 2,
         output: 2,
+        final_output: 2,
         batch_size: 1
     };
 
@@ -2206,6 +2289,7 @@ mod tests
 
         at_once.recorder.gradient(output.unwrap().into());
 
+        dbg!(&at_once.recorder);
         at_once.recorder.resolve_memory(false);
 
         at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
@@ -2250,6 +2334,7 @@ mod tests
 
             WeightsFullContainer{
                 output: f(weights.output).unwrap(),
+                embeddings: weights.embeddings.map(|embeddings| embeddings.map(|x| f(x).unwrap())),
                 layers: weights.layers.into_iter().map(|x| x.map_with_info(g)).collect()
             }
         };
