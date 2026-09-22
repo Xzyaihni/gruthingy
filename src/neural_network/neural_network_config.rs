@@ -12,6 +12,7 @@ use super::{
     Lstm,
     CharDictionary,
     WordDictionary,
+    BpeDictionary,
     EmbeddingsDictionary,
     ByteDictionary,
     PostcardFormat,
@@ -37,8 +38,10 @@ pub const BAG_OF_WORDS_EMBEDDINGS_COUNT: usize = 2;
 // options: Lstm, Gru
 pub type NUnit<T> = Lstm<T>;
 
-// options: EmbeddingsDictionary, WordDictionary, CharDictionary, ByteDictionary
+// options: EmbeddingsDictionary, BpeDictionary, WordDictionary, CharDictionary, ByteDictionary
 pub type NDictionary = ByteDictionary;
+
+pub const USE_EMBEDDING_LAYER: bool = false;
 
 // only applies to EmbeddingsDictionary and WordDictionary
 pub const LOWERCASE_ONLY: bool = true;
