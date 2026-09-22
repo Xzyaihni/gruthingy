@@ -1333,7 +1333,17 @@ where
     {
         self.recorder.finish();
 
-        self.recorder.store_tensor_until_end(self.weights_ptr.as_ref().unwrap().output.weight_original.as_value());
+        {
+            let weights_ptr = self.weights_ptr.as_ref().unwrap();
+
+            let mut store_tensor = |weight: &WeightInfoGeneric<DiffTensorPtr, TensorPtr>|
+            {
+                self.recorder.store_tensor_until_end(weight.weight_original.as_value());
+            };
+
+            store_tensor(&weights_ptr.output);
+            weights_ptr.embeddings.as_ref().map(|embeddings| embeddings.map_ref(|x| store_tensor(x)));
+        }
 
         if self.network_mode == Some(NetworkMode::Train)
         {
@@ -1404,7 +1414,7 @@ where
 
     fn record_feedforward(&mut self, store_gradient: bool)
     {
-        debug_assert!(self.network_mode.is_some());
+        assert!(self.network_mode.is_some());
 
         let config = self.config.clone().unwrap();
 
@@ -1751,12 +1761,12 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
-        debug_assert_eq!(self.network_mode, Some(NetworkMode::Train));
+        assert_eq!(self.network_mode, Some(NetworkMode::Train));
 
         let inputs_count = input.len();
         let mut inputs = input.flat_map(|(input, target)| [input, OwnedInputType::OneHot(target)]);
 
-        debug_assert!(inputs_count > 0, "inputs must not be empty");
+        assert!(inputs_count > 0, "inputs must not be empty");
 
         self.recorder.set_input(self.inputs.initial_input, inputs.next().unwrap());
         self.recorder.set_input(self.inputs.initial_target, inputs.next().unwrap());
@@ -1825,6 +1835,8 @@ where
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         F: Fn(&LayerType, usize, usize) -> T
     {
+        self.set_predict_mode();
+
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
         self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted, target)|
@@ -2011,7 +2023,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
+        assert_eq!(self.network_mode, Some(NetworkMode::Predict));
 
         self.prepare(false);
 
@@ -2019,7 +2031,7 @@ where
 
         let inputs_count = input.len();
 
-        debug_assert!(inputs_count > 0, "inputs must not be empty");
+        assert!(inputs_count > 0, "inputs must not be empty");
 
         self.recorder.set_input(self.inputs.initial_input, input.next().unwrap());
 

@@ -636,10 +636,44 @@ pub struct BpeMapping
     pub is_scaffold: bool
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScaffoldedIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenIndex(u32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BpeDictionaryCache
+{
+    words_to_bytes: Vec<Box<[u8]>>
+}
+
+impl BpeDictionaryCache
+{
+    pub fn new(dictionary: &BpeDictionary) -> Self
+    {
+        let mut words_to_bytes: Vec<Box<[u8]>> = (0..=u8::MAX).map(|x| -> Box<[u8]> { Box::new([x]) }).collect();
+
+        dictionary.pairs.iter().for_each(|mapping|
+        {
+            let (a, b) = mapping.pair;
+
+            let combined_bytes = words_to_bytes[a as usize].iter().chain(&words_to_bytes[b as usize]).copied().collect();
+            words_to_bytes.push(combined_bytes);
+        });
+
+        Self{
+            words_to_bytes
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BpeDictionary
 {
-    pub pairs: Vec<BpeMapping>
+    pub pairs: Vec<BpeMapping>,
+    #[serde(skip)]
+    pub cached: Option<BpeDictionaryCache>
 }
 
 #[allow(dead_code)]
@@ -661,30 +695,47 @@ impl BpeDictionary
         }
     }
 
-    pub fn word_to_bytes_scaffolded_single(&self, word: u32) -> Box<[u8]>
+    fn token_to_scaffolded(&self, word: TokenIndex) -> ScaffoldedIndex
     {
-        if let Some(pair_index) = Self::word_to_pair_index(word)
+        if let Some(word) = Self::word_to_pair_index(word.0)
         {
-            let pair = self.pairs[pair_index].pair;
+            let (index, _mapping) = self.pairs.iter()
+                .enumerate()
+                .filter(|(_, x)| !x.is_scaffold)
+                .nth(word as usize)
+                .unwrap();
 
-            self.word_to_bytes_scaffolded_single(pair.0).into_iter().chain(self.word_to_bytes_scaffolded_single(pair.1)).collect()
+            ScaffoldedIndex(index as u32 + u8::MAX as u32 + 1)
         } else
         {
-            Box::new([word as u8])
+            ScaffoldedIndex(word.0)
         }
     }
 
-    pub fn word_to_bytes_single(&self, word: u32) -> Box<[u8]>
+    fn require_cache(&mut self)
     {
-        if let Some(pair_index) = Self::word_to_pair_index(word)
-        {
-            let pair = self.pairs.iter().filter(|x| !x.is_scaffold).nth(pair_index).unwrap().pair;
+        self.cached = Some(BpeDictionaryCache::new(self));
+    }
 
-            self.word_to_bytes_single(pair.0).into_iter().chain(self.word_to_bytes_single(pair.1)).collect()
+    pub fn word_to_bytes_scaffolded_single(&self, word: ScaffoldedIndex) -> Box<[u8]>
+    {
+        if let Some(pair_index) = Self::word_to_pair_index(word.0)
+        {
+            let pair = self.pairs[pair_index].pair;
+
+            self.word_to_bytes_scaffolded_single(ScaffoldedIndex(pair.0))
+                .into_iter()
+                .chain(self.word_to_bytes_scaffolded_single(ScaffoldedIndex(pair.1)))
+                .collect()
         } else
         {
-            Box::new([word as u8])
+            Box::new([word.0 as u8])
         }
+    }
+
+    pub fn word_to_bytes_single(&self, word: TokenIndex) -> Box<[u8]>
+    {
+        self.cached.as_ref().unwrap().words_to_bytes[self.token_to_scaffolded(word).0 as usize].clone()
     }
 
     pub fn combine_pair(ngrams: &mut Vec<u32>, mapping: BpeMapping, mut on_replace: impl FnMut(Option<u32>, Option<u32>))
@@ -733,6 +784,172 @@ impl BpeDictionary
     }
 }
 
+#[allow(dead_code)]
+pub fn bpe_from_bytes(
+    limit: usize,
+    optional_info: bool,
+    bytes: impl IntoIterator<Item=u8>
+) -> BpeDictionary
+{
+    let mut ngrams: Vec<u32> = bytes.into_iter().map(u32::from).collect();
+
+    if ngrams.is_empty()
+    {
+        complain("the input is empty, cant create bpe");
+    }
+
+    let mut dictionary = BpeDictionary{pairs: Vec::new(), cached: None};
+
+    fn pair_frequencies_of(ngrams: &[u32]) -> HashMap<(u32, u32), usize>
+    {
+        let mut pair_frequencies: HashMap<(u32, u32), usize> = HashMap::new();
+
+        ngrams.windows(2).for_each(|x|
+        {
+            let pair = (x[0], x[1]);
+
+            *pair_frequencies.entry(pair).or_insert(0) += 1;
+        });
+
+        pair_frequencies
+    }
+
+    let mut pair_frequencies: HashMap<(u32, u32), usize> = pair_frequencies_of(&ngrams);
+
+    fn most_common_of(pair_frequencies: &HashMap<(u32, u32), usize>) -> ((u32, u32), usize)
+    {
+        pair_frequencies.iter()
+            .max_by_key(|(_key, value)| *value)
+            .map(|(a, b)| (*a, *b))
+            .expect("must exist")
+    }
+
+    let mut most_common = most_common_of(&pair_frequencies);
+
+    loop
+    {
+        let (most_common_pair, occurred_times) = most_common;
+
+        let mapping = BpeMapping{
+            pair: most_common_pair,
+            output: u8::MAX as u32 + 1 + dictionary.pairs.len() as u32,
+            is_scaffold: false
+        };
+
+        if let Some(previous_mapping) = dictionary.pairs.iter_mut().find(|x| x.pair == mapping.pair)
+        {
+            previous_mapping.is_scaffold = false;
+
+            continue;
+        }
+
+        dictionary.pairs.push(mapping);
+
+        let before_length = ngrams.len();
+        let mut replaced_times = 0;
+
+        BpeDictionary::combine_pair(&mut ngrams, mapping, |u, v|
+        {
+            replaced_times += 1;
+
+            let decrease_pair = |pair_frequencies: &mut HashMap<_, _>, x: u32, y: u32|
+            {
+                let key = (x, y);
+
+                let value = pair_frequencies.get_mut(&key)
+                    .unwrap_or_else(|| panic!("pair ({x},{y}) must exist"));
+
+                *value -= 1;
+
+                if *value == 0
+                {
+                    pair_frequencies.remove(&key);
+                }
+            };
+
+            let increase_pair = |pair_frequencies: &mut HashMap<_, _>, x: u32, y: u32|
+            {
+                *pair_frequencies.entry((x, y)).or_insert(0) += 1;
+            };
+
+            let t = mapping.output;
+
+            let (a, b) = mapping.pair;
+
+            if let Some(u) = u
+            {
+                decrease_pair(&mut pair_frequencies, u, a);
+                increase_pair(&mut pair_frequencies, u, t);
+            }
+
+            if let Some(v) = v
+            {
+                decrease_pair(&mut pair_frequencies, b, v);
+                increase_pair(&mut pair_frequencies, t, v);
+            }
+        });
+
+        debug_assert_eq!(before_length - replaced_times, ngrams.len());
+
+        pair_frequencies.remove(&mapping.pair);
+
+        most_common = most_common_of(&pair_frequencies);
+
+        fn pair_number_to_index(number: u32) -> Option<usize>
+        {
+            BpeDictionary::word_to_pair_index(number)
+        }
+
+        {
+            let a = pair_number_to_index(mapping.pair.0);
+            let b = pair_number_to_index(mapping.pair.1);
+
+            let mut mark_if_scaffold = |mapping: &mut BpeMapping|
+            {
+                if mapping.is_scaffold
+                {
+                    return;
+                }
+
+                let standalone_frequency = pair_frequencies.get(&mapping.pair).copied().unwrap_or(0);
+
+                if standalone_frequency < most_common.1
+                {
+                    mapping.is_scaffold = true;
+
+                    pair_frequencies.insert(mapping.pair, standalone_frequency);
+                }
+            };
+
+            if let Some(a) = a
+            {
+                mark_if_scaffold(&mut dictionary.pairs[a]);
+            }
+
+            if let Some(b) = b
+            {
+                mark_if_scaffold(&mut dictionary.pairs[b]);
+            }
+        }
+
+        let scaffold_count = dictionary.pairs.iter().filter(|x| x.is_scaffold).count();
+        let used_count = dictionary.pairs.len() - scaffold_count;
+
+        if optional_info
+        {
+            println!("({scaffold_count} scaffold) {used_count}/{limit} replaced pair that occurs {occurred_times} times");
+        }
+
+        if used_count == limit
+        {
+            let ngram = dictionary.word_to_bytes_scaffolded_single(ScaffoldedIndex(mapping.output));
+            println!("least common ngram occurs {occurred_times} times: {}", String::from_utf8_lossy(&ngram));
+
+            return dictionary;
+        }
+    }
+}
+
 impl NetworkDictionary for BpeDictionary
 {
     type Adapter<R: Read> = DefaultAdapter<R>;
@@ -751,16 +968,22 @@ impl NetworkDictionary for BpeDictionary
             complain(format!("error opening bpe file ({}): {err}", path.display()))
         });
 
-        PostcardFormat::deserialize(file).unwrap_or_else(|err|
+        let mut this: Self = PostcardFormat::deserialize(file).unwrap_or_else(|err|
         {
             complain(format!("error loading bpe: {err}"))
-        })
+        });
+
+        this.require_cache();
+
+        this
     }
 
     fn is_input_one_hot() -> bool { true }
 
     fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
     {
+        self.require_cache();
+
         let mut ngrams: Vec<u32> = {
             let mut reader = BufReader::new(reader);
 
@@ -775,43 +998,36 @@ impl NetworkDictionary for BpeDictionary
             Self::combine_pair(&mut ngrams, *pair, |_, _| {});
         });
 
-        let word_to_used: Vec<Option<VectorWord>> = (0..=u8::MAX as usize).map(Some)
-            .chain(self.pairs.iter().scan(0, |current_word, mapping|
-            {
-                let word = *current_word;
-
-                if !mapping.is_scaffold
-                {
-                    *current_word += 1;
-                }
-
-                Some((!mapping.is_scaffold).then_some(word))
-            }))
-            .map(|x| x.map(VectorWord::new))
+        let mut word_to_used: Vec<Box<[VectorWord]>> = (0..=u8::MAX as usize)
+            .map(|x| -> Box<[VectorWord]> { Box::new([VectorWord::new(x)]) })
             .collect();
+
+        self.pairs.iter().fold(0, |mut current_word, mapping|
+        {
+            let word = current_word + u8::MAX as usize + 1;
+
+            if !mapping.is_scaffold
+            {
+                current_word += 1;
+
+                word_to_used.push(Box::new([VectorWord::new(word)]));
+            } else
+            {
+                let (a, b) = mapping.pair;
+
+                let combined_word = word_to_used[a as usize].iter().chain(&word_to_used[b as usize]).copied().collect();
+                word_to_used.push(combined_word);
+            }
+
+            current_word
+        });
 
         let mut output = Vec::with_capacity(ngrams.len());
 
-        fn encode_word(
-            word_to_used: &[Option<VectorWord>],
-            pairs: &[BpeMapping],
-            output: &mut Vec<VectorWord>,
-            word: u32
-        )
+        ngrams.into_iter().for_each(|x|
         {
-            if let Some(word) = word_to_used[word as usize]
-            {
-                output.push(word);
-            } else
-            {
-                let (a, b) = pairs[BpeDictionary::word_to_pair_index_known(word)].pair;
-
-                encode_word(word_to_used, pairs, output, a);
-                encode_word(word_to_used, pairs, output, b);
-            }
-        }
-
-        ngrams.into_iter().for_each(|x| encode_word(&word_to_used, &self.pairs, &mut output, x));
+            output.extend(&word_to_used[x as usize]);
+        });
 
         output
     }
@@ -823,7 +1039,7 @@ impl NetworkDictionary for BpeDictionary
 
     fn word_to_bytes(&self, _previous_word: Option<VectorWord>, word: VectorWord) -> Box<[u8]>
     {
-        self.word_to_bytes_single(word.0 as u32)
+        self.word_to_bytes_single(TokenIndex(word.0 as u32))
     }
 
     fn words_amount(&self) -> usize
@@ -1089,6 +1305,26 @@ mod tests
             {
                 "hello world � � a COOL � (not rly) � � gay"
             }
+        );
+    }
+
+    #[test]
+    fn encodes_decodes_bpe()
+    {
+        let s = b"hellohellohellohelloworldimgayworldwor";
+        let mut dictionary = bpe_from_bytes(2, true, s.into_iter().copied());
+
+        let encoded = dictionary.vectorized(reader());
+
+        let decoded: Vec<Box<[u8]>> = encoded.into_iter().map(|word| dictionary.word_to_bytes(None, word)).collect();
+
+        let decoded: Vec<u8> = decoded.into_iter().flatten().collect();
+
+        assert_eq!(
+            decoded, original_text().bytes().collect::<Vec<u8>>(),
+            "expected: {}, got: {}",
+            original_text(),
+            String::from_utf8_lossy(&decoded)
         );
     }
 
