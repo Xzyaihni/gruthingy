@@ -525,6 +525,171 @@ fn create_word_dictionary(config: Config)
     eprintln!("created word dictionary at {}", config.dictionary_path.display());
 }
 
+fn bpe_from_bytes(
+    limit: usize,
+    optional_info: bool,
+    bytes: impl IntoIterator<Item=u8>
+) -> BpeDictionary
+{
+    let mut ngrams: Vec<u32> = bytes.into_iter().map(u32::from).collect();
+
+    if ngrams.is_empty()
+    {
+        complain("the input file is empty, cant create bpe");
+    }
+
+    let mut dictionary = BpeDictionary{pairs: Vec::new()};
+
+    fn pair_frequencies_of(ngrams: &[u32]) -> HashMap<(u32, u32), usize>
+    {
+        let mut pair_frequencies: HashMap<(u32, u32), usize> = HashMap::new();
+
+        ngrams.windows(2).for_each(|x|
+        {
+            let pair = (x[0], x[1]);
+
+            *pair_frequencies.entry(pair).or_insert(0) += 1;
+        });
+
+        pair_frequencies
+    }
+
+    let mut pair_frequencies: HashMap<(u32, u32), usize> = pair_frequencies_of(&ngrams);
+
+    fn most_common_of(pair_frequencies: &HashMap<(u32, u32), usize>) -> ((u32, u32), usize)
+    {
+        pair_frequencies.iter()
+            .max_by_key(|(_key, value)| *value)
+            .map(|(a, b)| (*a, *b))
+            .expect("must exist")
+    }
+
+    let mut most_common = most_common_of(&pair_frequencies);
+
+    loop
+    {
+        let (most_common_pair, occurred_times) = most_common;
+
+        let mapping = BpeMapping{
+            pair: most_common_pair,
+            output: u8::MAX as u32 + 1 + dictionary.pairs.len() as u32,
+            is_scaffold: false
+        };
+
+        if let Some(previous_mapping) = dictionary.pairs.iter_mut().find(|x| x.pair == mapping.pair)
+        {
+            previous_mapping.is_scaffold = false;
+
+            continue;
+        }
+
+        dictionary.pairs.push(mapping);
+
+        let before_length = ngrams.len();
+        let mut replaced_times = 0;
+
+        BpeDictionary::combine_pair(&mut ngrams, mapping, |u, v|
+        {
+            replaced_times += 1;
+
+            let decrease_pair = |pair_frequencies: &mut HashMap<_, _>, x: u32, y: u32|
+            {
+                let key = (x, y);
+
+                let value = pair_frequencies.get_mut(&key)
+                    .unwrap_or_else(|| panic!("pair ({x},{y}) must exist"));
+
+                *value -= 1;
+
+                if *value == 0
+                {
+                    pair_frequencies.remove(&key);
+                }
+            };
+
+            let increase_pair = |pair_frequencies: &mut HashMap<_, _>, x: u32, y: u32|
+            {
+                *pair_frequencies.entry((x, y)).or_insert(0) += 1;
+            };
+
+            let t = mapping.output;
+
+            let (a, b) = mapping.pair;
+
+            if let Some(u) = u
+            {
+                decrease_pair(&mut pair_frequencies, u, a);
+                increase_pair(&mut pair_frequencies, u, t);
+            }
+
+            if let Some(v) = v
+            {
+                decrease_pair(&mut pair_frequencies, b, v);
+                increase_pair(&mut pair_frequencies, t, v);
+            }
+        });
+
+        debug_assert_eq!(before_length - replaced_times, ngrams.len());
+
+        pair_frequencies.remove(&mapping.pair);
+
+        most_common = most_common_of(&pair_frequencies);
+
+        fn pair_number_to_index(number: u32) -> Option<usize>
+        {
+            BpeDictionary::word_to_pair_index(number)
+        }
+
+        {
+            let a = pair_number_to_index(mapping.pair.0);
+            let b = pair_number_to_index(mapping.pair.1);
+
+            let mut mark_if_scaffold = |mapping: &mut BpeMapping|
+            {
+                if mapping.is_scaffold
+                {
+                    return;
+                }
+
+                let standalone_frequency = pair_frequencies.get(&mapping.pair).copied().unwrap_or(0);
+
+                if standalone_frequency < most_common.1
+                {
+                    mapping.is_scaffold = true;
+
+                    pair_frequencies.insert(mapping.pair, standalone_frequency);
+                }
+            };
+
+            if let Some(a) = a
+            {
+                mark_if_scaffold(&mut dictionary.pairs[a]);
+            }
+
+            if let Some(b) = b
+            {
+                mark_if_scaffold(&mut dictionary.pairs[b]);
+            }
+        }
+
+        let scaffold_count = dictionary.pairs.iter().filter(|x| x.is_scaffold).count();
+        let used_count = dictionary.pairs.len() - scaffold_count;
+
+        if optional_info
+        {
+            println!("({scaffold_count} scaffold) {used_count}/{limit} replaced pair that occurs {occurred_times} times");
+        }
+
+        if used_count == limit
+        {
+            let ngram = dictionary.word_to_bytes_scaffolded_single(mapping.output);
+            println!("least common ngram occurs {occurred_times} times: {}", String::from_utf8_lossy(&ngram));
+
+            return dictionary;
+        }
+    }
+}
+
 fn create_bpe(config: &Config)
 {
     let mut text_file_reader = BufReader::new(File::open(config.get_input()).unwrap());
@@ -534,54 +699,9 @@ fn create_bpe(config: &Config)
     let mut text_file: Vec<u8> = Vec::new();
     text_file_reader.read_to_end(&mut text_file).unwrap_or_else(|err| handle_io(err));
 
-    let mut ngrams: Vec<u32> = text_file.into_iter().map(u32::from).collect();
+    let dictionary = bpe_from_bytes(config.bpe_limit, config.optional_info, text_file);
 
-    if ngrams.is_empty()
-    {
-        complain("the input file is empty, cant create bpe");
-    }
-
-    let mut dictionary = BpeDictionary{pairs: Vec::new()};
-
-    loop
-    {
-        let (most_common_pair, occurred_times) = {
-            let mut pair_frequencies: HashMap<(u32, u32), usize> = HashMap::new();
-
-            ngrams.windows(2).for_each(|x|
-            {
-                let pair = (x[0], x[1]);
-
-                *pair_frequencies.entry(pair).or_insert(0) += 1;
-            });
-
-            pair_frequencies.into_iter().max_by_key(|(_key, value)| *value).expect("must exist")
-        };
-
-        let mapping = BpeMapping{
-            pair: most_common_pair,
-            output: u8::MAX as u32 + 1 + dictionary.pairs.len() as u32
-        };
-
-        dictionary.pairs.push(mapping);
-
-        BpeDictionary::combine_pair(&mut ngrams, mapping);
-
-        if config.optional_info
-        {
-            println!("{}/{} replaced pair that occurs {occurred_times} times", dictionary.pairs.len(), config.bpe_limit);
-        }
-
-        if dictionary.pairs.len() == config.bpe_limit
-        {
-            let ngram = dictionary.word_to_bytes_single(mapping.output);
-            println!("least common ngram occurs {occurred_times} times: {}", String::from_utf8_lossy(&ngram));
-
-            break;
-        }
-    }
-
-    if let Some(longest_ngram) = dictionary.pairs.iter().map(|x| dictionary.word_to_bytes_single(x.output)).max_by_key(|x| x.len())
+    if let Some(longest_ngram) = dictionary.pairs.iter().map(|x| dictionary.word_to_bytes_scaffolded_single(x.output)).max_by_key(|x| x.len())
     {
         println!("the longest is a {}-gram: {}", longest_ngram.len(), String::from_utf8_lossy(&longest_ngram));
     }
@@ -590,7 +710,13 @@ fn create_bpe(config: &Config)
     {
         dictionary.pairs.iter().for_each(|ngram|
         {
-            println!("{}", String::from_utf8_lossy(&dictionary.word_to_bytes_single(ngram.output)));
+            let bytes = dictionary.word_to_bytes_scaffolded_single(ngram.output);
+            let s = String::from_utf8_lossy(&bytes);
+            let new_s = s.chars().flat_map(|x| if x == '\n' { vec!['\\', 'n'] } else { vec![x] }).collect::<String>();
+
+            let scaffold_status = if ngram.is_scaffold { "scaffold" } else { "token" };
+
+            println!("{scaffold_status}: {new_s}");
         });
     }
 
@@ -826,5 +952,47 @@ fn main()
         ProgramMode::TrainEmbeddings => train_embeddings(config),
         ProgramMode::WeightsImage => weights_image(config),
         ProgramMode::AccuracyData => accuracy_data(config)
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+
+    #[test]
+    fn correct_bpe()
+    {
+        // a = 97
+        // b = 98
+        // c = 99
+        // d = 100
+        // o = 111
+
+        let bytes = b"aaoabdaaabac";
+        let dictionary = bpe_from_bytes(2, true, bytes.into_iter().copied());
+
+        assert_eq!(dictionary, BpeDictionary{
+            pairs: vec![BpeMapping{
+                pair: (b'a' as u32, b'a' as u32),
+                output: 256,
+                is_scaffold: false
+            }, BpeMapping{
+                pair: (b'a' as u32, b'b' as u32),
+                output: 257,
+                is_scaffold: false
+            }]
+        });
+    }
+
+    #[test]
+    fn buncha_bpe_stuff()
+    {
+        // h = 104
+        // s = 115
+
+        let bytes = b"ahsshshshdhshshhshshahahahhahshdhdhshdahsdajkshdjashsshshdajskajshdasjhdasjkjksakjdhasjkdhsaasdhdhsaasdjdhsajkdhsjskahdajshdjkdjkjjkjkhsdhjasjkdaksjjsshdajsjsdhhdhdjskakaksjdhhdhdsjkajdshadhasjdhaskdhasdjhksadjksahdkjashdjksahdajkhsdajsdhasjkkdjhasjdshadkjash";
+        bpe_from_bytes(20, true, bytes.into_iter().copied());
     }
 }

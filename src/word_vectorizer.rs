@@ -628,14 +628,15 @@ impl NetworkDictionary for WordDictionary
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BpeMapping
 {
     pub pair: (u32, u32),
-    pub output: u32
+    pub output: u32,
+    pub is_scaffold: bool
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BpeDictionary
 {
     pub pairs: Vec<BpeMapping>
@@ -644,26 +645,54 @@ pub struct BpeDictionary
 #[allow(dead_code)]
 impl BpeDictionary
 {
-    pub fn word_to_bytes_single(&self, word: u32) -> Box<[u8]>
+    fn word_to_pair_index_known(word: u32) -> usize
+    {
+        (word - u8::MAX as u32 - 1) as usize
+    }
+
+    pub fn word_to_pair_index(word: u32) -> Option<usize>
     {
         if word <= u8::MAX as u32
         {
-            Box::new([word as u8])
+            None
         } else
         {
-            let pair_index = word - u8::MAX as u32 - 1;
-
-            let pair = self.pairs[pair_index as usize].pair;
-
-            self.word_to_bytes_single(pair.0).into_iter().chain(self.word_to_bytes_single(pair.1)).collect()
+            Some(Self::word_to_pair_index_known(word))
         }
     }
 
-    pub fn combine_pair(ngrams: &mut Vec<u32>, mapping: BpeMapping)
+    pub fn word_to_bytes_scaffolded_single(&self, word: u32) -> Box<[u8]>
+    {
+        if let Some(pair_index) = Self::word_to_pair_index(word)
+        {
+            let pair = self.pairs[pair_index].pair;
+
+            self.word_to_bytes_scaffolded_single(pair.0).into_iter().chain(self.word_to_bytes_scaffolded_single(pair.1)).collect()
+        } else
+        {
+            Box::new([word as u8])
+        }
+    }
+
+    pub fn word_to_bytes_single(&self, word: u32) -> Box<[u8]>
+    {
+        if let Some(pair_index) = Self::word_to_pair_index(word)
+        {
+            let pair = self.pairs.iter().filter(|x| !x.is_scaffold).nth(pair_index).unwrap().pair;
+
+            self.word_to_bytes_single(pair.0).into_iter().chain(self.word_to_bytes_single(pair.1)).collect()
+        } else
+        {
+            Box::new([word as u8])
+        }
+    }
+
+    pub fn combine_pair(ngrams: &mut Vec<u32>, mapping: BpeMapping, mut on_replace: impl FnMut(Option<u32>, Option<u32>))
     {
         let mut any_replaced = false;
 
-        let mut new_ngrams = Vec::new();
+        // this gets constantly reallocated so its not a big deal that its a bit bigger
+        let mut new_ngrams = Vec::with_capacity(ngrams.len());
 
         let mut i = 0;
         while i < ngrams.len().saturating_sub(1)
@@ -672,7 +701,10 @@ impl BpeDictionary
             {
                 any_replaced = true;
 
+                on_replace(new_ngrams.last().copied(), ngrams.get(i + 2).copied());
+
                 new_ngrams.push(mapping.output);
+
                 i += 1;
             } else
             {
@@ -685,6 +717,11 @@ impl BpeDictionary
         if !any_replaced
         {
             return;
+        }
+
+        if (i + 1) == ngrams.len()
+        {
+            new_ngrams.push(ngrams[ngrams.len() - 1]);
         }
 
         *ngrams = new_ngrams;
@@ -735,10 +772,48 @@ impl NetworkDictionary for BpeDictionary
 
         self.pairs.iter().for_each(|pair|
         {
-            Self::combine_pair(&mut ngrams, *pair);
+            Self::combine_pair(&mut ngrams, *pair, |_, _| {});
         });
 
-        ngrams.into_iter().map(|x| VectorWord::new(x as usize)).collect()
+        let word_to_used: Vec<Option<VectorWord>> = (0..=u8::MAX as usize).map(Some)
+            .chain(self.pairs.iter().scan(0, |current_word, mapping|
+            {
+                let word = *current_word;
+
+                if !mapping.is_scaffold
+                {
+                    *current_word += 1;
+                }
+
+                Some((!mapping.is_scaffold).then_some(word))
+            }))
+            .map(|x| x.map(VectorWord::new))
+            .collect();
+
+        let mut output = Vec::with_capacity(ngrams.len());
+
+        fn encode_word(
+            word_to_used: &[Option<VectorWord>],
+            pairs: &[BpeMapping],
+            output: &mut Vec<VectorWord>,
+            word: u32
+        )
+        {
+            if let Some(word) = word_to_used[word as usize]
+            {
+                output.push(word);
+            } else
+            {
+                let (a, b) = pairs[BpeDictionary::word_to_pair_index_known(word)].pair;
+
+                encode_word(word_to_used, pairs, output, a);
+                encode_word(word_to_used, pairs, output, b);
+            }
+        }
+
+        ngrams.into_iter().for_each(|x| encode_word(&word_to_used, &self.pairs, &mut output, x));
+
+        output
     }
 
     fn input_data() -> InputDataType
@@ -753,7 +828,7 @@ impl NetworkDictionary for BpeDictionary
 
     fn words_amount(&self) -> usize
     {
-        self.pairs.len() + u8::MAX as usize + 1
+        self.pairs.iter().filter(|x| !x.is_scaffold).count() + u8::MAX as usize + 1
     }
 }
 

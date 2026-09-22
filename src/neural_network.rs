@@ -1031,8 +1031,6 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        debug_assert_eq!(sizes.input, dictionary.input_amount());
-
         let network = Network::new(sizes, dropout_probability, config);
 
         let optimizer = O::new();
