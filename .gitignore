@@ -1,5 +1,6 @@
 Cargo.lock
 perf.data*
+/dictionary.txt
 /target
 /callgrind.*
 /vgcore*
