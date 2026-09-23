@@ -43,7 +43,6 @@ use crate::{
         OptimizerUnit,
         UnitFactory,
         USE_EMBEDDING_LAYER,
-        DROPCONNECT_PROBABILITY,
         network_unit::{EmbeddingsableOwned, NetworkUnitParameterable}
     }
 };
@@ -1968,7 +1967,7 @@ where
 
                         debug_assert_eq!(dropconnect_mask.shape().batch_size, self.sizes.batch_size);
 
-                        Self::set_dropout_mask(rng, dropconnect_mask, DROPCONNECT_PROBABILITY);
+                        Self::set_dropout_mask(rng, dropconnect_mask, self.dropouts.dropout_probability);
                     }
                 });
             });

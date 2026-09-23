@@ -21,8 +21,6 @@ use super::{
 };
 
 
-pub const DROPCONNECT_PROBABILITY: f32 = 0.5;
-
 // options: Power, Division
 pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 
