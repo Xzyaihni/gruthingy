@@ -813,10 +813,12 @@ mod tests
             pairs: vec![BpeMapping{
                 pair: (b'a' as u32, b'a' as u32),
                 output: 256,
+                frequency: 2,
                 is_scaffold: false
             }, BpeMapping{
                 pair: (b'a' as u32, b'b' as u32),
                 output: 257,
+                frequency: 2,
                 is_scaffold: false
             }],
             cached: None

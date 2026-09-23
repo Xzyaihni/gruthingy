@@ -633,6 +633,7 @@ pub struct BpeMapping
 {
     pub pair: (u32, u32),
     pub output: u32,
+    pub frequency: u32,
     pub is_scaffold: bool
 }
 
@@ -851,9 +852,10 @@ pub fn bpe_from_bytes(
     {
         let (most_common_pair, occurred_times) = most_common;
 
-        let mapping = BpeMapping{
+        let mut mapping = BpeMapping{
             pair: most_common_pair,
             output: u8::MAX as u32 + 1 + dictionary.pairs.len() as u32,
+            frequency: 0,
             is_scaffold: false
         };
 
@@ -861,17 +863,20 @@ pub fn bpe_from_bytes(
         {
             previous_mapping.is_scaffold = false;
 
+            pair_frequencies.remove(&previous_mapping.pair);
+
+            most_common = most_common_of(&pair_frequencies);
+
             continue;
         }
 
         dictionary.pairs.push(mapping);
 
         let before_length = ngrams.len();
-        let mut replaced_times = 0;
 
         BpeDictionary::combine_pair(&mut ngrams, mapping, |u, v|
         {
-            replaced_times += 1;
+            mapping.frequency += 1;
 
             let decrease_pair = |pair_frequencies: &mut HashMap<_, _>, x: u32, y: u32|
             {
@@ -910,7 +915,10 @@ pub fn bpe_from_bytes(
             }
         });
 
-        debug_assert_eq!(before_length - replaced_times, ngrams.len());
+        *dictionary.pairs.iter_mut().last().unwrap() = mapping;
+
+        debug_assert!(mapping.frequency as usize <= occurred_times);
+        debug_assert_eq!(before_length - mapping.frequency as usize, ngrams.len());
 
         pair_frequencies.remove(&mapping.pair);
 
@@ -925,6 +933,21 @@ pub fn bpe_from_bytes(
             let a = pair_number_to_index(mapping.pair.0);
             let b = pair_number_to_index(mapping.pair.1);
 
+            let decrease_frequency = |pair_part: &mut BpeMapping|
+            {
+                pair_part.frequency -= mapping.frequency;
+            };
+
+            if let Some(a) = a
+            {
+                decrease_frequency(&mut dictionary.pairs[a]);
+            }
+
+            if let Some(b) = b
+            {
+                decrease_frequency(&mut dictionary.pairs[b]);
+            }
+
             let mut mark_if_scaffold = |mapping: &mut BpeMapping|
             {
                 if mapping.is_scaffold
@@ -932,7 +955,7 @@ pub fn bpe_from_bytes(
                     return;
                 }
 
-                let standalone_frequency = pair_frequencies.get(&mapping.pair).copied().unwrap_or(0);
+                let standalone_frequency = mapping.frequency as usize;
 
                 if standalone_frequency < most_common.1
                 {
