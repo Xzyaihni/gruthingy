@@ -546,16 +546,7 @@ fn create_bpe(config: &Config)
 
     if config.optional_info
     {
-        dictionary.pairs.iter().for_each(|ngram|
-        {
-            let bytes = dictionary.word_to_bytes_scaffolded_single(ScaffoldedIndex(ngram.output));
-            let s = String::from_utf8_lossy(&bytes);
-            let new_s = s.chars().flat_map(|x| if x == '\n' { vec!['\\', 'n'] } else { vec![x] }).collect::<String>();
-
-            let scaffold_status = if ngram.is_scaffold { "scaffold" } else { "token" };
-
-            println!("{scaffold_status}: {new_s}");
-        });
+        dictionary.print_all_tokens();
     }
 
     let output_file = File::create(&config.dictionary_path).unwrap_or_else(|err| handle_io(err));

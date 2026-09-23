@@ -778,7 +778,21 @@ impl BpeDictionary
         *ngrams = new_ngrams;
     }
 
-    fn next_word<R: Read>(&mut self, _reader: &mut DefaultAdapter<R>) -> Option<VectorWord>
+    pub fn print_all_tokens(&self)
+    {
+        self.pairs.iter().for_each(|ngram|
+        {
+            let bytes = self.word_to_bytes_scaffolded_single(ScaffoldedIndex(ngram.output));
+            let s = String::from_utf8_lossy(&bytes);
+            let new_s = s.chars().flat_map(|x| if x == '\n' { vec!['\\', 'n'] } else { vec![x] }).collect::<String>();
+
+            let scaffold_status = if ngram.is_scaffold { "scaffold" } else { "token" };
+
+            println!("{scaffold_status}: {new_s}");
+        });
+    }
+
+    fn next_word<R>(&mut self, _reader: &mut DefaultAdapter<R>) -> Option<VectorWord>
     {
         unreachable!()
     }
@@ -1331,10 +1345,13 @@ mod tests
     #[test]
     fn bpe_uses_biggest_first()
     {
-        let text = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let mut dictionary = bpe_from_bytes(2, true, text.into_iter().copied());
+        let s = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAywwoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwywoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoyoyoyoyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let text = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut dictionary = bpe_from_bytes(2, true, s.into_iter().copied());
 
-        let encoded = dictionary.vectorized(reader());
+        dictionary.print_all_tokens();
+
+        let encoded = dictionary.vectorized(Cursor::new(text));
 
         assert_eq!(encoded.len(), 5)
     }
