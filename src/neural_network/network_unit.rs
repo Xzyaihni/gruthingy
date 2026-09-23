@@ -113,8 +113,7 @@ where
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType,
-        store_gradient: bool
+        input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>;
 
     fn record_feedforward_unit_nonlast(
@@ -122,11 +121,10 @@ where
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
         dropout_mask: TensorPtr,
-        input: DiffInputType,
-        store_gradient: bool
+        input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let mut output = self.record_feedforward_unit(recorder, previous_state, input, store_gradient);
+        let mut output = self.record_feedforward_unit(recorder, previous_state, input);
 
         let new_output = match LAYER_ACTIVATION
         {

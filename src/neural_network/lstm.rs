@@ -106,40 +106,9 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType,
-        store_gradient: bool
+        input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        {
-            let mut always_store = |weight: DiffTensorPtr|
-            {
-                let value = weight.as_value();
-                recorder.store_tensor_until_end(value);
-
-                if store_gradient
-                {
-                    let gradient = weight.as_gradient().unwrap();
-
-                    recorder.store_tensor_until_end(gradient);
-                }
-            };
-
-            always_store(self.hidden_update.weight_original);
-            always_store(self.hidden_forget.weight_original);
-            always_store(self.hidden_output.weight_original);
-            always_store(self.hidden_memory.weight_original);
-
-            always_store(self.update_bias.weight_original);
-            always_store(self.forget_bias.weight_original);
-            always_store(self.output_bias.weight_original);
-            always_store(self.memory_bias.weight_original);
-
-            always_store(self.input_update.weight_original);
-            always_store(self.input_forget.weight_original);
-            always_store(self.input_output.weight_original);
-            always_store(self.input_memory.weight_original);
-        }
-
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
@@ -326,7 +295,7 @@ mod tests
         let input = one_weight(1.0);
 
         let output = {
-            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input), true);
+            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input));
 
             NetworkOutput{
                 state: output.state,

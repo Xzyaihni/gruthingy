@@ -1291,15 +1291,19 @@ where
     {
         if !self.recorder.is_ready()
         {
-            self.record_feedforward(store_gradient);
+            self.record_feedforward();
 
             self.prepare_setup_shared();
+
+            self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
+            {
+                self.recorder.store_tensor_until_end(weight.weight_original.as_value());
+            });
 
             if store_gradient
             {
                 self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
                 {
-                    self.recorder.store_tensor_until_end(weight.weight_original.as_value());
                     self.recorder.store_tensor_until_end(weight.weight_original.as_gradient().unwrap());
                 });
 
@@ -1412,7 +1416,7 @@ where
         ptrs
     }
 
-    fn record_feedforward(&mut self, store_gradient: bool)
+    fn record_feedforward(&mut self)
     {
         assert!(self.network_mode.is_some());
 
@@ -1469,8 +1473,7 @@ where
             None,
             &dropout_masks_ptrs,
             this_input_first,
-            this_target_first,
-            store_gradient
+            this_target_first
         );
 
         self.recorder.name_diff_tensor(no_state_output.output.0, "no_state_output");
@@ -1512,8 +1515,7 @@ where
                 Some(previous_state_selected),
                 &dropout_masks_ptrs,
                 this_input_loop,
-                this_target_loop,
-                store_gradient
+                this_target_loop
             );
 
             self.recorder.name_diff_tensor(final_output.output.0, "final_output");
@@ -1562,8 +1564,7 @@ where
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
         input: InputTypePtr,
-        targets: Option<OneHotIndex>,
-        store_gradient: bool
+        targets: Option<OneHotIndex>
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, Option<DiffTensorPtr>)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input|
@@ -1571,8 +1572,7 @@ where
             this.record_feedforward_unit_last(
                 layer_index,
                 previous_state,
-                input,
-                store_gradient
+                input
             ).map(|output|
             {
                 let output = this.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
@@ -1582,7 +1582,7 @@ where
 
                 (output, targets.map(|targets| this.recorder.softmax_cross_entropy(output, targets).1))
             })
-        }, previous_states, dropout_masks, input, store_gradient)
+        }, previous_states, dropout_masks, input)
     }
 
     fn record_feedforward_single_input_with_activation<F, T>(
@@ -1590,8 +1590,7 @@ where
         last_f: F,
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         dropout_masks: &[TensorPtr],
-        input: InputTypePtr,
-        store_gradient: bool
+        input: InputTypePtr
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, T>
     where
         F: FnOnce(&mut Self, usize, Option<&UnitState<N, DiffTensorPtr>>, DiffInputType) -> NetworkOutput<UnitState<N, DiffTensorPtr>, T>
@@ -1645,8 +1644,7 @@ where
                     &mut self.recorder,
                     previous_state,
                     dropout_masks[l_i],
-                    input,
-                    store_gradient
+                    input
                 );
 
                 last_output = Some(DiffInputType::Normal(this_output));
@@ -1665,12 +1663,11 @@ where
         &mut self,
         layer_index: usize,
         previous_state: Option<&UnitState<N, DiffTensorPtr>>,
-        input: DiffInputType,
-        store_gradient: bool
+        input: DiffInputType
     ) -> NetworkOutput<UnitState<N, DiffTensorPtr>, DiffTensorPtr>
     {
         self.weights_ptr.as_ref().unwrap().layers[layer_index]
-            .record_feedforward_unit(&mut self.recorder, previous_state, input, store_gradient)
+            .record_feedforward_unit(&mut self.recorder, previous_state, input)
             .map(|output|
             {
                 self.recorder.matmulv(self.weights_ptr.as_ref().unwrap().output.weight_dropped, output)
@@ -2255,7 +2252,7 @@ mod tests
             let NetworkOutput{
                 state: next_state_ptr,
                 output: (this_output, loss)
-            } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, Some(*this_target), true);
+            } = at_once.record_feedforward_single_input(previous_state.take(), &dropout_masks_ptrs, *this_input, Some(*this_target));
 
             at_once.recorder.name_diff_tensor(this_output, "output");
             at_once.recorder.name_diff_tensor(loss.unwrap(), "loss");

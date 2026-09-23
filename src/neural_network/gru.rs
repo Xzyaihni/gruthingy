@@ -87,37 +87,9 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType,
-        store_gradient: bool
+        input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        {
-            let mut always_store = |weight: DiffTensorPtr|
-            {
-                let value = weight.as_value();
-                recorder.store_tensor_until_end(value);
-
-                if store_gradient
-                {
-                    let gradient = weight.as_gradient().unwrap();
-
-                    recorder.store_tensor_until_end(gradient);
-                }
-            };
-
-            always_store(self.hidden_update.weight_original);
-            always_store(self.hidden_reset.weight_original);
-            always_store(self.hidden_activation.weight_original);
-
-            always_store(self.input_update.weight_original);
-            always_store(self.input_reset.weight_original);
-            always_store(self.input_activation.weight_original);
-
-            always_store(self.update_bias.weight_original);
-            always_store(self.reset_bias.weight_original);
-            always_store(self.activation_bias.weight_original);
-        }
-
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
