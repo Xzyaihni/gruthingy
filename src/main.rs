@@ -239,13 +239,15 @@ where
     }
 }
 
-fn test_loss(config: Config)
+fn test_loss(mut config: Config)
 {
+    config.batch_size = 1;
+
     let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
 
-    network.test_loss(text_file, config.calculate_loss, config.calculate_accuracy);
+    network.test_loss(text_file, config.calculate_accuracy);
 }
 
 fn train(config: Config)
@@ -256,9 +258,7 @@ fn train(config: Config)
     {
         let text_file = config.get_input_file();
 
-        let test_file = config.test_file();
-
-        network.train::<NEmbeddings, _, _>(training_info, test_file, text_file);
+        network.train::<NEmbeddings, _>(training_info, text_file);
 
         try_save_network(&network, &config.network_path);
     };
@@ -615,9 +615,7 @@ fn train_embeddings(mut config: Config)
     {
         let text_file = config.get_input_file();
 
-        let test_file = config.test_file();
-
-        network.train::<NEmbeddings, _, _>(training_info, test_file, text_file);
+        network.train::<NEmbeddings, _>(training_info, text_file);
 
         try_save_network(network, &config.network_path);
     };

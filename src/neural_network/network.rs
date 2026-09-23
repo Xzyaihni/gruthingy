@@ -1315,11 +1315,12 @@ where
 
             self.prepare_shared(store_gradient);
 
-            if store_gradient
+            if let Some(loss_ptr) = self.outputs.loss_ptr
             {
-                let loss_ptr = DiffTensorPtr::no_gradient(self.outputs.loss_ptr.unwrap().as_value());
-                self.outputs.loss = self.recorder.resolve_diff_tensor_ptr(loss_ptr);
-            } else
+                self.outputs.loss = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(loss_ptr.as_value()));
+            }
+
+            if !store_gradient
             {
                 let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
                 self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
@@ -1835,7 +1836,7 @@ where
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         F: Fn(&LayerType, usize, usize) -> T
     {
-        self.set_predict_mode();
+        debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
 
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
@@ -2023,7 +2024,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        assert_eq!(self.network_mode, Some(NetworkMode::Predict));
+        assert!(self.network_mode == Some(NetworkMode::Predict));
 
         self.prepare(false);
 

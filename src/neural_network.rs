@@ -870,8 +870,6 @@ pub struct TrainingInfo
     pub batch_size: usize,
     pub steps_num: StepsNum,
     pub learning_rate: Option<f32>,
-    pub loss_every: Option<usize>,
-    pub calculate_loss: bool,
     pub calculate_accuracy: bool,
     pub less_info: bool
 }
@@ -885,8 +883,6 @@ impl From<&Config> for TrainingInfo
             batch_size: config.batch_size,
             steps_num: StepsNum::new(config.steps_num, config.steps_deviation),
             learning_rate: config.learning_rate,
-            loss_every: config.loss_every,
-            calculate_loss: config.calculate_loss,
             calculate_accuracy: config.calculate_accuracy,
             less_info: config.less_info
         }
@@ -1155,7 +1151,6 @@ where
     pub fn test_loss<R>(
         &mut self,
         reader: R,
-        calculate_loss: bool,
         calculate_accuracy: bool
     )
     where
@@ -1166,13 +1161,12 @@ where
     {
         let inputs = self.vectorized(reader);
 
-        self.test_loss_inner(&inputs, calculate_loss, calculate_accuracy);
+        self.test_loss_inner(&inputs, calculate_accuracy);
     }
 
     fn test_loss_inner(
         &mut self,
         inputs: &[VectorWord],
-        calculate_loss: bool,
         calculate_accuracy: bool
     )
     where
@@ -1184,13 +1178,15 @@ where
 
         if calculate_accuracy
         {
+            self.network.set_predict_mode();
+
             let accuracy = self.network.accuracy(input_outputs.clone());
 
             println!("accuracy: {}%", accuracy * 100.0);
-        }
-
-        if calculate_loss
+        } else
         {
+            self.network.set_train_mode();
+
             let total_loss = self.network.feedforward_no_gradient(input_outputs);
 
             Self::print_loss("testing".to_owned(), total_loss / inputs.len() as f32);
@@ -1209,18 +1205,15 @@ where
         self.dictionary.vectorized(reader)
     }
 
-    pub fn train<EmbeddingType, RT, R>(
+    pub fn train<EmbeddingType, R>(
         &mut self,
         info: TrainingInfo,
-        testing_reader: Option<RT>,
         reader: R
     )
     where
         EmbeddingType: EmbeddingsTypeable,
-        RT: Read,
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        for<'b> VectorizerType<'b, RT, D>: Iterator<Item=VectorWord>,
         for<'b> &'b mut N::Unit<O::WeightParam>: IntoIterator<Item=&'b mut O::WeightParam>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<DiffTensor>=N::Unit<DiffTensor>>,
         N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam, Unit<LayerType>=N::Unit<LayerType>>,
@@ -1245,19 +1238,8 @@ where
         let average_inputs_per_batch = info.batch_size * info.steps_num.mid();
 
         let inputs: Vec<_> = self.vectorized(reader);
-        let testing_inputs: Vec<_> = if !info.calculate_loss && !info.calculate_accuracy
-        {
-            Vec::new()
-        } else
-        {
-            testing_reader
-                .map(|reader| self.vectorized(reader))
-                .unwrap_or_else(Vec::new)
-        };
 
         let iterations_per_epoch = (inputs.len() / average_inputs_per_batch).max(1);
-
-        let inputs_per_loss = info.loss_every.unwrap_or(iterations_per_epoch);
 
         let display_header = !info.less_info;
         let display_inner = !info.less_info;
@@ -1273,22 +1255,7 @@ where
             println!("steps amount: {}", info.steps_num);
 
             println!("iterations per epoch: ~{iterations_per_epoch}");
-            println!("calculate testing loss every ~{inputs_per_loss} iterations");
         }
-
-        let output_testing_loss = |network: &mut NeuralNetwork<_, _, _>|
-        {
-            if testing_inputs.is_empty()
-            {
-                return;
-            }
-
-            network.test_loss_inner(
-                &testing_inputs,
-                info.calculate_loss,
-                info.calculate_accuracy
-            );
-        };
 
         for input_index in 0..info.iterations
         {
@@ -1296,12 +1263,6 @@ where
 
             time_debug! {
                 let steps_num = info.steps_num.get();
-
-                let print_loss = (input_index % inputs_per_loss) == inputs_per_loss - 1;
-                if print_loss
-                {
-                    output_testing_loss(self);
-                }
 
                 let min_len: usize = EmbeddingType::min_len();
                 let inputs_per_block = (steps_num + min_len) * info.batch_size;
@@ -1342,8 +1303,6 @@ where
                 self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
-
-        output_testing_loss(self);
     }
 
     pub fn predict_into<R>(

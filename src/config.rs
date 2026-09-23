@@ -566,10 +566,7 @@ pub struct Config
     pub steps_deviation: f32,
     pub embeddings_size: usize,
     pub learning_rate: Option<f32>,
-    pub loss_every: Option<usize>,
-    pub calculate_loss: bool,
     pub calculate_accuracy: bool,
-    pub testing_data: Option<PathBuf>,
     pub network_path: PathBuf,
     pub embeddings_path: PathBuf,
     pub input: Option<String>,
@@ -601,10 +598,7 @@ impl Config
         let mut steps_deviation = 0.1;
         let mut embeddings_size = 32;
         let mut learning_rate = None;
-        let mut loss_every = None;
-        let mut calculate_loss = true;
         let mut calculate_accuracy = false;
-        let mut testing_data = None;
         let mut network_path = "network.nn".into();
         let mut embeddings_path = "embeddings.nn".into();
         let mut input = None;
@@ -633,10 +627,7 @@ impl Config
         parser.push(&mut steps_deviation, 'D', "deviation", "deviation of the steps number as a fraction");
         parser.push(&mut embeddings_size, 'e', "embeddings", "size of the embeddings vector");
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
-        parser.push(&mut loss_every, None, "loss-every", "amount of iterations per test loss calculation");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
-        parser.push_flag(&mut calculate_loss, None, "no-loss", "dont calculate loss", false);
-        parser.push(&mut testing_data, 't', "testing", "data for calculating the loss/accuracy");
         parser.push(&mut network_path, 'p', "path", "path to the network");
         parser.push(&mut embeddings_path, 'E', "embeddings-path", "path to the embeddings network");
         parser.push(&mut input, 'i', "input", "input");
@@ -676,10 +667,7 @@ impl Config
             steps_deviation,
             embeddings_size,
             learning_rate,
-            loss_every,
-            calculate_loss,
             calculate_accuracy,
-            testing_data,
             network_path,
             embeddings_path,
             input,
@@ -720,14 +708,6 @@ impl Config
     pub fn get_input_file(&self) -> File
     {
         Self::get_file_inner(self.get_input())
-    }
-
-    pub fn test_file(&self) -> Option<File>
-    {
-        self.testing_data.as_ref().map(|test_path|
-        {
-            Self::get_file_inner(test_path)
-        })
     }
 
     fn get_file_inner(path: impl AsRef<Path>) -> File
