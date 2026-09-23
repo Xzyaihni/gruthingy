@@ -799,8 +799,15 @@ impl BpeDictionary
 }
 
 #[allow(dead_code)]
+pub enum BpeLimit
+{
+    Static(usize),
+    Dynamic(f32, usize)
+}
+
+#[allow(dead_code)]
 pub fn bpe_from_bytes(
-    limit: usize,
+    mut limit: BpeLimit,
     optional_info: bool,
     bytes: impl IntoIterator<Item=u8>
 ) -> BpeDictionary
@@ -951,10 +958,30 @@ pub fn bpe_from_bytes(
 
         if optional_info
         {
+            let limit = match limit
+            {
+                BpeLimit::Static(x) => x.to_string(),
+                BpeLimit::Dynamic(_, _) => "?".to_owned()
+            };
+
             println!("({scaffold_count} scaffold) {used_count}/{limit} replaced pair that occurs {occurred_times} times");
         }
 
-        if used_count == limit
+        let is_done = match limit
+        {
+            BpeLimit::Static(limit) => used_count >= limit,
+            BpeLimit::Dynamic(fraction, count) =>
+            {
+                if occurred_times < count
+                {
+                    limit = BpeLimit::Static((used_count as f32 / fraction).ceil() as usize);
+                }
+
+                false
+            }
+        };
+
+        if is_done
         {
             let ngram = dictionary.word_to_bytes_scaffolded_single(ScaffoldedIndex(mapping.output));
             println!("least common ngram occurs {occurred_times} times: {}", String::from_utf8_lossy(&ngram));
@@ -1326,7 +1353,7 @@ mod tests
     fn encodes_decodes_bpe()
     {
         let s = b"hellohellohellohelloworldimgayworldwor";
-        let mut dictionary = bpe_from_bytes(2, true, s.into_iter().copied());
+        let mut dictionary = bpe_from_bytes(BpeLimit::Static(2), true, s.into_iter().copied());
 
         let encoded = dictionary.vectorized(reader());
 
@@ -1347,7 +1374,7 @@ mod tests
     {
         let s = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAywwoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwywoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoyoyoyoyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let text = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let mut dictionary = bpe_from_bytes(2, true, s.into_iter().copied());
+        let mut dictionary = bpe_from_bytes(BpeLimit::Static(2), true, s.into_iter().copied());
 
         dictionary.print_all_tokens();
 

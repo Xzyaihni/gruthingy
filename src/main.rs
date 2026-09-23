@@ -61,6 +61,7 @@ use word_vectorizer::{
     NetworkDictionary,
     WordDictionary,
     ScaffoldedIndex,
+    BpeLimit,
     VectorWord,
     PathType,
     InputDataType,
@@ -534,7 +535,11 @@ fn create_bpe(config: &Config)
     let mut text_file: Vec<u8> = Vec::new();
     text_file_reader.read_to_end(&mut text_file).unwrap_or_else(|err| handle_io(err));
 
-    let dictionary = bpe_from_bytes(config.bpe_limit, config.optional_info, text_file);
+    let dictionary = bpe_from_bytes(
+        config.bpe_limit.map(BpeLimit::Static).unwrap_or(BpeLimit::Dynamic(0.95, 100)),
+        config.optional_info,
+        text_file
+    );
 
     if let Some(longest_ngram) = dictionary.pairs.iter().map(|x|
     {
@@ -804,7 +809,7 @@ mod tests
         // o = 111
 
         let bytes = b"aaoabdaaabac";
-        let dictionary = bpe_from_bytes(2, true, bytes.into_iter().copied());
+        let dictionary = bpe_from_bytes(BpeLimit::Static(2), true, bytes.into_iter().copied());
 
         assert_eq!(dictionary, BpeDictionary{
             pairs: vec![BpeMapping{
@@ -827,6 +832,6 @@ mod tests
         // s = 115
 
         let bytes = b"ahsshshshdhshshhshshahahahhahshdhdhshdahsdajkshdjashsshshdajskajshdasjhdasjkjksakjdhasjkdhsaasdhdhsaasdjdhsajkdhsjskahdajshdjkdjkjjkjkhsdhjasjkdaksjjsshdajsjsdhhdhdjskakaksjdhhdhdsjkajdshadhasjdhaskdhasdjhksadjksahdkjashdjksahdajkhsdajsdhasjkkdjhasjdshadkjash";
-        bpe_from_bytes(20, true, bytes.into_iter().copied());
+        bpe_from_bytes(BpeLimit::Static(20), true, bytes.into_iter().copied());
     }
 }
