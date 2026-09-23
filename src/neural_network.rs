@@ -1092,6 +1092,8 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
+        self.network.set_predict_mode();
+
         let inputs = self.vectorized(reader);
 
         let input_outputs = InputOutputEmbeddingsIter::<NEmbeddings, D>::new(
