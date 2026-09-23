@@ -2,6 +2,7 @@ use std::{
     f32,
     fmt,
     iter,
+    borrow::Cow,
     cell::RefCell,
     marker::PhantomData,
     io::{self, Read, Write, BufReader, BufWriter},
@@ -386,8 +387,8 @@ impl KahanSum
 pub struct InputOutput<'a, D>
 {
     dictionary: &'a D,
-    values: &'a [VectorWord],
-    batch_starts: &'a [usize],
+    values: Cow<'a, Vec<VectorWord>>,
+    batch_starts: Cow<'a, Vec<usize>>,
     inputs_per_batch: usize
 }
 
@@ -395,11 +396,51 @@ impl<'a, D> InputOutput<'a, D>
 {
     pub fn new(
         dictionary: &'a D,
-        values: &'a [VectorWord],
-        batch_starts: &'a [usize],
+        values: &'a Vec<VectorWord>,
+        batch_starts: &'a Vec<usize>,
         inputs_per_batch: usize
     ) -> Self
+    where
+        D: NetworkDictionary
     {
+        let (batch_starts, values) = if dictionary.needs_reencoding()
+        {
+            let batch_size = batch_starts.len();
+            let sequential_batch_starts: Vec<usize> = (0..batch_size).map(|x| x * inputs_per_batch).collect();
+
+            let mut reencoded_values = Vec::new();
+
+            fn reencode_at<D: NetworkDictionary>(
+                reencoded_values: &mut Vec<VectorWord>,
+                dictionary: &D,
+                values: &[VectorWord],
+                batch_start: usize,
+                take_amount: usize,
+                inputs_per_batch: usize
+            )
+            {
+                let reencoded = dictionary.reencode(&values[batch_start..(batch_start + inputs_per_batch)]);
+
+                if reencoded.len() >= inputs_per_batch
+                {
+                    reencoded_values.extend(&reencoded[..inputs_per_batch]);
+                } else
+                {
+                    reencode_at(reencoded_values, dictionary, values, batch_start, take_amount * 2, inputs_per_batch)
+                }
+            }
+
+            batch_starts.iter().copied().for_each(|batch_start|
+            {
+                reencode_at(&mut reencoded_values, dictionary, values, batch_start, inputs_per_batch, inputs_per_batch)
+            });
+
+            (Cow::Owned(sequential_batch_starts), Cow::Owned(reencoded_values))
+        } else
+        {
+            (Cow::Borrowed(batch_starts), Cow::Borrowed(values))
+        };
+
         Self{
             dictionary,
             values,
@@ -408,9 +449,9 @@ impl<'a, D> InputOutput<'a, D>
         }
     }
 
-    pub fn iter<EmbeddingsType>(&self) -> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
+    pub fn iter<EmbeddingsType>(&self) -> InputOutputEmbeddingsIter<'_, EmbeddingsType, D>
     {
-        InputOutputEmbeddingsIter::new(self.dictionary, self.values, self.batch_starts, self.inputs_per_batch)
+        InputOutputEmbeddingsIter::new(self.dictionary, &self.values, &self.batch_starts, self.inputs_per_batch)
     }
 }
 
@@ -1452,8 +1493,8 @@ mod tests
     fn gradient_with_batch_size(
         rng: PrecomputedRng,
         network: &mut NeuralNetwork<Network<Unit, ()>, (), ThisDictionary>,
-        inputs: &[VectorWord],
-        batch_starts: &[usize],
+        inputs: &Vec<VectorWord>,
+        batch_starts: &Vec<usize>,
         inputs_per_batch: usize
     ) -> WeightsFullContainer<Unit, LayerType>
     {
@@ -1590,7 +1631,8 @@ mod tests
                 }
             };
 
-            gradient_with_batch_size(single_rng, &mut network_single, &inputs[start..(start + count)], &[0], inputs_per_batch)
+            let inputs = inputs[start..(start + count)].to_vec();
+            gradient_with_batch_size(single_rng, &mut network_single, &inputs, &vec![0], inputs_per_batch)
         }).reduce(|mut acc, this|
         {
             acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|

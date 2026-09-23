@@ -575,6 +575,7 @@ pub struct Config
     pub temperature: f32,
     pub bpe_limit: Option<usize>,
     pub dropout_probability: f32,
+    pub bpe_dropout_probability: f32,
     pub gradient_clip: Option<f32>,
     pub replace_invalid: bool,
     pub less_info: bool,
@@ -607,6 +608,7 @@ impl Config
         let mut temperature = 1.0;
         let mut bpe_limit = None;
         let mut dropout_probability = 0.5;
+        let mut bpe_dropout_probability = 0.1;
         let mut gradient_clip = Some(1.0);
         let mut replace_invalid = true;
         let mut dictionary_path = "dictionary.txt".into();
@@ -636,6 +638,7 @@ impl Config
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
         parser.push(&mut bpe_limit, None, "bpe-limit", "maximum amount of ngrams in a bpe, dynamic by default");
         parser.push(&mut dropout_probability, None, "dropout", "dropout probability");
+        parser.push(&mut bpe_dropout_probability, None, "bpe-dropout", "bpe dropout probability");
         parser.push(&mut gradient_clip, None, "gradient-clip", "magnitude at which gradient vectors get clipped");
         parser.push_flag(&mut replace_invalid, 'r', "raw", "dont replace invalid utf8", false);
         parser.push_flag(&mut less_info, None, "less-info", "display less info when training", true);
@@ -676,6 +679,7 @@ impl Config
             temperature,
             bpe_limit,
             dropout_probability,
+            bpe_dropout_probability,
             gradient_clip,
             replace_invalid,
             dictionary_path,

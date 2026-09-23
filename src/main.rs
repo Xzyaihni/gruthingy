@@ -537,6 +537,7 @@ fn create_bpe(config: &Config)
 
     let dictionary = bpe_from_bytes(
         config.bpe_limit.map(BpeLimit::Static).unwrap_or(BpeLimit::Dynamic(0.95, 100)),
+        config.bpe_dropout_probability,
         config.optional_info,
         text_file
     );
@@ -807,7 +808,7 @@ mod tests
         // o = 111
 
         let bytes = b"aaoabdaaabac";
-        let dictionary = bpe_from_bytes(BpeLimit::Static(2), true, bytes.into_iter().copied());
+        let dictionary = bpe_from_bytes(BpeLimit::Static(2), 0.0, true, bytes.into_iter().copied());
 
         assert_eq!(dictionary, BpeDictionary{
             pairs: vec![BpeMapping{
@@ -821,6 +822,7 @@ mod tests
                 frequency: 2,
                 is_scaffold: false
             }],
+            dropout_probability: 0.0,
             cached: None
         });
     }
@@ -832,6 +834,6 @@ mod tests
         // s = 115
 
         let bytes = b"ahsshshshdhshshhshshahahahhahshdhdhshdahsdajkshdjashsshshdajskajshdasjhdasjkjksakjdhasjkdhsaasdhdhsaasdjdhsajkdhsjskahdajshdjkdjkjjkjkhsdhjasjkdaksjjsshdajsjsdhhdhdjskakaksjdhhdhdsjkajdshadhasjdhaskdhasdjhksadjksahdkjashdjksahdajkhsdajsdhasjkkdjhasjdshadkjash";
-        bpe_from_bytes(BpeLimit::Static(20), true, bytes.into_iter().copied());
+        bpe_from_bytes(BpeLimit::Static(20), 0.0, true, bytes.into_iter().copied());
     }
 }

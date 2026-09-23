@@ -9,6 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::{
         self,
+        Cursor,
         BufReader,
         Bytes,
         Read
@@ -162,6 +163,10 @@ pub trait NetworkDictionary: Debug
 
     fn is_input_one_hot() -> bool;
     fn input_data() -> InputDataType;
+
+    fn needs_reencoding(&self) -> bool { false }
+
+    fn reencode(&self, _words: &[VectorWord]) -> Vec<VectorWord> { unimplemented!() }
 
     fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
     where
@@ -646,7 +651,8 @@ pub struct TokenIndex(u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BpeDictionaryCache
 {
-    words_to_bytes: Vec<Box<[u8]>>
+    words_to_bytes: Vec<Box<[u8]>>,
+    word_to_used: Vec<Box<[VectorWord]>>
 }
 
 impl BpeDictionaryCache
@@ -663,16 +669,42 @@ impl BpeDictionaryCache
             words_to_bytes.push(combined_bytes);
         });
 
+        let mut word_to_used: Vec<Box<[VectorWord]>> = (0..=u8::MAX as usize)
+            .map(|x| -> Box<[VectorWord]> { Box::new([VectorWord::new(x)]) })
+            .collect();
+
+        dictionary.pairs.iter().fold(0, |mut current_word, mapping|
+        {
+            let word = current_word + u8::MAX as usize + 1;
+
+            if !mapping.is_scaffold
+            {
+                current_word += 1;
+
+                word_to_used.push(Box::new([VectorWord::new(word)]));
+            } else
+            {
+                let (a, b) = mapping.pair;
+
+                let combined_word = word_to_used[a as usize].iter().chain(&word_to_used[b as usize]).copied().collect();
+                word_to_used.push(combined_word);
+            }
+
+            current_word
+        });
+
         Self{
-            words_to_bytes
+            words_to_bytes,
+            word_to_used
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BpeDictionary
 {
     pub pairs: Vec<BpeMapping>,
+    pub dropout_probability: f32,
     #[serde(skip)]
     pub cached: Option<BpeDictionaryCache>
 }
@@ -739,8 +771,18 @@ impl BpeDictionary
         self.cached.as_ref().unwrap().words_to_bytes[self.token_to_scaffolded(word).0 as usize].clone()
     }
 
-    pub fn combine_pair(ngrams: &mut Vec<u32>, mapping: BpeMapping, mut on_replace: impl FnMut(Option<u32>, Option<u32>))
+    pub fn combine_pair(
+        ngrams: &mut Vec<u32>,
+        mapping: BpeMapping,
+        dropout: f32,
+        mut on_replace: impl FnMut(Option<u32>, Option<u32>)
+    )
     {
+        let check_dropout = move ||
+        {
+            dropout == 0.0 || fastrand::f32() > dropout
+        };
+
         let mut any_replaced = false;
 
         // this gets constantly reallocated so its not a big deal that its a bit bigger
@@ -749,7 +791,9 @@ impl BpeDictionary
         let mut i = 0;
         while i < ngrams.len().saturating_sub(1)
         {
-            if (ngrams[i], ngrams[i + 1]) == mapping.pair
+            let is_matching = (ngrams[i], ngrams[i + 1]) == mapping.pair;
+
+            if is_matching && check_dropout()
             {
                 any_replaced = true;
 
@@ -777,6 +821,31 @@ impl BpeDictionary
         }
 
         *ngrams = new_ngrams;
+    }
+
+    fn vectorized_with_dropped<R: Read>(&self, mut reader: R, dropout: f32) -> Vec<VectorWord>
+    {
+        let mut ngrams: Vec<u32> = {
+            let mut bytes: Vec<u8> = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+
+            bytes.into_iter().map(u32::from).collect()
+        };
+
+        self.pairs.iter().for_each(|pair|
+        {
+            Self::combine_pair(&mut ngrams, *pair, dropout, |_, _| {});
+        });
+
+        let mut output = Vec::with_capacity(ngrams.len());
+
+        let cached = self.cached.as_ref().unwrap();
+        ngrams.into_iter().for_each(|x|
+        {
+            output.extend(&cached.word_to_used[x as usize]);
+        });
+
+        output
     }
 
     pub fn print_all_tokens(&self)
@@ -809,6 +878,7 @@ pub enum BpeLimit
 #[allow(dead_code)]
 pub fn bpe_from_bytes(
     mut limit: BpeLimit,
+    dropout_probability: f32,
     optional_info: bool,
     bytes: impl IntoIterator<Item=u8>
 ) -> BpeDictionary
@@ -820,7 +890,7 @@ pub fn bpe_from_bytes(
         complain("the input is empty, cant create bpe");
     }
 
-    let mut dictionary = BpeDictionary{pairs: Vec::new(), cached: None};
+    let mut dictionary = BpeDictionary{pairs: Vec::new(), dropout_probability, cached: None};
 
     fn pair_frequencies_of(ngrams: &[u32]) -> HashMap<(u32, u32), usize>
     {
@@ -874,7 +944,7 @@ pub fn bpe_from_bytes(
 
         let before_length = ngrams.len();
 
-        BpeDictionary::combine_pair(&mut ngrams, mapping, |u, v|
+        BpeDictionary::combine_pair(&mut ngrams, mapping, 0.0, |u, v|
         {
             mapping.frequency += 1;
 
@@ -1044,56 +1114,21 @@ impl NetworkDictionary for BpeDictionary
 
     fn is_input_one_hot() -> bool { true }
 
+    fn needs_reencoding(&self) -> bool { self.dropout_probability > 0.0 }
+
+    fn reencode(&self, words: &[VectorWord]) -> Vec<VectorWord>
+    {
+        let mut bytes: Vec<u8> = Vec::new();
+        words.iter().for_each(|word| bytes.extend(self.word_to_bytes_single(TokenIndex(word.0 as u32))));
+
+        self.vectorized_with_dropped(Cursor::new(bytes), self.dropout_probability)
+    }
+
     fn vectorized<R: Read>(&mut self, reader: R) -> Vec<VectorWord>
     {
         self.require_cache();
 
-        let mut ngrams: Vec<u32> = {
-            let mut reader = BufReader::new(reader);
-
-            let mut bytes: Vec<u8> = Vec::new();
-            reader.read_to_end(&mut bytes).unwrap();
-
-            bytes.into_iter().map(u32::from).collect()
-        };
-
-        self.pairs.iter().for_each(|pair|
-        {
-            Self::combine_pair(&mut ngrams, *pair, |_, _| {});
-        });
-
-        let mut word_to_used: Vec<Box<[VectorWord]>> = (0..=u8::MAX as usize)
-            .map(|x| -> Box<[VectorWord]> { Box::new([VectorWord::new(x)]) })
-            .collect();
-
-        self.pairs.iter().fold(0, |mut current_word, mapping|
-        {
-            let word = current_word + u8::MAX as usize + 1;
-
-            if !mapping.is_scaffold
-            {
-                current_word += 1;
-
-                word_to_used.push(Box::new([VectorWord::new(word)]));
-            } else
-            {
-                let (a, b) = mapping.pair;
-
-                let combined_word = word_to_used[a as usize].iter().chain(&word_to_used[b as usize]).copied().collect();
-                word_to_used.push(combined_word);
-            }
-
-            current_word
-        });
-
-        let mut output = Vec::with_capacity(ngrams.len());
-
-        ngrams.into_iter().for_each(|x|
-        {
-            output.extend(&word_to_used[x as usize]);
-        });
-
-        output
+        self.vectorized_with_dropped(BufReader::new(reader), 0.0)
     }
 
     fn input_data() -> InputDataType
@@ -1376,9 +1411,11 @@ mod tests
     fn encodes_decodes_bpe()
     {
         let s = b"hellohellohellohelloworldimgayworldwor";
-        let mut dictionary = bpe_from_bytes(BpeLimit::Static(2), true, s.into_iter().copied());
+        let mut dictionary = bpe_from_bytes(BpeLimit::Static(2), 0.0, true, s.into_iter().copied());
 
         let encoded = dictionary.vectorized(reader());
+
+        assert_eq!(encoded, dictionary.reencode(&encoded));
 
         let decoded: Vec<Box<[u8]>> = encoded.into_iter().map(|word| dictionary.word_to_bytes(None, word)).collect();
 
@@ -1397,7 +1434,7 @@ mod tests
     {
         let s = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAywwoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwywoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoyoyoyoyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let text = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let mut dictionary = bpe_from_bytes(BpeLimit::Static(2), true, s.into_iter().copied());
+        let mut dictionary = bpe_from_bytes(BpeLimit::Static(2), 0.0, true, s.into_iter().copied());
 
         dictionary.print_all_tokens();
 
