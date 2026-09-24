@@ -31,7 +31,7 @@ do
 
     # even though this MIGHT finish after the next network trained, it wont do that on any reasonable amount of iterations and a reasonable test file
     {
-        $1 --mode test --path $networkpath --input $testinput | grep --only-matching '[\.0-9]*' >> $testlosses
+        $1 --mode test --path $networkpath --input $testinput --batch 5 | grep --only-matching '[\.0-9]*' >> $testlosses
 
         perlheader="use warnings; use strict; my \$checks = $trynruns;"
 
