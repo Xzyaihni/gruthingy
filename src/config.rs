@@ -594,8 +594,8 @@ impl Config
     {
         let mut iterations = 100;
         let mut batch_size = 32;
-        let mut hidden_size = 512;
-        let mut layers_amount = 6;
+        let mut hidden_size = 256;
+        let mut layers_amount = 8;
         let mut steps_num = 64;
         let mut steps_deviation = 0.1;
         let mut embeddings_size = 32;
