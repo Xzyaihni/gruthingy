@@ -601,7 +601,7 @@ pub struct NetworkOutput<State, Output>
 
 impl<State, Output> NetworkOutput<State, Output>
 {
-    fn map<F, NewOutput>(self, f: F) -> NetworkOutput<State, NewOutput>
+    pub fn map<F, NewOutput>(self, f: F) -> NetworkOutput<State, NewOutput>
     where
         F: FnOnce(Output) -> NewOutput
     {

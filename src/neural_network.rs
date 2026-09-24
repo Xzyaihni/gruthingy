@@ -292,13 +292,6 @@ impl SerializeFormat for JsonFormat
     }
 }
 
-#[allow(dead_code)]
-pub enum AFType
-{
-    Tanh,
-    LeakyRelu
-}
-
 pub struct OneHotEmbeddings;
 
 pub struct BagOfWordsEmbeddings;

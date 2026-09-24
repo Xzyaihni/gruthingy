@@ -5695,7 +5695,7 @@ impl OperationsRecorder
 
     fn calculate_gradient(
         &mut self,
-        assigned_gradients: &mut Vec<AssignedInfo>,
+        mut assigned_gradients: &mut Vec<AssignedInfo>,
         selectors: &mut Vec<LoopSelectorInfo>,
         intermediate_selector: &mut Option<PhiOtherSelectorIndex>,
         used_stack_values: &mut Vec<UsedStackValueInfo>,
@@ -5879,7 +5879,12 @@ impl OperationsRecorder
                     }
                 });
 
-                debug_assert!(lhs.is_some());
+                debug_assert!(
+                    lhs.is_some(),
+                    "{:?} must have an output {}",
+                    NotationGradientOp::from_nameable(&this.memory, this.gradient_operations[info.operation_index.0].clone()),
+                    this.memory.format_variable(output)
+                );
 
                 let mut rhs = None;
                 let mut selector_rhs = None;
@@ -6048,27 +6053,36 @@ impl OperationsRecorder
             };
 
             let mut overlaps = false;
-            let mut outputs_count = 0;
 
-            if let Some((info, output)) = assigned_gradients.iter_mut().find_map(|info|
+            fn this_assigned<'a>(
+                assigned_gradients: &'a mut Vec<AssignedInfo>,
+                gradient_op: &StandardGradientOp
+            ) -> (Option<(&'a mut AssignedInfo, DiffValue)>, usize)
             {
-                outputs_count = 0;
+                let mut outputs_count = 0;
 
-                let mut is_assigned = None;
-                gradient_op.for_outputs(|output|
+                (assigned_gradients.iter_mut().find_map(|info|
                 {
-                    outputs_count += 1;
+                    outputs_count = 0;
 
-                    if info.value == output
+                    let mut is_assigned = None;
+                    gradient_op.for_outputs(|output|
                     {
-                        debug_assert!(is_assigned.is_none());
+                        outputs_count += 1;
 
-                        is_assigned = Some(output);
-                    }
-                });
+                        if info.value == output
+                        {
+                            debug_assert!(is_assigned.is_none());
 
-                is_assigned.map(|output| (info, output))
-            })
+                            is_assigned = Some(output);
+                        }
+                    });
+
+                    is_assigned.map(|output| (info, output))
+                }), outputs_count)
+            }
+
+            if let (Some((info, output)), outputs_count) = this_assigned(&mut assigned_gradients, &gradient_op)
             {
                 overlaps = true;
 
@@ -6142,7 +6156,7 @@ impl OperationsRecorder
                         DiffValue::OneHot(_) => unimplemented!()
                     };
 
-                    this.gradient_operations[last_operation_index.0] = gradient_op.map_outputs(|output|
+                    this.gradient_operations[last_operation_index.0] = gradient_op.clone().map_outputs(|output|
                     {
                         if output == other
                         {
@@ -6153,6 +6167,7 @@ impl OperationsRecorder
                         }
                     });
 
+                    let this_operation_index = this.gradient_operations.len();
                     this.gradient_operations.push(add_op);
 
                     new_names.into_iter().for_each(|(value, inherit, suffix): (DiffValue, DiffValue, &str)|
@@ -6164,6 +6179,11 @@ impl OperationsRecorder
                             DiffValue::OneHot(_) => unimplemented!()
                         }
                     });
+
+                    if let (Some((assigned_info, _)), _) = this_assigned(&mut assigned_gradients, &gradient_op)
+                    {
+                        assigned_info.operation_index = GradientOperationIndex(this_operation_index);
+                    }
                 }
             }
         };

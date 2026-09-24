@@ -1,6 +1,4 @@
 use crate::neural_network::{
-    LAYER_ACTIVATION,
-    AFType,
     OperationsRecorder,
     DiffTensorPtr,
     LayerType,
@@ -120,23 +118,7 @@ where
         input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let mut output = self.record_feedforward_unit(recorder, previous_state, input);
-
-        let new_output = match LAYER_ACTIVATION
-        {
-            AFType::LeakyRelu =>
-            {
-                recorder.leaky_relu(output.output)
-            },
-            AFType::Tanh =>
-            {
-                recorder.tanh(output.output)
-            }
-        };
-
-        recorder.name_diff_tensor(new_output, "output_activated");
-        output.output = new_output;
-
-        output
+        // my backprop thingy struggles too much if i dont do a copy lol
+        self.record_feedforward_unit(recorder, previous_state, input).map(|x| recorder.copy(x))
     }
 }

@@ -5,7 +5,6 @@ use super::{
     Adam,
     AdamX,
     PowerSign,
-    AFType,
     OneHotEmbeddings,
     BagOfWordsEmbeddings,
     Gru,
@@ -24,9 +23,6 @@ use super::{
 
 // options: Power, Division
 pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
-
-// options: Tanh, LeakyRelu
-pub const LAYER_ACTIVATION: AFType = AFType::LeakyRelu;
 
 // options: OneHotEmbeddings, BagOfWordsEmbeddings
 pub type NEmbeddings = OneHotEmbeddings;
