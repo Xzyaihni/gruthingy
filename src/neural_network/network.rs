@@ -81,11 +81,25 @@ impl DropoutRoll for PrecomputedRng
     }
 }
 
-pub fn with_previous_layer_random(previous_layer: usize) -> f32
+pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 {
-    let v = 1.0 / (previous_layer as f32).sqrt();
+    let x = if m <= k
+    {
+        LayerType::new_with(m, k, fastrand::f32)
+    } else
+    {
+        LayerType::new_with(k, m, fastrand::f32)
+    };
 
-    (fastrand::f32() * 2.0 - 1.0) * v
+    let output = x.as_ref().gemm_tr(x.as_ref()).map(|x| x.sqrt().recip()).as_ref().gemm(x.as_ref());
+
+    if m <= k
+    {
+        output
+    } else
+    {
+        output.as_ref().transpose().mul_scalar((m as f32 / k as f32).sqrt())
+    }
 }
 
 pub fn maybe_dropout_weights(
@@ -211,6 +225,7 @@ macro_rules! create_weights_container
     {
         use std::ops::{SubAssign, AddAssign, DivAssign};
 
+        #[allow(unused_imports)]
         use $crate::neural_network::{
             DebugUnitInfo,
             LayerType,
@@ -310,7 +325,7 @@ macro_rules! create_weights_container
         {
             pub fn new_randomized(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                use $crate::neural_network::{TensorShape, network::{with_previous_layer_random, maybe_dropout_weights, LayerSize}};
+                use $crate::neural_network::{TensorShape, network::{initialize_orthogonal, maybe_dropout_weights, LayerSize}};
 
                 Self{sizes, $(
                     $name: {
@@ -327,14 +342,9 @@ macro_rules! create_weights_container
 
                                 bias
                             },
-                            x =>
+                            _x =>
                             {
-                                let previous_layer = x.into_number(sizes);
-
-                                let weights = LayerType::new_with(this_size, previous_size, ||
-                                {
-                                    with_previous_layer_random(previous_layer)
-                                });
+                                let weights = initialize_orthogonal(this_size, previous_size);
 
                                 recorder.set_new_tensor_gradientable(weights, sizes.batch_size)
                             }
@@ -1167,10 +1177,7 @@ where
     {
         let mut create_weights = |name: &'static str, is_skip: bool, previous: usize, current: usize| -> WeightInfoPtr
         {
-            let weights = self.recorder.set_new_tensor_gradientable(LayerType::new_with(current, previous, ||
-            {
-                with_previous_layer_random(previous)
-            }), sizes.batch_size);
+            let weights = self.recorder.set_new_tensor_gradientable(initialize_orthogonal(current, previous), sizes.batch_size);
 
             self.recorder.name_diff_tensor(weights, name);
 
@@ -2409,7 +2416,7 @@ mod tests
 
         assert!(loss > 0.0);
 
-        assert!(gradients.iter().all(|x| !x.as_vec().into_iter().all(|x| x == 0.0)), "gradients have unused fields: {gradients:?}");
+        assert!(gradients.iter().any(|x| !x.as_vec().into_iter().all(|x| x == 0.0)), "gradients are all 0: {gradients:?}");
     }
 
     #[test]

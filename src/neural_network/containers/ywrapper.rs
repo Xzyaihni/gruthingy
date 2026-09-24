@@ -1,6 +1,7 @@
 use std::{
     f32,
     iter,
+    cmp::Ordering,
     num::FpCategory
 };
 
@@ -211,7 +212,7 @@ impl YWrapper
         }
     }
 
-    fn map(self, f: impl Fn(f32) -> f32) -> Self
+    pub fn map(self, f: impl Fn(f32) -> f32) -> Self
     {
         Self{
             shape: self.shape,
@@ -382,6 +383,60 @@ impl<'a> YWrapperRef<'a>
         self.values.iter().copied().sum::<f32>()
     }
 
+    pub fn max_value(&self) -> f32
+    {
+        self.values.iter().copied().max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal)).unwrap_or(0.0)
+    }
+
+    pub fn gemm_tr(&self, other: YWrapperRef) -> YWrapper
+    {
+        self.gemm_inner(true, other)
+    }
+
+    pub fn gemm(&self, other: YWrapperRef) -> YWrapper
+    {
+        self.gemm_inner(false, other)
+    }
+
+    fn gemm_inner(&self, is_b_transpose: bool, other: YWrapperRef) -> YWrapper
+    {
+        debug_assert_eq!(self.shape.batch_size, 1);
+        debug_assert_eq!(other.shape.batch_size, 1);
+
+        use oxiblas_blas::level3::Trans;
+
+        let mut output = YWrapper::new(
+            self.shape.rows,
+            if is_b_transpose { other.shape.rows } else { other.shape.columns }
+        );
+
+        oxiblas_blas::level3::gemm::gemm_transposed(
+            Trans::NoTrans,
+            if is_b_transpose { Trans::Trans } else { Trans::NoTrans },
+            1.0,
+            self.as_mat_ref(),
+            other.as_mat_ref(),
+            0.0,
+            output.as_mut().as_mat_mut()
+        );
+
+        output
+    }
+
+    pub fn transpose(&self) -> YWrapper
+    {
+        debug_assert_eq!(self.shape.batch_size, 1);
+
+        let transposed = nalgebra::DMatrixView::from_slice(self.values, self.shape.rows, self.shape.columns).transpose();
+
+        let (rows, columns) = transposed.shape();
+
+        YWrapper{
+            shape: TensorShape{rows, columns, batch_size: self.shape.batch_size},
+            values: transposed.as_slice().to_vec().into_boxed_slice()
+        }
+    }
+
     pub fn as_vector_ref(&self) -> YVectorWrapperRef<'_>
     {
         debug_assert_eq!(self.shape.columns, 1);
@@ -531,6 +586,11 @@ impl<'a> YWrapperMut<'a>
         debug_assert_eq!(self.shape, rhs.shape);
 
         oxiblas_blas::level1::axpy_f32(scale, rhs.values, self.values)
+    }
+
+    pub fn sub_scalar_inplace(&mut self, other: f32)
+    {
+        self.add_scalar_inplace(-other)
     }
 
     pub fn add_scalar_inplace(&mut self, other: f32)
@@ -891,6 +951,13 @@ impl<'a> YWrapperMut<'a>
 
         debug_assert_eq!(values.shape.batch_size, targets.batch_size());
 
+        for batch_index in 0..self.shape.batch_size
+        {
+            let biggest_value = values.as_ref().batch_slice_ref(batch_index).max_value();
+
+            values.batch_slice_mut(batch_index).sub_scalar_inplace(biggest_value);
+        }
+
         values.apply(|x| x.exp());
 
         for batch_index in 0..self.shape.batch_size
@@ -912,7 +979,7 @@ impl<'a> YWrapperMut<'a>
         }
     }
 
-    fn apply(&mut self, f: impl Fn(f32) -> f32)
+    pub fn apply(&mut self, f: impl Fn(f32) -> f32)
     {
         self.values.iter_mut().for_each(|x| *x = f(*x));
     }
