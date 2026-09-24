@@ -102,14 +102,6 @@ impl TensorShape
     }
 }
 
-pub trait Softmaxable
-{
-    fn exp_inplace(&mut self);
-    fn sum(&self) -> f32;
-
-    fn mul_scalar_inplace(&mut self, value: f32);
-}
-
 #[derive(Debug)]
 pub struct Softmaxer;
 
@@ -123,10 +115,15 @@ impl Softmaxer
         Self::softmax(layer)
     }
 
-    pub fn softmax(mut layer: impl Softmaxable)
+    pub fn softmax(mut layer: LayerTypeMut)
     {
+        let biggest_value = layer.as_ref().max_value();
+
+        layer.sub_scalar_inplace(biggest_value);
+
         layer.exp_inplace();
-        let s = layer.sum();
+
+        let s = layer.as_ref().sum();
 
         layer.mul_scalar_inplace(s.recip());
     }

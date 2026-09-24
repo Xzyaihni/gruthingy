@@ -12,7 +12,6 @@ use oxiblas_matrix::{MatRef, MatMut};
 use super::{
     TensorShape,
     Softmaxer,
-    Softmaxable,
     OneHotLayer,
     TensorRawDataPointer,
     LEAKY_SLOPE,
@@ -63,24 +62,6 @@ pub struct YVectorWrapperMut<'a>
     rows: usize,
     batch_size: usize,
     values: &'a mut [f32]
-}
-
-impl<'a> Softmaxable for YWrapperMut<'a>
-{
-    fn exp_inplace(&mut self)
-    {
-        self.exp_inplace();
-    }
-
-    fn sum(&self) -> f32
-    {
-        self.as_ref().sum()
-    }
-
-    fn mul_scalar_inplace(&mut self, value: f32)
-    {
-        self.mul_scalar_inplace(value);
-    }
 }
 
 fn dot(lhs: &[f32], rhs: &[f32]) -> f32
@@ -623,7 +604,7 @@ impl<'a> YWrapperMut<'a>
 
         for batch_index in 0..self.shape.batch_size
         {
-            self.values[batch_index] = value.values[value.shape.batch_range(batch_index)].iter().copied().sum();
+            self.values[batch_index] = value.batch_slice_ref(batch_index).sum();
         }
     }
 
@@ -953,27 +934,26 @@ impl<'a> YWrapperMut<'a>
 
         for batch_index in 0..self.shape.batch_size
         {
-            let biggest_value = values.as_ref().batch_slice_ref(batch_index).max_value();
+            let positions = &targets.positions[batch_index];
 
-            values.batch_slice_mut(batch_index).sub_scalar_inplace(biggest_value);
-        }
+            let mut values = values.batch_slice_mut(batch_index);
 
-        values.apply(|x| x.exp());
+            let biggest_value = values.as_ref().max_value();
 
-        for batch_index in 0..self.shape.batch_size
-        {
-            let batch_range = values.shape.batch_range(batch_index);
+            values.sub_scalar_inplace(biggest_value);
 
-            let s = values.values[batch_range.clone()].iter().copied().sum::<f32>();
+            let z: f32 = positions.iter().map(|position| values.values[*position]).sum();
+
+            values.apply(|x| x.exp());
+
+            let s = values.as_ref().sum();
 
             debug_assert!(s.classify() != FpCategory::Zero);
             debug_assert!(s.classify() != FpCategory::Infinite);
 
-            values.batch_slice_mut(batch_index).mul_scalar_inplace(s.recip());
+            let entropy = -(z - s.ln() * positions.len() as f32);
 
-            let batch_start = batch_range.start;
-
-            let entropy = -targets.positions[batch_index].iter().map(|position| values.values[batch_start + *position].ln()).sum::<f32>();
+            values.mul_scalar_inplace(s.recip());
 
             self.values[batch_index] = entropy;
         }
