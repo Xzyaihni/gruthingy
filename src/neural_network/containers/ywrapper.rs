@@ -64,7 +64,7 @@ pub struct YVectorWrapperMut<'a>
     values: &'a mut [f32]
 }
 
-impl Softmaxable for YWrapper
+impl<'a> Softmaxable for YWrapperMut<'a>
 {
     fn exp_inplace(&mut self)
     {
@@ -73,7 +73,7 @@ impl Softmaxable for YWrapper
 
     fn sum(&self) -> f32
     {
-        self.sum()
+        self.as_ref().sum()
     }
 
     fn mul_scalar_inplace(&mut self, value: f32)
@@ -141,6 +141,16 @@ impl YWrapper
         }
     }
 
+    pub fn batch_replicate(self, batch_size: usize) -> Self
+    {
+        debug_assert_eq!(self.shape.batch_size, 1);
+
+        Self{
+            shape: TensorShape{batch_size, ..self.shape},
+            values: self.values.repeat(batch_size).into_boxed_slice()
+        }
+    }
+
     pub fn mul_scalar(&self, value: f32) -> Self
     {
         self.clone().map(|x| x * value)
@@ -184,18 +194,6 @@ impl YWrapper
     pub fn signum(&self) -> Self
     {
         self.clone().map(|x| x.signum())
-    }
-
-    pub fn exp_inplace(&mut self)
-    {
-        self.as_mut().apply(|x| x.exp())
-    }
-
-    pub fn sum(&self) -> f32
-    {
-        debug_assert_eq!(self.shape.batch_size, 1);
-
-        self.values.iter().copied().sum::<f32>()
     }
 
     pub fn max(&self, other: YWrapperRef) -> Self
@@ -350,7 +348,38 @@ impl<'a> YWrapperRef<'a>
     {
         debug_assert!(self.shape.is_batched_scalar());
 
-        self.values.iter().copied().sum::<f32>() / self.shape.batch_size as f32
+        self.average_tensor().values[0]
+    }
+
+    pub fn average_tensor(&self) -> YWrapper
+    {
+        let batch_size = self.shape.batch_size;
+
+        if batch_size < 2
+        {
+            return self.clone_owned();
+        }
+
+        let mut output = YWrapper{
+            shape: TensorShape{batch_size: 1, ..self.shape},
+            values: vec![0.0; self.shape.single_size()].into_boxed_slice()
+        };
+
+        let batch_size_recip = (batch_size as f32).recip();
+
+        for batch_index in 0..batch_size
+        {
+            output.as_mut().add_inplace_scale(self.batch_slice_ref(batch_index), batch_size_recip);
+        }
+
+        output
+    }
+
+    pub fn sum(&self) -> f32
+    {
+        debug_assert_eq!(self.shape.batch_size, 1);
+
+        self.values.iter().copied().sum::<f32>()
     }
 
     pub fn as_vector_ref(&self) -> YVectorWrapperRef<'_>
@@ -427,6 +456,11 @@ impl<'a> YWrapperMut<'a>
         self.values.copy_from_slice(value.values)
     }
 
+    pub fn exp_inplace(&mut self)
+    {
+        self.apply(|x| x.exp())
+    }
+
     pub fn fill(self, value: f32)
     {
         self.values.fill(value);
@@ -489,9 +523,14 @@ impl<'a> YWrapperMut<'a>
 
     pub fn add_inplace(self, rhs: YWrapperRef)
     {
+        self.add_inplace_scale(rhs, 1.0)
+    }
+
+    fn add_inplace_scale(self, rhs: YWrapperRef, scale: f32)
+    {
         debug_assert_eq!(self.shape, rhs.shape);
 
-        oxiblas_blas::level1::axpy_f32(1.0, rhs.values, self.values)
+        oxiblas_blas::level1::axpy_f32(scale, rhs.values, self.values)
     }
 
     pub fn add_scalar_inplace(&mut self, other: f32)
@@ -885,13 +924,21 @@ impl<'a> YWrapperMut<'a>
         YVectorWrapperMut::from_data(&mut self.values, self.shape)
     }
 
-    fn batch_slice_mut(&mut self, batch_index: usize) -> YWrapperMut<'_>
+    pub fn batch_slice_mut(&mut self, batch_index: usize) -> YWrapperMut<'_>
     {
         debug_assert!(batch_index < self.shape.batch_size);
 
         YWrapperMut{
             values: &mut self.values[self.shape.batch_range(batch_index)],
             shape: TensorShape{batch_size: 1, ..self.shape}
+        }
+    }
+
+    pub fn as_ref(&self) -> YWrapperRef<'_>
+    {
+        YWrapperRef{
+            shape: self.shape,
+            values: &*self.values
         }
     }
 
@@ -1101,24 +1148,29 @@ impl<'a> YVectorWrapperMut<'a>
         debug_assert_eq!(self.rows, lhs.shape.rows);
         debug_assert_eq!(lhs.shape.columns, rhs.rows);
 
-        debug_assert_eq!(self.batch_size, rhs.batch_size);
+        debug_assert!(self.batch_size >= lhs.shape.batch_size);
+        debug_assert!(self.batch_size >= rhs.batch_size);
 
-        if self.batch_size != lhs.shape.batch_size
+        for batch_index in 0..self.batch_size
         {
-            debug_assert_eq!(lhs.shape.batch_size, 1);
-            debug_assert_eq!(self.batch_size, rhs.batch_size);
-
-            for batch_index in 0..self.batch_size
+            let lhs = if lhs.shape.batch_size != 1
             {
-                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index));
-            }
+                lhs.batch_slice_ref(batch_index)
+            } else
+            {
+                lhs
+            };
 
-            return;
+            let rhs = if rhs.batch_size != 1
+            {
+                rhs.batch_slice_ref(batch_index)
+            } else
+            {
+                rhs
+            };
+
+            inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs);
         }
-
-        debug_assert_eq!(self.batch_size, 1);
-
-        inner_single_batch(self, lhs, rhs);
     }
 
     pub fn matmulv_add_into(mut self, lhs: YWrapperRef, rhs: YVectorWrapperRef, added: YVectorWrapperRef)
@@ -1148,40 +1200,35 @@ impl<'a> YVectorWrapperMut<'a>
         debug_assert_eq!(lhs.shape.columns, rhs.rows);
         debug_assert_eq!(self.rows, added.rows);
 
-        if self.batch_size != lhs.shape.batch_size
-        {
-            debug_assert_eq!(self.batch_size, rhs.batch_size);
-
-            debug_assert_eq!(lhs.shape.batch_size, 1);
-
-            for batch_index in 0..self.batch_size
-            {
-                let added = if self.batch_size == added.batch_size
-                {
-                    added.batch_slice_ref(batch_index)
-                } else
-                {
-                    debug_assert_eq!(added.batch_size, 1);
-
-                    added
-                };
-
-                inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs.batch_slice_ref(batch_index), added);
-            }
-
-            return;
-        }
-
-        debug_assert_eq!(self.batch_size, rhs.batch_size);
-
         debug_assert!(self.batch_size >= lhs.shape.batch_size);
+        debug_assert!(self.batch_size >= rhs.batch_size);
         debug_assert!(self.batch_size >= added.batch_size);
 
         for batch_index in 0..self.batch_size
         {
-            let lhs = lhs.batch_slice_ref(batch_index);
-            let rhs = rhs.batch_slice_ref(batch_index);
-            let added = added.batch_slice_ref(batch_index);
+            let lhs = if lhs.shape.batch_size != 1
+            {
+                lhs.batch_slice_ref(batch_index)
+            } else
+            {
+                lhs
+            };
+
+            let rhs = if rhs.batch_size != 1
+            {
+                rhs.batch_slice_ref(batch_index)
+            } else
+            {
+                rhs
+            };
+
+            let added = if added.batch_size != 1
+            {
+                added.batch_slice_ref(batch_index)
+            } else
+            {
+                added
+            };
 
             inner_single_batch(self.batch_slice_mut(batch_index), lhs, rhs, added);
         }

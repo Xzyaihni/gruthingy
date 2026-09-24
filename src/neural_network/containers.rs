@@ -116,14 +116,14 @@ pub struct Softmaxer;
 impl Softmaxer
 {
     #[allow(dead_code)]
-    pub fn softmax_temperature(layer: &mut LayerType, temperature: f32)
+    pub fn softmax_temperature(mut layer: LayerTypeMut, temperature: f32)
     {
         layer.mul_scalar_inplace(temperature.recip());
 
         Self::softmax(layer)
     }
 
-    pub fn softmax(layer: &mut impl Softmaxable)
+    pub fn softmax(mut layer: impl Softmaxable)
     {
         layer.exp_inplace();
         let s = layer.sum();
@@ -1805,34 +1805,7 @@ impl OperationsRecorder
         {
             if self.memory.variable_names.0.values().any(|x| *x == _name)
             {
-                let name_chars: Vec<char> = _name.chars().collect();
-
-                let mut count = 0;
-
-                let end_number: String = name_chars.iter().rev().copied().take_while(|c: &char|
-                {
-                    let is_digit = c.is_ascii_digit();
-
-                    if is_digit
-                    {
-                        count += 1;
-                    }
-
-                    is_digit
-                }).collect();
-
-                let new_name = if end_number.is_empty()
-                {
-                    _name + "1"
-                } else
-                {
-                    let new_end_number = (end_number.parse::<u32>().expect("must be valid") + 1).to_string();
-
-                    let total_chars = name_chars.len();
-                    name_chars.into_iter().take(total_chars - count).collect::<String>() + &new_end_number
-                };
-
-                self.name_diff_value(_value, new_name);
+                self.name_diff_value(_value, _name + "#");
             } else
             {
                 self.memory.variable_names.0.insert(_value, _name);
@@ -6901,6 +6874,11 @@ impl DiffTensorPtr
         }
     }
 
+    pub fn is_undefined(&self) -> bool
+    {
+        *self == Self::undefined()
+    }
+
     pub fn clear_gradient(&mut self)
     {
         self.gradient = None;
@@ -7783,6 +7761,17 @@ impl OneHotLayer
         self.batch_size
     }
 
+    pub fn batch_replicate(self, batch_size: usize) -> Self
+    {
+        debug_assert_eq!(self.batch_size, 1);
+
+        Self{
+            positions: iter::repeat(&self.positions[0]).take(batch_size).cloned().collect(),
+            size: self.size,
+            batch_size
+        }
+    }
+
     pub fn into_layer(self) -> LayerType
     {
         let total_size = self.size * self.batch_size;
@@ -7931,6 +7920,15 @@ impl OwnedInputType
         {
             Self::Normal(value) => value,
             _ => panic!("expected normal")
+        }
+    }
+
+    pub fn batch_replicate(self, batch_size: usize) -> Self
+    {
+        match self
+        {
+            Self::Normal(x) => Self::Normal(x.batch_replicate(batch_size)),
+            Self::OneHot(x) => Self::OneHot(x.batch_replicate(batch_size))
         }
     }
 }

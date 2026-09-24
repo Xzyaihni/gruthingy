@@ -198,7 +198,7 @@ impl Optimizer for PowerSign
         let decay = DECAY_FUNCTION.decay(self.learning_rate, self.t);
 
         let mut this = gradient.signum().mul_componentwise(gradient_info.m.signum().as_ref()).mul_scalar(decay);
-        this.exp_inplace();
+        this.as_mut().exp_inplace();
 
         this.mul_componentwise(gradient.as_ref())
     }

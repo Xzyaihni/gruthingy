@@ -112,7 +112,11 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
-            let bias = bias.weight_dropped;
+
+            debug_assert!(bias.weight_dropped.is_undefined());
+            debug_assert!(bias.dropout.is_none());
+
+            let bias = bias.weight_original;
 
             match input
             {
@@ -240,14 +244,14 @@ mod tests
             w
         };
 
-        let mut one_weight_info = |value: f32|
+        let mut one_weight_info = |is_bias: bool, value: f32|
         {
             let weight = one_weight(value);
 
             WeightInfoPtr{
-                weight_dropped: weight.clone(),
+                weight_dropped: if is_bias { DiffTensorPtr::undefined() } else { weight.clone() },
                 weight_original: weight,
-                dropconnect_mask: None
+                dropout: None
             }
         };
 
@@ -271,20 +275,20 @@ mod tests
         {
             sizes: LayerSizes{hidden: 1, initial_input: 1, input: 1, output: 1, final_output: 1, layers: 1, batch_size: 1},
 
-            input_update: one_weight_info(1.65),
-            input_forget: one_weight_info(1.63),
-            input_output: one_weight_info(-0.19),
-            input_memory: one_weight_info(0.94),
+            input_update: one_weight_info(false, 1.65),
+            input_forget: one_weight_info(false, 1.63),
+            input_output: one_weight_info(false, -0.19),
+            input_memory: one_weight_info(false, 0.94),
 
-            hidden_update: one_weight_info(2.00),
-            hidden_forget: one_weight_info(2.70),
-            hidden_output: one_weight_info(4.38),
-            hidden_memory: one_weight_info(1.41),
+            hidden_update: one_weight_info(false, 2.00),
+            hidden_forget: one_weight_info(false, 2.70),
+            hidden_output: one_weight_info(false, 4.38),
+            hidden_memory: one_weight_info(false, 1.41),
 
-            update_bias: one_weight_info(0.62),
-            forget_bias: one_weight_info(1.62),
-            output_bias: one_weight_info(0.59),
-            memory_bias: one_weight_info(-0.32)
+            update_bias: one_weight_info(true, 0.62),
+            forget_bias: one_weight_info(true, 1.62),
+            output_bias: one_weight_info(true, 0.59),
+            memory_bias: one_weight_info(true, -0.32)
         };
 
         let state = LSTMState::<DiffTensorPtr>{

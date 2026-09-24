@@ -688,6 +688,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
         UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+        for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
         for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
@@ -734,6 +735,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
         UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+        for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
         for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
@@ -843,6 +845,7 @@ where
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
     for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
@@ -867,6 +870,7 @@ where
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
     for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
@@ -891,6 +895,7 @@ where
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
     for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
@@ -1052,6 +1057,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     D: NetworkDictionary
@@ -1060,6 +1066,7 @@ where
         dictionary: D,
         sizes: LayerSizes,
         config: NetworkConfigInfo,
+        input_dropout_probability: f32,
         dropout_probability: f32,
         gradient_clip: Option<f32>
     ) -> Self
@@ -1068,7 +1075,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        let network = Network::new(sizes, dropout_probability, config);
+        let network = Network::new(sizes, input_dropout_probability, dropout_probability, config);
 
         let optimizer = O::new();
 
@@ -1512,7 +1519,7 @@ mod tests
     fn batch_equivalent()
     {
         let inputs_amount = 5;
-        let batch_size = 64;
+        let batch_size = 32;
 
         let dictionary = CharDictionary::new(InputData::String("abcde".to_owned()));
 
@@ -1544,6 +1551,7 @@ mod tests
             batch_size
         };
 
+        let input_dropout_probability = 0.5;
         let dropout_probability = 0.5;
         let gradient_clip = Some(1.0);
 
@@ -1560,6 +1568,7 @@ mod tests
                 is_multistep: true,
                 print_optional_info: true
             },
+            input_dropout_probability,
             dropout_probability,
             gradient_clip
         );
@@ -1570,16 +1579,42 @@ mod tests
 
         fastrand::seed(111);
 
-        let rolls_per_hidden = hidden * hidden;
-        let rolls_per_layer = hidden;
+        let embeddings_input_rolls = if USE_EMBEDDING_LAYER { input_size } else { 0 };
+        let embeddings_output_rolls = if USE_EMBEDDING_LAYER { output_size } else { 0 };
+        let output_rolls = output_size;
+
+        let rolls_per_input_weight = hidden;
+        let rolls_per_layer_weight = hidden;
+
+        let rolls_per_hidden = hidden;
+
+        dbg!(
+            embeddings_input_rolls,
+            embeddings_output_rolls,
+            output_rolls,
+            rolls_per_input_weight,
+            rolls_per_layer_weight,
+            rolls_per_hidden,
+            layers
+        );
 
         // hardcoded for lstm
+        let weight_units = 4;
         let hidden_units = 4;
 
-        let rolls_per_batch = rolls_per_hidden * hidden_units * layers + rolls_per_layer * (layers - 1);
+        let rolls_per_batch = embeddings_input_rolls
+            + embeddings_output_rolls
+            + output_rolls
+            + rolls_per_input_weight * weight_units
+            + rolls_per_layer_weight * weight_units * (layers - 1)
+            + rolls_per_hidden * hidden_units * layers;
+
+        dbg!(rolls_per_batch);
 
         let dropout_rng_values: Vec<f32> = {
             let total_rolls = batch_size * rolls_per_batch;
+
+            dbg!(total_rolls);
 
             iter::repeat_with(||
             {
@@ -1597,33 +1632,43 @@ mod tests
 
                 let mut values: Vec<f32> = Vec::new();
 
-                for _ in 0..(hidden_units * layers)
+                let mut push_dropout_layer = |index: &mut usize, s: usize|
                 {
-                    for _ in 0..rolls_per_hidden
+                    for _ in 0..s
                     {
-                        let offset = batch_step * rolls_per_hidden;
+                        let offset = batch_step * s;
 
-                        values.push(dropout_rng_values[index + offset]);
+                        values.push(dropout_rng_values[*index + offset]);
 
-                        index += 1;
+                        *index += 1;
                     }
 
-                    index += (batch_size - 1) * rolls_per_hidden;
-                }
+                    *index += (batch_size - 1) * s;
+                };
 
-                for _ in 0..(layers - 1)
+                for i in 0..layers
                 {
-                    for _ in 0..rolls_per_layer
+                    for _ in 0..weight_units
                     {
-                        let offset = batch_step * rolls_per_layer;
-
-                        values.push(dropout_rng_values[index + offset]);
-
-                        index += 1;
+                        if i == 0
+                        {
+                            push_dropout_layer(&mut index, rolls_per_input_weight);
+                        } else
+                        {
+                            push_dropout_layer(&mut index, rolls_per_layer_weight);
+                        }
                     }
 
-                    index += (batch_size - 1) * rolls_per_layer;
+                    for _ in 0..hidden_units
+                    {
+                        push_dropout_layer(&mut index, rolls_per_hidden);
+                    }
                 }
+
+                push_dropout_layer(&mut index, embeddings_output_rolls);
+                push_dropout_layer(&mut index, output_rolls);
+
+                push_dropout_layer(&mut index, embeddings_input_rolls);
 
                 PrecomputedRng{
                     index: 0,
@@ -1657,6 +1702,7 @@ mod tests
                 is_multistep: true,
                 print_optional_info: true
             },
+            input_dropout_probability,
             dropout_probability,
             gradient_clip
         );

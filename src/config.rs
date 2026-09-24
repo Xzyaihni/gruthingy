@@ -574,6 +574,7 @@ pub struct Config
     pub tokens_amount: usize,
     pub temperature: f32,
     pub bpe_limit: Option<usize>,
+    pub input_dropout_probability: f32,
     pub dropout_probability: f32,
     pub bpe_dropout_probability: f32,
     pub gradient_clip: Option<f32>,
@@ -607,6 +608,7 @@ impl Config
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
         let mut bpe_limit = None;
+        let mut input_dropout_probability = 0.2;
         let mut dropout_probability = 0.5;
         let mut bpe_dropout_probability = 0.1;
         let mut gradient_clip = Some(1.0);
@@ -637,6 +639,7 @@ impl Config
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
         parser.push(&mut bpe_limit, None, "bpe-limit", "maximum amount of ngrams in a bpe, dynamic by default");
+        parser.push(&mut input_dropout_probability, None, "input-dropout", "input dropout probability");
         parser.push(&mut dropout_probability, None, "dropout", "dropout probability");
         parser.push(&mut bpe_dropout_probability, None, "bpe-dropout", "bpe dropout probability");
         parser.push(&mut gradient_clip, None, "gradient-clip", "magnitude at which gradient vectors get clipped");
@@ -678,6 +681,7 @@ impl Config
             tokens_amount,
             temperature,
             bpe_limit,
+            input_dropout_probability,
             dropout_probability,
             bpe_dropout_probability,
             gradient_clip,

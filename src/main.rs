@@ -160,6 +160,7 @@ where
     for<'de> N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam> + Deserialize<'de>,
     for<'de> O::WeightParam: NewableLayer + Serialize + Deserialize<'de>,
     for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + Deserialize<'de>,
+    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
@@ -232,17 +233,22 @@ where
             batch_size: sizes.batch_size
         };
 
-        NeuralNetwork::new(dictionary, sizes, network_config, config.dropout_probability, config.gradient_clip)
+        NeuralNetwork::new(
+            dictionary,
+            sizes,
+            network_config,
+            config.input_dropout_probability,
+            config.dropout_probability,
+            config.gradient_clip
+        )
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))
     }
 }
 
-fn test_loss(mut config: Config)
+fn test_loss(config: Config)
 {
-    config.batch_size = 1;
-
     let text_file = config.get_input_file();
 
     let mut network = load_network(&config, None, false);
@@ -277,10 +283,8 @@ fn train(config: Config)
     }
 }
 
-fn run(mut config: Config)
+fn run(config: Config)
 {
-    config.batch_size = 1;
-
     let mut network = load_network(&config, None, false);
 
     let f = config.output.as_ref().map(|filepath|
@@ -587,6 +591,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
+    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     O::WeightParam: Serialize + Clone,
@@ -704,10 +709,8 @@ fn closest_embeddings(config: Config)
     }
 }
 
-fn accuracy_data(mut config: Config)
+fn accuracy_data(config: Config)
 {
-    config.batch_size = 1;
-
     if config.certainty && config.top_guesses
     {
         eprintln!("certainty and top-guesses are contradictory, choose only one");

@@ -4,7 +4,6 @@ use crate::neural_network::{
     OperationsRecorder,
     DiffTensorPtr,
     LayerType,
-    TensorPtr,
     DiffInputType,
     WeightInfoPtr,
     OneHotLayer,
@@ -42,8 +41,6 @@ pub trait EmbeddingsableOwned
 pub trait GenericUnit<T>
 {
     type Unit<U>;
-
-    fn dropconnectable() -> bool;
 
     fn map<U, F>(self, f: F) -> Self::Unit<U>
     where
@@ -120,7 +117,6 @@ where
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        dropout_mask: TensorPtr,
         input: DiffInputType
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
@@ -139,9 +135,7 @@ where
         };
 
         recorder.name_diff_tensor(new_output, "output_activated");
-
-        output.output = recorder.mul_componentwise(new_output, DiffTensorPtr::no_gradient(dropout_mask));
-        recorder.name_diff_tensor(output.output, "output_dropped_out");
+        output.output = new_output;
 
         output
     }
