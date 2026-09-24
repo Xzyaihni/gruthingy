@@ -10,6 +10,7 @@ use super::{
     BagOfWordsEmbeddings,
     Gru,
     Lstm,
+    Star,
     CharDictionary,
     WordDictionary,
     BpeDictionary,
@@ -33,8 +34,8 @@ pub type NEmbeddings = OneHotEmbeddings;
 // only applies to BagOfWordsEmbeddings
 pub const BAG_OF_WORDS_EMBEDDINGS_COUNT: usize = 2;
 
-// options: Lstm, Gru
-pub type NUnit<T> = Lstm<T>;
+// options: Star, Lstm, Gru
+pub type NUnit<T> = Star<T>;
 
 // options: EmbeddingsDictionary, BpeDictionary, WordDictionary, CharDictionary, ByteDictionary
 pub type NDictionary = BpeDictionary;

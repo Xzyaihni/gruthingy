@@ -8097,13 +8097,13 @@ mod tests
             new_recorder.get_tensor(output_value).clone_owned()
         };
 
-        let orig = vals(&a_value, &b_value).sum();
+        let orig = vals(&a_value, &b_value).as_ref().sum();
 
         let epsilon: f32 = 0.009;
 
         let fg = |value: LayerType|
         {
-            let value = value.sum();
+            let value = value.as_ref().sum();
 
             (value - orig) / epsilon
         };

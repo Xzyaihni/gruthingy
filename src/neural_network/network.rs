@@ -2189,7 +2189,7 @@ mod tests
     use super::*;
 
     #[allow(unused_imports)]
-    use crate::neural_network::{EmbeddingUnit, Lstm, Gru};
+    use crate::neural_network::{EmbeddingUnit, Lstm, Gru, Star};
 
 
     const SEED: u64 = 123;
@@ -2231,6 +2231,15 @@ mod tests
 
     #[allow(dead_code)]
     #[derive(Debug)]
+    struct StarUnitFactory;
+
+    impl UnitFactory for StarUnitFactory
+    {
+        type Unit<T> = Star<T>;
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug)]
     struct EmbeddingUnitFactory;
 
     impl UnitFactory for EmbeddingUnitFactory
@@ -2238,7 +2247,7 @@ mod tests
         type Unit<T> = EmbeddingUnit<T>;
     }
 
-    type ThisFactory = LstmUnitFactory;
+    type ThisFactory = StarUnitFactory;
 
     type NetworkType = Network<ThisFactory, ()>;
 

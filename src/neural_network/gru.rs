@@ -93,7 +93,11 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
             let weights = weights.weight_dropped;
-            let bias = bias.weight_dropped;
+
+            debug_assert!(bias.weight_dropped.is_undefined());
+            debug_assert!(bias.dropout.is_none());
+
+            let bias = bias.weight_original;
 
             match input
             {
@@ -165,33 +169,5 @@ impl NetworkUnit for Gru<WeightInfoPtr>
             state: state.clone(),
             output: state
         }
-    }
-}
-
-#[cfg(test)]
-pub mod tests
-{
-    use super::*;
-
-    #[allow(dead_code)]
-    pub fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
-        {
-            return true;
-        }
-
-        if a.signum() != b.signum()
-        {
-            return false;
-        }
-
-        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
-
-    #[allow(dead_code)]
-    pub fn close_enough_abs(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        (a - b).abs() < epsilon
     }
 }

@@ -80,12 +80,16 @@ use gru::Gru;
 #[allow(unused_imports)]
 use lstm::Lstm;
 
+#[allow(unused_imports)]
+use star::Star;
+
 pub use embedding_unit::EmbeddingUnit;
 
 mod optimizers;
 mod network_unit;
 mod gru;
 mod lstm;
+mod star;
 mod embedding_unit;
 
 pub mod network;
@@ -1468,7 +1472,7 @@ mod tests
     {
         let mut test_layer = LayerType::from_boxed([1.0, 2.0, 8.0].into(), 3, 1);
 
-        Softmaxer::softmax(&mut test_layer);
+        Softmaxer::softmax(test_layer.as_mut());
 
         let softmaxed = test_layer;
 
