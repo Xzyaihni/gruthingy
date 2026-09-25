@@ -1247,6 +1247,11 @@ where
 
     pub fn set_train_mode(&mut self)
     {
+        if self.network_mode == Some(NetworkMode::Train)
+        {
+            return;
+        }
+
         assert!(self.network_mode.is_none());
 
         self.network_mode = Some(NetworkMode::Train);
@@ -1254,6 +1259,11 @@ where
 
     pub fn set_predict_mode(&mut self)
     {
+        if self.network_mode == Some(NetworkMode::Predict)
+        {
+            return;
+        }
+
         assert!(self.network_mode.is_none());
 
         self.network_mode = Some(NetworkMode::Predict);

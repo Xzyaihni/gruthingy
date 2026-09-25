@@ -1199,7 +1199,7 @@ where
         &mut self,
         reader: R,
         calculate_accuracy: bool
-    )
+    ) -> f32
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
@@ -1208,14 +1208,14 @@ where
     {
         let inputs = self.vectorized(reader);
 
-        self.test_loss_inner(&inputs, calculate_accuracy);
+        self.test_loss_inner(&inputs, calculate_accuracy)
     }
 
     fn test_loss_inner(
         &mut self,
         inputs: &[VectorWord],
         calculate_accuracy: bool
-    )
+    ) -> f32
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
@@ -1230,13 +1230,18 @@ where
             let accuracy = self.network.accuracy(input_outputs.clone());
 
             println!("accuracy: {}%", accuracy * 100.0);
+
+            accuracy
         } else
         {
             self.network.set_train_mode();
 
             let total_loss = self.network.feedforward_no_gradient(input_outputs);
+            let loss = total_loss / inputs.len() as f32;
 
-            Self::print_loss("testing".to_owned(), total_loss / inputs.len() as f32);
+            Self::print_loss("testing".to_owned(), loss);
+
+            loss
         }
     }
 

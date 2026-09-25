@@ -380,6 +380,7 @@ macro_rules! iterable_enum
         $($key:ident),+
     }) =>
     {
+        #[derive(Debug, Clone)]
         pub enum $enum_name
         {
             $($key,)+
@@ -463,6 +464,7 @@ iterable_enum!
 {
     enum ProgramMode
     {
+        TrainUntilBest,
         Train,
         Run,
         Test,
@@ -556,6 +558,7 @@ impl<T: ParsableInner + DisplayableDefault> ArgParsable for Option<T>
     }
 }
 
+#[derive(Clone)]
 pub struct Config
 {
     pub iterations: usize,
@@ -569,10 +572,12 @@ pub struct Config
     pub calculate_accuracy: bool,
     pub network_path: PathBuf,
     pub embeddings_path: PathBuf,
+    pub test_path: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
     pub tokens_amount: usize,
     pub temperature: f32,
+    pub validation_attempts: usize,
     pub bpe_limit: Option<usize>,
     pub input_dropout_probability: f32,
     pub dropout_probability: f32,
@@ -603,10 +608,12 @@ impl Config
         let mut calculate_accuracy = false;
         let mut network_path = "network.nn".into();
         let mut embeddings_path = "embeddings.nn".into();
+        let mut test_path = None;
         let mut input = None;
         let mut output = None;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
+        let mut validation_attempts = 10;
         let mut bpe_limit = None;
         let mut input_dropout_probability = 0.2;
         let mut dropout_probability = 0.5;
@@ -636,8 +643,10 @@ impl Config
         parser.push(&mut embeddings_path, 'E', "embeddings-path", "path to the embeddings network");
         parser.push(&mut input, 'i', "input", "input");
         parser.push(&mut output, 'o', "output", "output path");
+        parser.push(&mut test_path, None, "test-path", "path to validation file");
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
+        parser.push(&mut validation_attempts, None, "validation-attempts", "n of increasing validation loss in test_until_best until stop");
         parser.push(&mut bpe_limit, None, "bpe-limit", "maximum amount of ngrams in a bpe, dynamic by default");
         parser.push(&mut input_dropout_probability, None, "input-dropout", "input dropout probability");
         parser.push(&mut dropout_probability, None, "dropout", "dropout probability");
@@ -676,10 +685,12 @@ impl Config
             calculate_accuracy,
             network_path,
             embeddings_path,
+            test_path,
             input,
             output,
             tokens_amount,
             temperature,
+            validation_attempts,
             bpe_limit,
             input_dropout_probability,
             dropout_probability,
@@ -716,6 +727,11 @@ impl Config
     pub fn get_input_file(&self) -> File
     {
         Self::get_file_inner(self.get_input())
+    }
+
+    pub fn get_test_file(&self) -> Option<File>
+    {
+        self.test_path.as_ref().map(|x| Self::get_file_inner(x))
     }
 
     fn get_file_inner(path: impl AsRef<Path>) -> File

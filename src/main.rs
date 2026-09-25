@@ -8,8 +8,11 @@ use std::{
     env,
     iter,
     process,
+    error::Error,
+    num::ParseFloatError,
+    thread::{self, JoinHandle},
     path::{PathBuf, Path},
-    io::{self, Read, Write, BufReader, BufWriter, Cursor},
+    io::{self, ErrorKind, Read, Write, BufReader, BufWriter, Cursor},
     fs::{self, File},
     collections::HashSet,
     ops::{Index, IndexMut}
@@ -244,6 +247,124 @@ where
     } else
     {
         complain(format!("cant load the network at: {}", path.display()))
+    }
+}
+
+fn train_until_best(config: Config)
+{
+    let mut test_config = config.clone();
+    test_config.batch_size = 5;
+    test_config.calculate_accuracy = false;
+
+    let losses_path = config.network_path.with_extension("losses");
+    let best_path = config.network_path.with_extension("best");
+
+    let mut network = load_network(&config, None, true);
+
+    let training_info = TrainingInfo::from(&config);
+
+    let mut test_thread: Option<JoinHandle<Result<bool, (&'static str, Box<dyn Error + Send>)>>> = None;
+
+    loop
+    {
+        let text_file = config.get_input_file();
+        let test_file = config.get_test_file().unwrap_or_else(|| complain(format!("--test-path must be provided")));
+
+        network.train::<NEmbeddings, _>(training_info.clone(), text_file);
+
+        if let Some(test_thread) = test_thread.take()
+        {
+            match test_thread.join().unwrap()
+            {
+                Err((place, err)) => complain(format!("{place}: {err}")),
+                Ok(true) => return eprintln!("achieved best possible loss"),
+                Ok(false) => ()
+            }
+        }
+
+        try_save_network(&network, &config.network_path);
+
+        test_thread = {
+            let losses_path = losses_path.clone();
+            let best_path = best_path.clone();
+            let test_config = test_config.clone();
+
+            Some(thread::spawn(move ||
+            {
+                let mut network = load_network(&test_config, None, false);
+
+                let loss = network.test_loss(test_file, test_config.calculate_accuracy);
+
+                let file = match File::create_new(&losses_path)
+                {
+                    Err(err) if err.kind() == ErrorKind::AlreadyExists => File::options().read(true).append(true).open(&losses_path),
+                    Ok(x) =>
+                    {
+                        eprintln!("creating losses file at: {}", losses_path.display());
+
+                        Ok(x)
+                    },
+                    x => x
+                };
+
+                fn err_mapper<T, E: Error + Send + 'static>(
+                    err: Result<T, E>,
+                    name: &'static str
+                ) -> Result<T, (&'static str, Box<dyn Error + Send>)>
+                {
+                    err.map_err(|err| -> (&'static str, Box<dyn Error + Send>)
+                    {
+                        (name, Box::new(err))
+                    })
+                }
+
+                let mut file = err_mapper(file, "opening losses file")?;
+
+                {
+                    let mut losses = String::new();
+                    err_mapper(BufReader::new(&file).read_to_string(&mut losses), "reading losses file")?;
+
+                    let lines_count = losses.lines().count();
+
+                    let (lowest_line_index, lowest_loss) = err_mapper(losses.lines()
+                        .map(|x| x.parse::<f32>())
+                        .enumerate()
+                        .try_fold(None, |acc, (line_index, loss)| -> Result<Option<(usize, f32)>, ParseFloatError>
+                        {
+                            let loss = loss?;
+
+                            Ok(if let Some((_line_index, lowest_loss)) = acc
+                            {
+                                if loss < lowest_loss
+                                {
+                                    Some((line_index, loss))
+                                } else
+                                {
+                                    acc
+                                }
+                            } else
+                            {
+                                Some((line_index, loss))
+                            })
+                        }), "finding lowest loss")?
+                        .unwrap_or((0, f32::INFINITY));
+
+                    if loss < lowest_loss
+                    {
+                        eprintln!("copying network to best at: {}", best_path.display());
+
+                        err_mapper(fs::copy(&test_config.network_path, &best_path), "best copy")?;
+                    } else if lines_count.saturating_sub(lowest_line_index + 1) > test_config.validation_attempts
+                    {
+                        return Ok(true);
+                    }
+                }
+
+                err_mapper(file.write_all((loss.to_string() + "\n").as_bytes()), "writing loss")?;
+
+                Ok(false)
+            }))
+        };
     }
 }
 
@@ -781,6 +902,7 @@ fn main()
 
     match config.mode
     {
+        ProgramMode::TrainUntilBest => train_until_best(config),
         ProgramMode::Train => train(config),
         ProgramMode::Run => run(config),
         ProgramMode::Test => test_loss(config),
