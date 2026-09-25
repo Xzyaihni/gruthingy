@@ -42,7 +42,7 @@ use crate::{
         OptimizerUnit,
         UnitFactory,
         USE_EMBEDDING_LAYER,
-        network_unit::{EmbeddingsableOwned, NetworkUnitParameterable}
+        network_unit::EmbeddingsableOwned
     }
 };
 
@@ -1188,12 +1188,12 @@ where
             })
         };
 
-        let output_weights_ptr = create_weights("output_weights", false, sizes.hidden, sizes.output);
+        let output_weights_ptr = create_weights("output_weights", false, sizes.output, sizes.final_output);
         let embeddings_weights_ptr = USE_EMBEDDING_LAYER.then(||
         {
             EmbeddingsLayers{
                 input: create_weights("embeddings_input", true, sizes.initial_input, sizes.input),
-                output: create_weights("embeddings_output", false, sizes.output, sizes.final_output)
+                output: create_weights("embeddings_output", false, sizes.hidden, sizes.output)
             }
         });
 
@@ -1223,10 +1223,10 @@ where
         let optimizer_info: Option<_> = Some({
             let embeddings = USE_EMBEDDING_LAYER.then(|| EmbeddingsLayers{
                 input: O::new(sizes.initial_input, sizes.input),
-                output: O::new(sizes.output, sizes.final_output)
+                output: O::new(sizes.hidden, sizes.output)
             });
 
-            let output = O::new(sizes.hidden, sizes.output);
+            let output = O::new(sizes.output, sizes.final_output);
 
             WeightsFullContainer::new(sizes, N::Unit::new_zeroed, embeddings, output)
         });
@@ -1593,11 +1593,6 @@ where
                 input
             ).map(|output|
             {
-                let output = this.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
-                {
-                    this.recorder.matmulv(embeddings.output.weight_dropped, output)
-                }).unwrap_or(output);
-
                 (output, targets.map(|targets| this.recorder.softmax_cross_entropy(output, targets).1))
             })
         }, previous_states, input)
@@ -1691,7 +1686,14 @@ where
             .record_feedforward_unit(&mut self.recorder, previous_state, input)
             .map(|output|
             {
-                self.recorder.matmulv(weights.output.weight_dropped, output)
+                let output = self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
+                {
+                    self.recorder.matmulv(embeddings.output.weight_dropped, output)
+                }).unwrap_or(output);
+
+                let output_activated = self.recorder.leaky_relu(output);
+
+                self.recorder.matmulv(weights.output.weight_dropped, output_activated)
             })
     }
 
@@ -1882,14 +1884,12 @@ where
     #[allow(dead_code)]
     pub fn parameters_amount(&self) -> u128
     where
-        N::Unit<WeightInfo>: NetworkUnitParameterable
+        for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>
     {
-        let layers_sum: u128 = self.weights.as_ref().unwrap().layers.iter().map(|layer|
+        self.weights.as_ref().unwrap().iter().map(|weight_info|
         {
-            layer.parameters_amount(self.sizes)
-        }).sum();
-
-        layers_sum + self.sizes.input as u128 * self.sizes.hidden as u128
+            weight_info.weight.as_value().shape().single_size() as u128
+        }).sum()
     }
 
     fn with_predict<T, F>(

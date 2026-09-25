@@ -13,11 +13,10 @@ use crate::{
         OneHotLayer,
         LayerSizes,
         DiffInputType,
-        WeightInfo,
         WeightInfoPtr,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::{NetworkUnit, Embeddingsable, EmbeddingsableOwned, NetworkUnitParameterable}
+        network_unit::{NetworkUnit, Embeddingsable, EmbeddingsableOwned}
     }
 };
 
@@ -62,17 +61,6 @@ impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
         WeightsContainer::new_randomized(recorder, sizes)
-    }
-}
-
-impl NetworkUnitParameterable for EmbeddingUnit<WeightInfo>
-{
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128
-    {
-        let i = sizes.input as u128;
-        let h = sizes.hidden as u128;
-
-        i * h + h
     }
 }
 

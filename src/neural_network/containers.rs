@@ -6732,6 +6732,11 @@ impl ShapedTensorIndex
             shape: TensorShape{rows: 0, columns: 0, batch_size: 0}
         }
     }
+
+    pub fn shape(&self) -> TensorShape
+    {
+        self.shape
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

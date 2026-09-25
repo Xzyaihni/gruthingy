@@ -93,11 +93,6 @@ pub trait NetworkUnitNewable
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
 }
 
-pub trait NetworkUnitParameterable
-{
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128;
-}
-
 pub trait NetworkUnit: GenericUnit<WeightInfoPtr> + Clone
 where
     Self: Sized

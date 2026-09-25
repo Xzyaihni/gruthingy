@@ -229,7 +229,7 @@ where
         let sizes = LayerSizes{
             initial_input,
             input: if USE_EMBEDDING_LAYER { config.embeddings_size } else { initial_input },
-            output: if USE_EMBEDDING_LAYER { config.embeddings_size } else { final_output },
+            output: if USE_EMBEDDING_LAYER { config.output_embeddings_size } else { final_output },
             final_output,
             hidden: sizes.hidden,
             layers: sizes.layers,

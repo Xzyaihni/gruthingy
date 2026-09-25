@@ -10,13 +10,12 @@ use crate::{
         NetworkStateGettable,
         DiffTensorPtr,
         DiffInputType,
-        WeightInfo,
         WeightInfoPtr,
         LayerSizes,
         OperationsRecorder,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::{NetworkUnit, NetworkUnitParameterable}
+        network_unit::NetworkUnit
     }
 };
 
@@ -84,17 +83,6 @@ impl NetworkUnitNewable for Lstm<WeightInfoPtr>
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
         WeightsContainer::new_randomized(recorder, sizes)
-    }
-}
-
-impl NetworkUnitParameterable for Lstm<WeightInfo>
-{
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128
-    {
-        let i = sizes.input as u128;
-        let h = sizes.hidden as u128;
-
-        (4 * i * h) + (4 * h * h) + (4 * h)
     }
 }
 

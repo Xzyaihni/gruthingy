@@ -12,11 +12,10 @@ use crate::{
         DiffTensorPtr,
         DiffInputType,
         LayerSizes,
-        WeightInfo,
         WeightInfoPtr,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::{NetworkUnit, NetworkUnitParameterable}
+        network_unit::NetworkUnit
     }
 };
 
@@ -64,18 +63,6 @@ impl NetworkUnitNewable for Gru<WeightInfoPtr>
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
     {
         WeightsContainer::new_randomized(recorder, sizes)
-    }
-}
-
-impl NetworkUnitParameterable for Gru<WeightInfo>
-{
-    fn parameters_amount(&self, sizes: LayerSizes) -> u128
-    {
-        let i = sizes.input as u128;
-        let h = sizes.hidden as u128;
-
-        // i hope i calculated this right
-        (3 * i * h) + (3 * h * h) + (3 * h)
     }
 }
 
