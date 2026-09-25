@@ -46,6 +46,9 @@ use crate::{
     }
 };
 
+#[allow(unused_imports)]
+use super::close_enough;
+
 
 pub trait DropoutRoll: Debug
 {
@@ -83,23 +86,113 @@ impl DropoutRoll for PrecomputedRng
 
 pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 {
+    fn normal_distribution() -> f32
+    {
+        let u = fastrand::f32();
+        let v = fastrand::f32();
+
+        (-2.0 * u.ln()).sqrt() * (f32::consts::PI * 2.0 * v).cos()
+    }
+
     let x = if m <= k
     {
-        LayerType::new_with(m, k, fastrand::f32)
+        LayerType::new_with(m, k, normal_distribution)
     } else
     {
-        LayerType::new_with(k, m, fastrand::f32)
+        LayerType::new_with(k, m, normal_distribution)
     };
 
-    let output = x.as_ref().gemm_tr(x.as_ref()).map(|x| x.sqrt().recip()).as_ref().gemm(x.as_ref());
+    let symmetric_part = x.as_ref().gemm_tr(x.as_ref());
 
-    if m <= k
+    debug_assert_eq!(symmetric_part, symmetric_part.as_ref().transpose(), "{symmetric_part:?}\nmust be symmetric");
+
+    debug_assert_eq!(
+        symmetric_part.as_ref().gemm_tr(symmetric_part.as_ref()),
+        symmetric_part.as_ref().tr_gemm(symmetric_part.as_ref()),
+        "{symmetric_part:?}\nmust be normal"
+    );
+
+    let pre_decomposition = symmetric_part.as_ref().as_nmat_ref().clone_owned();
+
+    let mut decomposed = pre_decomposition.symmetric_eigen();
+
+    decomposed.eigenvalues.apply(|x| *x = x.sqrt().recip());
+
+    let post_inverse_sqrt = LayerType::from_nalgebra(decomposed.recompose().as_view());
+
+    let output = post_inverse_sqrt.as_ref().gemm(x.as_ref());
+
+    #[cfg(debug_assertions)]
+    {
+        let is_identity = |expected_identity: LayerType| -> bool
+        {
+            let shape = expected_identity.shape();
+
+            assert_eq!(shape.rows, shape.columns);
+
+            let expected_identity_vec = expected_identity.as_vec();
+
+            (0..shape.rows).all(|row|
+            {
+                (0..shape.columns).all(|column|
+                {
+                    let expected_value = if row == column { 1.0 } else { 0.0 };
+
+                    close_enough(expected_identity_vec[column * shape.rows + row], expected_value, 0.01)
+                })
+            })
+        };
+
+        let ata = output.as_ref().tr_gemm(output.as_ref());
+        let is_ata_identity = is_identity(ata.clone());
+
+        let aat = output.as_ref().gemm_tr(output.as_ref());
+        let is_aat_identity = is_identity(aat.clone());
+
+        assert!(is_ata_identity || is_aat_identity, "{ata:?}\nor\n{aat:?}\nmust be the identity");
+
+        let column_major_orthonormal = output.as_ref().transpose();
+        let column_size = column_major_orthonormal.rows();
+
+        let column_major_orthonormal = column_major_orthonormal.as_vec();
+        let columns: Vec<LayerTypeRef> = column_major_orthonormal.chunks(column_size)
+            .map(|x| LayerTypeRef::from_data(x, TensorShape{rows: column_size, columns: 1, batch_size: 1}))
+            .collect();
+
+        // all vectors must be normal
+        columns.iter().for_each(|column|
+        {
+            let magnitude = column.magnitude();
+
+            assert!(close_enough(magnitude, 1.0, 0.01), "magnitude is {magnitude}, should be 1");
+        });
+
+        let columns_count = columns.len();
+
+        (0..columns_count).for_each(|column_index|
+        {
+            let a = columns[column_index];
+
+            ((column_index + 1)..columns_count).for_each(|other_column_index|
+            {
+                let b = columns[other_column_index];
+
+                let dot = a.dot(b);
+
+                assert!(close_enough(dot, 0.0, 0.01), "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
+            });
+        });
+    }
+
+    let output = if m <= k
     {
         output
     } else
     {
         output.as_ref().transpose().mul_scalar((m as f32 / k as f32).sqrt())
-    }
+    };
+
+    output
 }
 
 pub fn maybe_dropout_weights(

@@ -199,19 +199,8 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::{ShapedTensorIndex, LayerType, LayerSizes};
+    use crate::neural_network::{close_enough, ShapedTensorIndex, LayerType, LayerSizes};
 
-    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if a == b
-        {
-            return true;
-        }
-
-        let relative_diff = (a - b).abs() / (a.abs() + b.abs());
-
-        relative_diff < epsilon
-    }
 
     fn assert_close_enough(a: f32, b: f32, epsilon: f32)
     {

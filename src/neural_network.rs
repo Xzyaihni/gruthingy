@@ -71,6 +71,9 @@ pub use containers::{
 };
 
 #[allow(unused_imports)]
+pub use containers::close_enough;
+
+#[allow(unused_imports)]
 pub use network::{WeightInfo, WeightInfoPtr, WeightsSize};
 
 #[allow(unused_imports)]
@@ -1452,16 +1455,6 @@ mod tests
 
     use network::WeightsFullContainer;
 
-
-    fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if (a == b) || ((a.min(b) == -0.0) && (a.max(b) == 0.0))
-        {
-            return true;
-        }
-
-        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
 
     #[test]
     fn softmax()

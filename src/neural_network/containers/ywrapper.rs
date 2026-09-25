@@ -107,6 +107,16 @@ impl YWrapper
         }
     }
 
+    pub fn from_nalgebra(m: nalgebra::DMatrixView<f32>) -> Self
+    {
+        let (rows, columns) = m.shape();
+
+        YWrapper{
+            shape: TensorShape{rows, columns, batch_size: 1},
+            values: m.clone_owned().as_slice().to_vec().into_boxed_slice()
+        }
+    }
+
     pub fn as_ref(&self) -> YWrapperRef<'_>
     {
         YWrapperRef{
@@ -369,17 +379,22 @@ impl<'a> YWrapperRef<'a>
         self.values.iter().copied().max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal)).unwrap_or(0.0)
     }
 
+    pub fn tr_gemm(&self, other: YWrapperRef) -> YWrapper
+    {
+        self.gemm_inner(true, false, other)
+    }
+
     pub fn gemm_tr(&self, other: YWrapperRef) -> YWrapper
     {
-        self.gemm_inner(true, other)
+        self.gemm_inner(false, true, other)
     }
 
     pub fn gemm(&self, other: YWrapperRef) -> YWrapper
     {
-        self.gemm_inner(false, other)
+        self.gemm_inner(false, false, other)
     }
 
-    fn gemm_inner(&self, is_b_transpose: bool, other: YWrapperRef) -> YWrapper
+    fn gemm_inner(&self, is_a_transpose: bool, is_b_transpose: bool, other: YWrapperRef) -> YWrapper
     {
         debug_assert_eq!(self.shape.batch_size, 1);
         debug_assert_eq!(other.shape.batch_size, 1);
@@ -387,12 +402,12 @@ impl<'a> YWrapperRef<'a>
         use oxiblas_blas::level3::Trans;
 
         let mut output = YWrapper::new(
-            self.shape.rows,
+            if is_a_transpose { self.shape.columns } else { self.shape.rows },
             if is_b_transpose { other.shape.rows } else { other.shape.columns }
         );
 
         oxiblas_blas::level3::gemm::gemm_transposed(
-            Trans::NoTrans,
+            if is_a_transpose { Trans::Trans } else { Trans::NoTrans },
             if is_b_transpose { Trans::Trans } else { Trans::NoTrans },
             1.0,
             self.as_mat_ref(),
@@ -408,14 +423,14 @@ impl<'a> YWrapperRef<'a>
     {
         debug_assert_eq!(self.shape.batch_size, 1);
 
-        let transposed = nalgebra::DMatrixView::from_slice(self.values, self.shape.rows, self.shape.columns).transpose();
+        let transposed = self.as_nmat_ref().transpose();
 
-        let (rows, columns) = transposed.shape();
+        YWrapper::from_nalgebra(transposed.as_view())
+    }
 
-        YWrapper{
-            shape: TensorShape{rows, columns, batch_size: self.shape.batch_size},
-            values: transposed.as_slice().to_vec().into_boxed_slice()
-        }
+    pub fn as_nmat_ref(&self) -> nalgebra::DMatrixView<'_, f32>
+    {
+        nalgebra::DMatrixView::from_slice(self.values, self.shape.rows, self.shape.columns)
     }
 
     pub fn as_vector_ref(&self) -> YVectorWrapperRef<'_>

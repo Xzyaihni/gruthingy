@@ -57,6 +57,21 @@ macro_rules! get_disjoint_mut_with
     }
 }
 
+pub fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
+{
+    if a == 0.0 || a == -0.0
+    {
+        return b.abs() < epsilon;
+    }
+
+    if b == 0.0 || b == -0.0
+    {
+        return a.abs() < epsilon;
+    }
+
+    ((a - b).abs() / (a.abs() + b.abs())) < epsilon
+}
+
 // i have no clue where else to put this
 pub fn leaky_relu_d(value: f32) -> f32
 {
@@ -7979,26 +7994,12 @@ mod tests
     const LAYER_PREV: usize = 3;
     const LAYER_CURR: usize = 2;
 
-    pub fn close_enough_loose(a: f32, b: f32, epsilon: f32) -> bool
-    {
-        if a == 0.0 || a == -0.0
-        {
-            return b.abs() < epsilon;
-        }
-
-        if b == 0.0 || b == -0.0
-        {
-            return a.abs() < epsilon;
-        }
-
-        ((a - b).abs() / (a.abs() + b.abs())) < epsilon
-    }
 
     fn compare_single(correct: f32, calculated: f32)
     {
         let epsilon = 0.2;
         assert!(
-            close_enough_loose(correct, calculated, epsilon),
+            close_enough(correct, calculated, epsilon),
             "correct: {}, calculated: {}",
             correct, calculated
         );
