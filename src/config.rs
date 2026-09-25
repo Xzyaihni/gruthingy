@@ -587,7 +587,7 @@ pub struct Config
     pub replace_invalid: bool,
     pub less_info: bool,
     pub optional_info: bool,
-    pub certainty: bool,
+    pub correct_guesses: bool,
     pub top_guesses: bool,
     pub infinite_loop: bool,
     pub mode: ProgramMode,
@@ -625,7 +625,7 @@ impl Config
         let mut dictionary_path = "dictionary.txt".into();
         let mut less_info = false;
         let mut optional_info = false;
-        let mut certainty = false;
+        let mut correct_guesses = false;
         let mut top_guesses = false;
         let mut infinite_loop = false;
         let mut mode = None;
@@ -658,8 +658,8 @@ impl Config
         parser.push_flag(&mut replace_invalid, 'r', "raw", "dont replace invalid utf8", false);
         parser.push_flag(&mut less_info, None, "less-info", "display less info when training", true);
         parser.push_flag(&mut optional_info, None, "optional-info", "display additional info", true);
-        parser.push_flag(&mut certainty, None, "certainty", "show certainty instead of bool in accuracy_data mode", true);
-        parser.push_flag(&mut top_guesses, None, "top-guesses", "show guess place from the top instead of bool in accuracy_data mode", true);
+        parser.push_flag(&mut correct_guesses, None, "correct-guesses", "show bool instead of certainty in accuracy_data mode", true);
+        parser.push_flag(&mut top_guesses, None, "top-guesses", "show guess place from the top instead of certainty in accuracy_data mode", true);
         parser.push_flag(&mut infinite_loop, None, "loop", "training never stops, instead saves the network every -I iterations", true);
         parser.push(&mut mode, 'm', "mode", "program mode");
         parser.push(&mut dictionary_path, 'd', "dictionary", "path to the dictionary");
@@ -704,7 +704,7 @@ impl Config
             dictionary_path,
             less_info,
             optional_info,
-            certainty,
+            correct_guesses,
             top_guesses,
             infinite_loop,
             mode

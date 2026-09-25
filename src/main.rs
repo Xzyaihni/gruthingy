@@ -832,9 +832,9 @@ fn closest_embeddings(config: Config)
 
 fn accuracy_data(config: Config)
 {
-    if config.certainty && config.top_guesses
+    if config.correct_guesses && config.top_guesses
     {
-        eprintln!("certainty and top-guesses are contradictory, choose only one");
+        eprintln!("correct-guesses and top-guesses are contradictory, choose only one");
         return;
     }
 
@@ -870,9 +870,9 @@ fn accuracy_data(config: Config)
         }
     }
 
-    let result = if config.certainty
+    let result = if config.correct_guesses
     {
-        to_data_with(config, None, network.certainty_guesses(text_file))
+        to_data_with(config, None, network.correct_guesses(text_file))
     } else if config.top_guesses
     {
         to_data_with(
@@ -882,7 +882,7 @@ fn accuracy_data(config: Config)
         )
     } else
     {
-        to_data_with(config, None, network.correct_guesses(text_file))
+        to_data_with(config, None, network.certainty_guesses(text_file))
     };
 
     if let Err(err) = result
