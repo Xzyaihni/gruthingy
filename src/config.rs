@@ -602,7 +602,7 @@ impl Config
         let mut batch_size = 32;
         let mut hidden_size = 256;
         let mut layers_amount = 8;
-        let mut steps_num = 64;
+        let mut steps_num = 100;
         let mut steps_deviation = 0.1;
         let mut embeddings_size = 32;
         let mut output_embeddings_size = 64;
