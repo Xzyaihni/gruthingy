@@ -620,7 +620,7 @@ impl Config
         let mut input_dropout_probability = 0.2;
         let mut dropout_probability = 0.5;
         let mut bpe_dropout_probability = 0.1;
-        let mut gradient_clip = Some(1.0);
+        let mut gradient_clip = 1.0;
         let mut replace_invalid = true;
         let mut dictionary_path = "dictionary.txt".into();
         let mut less_info = false;
@@ -675,6 +675,8 @@ impl Config
 
             complain(format!("provide a valid mode: {modes}"))
         });
+
+        let gradient_clip = (gradient_clip != 0.0).then_some(gradient_clip);
 
         Self{
             iterations,
