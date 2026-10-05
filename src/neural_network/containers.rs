@@ -611,7 +611,7 @@ impl Default for LoopValues
 struct LoopStack
 {
     values_stack: Vec<LoopStackValue<f32, ValueIndex>>,
-    tensors_stack: Vec<LoopStackValue<LayerType, TensorRawDataPointer>>
+    tensors_stack: Vec<LoopStackValue<wgpu::Buffer, TensorRawDataPointer>>
 }
 
 #[derive(Debug, Clone)]
@@ -2535,8 +2535,6 @@ impl OperationsRecorder
 
         let mut submit_buffers = Vec::new();
 
-        let raw_array_memory = &mut self.raw_array_memory;
-
         fn get_raw_array(data: &[RawArray], raw_data_pointer: TensorRawDataPointer) -> &RawArray
         {
             &data[raw_data_pointer.raw_index.0]
@@ -2547,7 +2545,7 @@ impl OperationsRecorder
             &get_raw_array(&memory.tensors_raw_data, raw_data_pointer).buffer
         }
 
-        let mut encoder = raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+        let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
 
         let mut compute_pass = None;
 
@@ -2612,6 +2610,16 @@ impl OperationsRecorder
                 *compute_pass = None;
             };
 
+            let mut copy_tensor = |memory: &OperationsRecorderMemory, src: TensorRawDataPointer, dst: TensorRawDataPointer|
+            {
+                debug_assert_eq!(src.shape, dst.shape);
+
+                try_end_compute_pass(&mut compute_pass);
+
+                let src_buffer = get_buffer(memory, src);
+                encoder.copy_buffer_to_buffer(src_buffer, 0, get_buffer(memory, dst), 0, src_buffer.size());
+            };
+
             match &self.raw_operations[i]
             {
                 GradientOp::None
@@ -2622,18 +2630,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Copy{src, dst} =>
                 {
-                    debug_assert_eq!(src.shape, dst.shape);
-
-                    try_end_compute_pass(&mut compute_pass);
-
-                    let src_buffer = get_buffer(&self.memory, *src);
-                    encoder.copy_buffer_to_buffer(
-                        src_buffer,
-                        0,
-                        get_buffer(&self.memory, *dst),
-                        0,
-                        src_buffer.size()
-                    );
+                    copy_tensor(&self.memory, *src, *dst);
                 },
                 GradientOp::ZeroValue(dst) =>
                 {
@@ -2645,6 +2642,64 @@ impl OperationsRecorder
 
                     let dst_buffer = get_buffer(&self.memory, *dst);
                     encoder.clear_buffer(dst_buffer, 0, None);
+                },
+                GradientOp::PushStackValue{loop_index, value} =>
+                {
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
+
+                    #[allow(unused_mut)]
+                    let mut stack_value: LoopStackValue<_, _> = self.memory.values[value.0].into();
+                    stack_value.set_source(*value);
+
+                    self.loops_memory.loops_stack[loop_stack_index.0].values_stack.push(stack_value);
+                },
+                GradientOp::PushStackTensor{loop_index, tensor} =>
+                {
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
+
+                    let reminder = "reuse buffers by storing them in a hashmap with vecs of wgpu::Buffer";
+
+                    let buffer_size = (tensor.shape.size() * FLOAT_BYTES) as u64;
+
+                    let stack_tensor_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                        label: None,
+                        size: buffer_size,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false
+                    });
+
+                    try_end_compute_pass(&mut compute_pass);
+
+                    encoder.copy_buffer_to_buffer(get_buffer(&self.memory, *tensor), 0, &stack_tensor_buffer, 0, buffer_size);
+
+                    #[allow(unused_mut)]
+                    let mut stack_value: LoopStackValue<_, _> = stack_tensor_buffer.into();
+                    stack_value.set_source(*tensor);
+
+                    self.loops_memory.loops_stack[loop_stack_index.0].tensors_stack.push(stack_value);
+                },
+                GradientOp::PopStackValue{loop_index, output} =>
+                {
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
+
+                    let stack_value = self.loops_memory.loops_stack[loop_stack_index.0].values_stack.pop()
+                        .expect("stack must not be empty");
+
+                    self.memory.values[output.0] = stack_value.get_stack_value_for(self, *loop_index, *output);
+                },
+                GradientOp::PopStackTensor{loop_index, output} =>
+                {
+                    let reminder = "this could be a noop";
+                    let loop_stack_index = self.loops[loop_index.0].stack_values;
+
+                    let stack_value = self.loops_memory.loops_stack[loop_stack_index.0].tensors_stack.pop()
+                        .expect("stack must not be empty");
+
+                    let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
+
+                    try_end_compute_pass(&mut compute_pass);
+
+                    encoder.copy_buffer_to_buffer(&tensor, 0, get_buffer(&self.memory, *output), 0, tensor.size());
                 },
                 GradientOp::SetInputs(loop_index) =>
                 {
@@ -2671,26 +2726,28 @@ impl OperationsRecorder
 
                                             let value = value.into_normal();
 
-                                            todo!("value itself should be the buffer so it gets shared between gradient and normal loop");
-                                            if raw_array_memory.input_buffers.len() == input_buffer_index
+                                            let reminder = "value itself should be the buffer so it gets shared between gradient and normal loop";
+                                            if self.raw_array_memory.input_buffers.len() == input_buffer_index
                                             {
-                                                let new_input_buffer = raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                                                let new_input_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
                                                     label: None,
-                                                    size: value.shape().size() as u64,
+                                                    size: (value.shape().size() * FLOAT_BYTES) as u64,
                                                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
                                                     mapped_at_creation: false
                                                 });
 
-                                                raw_array_memory.input_buffers.push(new_input_buffer);
+                                                self.raw_array_memory.input_buffers.push(new_input_buffer);
                                             }
 
-                                            let src_buffer = &raw_array_memory.input_buffers[input_buffer_index];
+                                            let src_buffer = &self.raw_array_memory.input_buffers[input_buffer_index];
                                             input_buffer_index += 1;
 
-                                            raw_array_memory.queue.write_buffer(src_buffer, 0, value.as_ref().bytes_slice());
+                                            self.raw_array_memory.queue.write_buffer(src_buffer, 0, value.as_ref().bytes_slice());
 
                                             let raw_index = self.memory.tensors[input.index.0];
                                             let dst_buffer = &self.memory.tensors_raw_data[raw_index.raw_index.0].buffer;
+
+                                            debug_assert_eq!(src_buffer.size(), dst_buffer.size());
 
                                             encoder.copy_buffer_to_buffer(
                                                 src_buffer,
@@ -2712,9 +2769,80 @@ impl OperationsRecorder
                         }
                     });
                 },
+                GradientOp::GetOtherSelectorValue{info: index, first, other, output} =>
+                {
+                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
+
+                    debug_assert_ne!(first, output);
+                    debug_assert_ne!(other, output);
+
+                    let src = if this_selector.is_set
+                    {
+                        other
+                    } else
+                    {
+                        first
+                    };
+
+                    self.memory.values[output.0] = self.memory.values[src.0];
+                },
+                GradientOp::GetOtherSelectorTensor{info: index, first, other, output} =>
+                {
+                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
+
+                    debug_assert_ne!(first, output);
+                    debug_assert_ne!(other, output);
+
+                    let src = if this_selector.is_set
+                    {
+                        other
+                    } else
+                    {
+                        first
+                    };
+
+                    copy_tensor(&self.memory, *src, *output);
+                },
+                GradientOp::OtherSelectorValueGradient{index, first, other, src} =>
+                {
+                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
+
+                    let dst = if this_selector.is_set
+                    {
+                        first
+                    } else
+                    {
+                        other
+                    };
+
+                    self.memory.values[dst.0] = self.memory.values[src.0];
+                },
+                GradientOp::OtherSelectorTensorGradient{index, first, other, src} =>
+                {
+                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
+
+                    let dst = if this_selector.is_set
+                    {
+                        first
+                    } else
+                    {
+                        other
+                    };
+
+                    copy_tensor(&self.memory, *src, *dst);
+                },
                 GradientOp::SetOtherSelector(index) =>
                 {
                     self.memory.phi_other_selectors_values[index.0].is_set = true;
+                },
+                GradientOp::SetOtherSelectorGradient{loop_index, selector_index} =>
+                {
+                    if self.loops[loop_index.0].times <= 1
+                    {
+                        debug_assert!(!self.memory.phi_other_selectors_values[selector_index.0].is_set);
+
+                        self.memory.phi_other_selectors_values[selector_index.0].is_set = true;
+                    }
                 },
                 GradientOp::Jump(RawJumpInfo{loop_index, operation_index}) =>
                 {
@@ -2736,6 +2864,14 @@ impl OperationsRecorder
                         continue;
                     }
                 },
+                GradientOp::JumpIfLast(RawJumpInfo{loop_index, operation_index}) =>
+                {
+                    if self.loops[loop_index.0].times == 1
+                    {
+                        i = operation_index.0;
+                        continue;
+                    }
+                },
                 GradientOp::MulComponentwise{lhs, rhs, output} =>
                 {
                     debug_assert_eq!(lhs.shape, rhs.shape);
@@ -2744,8 +2880,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::MulComponentwise,
                         &[
                             bind_group_entry(0, *lhs),
@@ -2763,8 +2899,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.t_s_output,
                         OpKernel::MulScalar,
                         &[
                             bind_group_entry(0, *lhs),
@@ -2784,8 +2920,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::Add,
                         &[
                             bind_group_entry(0, *lhs),
@@ -2804,8 +2940,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::Sub,
                         &[
                             bind_group_entry(0, *lhs),
@@ -2823,8 +2959,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.t_s_output,
                         OpKernel::SubFromScalar,
                         &[
                             bind_group_entry(0, *rhs),
@@ -2841,7 +2977,7 @@ impl OperationsRecorder
                     debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
                     debug_assert!(output.shape.is_batched_scalar());
 
-                    let scratch_buffer = &raw_array_memory.scratch_buffers[&value.shape.size()];
+                    let scratch_buffer = &self.raw_array_memory.scratch_buffers[&value.shape.size()];
 
                     let input_buffer = &get_raw_array(&self.memory.tensors_raw_data, *value).buffer;
 
@@ -2852,8 +2988,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.reduction,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.reduction,
                         OpKernel::SumTensor,
                         &[
                             create_bind_group_entry(0, scratch_buffer),
@@ -2873,8 +3009,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_dst,
                         OpKernel::Fill,
                         &[
                             bind_group_entry(0, *value),
@@ -2891,8 +3027,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.t_s_output,
                         OpKernel::Pow,
                         &[
                             bind_group_entry(0, *lhs),
@@ -2911,8 +3047,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_dst,
                         OpKernel::Tanh,
                         &[
                             bind_group_entry(0, *value),
@@ -2930,8 +3066,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::TanhDiff,
                         &[
                             bind_group_entry(0, *value),
@@ -2949,8 +3085,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_dst,
                         OpKernel::Sigmoid,
                         &[
                             bind_group_entry(0, *value),
@@ -2968,8 +3104,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::SigmoidDiff,
                         &[
                             bind_group_entry(0, *value),
@@ -2987,8 +3123,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_dst,
                         OpKernel::LeakyRelu,
                         &[
                             bind_group_entry(0, *value),
@@ -3006,8 +3142,8 @@ impl OperationsRecorder
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
-                        &raw_array_memory,
-                        &raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::LeakyReluDiff,
                         &[
                             bind_group_entry(0, *value),
@@ -8284,7 +8420,10 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
-            recorder.add(b, final_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
@@ -8386,7 +8525,10 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, targets.iter().cloned().map(OwnedInputType::OneHot).collect::<Vec<_>>());
 
-            recorder.add(b, final_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
@@ -8443,7 +8585,10 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs);
 
-            recorder.add(b, final_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
@@ -8478,7 +8623,10 @@ mod tests
             let final_selected = recorder.select_tensor(final_state_selector);
             recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let intermediate = recorder.mul_componentwise(b, final_selected);
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_selected_filled = recorder.fill_batched(b_shape, final_selected);
+
+            let intermediate = recorder.mul_componentwise(b, final_selected_filled);
             recorder.name_diff_tensor(intermediate, "intermediate");
 
             let intermediate_sum = recorder.sum_tensor(intermediate);
@@ -8494,7 +8642,10 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
-            recorder.add(b, final_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
@@ -8572,7 +8723,10 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().skip(2).collect::<Vec<_>>());
 
-            recorder.add(b, final_combined_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
@@ -8652,7 +8806,11 @@ mod tests
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
             let f_sum = recorder.sum_tensor(s2);
-            recorder.add(b, f_sum)
+
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let f_sum_filled = recorder.fill_batched(b_shape, f_sum);
+
+            recorder.add(b, f_sum_filled)
         })
     }
 
@@ -8765,7 +8923,10 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add(b, final_combined_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
@@ -8906,7 +9067,10 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add(bc, final_combined_state)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
