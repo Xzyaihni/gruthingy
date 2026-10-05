@@ -950,7 +950,7 @@ impl Default for ExtraInfo
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NeuralNetwork<NetworkType, O, D>
 {
     dictionary: D,
@@ -963,41 +963,23 @@ pub struct NeuralNetwork<NetworkType, O, D>
 
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
-// only use this for saving the network, it doesnt fully clone things!!
-impl<O, D> Clone for NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, D>
+impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, D>
 where
     O: Optimizer,
     D: Clone,
     O::WeightParam: Clone
 {
-    fn clone(&self) -> Self
-    {
-        Self{
-            dictionary: self.dictionary.clone(),
-            network: self.network.clone(),
-            optimizer: self.optimizer.clone(),
-            gradient_clip: self.gradient_clip.clone(),
-            extra_info: self.extra_info.clone(),
-            sizes: self.sizes.clone()
-        }
-    }
-}
-
-impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, D>
-where
-    O: Optimizer
-{
-    pub fn without_optimizer(self) -> NeuralNetwork<Network<EmbeddingsUnitFactory, ()>, (), D>
+    pub fn without_optimizer(&self) -> NeuralNetwork<SaveNetwork<EmbeddingsUnitFactory, ()>, (), D>
     where
         EN<()>: OptimizerUnit<()>,
     {
         NeuralNetwork{
-            dictionary: self.dictionary,
+            dictionary: self.dictionary.clone(),
             network: self.network.without_optimizer(),
             optimizer: (),
-            gradient_clip: self.gradient_clip,
-            extra_info: self.extra_info,
-            sizes: self.sizes
+            gradient_clip: self.gradient_clip.clone(),
+            extra_info: self.extra_info.clone(),
+            sizes: self.sizes.clone()
         }
     }
 }
@@ -1038,6 +1020,23 @@ where
         let reader = File::open(path)?;
 
         SaveFormat::deserialize(BufReader::new(reader))
+    }
+
+    pub fn save_data(&self, path: &Path) -> io::Result<()>
+    where
+        O: Serialize,
+        D: Serialize,
+        O::WeightParam: Serialize,
+        N::Unit<SaveWeightType>: Serialize,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+        N::Unit<O::WeightParam>: Serialize
+    {
+        eprintln!("saved network at {}", path.display());
+
+        let writer = File::create(path)?;
+
+        Ok(SaveFormat::serialize(BufWriter::new(writer), self).unwrap())
     }
 
     pub fn into_embeddings_info(self) -> (D, SaveNetwork<N, O::WeightParam>)
@@ -1086,20 +1085,25 @@ where
     pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()>
     where
         O: Serialize,
-        D: Serialize,
+        D: Serialize + Clone,
         O::WeightParam: Serialize + Clone,
         N::Unit<SaveWeightType>: Serialize,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<O::WeightParam>: Serialize + Clone
     {
         let path = path.as_ref();
 
-        eprintln!("saved network at {}", path.display());
+        let save_network: NeuralNetwork<SaveNetwork<N, O::WeightParam>, O, D> = NeuralNetwork{
+            dictionary: self.dictionary.clone(),
+            network: SaveNetwork::from_network(&self.network),
+            optimizer: self.optimizer.clone(),
+            gradient_clip: self.gradient_clip.clone(),
+            extra_info: self.extra_info.clone(),
+            sizes: self.sizes.clone()
+        };
 
-        let writer = File::create(path)?;
-
-        Ok(SaveFormat::serialize(BufWriter::new(writer), self).unwrap())
+        save_network.save_data(path)
     }
 
     pub fn load<P: AsRef<Path>>(

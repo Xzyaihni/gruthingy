@@ -34,7 +34,6 @@ use crate::{
         OwnedInputType,
         LayerType,
         LayerTypeRef,
-        LayerTypeMut,
         NetworkUnit,
         NewableLayer,
         GenericUnit,
@@ -953,23 +952,25 @@ where
     }
 }
 
-impl<N: UnitFactory, O> From<Network<N, O>> for SaveNetwork<N, O>
+impl<N: UnitFactory, O> SaveNetwork<N, O>
 where
+    O: Clone,
+    N::Unit<O>: Clone,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
 {
-    fn from(x: Network<N, O>) -> Self
+    pub fn from_network(x: &Network<N, O>) -> Self
     {
-        let weights = if let Some(w) = x.weights
+        let weights = if let Some(w) = x.weights.as_ref()
         {
-            w.map(|weight_info|
+            w.map_ref(|weight_info|
             {
-                x.recorder.get_tensor(weight_info.weight.as_value()).clone_owned()
+                x.recorder.get_tensor_blocking(weight_info.weight.as_value())
             })
         } else
         {
-            x.weights_ptr.unwrap().map(|weight_info|
+            x.weights_ptr.as_ref().unwrap().map_ref(|weight_info|
             {
                 x.recorder.get_tensor_memory_value(weight_info.weight_original.as_value()).clone_owned()
             })
@@ -979,7 +980,7 @@ where
             sizes: x.sizes,
             input_dropout_probability: x.dropouts.input_dropout_probability,
             dropout_probability: x.dropouts.dropout_probability,
-            optimizer_info: x.optimizer_info,
+            optimizer_info: x.optimizer_info.clone(),
             weights
         }
     }
@@ -1076,9 +1077,6 @@ pub struct NetworkConfigInfo
     pub is_input_one_hot: bool
 }
 
-#[derive(Serialize)]
-#[serde(into = "SaveNetwork<N, O>")]
-#[serde(bound(serialize = "O: Serialize + Clone, N::Unit<O>: Serialize + Clone, N::Unit<SaveWeightType>: Serialize, N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de> + GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>, N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>, for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>"))]
 pub struct Network<N: UnitFactory, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -1093,31 +1091,6 @@ where
     optimizer_info: Option<WeightsFullContainer<N, O>>,
     weights_ptr: Option<WeightsFullContainer<N, WeightInfoPtr>>,
     weights: Option<WeightsFullContainer<N, WeightInfo>>
-}
-
-// this clone is ONLY used for serialization, dont use for ANYTHING else
-impl<N: UnitFactory, O> Clone for Network<N, O>
-where
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfo>: Clone,
-    O: Clone,
-    N::Unit<O>: Clone
-{
-    fn clone(&self) -> Self
-    {
-        Self{
-            recorder: self.recorder.clone(),
-            network_mode: self.network_mode,
-            sizes: self.sizes,
-            config: self.config.clone(),
-            dropouts: self.dropouts.clone(),
-            inputs: self.inputs.clone(),
-            outputs: self.outputs.clone(),
-            optimizer_info: self.optimizer_info.clone(),
-            weights_ptr: self.weights_ptr.clone(),
-            weights: self.weights.clone()
-        }
-    }
 }
 
 impl<N: UnitFactory, O> Network<N, O>
@@ -1452,14 +1425,14 @@ where
             {
                 self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
                 {
-                    self.recorder.store_tensor_until_end(weight.weight_original.as_gradient().unwrap());
+                    self.recorder.store_tensor_as_output(weight.weight_original.as_gradient().unwrap());
                 });
 
                 self.recorder.gradient(self.outputs.loss_ptr.expect("must be initialized").into());
             } else
             {
-                self.recorder.store_tensor_until_end(self.outputs.first_output_value_ptr.unwrap());
-                self.recorder.store_tensor_until_end(self.outputs.output_ptr.unwrap().as_value());
+                self.recorder.store_tensor_as_output(self.outputs.first_output_value_ptr.unwrap());
+                self.recorder.store_tensor_as_output(self.outputs.output_ptr.unwrap().as_value());
 
                 self.recorder.no_gradient();
             }
@@ -1499,7 +1472,7 @@ where
 
         if self.network_mode == Some(NetworkMode::Train)
         {
-            self.recorder.store_tensor_until_end(self.outputs.loss_ptr.expect("must be initialized").as_value());
+            self.recorder.store_tensor_as_output(self.outputs.loss_ptr.expect("must be initialized").as_value());
         }
     }
 
@@ -1813,7 +1786,12 @@ where
 
                 let change = optimizer.gradient_to_change(optimizer_info, gradient);
 
-                self.recorder.get_tensor_mut::<true>(network_weights.weight.as_value()).sub_inplace(LayerTypeRef::from(&change));
+                let weight_value = network_weights.weight.as_value();
+
+                let mut new_weight = self.recorder.get_tensor_blocking(weight_value);
+                new_weight.as_mut().sub_inplace(LayerTypeRef::from(&change));
+
+                self.recorder.set_tensor(weight_value, new_weight);
             });
 
         optimizer.advance_time();
@@ -1837,7 +1815,7 @@ where
 
         let f = |weight: &WeightInfo|
         {
-            self.recorder.get_tensor(weight.weight.as_gradient().unwrap()).clone_owned()
+            self.recorder.get_tensor_blocking(weight.weight.as_gradient().unwrap())
         };
 
         let gradients = if inputs_count == 1
@@ -1914,12 +1892,12 @@ where
 
         calculate_function(&mut self.recorder);
 
-        self.recorder.get_tensor(self.outputs.loss.as_value()).average()
+        self.recorder.get_tensor_blocking(self.outputs.loss.as_value()).as_ref().average()
     }
 
     pub fn weights_info<'b, 'c>(
         &'b self
-    ) -> Vec<WeightsNamed<LayerTypeRef<'b>>>
+    ) -> Vec<WeightsNamed<LayerType>>
     where
         for<'a> N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<WeightsNamed<&'a WeightInfo>>=N::Unit<WeightsNamed<&'a WeightInfo>>>,
         N::Unit<WeightsNamed<&'b WeightInfo>>: IntoIterator<Item=WeightsNamed<&'b WeightInfo>>
@@ -1970,7 +1948,7 @@ where
                     }
                 }]
             }).into_iter().flatten())
-            .map(|x| x.map(|x| self.recorder.get_tensor(x.weight.as_value())))
+            .map(|x| x.map(|x| self.recorder.get_tensor_blocking(x.weight.as_value())))
             .collect::<Vec<_>>()
     }
 
@@ -2100,11 +2078,10 @@ where
         {
             if let Some(dropout) = weight_info.dropout
             {
-                let dropout = self.recorder.get_tensor_mut::<false>(dropout);
+                let dropout_shape = dropout.shape();
+                debug_assert_eq!(dropout_shape.batch_size, self.sizes.batch_size);
 
-                debug_assert_eq!(dropout.shape().batch_size, self.sizes.batch_size);
-
-                Self::set_dropout_mask(rng, dropout, dropout_probability);
+                self.recorder.set_tensor_with(dropout, Self::dropout_mask_setter(rng, dropout_shape.columns, dropout_probability));
             }
         });
 
@@ -2200,84 +2177,79 @@ where
             let mut is_first_input = true;
             self.recorder.calculate_feedforward_with_dependent(|_, memory: &OperationsRecorderMemory|
             {
-                let output = if is_first_input
+                /*let output = if is_first_input
                 {
                     is_first_input = false;
 
-                    memory.get_tensor(first_output_value)
+                    memory.get_tensor_blocking(first_output_value)
                 } else
                 {
-                    memory.get_tensor(output_value)
+                    memory.get_tensor_blocking(output_value)
                 };
 
-                consume_output(output.clone_owned());
+                consume_output(output);
 
-                input.next().expect("must be called the same amount of times as there are inputs")
+                input.next().expect("must be called the same amount of times as there are inputs")*/todo!()
             });
         }
 
-        consume_output(self.recorder.get_tensor(output_value).clone_owned());
+        consume_output(self.recorder.get_tensor_blocking(output_value));
     }
 
-    fn set_dropout_mask<R: DropoutRoll>(
+    fn dropout_mask_setter<R: DropoutRoll>(
         rng: &mut R,
-        target: LayerTypeMut,
+        columns: usize,
         probability: f32
-    )
+    ) -> impl FnMut() -> f32
     {
-        if probability == 0.0
-        {
-            target.fill(1.0);
-        } else
-        {
-            let mut set_value = 0.0;
-            let mut column = 0;
+        let mut set_value = 0.0;
+        let mut column = 0;
 
-            let columns = target.columns();
-
-            target.fill_with(move ||
+        move ||
+        {
+            if probability == 0.0
             {
-                if column == 0
+                return 1.0;
+            }
+
+            if column == 0
+            {
+                set_value = if rng.roll() >= probability
                 {
-                    set_value = if rng.roll() >= probability
-                    {
-                        1.0
-                    } else
-                    {
-                        0.0
-                    };
-                }
-
-                column += 1;
-
-                if column == columns
+                    1.0
+                } else
                 {
-                    column = 0;
-                }
+                    0.0
+                };
+            }
 
-                set_value
-            });
+            column += 1;
+
+            if column == columns
+            {
+                column = 0;
+            }
+
+            set_value
         }
     }
 }
 
 impl<O> Network<EmbeddingsUnitFactory, O>
 where
-    EmbeddingsUnitFactory: UnitFactory
+    EmbeddingsUnitFactory: UnitFactory,
+    O: Clone
 {
-    pub fn without_optimizer(self) -> Network<EmbeddingsUnitFactory, ()>
+    pub fn without_optimizer(&self) -> SaveNetwork<EmbeddingsUnitFactory, ()>
     {
-        Network{
-            recorder: self.recorder,
-            network_mode: self.network_mode,
-            sizes: self.sizes,
-            config: self.config,
-            optimizer_info: None,
-            weights_ptr: self.weights_ptr,
-            weights: self.weights,
-            dropouts: self.dropouts,
-            inputs: self.inputs,
-            outputs: self.outputs
+        let save_network = SaveNetwork::from_network(self);
+
+        SaveNetwork{
+            dropout_probability: save_network.dropout_probability,
+            input_dropout_probability: save_network.input_dropout_probability,
+            sizes: save_network.sizes,
+            weights: save_network.weights,
+            optimizer_info: None
         }
     }
 }
@@ -2449,12 +2421,12 @@ mod tests
 
         at_once.recorder.finish();
 
-        at_once.recorder.store_tensor_until_end(output.unwrap().as_value());
+        at_once.recorder.store_tensor_as_output(output.unwrap().as_value());
 
         at_once.weights_ptr.as_ref().unwrap().iter().for_each(|x|
         {
             at_once.recorder.store_tensor_until_end(x.weight_original.as_value());
-            at_once.recorder.store_tensor_until_end(x.weight_original.as_gradient().unwrap());
+            at_once.recorder.store_tensor_as_output(x.weight_original.as_gradient().unwrap());
 
             x.dropout.map(|x| at_once.recorder.store_tensor_until_end(x));
         });
@@ -2478,8 +2450,8 @@ mod tests
 
         at_once.recorder.calculate();
 
-        let loss_batch = at_once.recorder.get_tensor(output_value);
-        let loss = loss_batch.average();
+        let loss_batch = at_once.recorder.get_tensor_blocking(output_value);
+        let loss = loss_batch.as_ref().average();
 
         let gradients = {
             let weights = at_once.weights.clone().unwrap();
@@ -2490,7 +2462,7 @@ mod tests
 
                 if !at_once.recorder.is_undefined_location(gradient)
                 {
-                    Some(at_once.recorder.get_tensor(gradient).clone_owned())
+                    Some(at_once.recorder.get_tensor_blocking(gradient))
                 } else
                 {
                     None
@@ -2550,7 +2522,7 @@ mod tests
 
         let map_weights = |r: &mut OperationsRecorder, w: WeightInfo| -> LayerType
         {
-            r.get_tensor(w.weight.as_value()).clone_owned()
+            r.get_tensor_blocking(w.weight.as_value())
         };
 
         assert_eq!(

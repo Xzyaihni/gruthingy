@@ -478,6 +478,16 @@ impl<'a> YWrapperRef<'a>
         }
     }
 
+    pub fn as_raw(&self) -> &[f32]
+    {
+        &self.values
+    }
+
+    pub fn bytes_slice(&self) -> &[u8]
+    {
+        bytemuck::cast_slice(&self.values)
+    }
+
     pub fn as_vec(&self) -> Vec<f32>
     {
         self.values.to_vec()

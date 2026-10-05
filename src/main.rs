@@ -705,7 +705,7 @@ fn try_save_network<N, O, D>(
 where
     N: UnitFactory,
     O: Optimizer + Serialize,
-    D: NetworkDictionary + Serialize,
+    D: NetworkDictionary + Serialize + Clone,
     N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -752,19 +752,27 @@ fn train_embeddings(mut config: Config)
         ..TrainingInfo::from(&config)
     };
 
+    let try_save_raw_network = |raw_network: &NeuralNetwork<SaveNetwork<_, _>, _, _>, path: &Path|
+    {
+        if let Err(err) = raw_network.save_data(path)
+        {
+            complain(format!("couldnt save to {}: {err}", path.display()));
+        }
+    };
+
     if config.infinite_loop
     {
         loop
         {
             run_this(&mut network, training_info.clone());
 
-            try_save_network(&network.clone().without_optimizer(), &config.embeddings_path);
+            try_save_raw_network(&network.without_optimizer(), &config.embeddings_path);
         }
     } else
     {
         run_this(&mut network, training_info);
 
-        try_save_network(&network.clone().without_optimizer(), &config.embeddings_path);
+        try_save_raw_network(&network.without_optimizer(), &config.embeddings_path);
     }
 }
 
@@ -896,6 +904,8 @@ fn main()
     #[cfg(debug_assertions)]
     {
         fastrand::seed(7777);
+
+        env_logger::init();
     }
 
     let config = Config::parse(env::args().skip(1));

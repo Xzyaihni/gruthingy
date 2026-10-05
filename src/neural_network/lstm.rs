@@ -305,7 +305,7 @@ mod tests
 
         let single_value = |l: ShapedTensorIndex|
         {
-            recorder.get_tensor(l).as_vec()[0]
+            recorder.get_tensor_blocking(l).as_vec()[0]
         };
 
         assert_close_enough(single_value(memory), 2.947, epsilon);

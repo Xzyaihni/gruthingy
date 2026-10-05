@@ -1,5 +1,9 @@
 use std::{
     f32,
+    mem,
+    num::NonZero,
+    sync::mpsc,
+    num::NonZeroU64,
     convert,
     debug_assert_matches,
     fmt::{self, Debug},
@@ -13,11 +17,11 @@ use std::{iter, cell::RefCell, marker::PhantomData, cmp::Ordering, collections::
 
 use serde::{Serialize, Deserialize};
 
-//use matrix_wrapper::{MatrixWrapper, MatrixWrapperRef, MatrixWrapperMut, VectorWrapper, VectorWrapperMut};
 use ywrapper::*;
+use rawarray::*;
 
-//mod matrix_wrapper;
 mod ywrapper;
+mod rawarray;
 
 
 pub type LayerType = YWrapper;
@@ -29,33 +33,11 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = false;
-const _PRINT_CALCULATE_VALUES: bool = false;
+const NO_COLORING: bool = true; const remove_me: () = ();
+const DUMP_MEMORY: bool = true; const remove_me1: () = ();
 
+const FLOAT_BYTES: usize = mem::size_of::<f32>();
 
-macro_rules! get_disjoint_mut_with
-{
-    ($this:expr, $(($target_type:ident, $name:expr, $tmp_name:ident)),+$(,)?) =>
-    {
-        {
-            let indices = [$($name.range(),)+];
-
-            let [$($tmp_name,)+] = {
-                #[cfg(debug_assertions)]
-                {
-                    $this.memory.tensors_raw_data.get_disjoint_mut(indices).unwrap()
-                }
-
-                #[cfg(not(debug_assertions))]
-                {
-                    unsafe{ $this.memory.tensors_raw_data.get_disjoint_unchecked_mut(indices) }
-                }
-            };
-
-            ($($target_type::from_data($tmp_name, $name.shape),)+)
-        }
-    }
-}
 
 pub fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
 {
@@ -273,6 +255,14 @@ enum TensorMemoryValue
     Size{rows: usize, columns: usize, batch_size: usize}
 }
 
+impl From<TensorShape> for TensorMemoryValue
+{
+    fn from(TensorShape{rows, columns, batch_size}: TensorShape) -> Self
+    {
+        Self::Size{rows, columns, batch_size}
+    }
+}
+
 impl TensorMemoryValue
 {
     fn tensor_shape(&self) -> TensorShape
@@ -320,7 +310,6 @@ impl Debug for DebugStringRaw
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StoreCheckKey<P, R>
 {
@@ -864,10 +853,11 @@ pub struct OperationsRecorderMemory
     value_live_ranges: Vec<LiveRange>,
     tensor_live_ranges: Vec<LiveRange>,
     tensors_memory: Vec<TensorMemorySlot>,
-    tensors_raw_data: Vec<f32>,
+    tensors_raw_data: Vec<RawArray>,
     one_hot_layers: Vec<OneHotLayer>,
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
     variable_names: VariableNames,
+    store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     #[cfg(debug_assertions)]
     set_tensor_memory: RefCell<SetTensorMemoryChecks>,
     #[cfg(debug_assertions)]
@@ -876,8 +866,6 @@ pub struct OperationsRecorderMemory
     allow_discard: Vec<TensorPtr>,
     #[cfg(debug_assertions)]
     set_tensors_check: Vec<InputCheckType>,
-    #[cfg(debug_assertions)]
-    store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     #[cfg(debug_assertions)]
     store_values_check: Vec<StoreCheckKey<ValueIndex, ValueIndex>>
 }
@@ -897,7 +885,8 @@ impl Debug for OperationsRecorderMemory
             .field("tensors", &self.tensors.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("tensors_raw_data", &DebugStringRaw(format!("{} values", self.tensors_raw_data.len())))
             .field("one_hot_layers", &self.one_hot_layers)
-            .field("phi_other_selectors_values", &self.phi_other_selectors_values);
+            .field("phi_other_selectors_values", &self.phi_other_selectors_values)
+            .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
 
         #[cfg(debug_assertions)]
         {
@@ -936,7 +925,6 @@ impl Debug for OperationsRecorderMemory
                 .field("tensor_inputs", &self.tensor_inputs.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("allow_discard", &self.allow_discard.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("set_tensors_check", &self.set_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
-                .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
                 .field("store_values_check", &self.store_values_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
         }
 
@@ -959,6 +947,7 @@ impl OperationsRecorderMemory
             one_hot_layers: Vec::new(),
             phi_other_selectors_values: Vec::new(),
             variable_names: VariableNames::new(),
+            store_tensors_check: Vec::new(),
             #[cfg(debug_assertions)]
             set_tensor_memory: RefCell::new(SetTensorMemoryChecks::new()),
             #[cfg(debug_assertions)]
@@ -967,8 +956,6 @@ impl OperationsRecorderMemory
             allow_discard: Vec::new(),
             #[cfg(debug_assertions)]
             set_tensors_check: Vec::new(),
-            #[cfg(debug_assertions)]
-            store_tensors_check: Vec::new(),
             #[cfg(debug_assertions)]
             store_values_check: Vec::new()
         }
@@ -1052,32 +1039,6 @@ impl OperationsRecorderMemory
         }
     }
 
-    fn set_input(&mut self, input: InputType, value: OwnedInputType)
-    {
-        match input
-        {
-            InputType::Normal(input) => self.set_tensor(input.into(), value.into_ref_normal()),
-            InputType::OneHot(input) => self.set_one_hot(input, value.into_one_hot())
-        }
-    }
-
-    fn set_tensor(&mut self, index: TensorIndex, value: &LayerType)
-    {
-        #[cfg(debug_assertions)]
-        {
-            self.set_tensors_check.push(index.into());
-
-            self.verify_raw_ptr_assign_index(index);
-        }
-
-        self.set_tensor_raw(self.tensors[index.0], value);
-    }
-
-    fn set_tensor_raw(&mut self, index: LinearRawDataPointer, value: &LayerType)
-    {
-        self.tensors_raw_data[index.range()].copy_from_slice(value.as_slice())
-    }
-
     fn set_value(&mut self, index: ValueIndex, value: f32)
     {
         self.values[index.0] = value
@@ -1098,23 +1059,6 @@ impl OperationsRecorderMemory
         self.value_live_ranges[scalar.as_value().0].start = Some(-1);
 
         scalar
-    }
-
-    pub fn get_tensor(&self, index: ShapedTensorIndex) -> LayerTypeRef<'_>
-    {
-        debug_assert_ne!(index, ShapedTensorIndex::undefined());
-
-        #[cfg(debug_assertions)]
-        {
-            verify_store_check(&self.store_tensors_check, index.index, "tensor");
-
-            self.verify_raw_ptr_use_index(index.index);
-        }
-
-        let info = self.tensors[index.index.0].with_shape(index.shape);
-        debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
-
-        LayerTypeRef::from_data_with_start(&self.tensors_raw_data, info)
     }
 
     fn tensor_shape(&self, tensor: TensorPtr) -> TensorShape
@@ -1202,70 +1146,6 @@ impl OperationsRecorderMemory
             format!("{raw_ptr:?}")
         }
     }
-
-    #[cfg(debug_assertions)]
-    fn verify_raw_ptr_use(&self, raw_ptr: TensorRawDataPointer)
-    {
-        let memory_index = self.raw_ptr_to_memory(raw_ptr.to_linear_pointer());
-
-        self.verify_raw_ptr_use_index(memory_index)
-    }
-
-    #[cfg(debug_assertions)]
-    fn verify_raw_ptr_use_index(&self, memory_index: TensorIndex)
-    {
-        let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
-
-        debug_assert!(
-            set_tensor_memory.set_memory.contains(&memory_index),
-            "{} was used without being set",
-            self.format_tensor_index(memory_index)
-        );
-
-        if !set_tensor_memory.read_memory.contains(&memory_index)
-        {
-            set_tensor_memory.read_memory.push(memory_index);
-        }
-
-        if let Some(read_index) = set_tensor_memory.unread_memory.iter().position(|x| *x == memory_index)
-        {
-            set_tensor_memory.unread_memory.remove(read_index);
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn verify_raw_ptr_assign(&mut self, raw_ptr: TensorRawDataPointer)
-    {
-        let memory_index = self.raw_ptr_to_memory(raw_ptr.to_linear_pointer());
-
-        self.verify_raw_ptr_assign_index(memory_index)
-    }
-
-    #[cfg(debug_assertions)]
-    fn verify_raw_ptr_assign_index(&mut self, memory_index: TensorIndex)
-    {
-        let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
-
-        if let Some(read_index) = set_tensor_memory.read_memory.iter().position(|x| *x == memory_index)
-        {
-            set_tensor_memory.read_memory.remove(read_index);
-        } else
-        {
-            let is_no_read_reassigned = set_tensor_memory.set_memory.contains(&memory_index);
-
-            if is_no_read_reassigned && !set_tensor_memory.allow_reassign.contains(&StoreCheckKey::Resolved(memory_index))
-            {
-                panic!("{} was reassigned without being read", self.format_tensor_index(memory_index));
-            }
-        }
-
-        set_tensor_memory.set_memory.push(memory_index);
-
-        if !set_tensor_memory.unread_memory.contains(&memory_index)
-        {
-            set_tensor_memory.unread_memory.push(memory_index);
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1286,9 +1166,246 @@ impl LoopsMemory
     }
 }
 
+const KERNELS_COUNT: usize = OpKernel::COUNT;
+
 #[derive(Clone)]
+struct KernelLayout
+{
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout
+}
+
+struct KernelLayouts
+{
+    a_b_output: KernelLayout,
+    t_s_output: KernelLayout,
+    src_dst: KernelLayout,
+    reduction: KernelLayout
+}
+
+struct RawArrayMemory
+{
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    input_buffers: Vec<wgpu::Buffer>,
+    scratch_buffers: HashMap<usize, wgpu::Buffer>,
+    kernel_layouts: KernelLayouts,
+    kernels: [wgpu::ComputePipeline; KERNELS_COUNT]
+}
+
+impl RawArrayMemory
+{
+    fn new() -> Self
+    {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .unwrap_or_else(|err| panic!("no compatible adapter found: {err}"));
+
+        eprintln!("using adapter: {}", adapter.get_info().name);
+
+        if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        {
+            panic!("adapter doesnt support compute shaders");
+        }
+
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor{
+            label: None,
+            required_features: wgpu::Features::IMMEDIATES,
+            required_limits: wgpu::Limits{
+                max_immediate_size: 4,
+                ..wgpu::Limits::downlevel_defaults()
+            },
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off
+        })).unwrap_or_else(|err| panic!("error creating device: {err}"));
+
+        let float_element_size = NonZeroU64::new(FLOAT_BYTES as u64).unwrap();
+
+        let common_layout_entry = |binding, read_only|
+        {
+            wgpu::BindGroupLayoutEntry{
+                binding,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer{
+                    ty: wgpu::BufferBindingType::Storage{read_only},
+                    min_binding_size: Some(float_element_size),
+                    has_dynamic_offset: false
+                },
+                count: None
+            }
+        };
+
+        let input_layout_entry = |binding|
+        {
+            common_layout_entry(binding, true)
+        };
+
+        let output_layout_entry = |binding|
+        {
+            common_layout_entry(binding, false)
+        };
+
+        let kernel_layouts = {
+            let from_bind_group_layout = |bind_group_layout, immediates_count: usize|
+            {
+                let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
+                    label: None,
+                    bind_group_layouts: &[Some(&bind_group_layout)],
+                    immediate_size: (immediates_count * FLOAT_BYTES) as u32
+                });
+
+                KernelLayout{
+                    bind_group_layout,
+                    pipeline_layout
+                }
+            };
+
+            let a_b_output = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            let t_s_output = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 1)
+            };
+
+            let src_dst = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            let reduction = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        output_layout_entry(0),
+                        output_layout_entry(1)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            KernelLayouts{
+                a_b_output,
+                t_s_output,
+                src_dst,
+                reduction
+            }
+        };
+
+        let kernels = OpKernel::create_kernels(|kernel|
+        {
+            let (shader_code, kernel_layout) = match kernel
+            {
+                OpKernel::Add =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/add.wgsl"), &kernel_layouts.a_b_output)
+                },
+                OpKernel::Sub =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/sub.wgsl"), &kernel_layouts.a_b_output)
+                },
+                OpKernel::SubFromScalar =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/sub_from_scalar.wgsl"), &kernel_layouts.t_s_output)
+                },
+                OpKernel::MulComponentwise =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/mul_componentwise.wgsl"), &kernel_layouts.a_b_output)
+                },
+                OpKernel::MulScalar =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/mul_scalar.wgsl"), &kernel_layouts.t_s_output)
+                },
+                OpKernel::SumTensor =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/sum_tensor.wgsl"), &kernel_layouts.reduction)
+                },
+                OpKernel::Fill =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/fill.wgsl"), &kernel_layouts.src_dst)
+                },
+                OpKernel::Pow =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/pow.wgsl"), &kernel_layouts.t_s_output)
+                },
+                OpKernel::Tanh =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/tanh.wgsl"), &kernel_layouts.src_dst)
+                },
+                OpKernel::TanhDiff =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/tanh_diff.wgsl"), &kernel_layouts.a_b_output)
+                },
+                OpKernel::Sigmoid =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/sigmoid.wgsl"), &kernel_layouts.src_dst)
+                },
+                OpKernel::SigmoidDiff =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/sigmoid_diff.wgsl"), &kernel_layouts.a_b_output)
+                },
+                OpKernel::LeakyRelu =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/leaky_relu.wgsl"), &kernel_layouts.src_dst)
+                },
+                OpKernel::LeakyReluDiff =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/leaky_relu_diff.wgsl"), &kernel_layouts.a_b_output)
+                }
+            };
+
+            let shader = device.create_shader_module(shader_code);
+
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
+                label: None,
+                layout: Some(&kernel_layout.pipeline_layout),
+                module: &shader,
+                entry_point: Some("run"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None
+            })
+        });
+
+        Self{
+            device,
+            queue,
+            scratch_buffers: HashMap::new(),
+            input_buffers: Vec::new(),
+            kernel_layouts,
+            kernels
+        }
+    }
+}
+
 pub struct OperationsRecorder
 {
+    raw_array_memory: RawArrayMemory,
     memory: OperationsRecorderMemory,
     state: RecorderState,
     operations_target: OperationsTarget,
@@ -1368,33 +1485,9 @@ macro_rules! impl_pair_tensor_op
             let a_shape = $this.tensor_shape($a.as_value());
             let b_shape = $this.tensor_shape($b.as_value());
 
-            let output_batch_size = a_shape.batch_size.max(b_shape.batch_size);
+            debug_assert_eq!(a_shape, b_shape);
 
-            let gradient_batch_size_of = |x: &DiffTensorPtr|
-            {
-                $this.gradient_batch_size_of(x).unwrap_or(output_batch_size)
-            };
-
-            let gradient_batch_size = gradient_batch_size_of(&$a).max(gradient_batch_size_of(&$b));
-
-            #[cfg(debug_assertions)]
-            {
-                if !a_shape.is_batched_scalar() && !b_shape.is_batched_scalar()
-                {
-                    debug_assert_eq!(a_shape.rows, b_shape.rows);
-                    debug_assert_eq!(a_shape.columns, b_shape.columns);
-                }
-            }
-
-            let shape = if a_shape.is_batched_scalar()
-            {
-                b_shape
-            } else
-            {
-                a_shape
-            };
-
-            let output = $this.new_tensor_op(TensorShape{batch_size: output_batch_size, ..shape}, gradient_batch_size);
+            let output = $this.new_tensor_op(a_shape);
 
             $this.add_recording_operation(Op::$name{lhs: $a, rhs: $b, output});
 
@@ -1409,9 +1502,8 @@ macro_rules! impl_map_tensor_op
     {
         {
             let shape = $this.tensor_shape($a.as_value());
-            let gradient_batch_size = $this.gradient_batch_size_of(&$a).unwrap_or(shape.batch_size);
 
-            let output = $this.new_tensor_op(shape, gradient_batch_size);
+            let output = $this.new_tensor_op(shape);
 
             $this.add_recording_operation(Op::$name{value: $a, output});
 
@@ -1426,6 +1518,7 @@ impl OperationsRecorder
     pub fn new() -> Self
     {
         Self{
+            raw_array_memory: RawArrayMemory::new(),
             memory: OperationsRecorderMemory::new(),
             state: RecorderState::Recording,
             operations_target: OperationsTarget::Normal,
@@ -1490,19 +1583,10 @@ impl OperationsRecorder
 
     fn new_tensor_op(
         &mut self,
-        TensorShape{
-            rows,
-            columns,
-            batch_size
-        }: TensorShape,
-        gradient_batch_size: usize
+        shape: TensorShape
     ) -> DiffTensorPtr
     {
-        self.memory.new_tensor_separate_gradient(
-            true,
-            TensorMemoryValue::Size{rows, columns, batch_size},
-            TensorMemoryValue::Size{rows, columns, batch_size: gradient_batch_size}
-        )
+        self.memory.new_tensor_separate_gradient(true, shape.into(), shape.into())
     }
 
     fn new_value_op(&mut self) -> DiffScalar
@@ -1510,11 +1594,23 @@ impl OperationsRecorder
         self.memory.new_value(true)
     }
 
-    pub fn set_tensor(&mut self, index: impl Into<TensorIndex>, value: &LayerType)
+    pub fn set_tensor(&mut self, index: impl Into<TensorIndex>, value: LayerType)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.memory.set_tensor(index.into(), value)
+        let index = index.into();
+
+        #[cfg(debug_assertions)]
+        {
+            self.memory.set_tensors_check.push(index.into());
+        }
+
+        let info = self.memory.tensors[index.0];
+        debug_assert_ne!(info, LinearRawDataPointer::undefined(), "{index:?} location is undefined");
+
+        let input_buffer = &self.memory.tensors_raw_data[info.raw_index.0].buffer;
+
+        self.raw_array_memory.queue.write_buffer(input_buffer, 0, value.as_ref().bytes_slice());
     }
 
     pub fn set_tensor_ptr_zeroed(&mut self, _index: TensorPtr)
@@ -1551,23 +1647,6 @@ impl OperationsRecorder
         }
     }
 
-    pub fn set_tensor_from(&mut self, index: TensorIndex, src: TensorIndex)
-    {
-        debug_assert_eq!(self.state, RecorderState::Ready);
-
-        #[cfg(debug_assertions)]
-        {
-            self.memory.set_tensors_check.push(index.into());
-        }
-
-        let dst = self.memory.tensors[index.0];
-        let src = self.memory.tensors[src.0];
-
-        debug_assert_eq!(src.size, dst.size);
-
-        self.memory.tensors_raw_data.copy_within(src.range(), dst.raw_index.0);
-    }
-
     pub fn set_value(&mut self, index: ValueIndex, value: f32)
     {
         self.memory.set_value(index, value);
@@ -1580,7 +1659,11 @@ impl OperationsRecorder
 
     pub fn set_input(&mut self, input: InputType, value: OwnedInputType)
     {
-        self.memory.set_input(input, value)
+        match input
+        {
+            InputType::Normal(input) => self.set_tensor(input, value.into_normal()),
+            InputType::OneHot(input) => self.memory.set_one_hot(input, value.into_one_hot())
+        }
     }
 
     pub fn set_new_tensor_gradientable(&mut self, value: LayerType, gradient_batch_size: usize) -> DiffTensorPtr
@@ -1753,14 +1836,63 @@ impl OperationsRecorder
         self.memory.tensors[index.into().0] == LinearRawDataPointer::undefined()
     }
 
-    pub fn get_tensor(&self, index: ShapedTensorIndex) -> LayerTypeRef<'_>
+    pub fn get_tensor_blocking(&self, index: ShapedTensorIndex) -> LayerType
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.memory.get_tensor(index)
+        debug_assert_ne!(index, ShapedTensorIndex::undefined());
+
+        #[cfg(debug_assertions)]
+        {
+            verify_store_check(&self.memory.store_tensors_check, index.index, "tensor");
+        }
+
+        self.get_tensor_blocking_unchecked(index)
     }
 
-    pub fn get_tensor_mut<const USES_VALUE: bool>(&mut self, index: ShapedTensorIndex) -> LayerTypeMut<'_>
+    fn get_tensor_blocking_unchecked(&self, index: ShapedTensorIndex) -> LayerType
+    {
+        let info = self.memory.tensors[index.index.0].with_shape(index.shape);
+        debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
+
+        let output_buffer = self.memory.tensors_raw_data[info.raw_index.0].output_buffer.as_ref().unwrap_or_else(||
+        {
+            panic!("tried to get non output tensor: {}", self.memory.format_tensor_index(index.index));
+        });
+
+        let (sender, receiver) = mpsc::channel();
+
+        output_buffer.map_async(wgpu::MapMode::Read, .., {
+            let output_buffer: wgpu::Buffer = output_buffer.clone();
+
+            move |result|
+            {
+                if let Err(err) = result
+                {
+                    panic!("error mapping tensor: {err}");
+                }
+
+                let tensor = {
+                    let view: wgpu::BufferView = output_buffer.get_mapped_range(..).unwrap();
+
+                    let data: &[u8] = &view;
+                    let data: &[f32] = bytemuck::cast_slice(data);
+
+                    LayerType::from_raw(data.into(), index.shape)
+                };
+
+                output_buffer.unmap();
+
+                sender.send(tensor).unwrap();
+            }
+        });
+
+        self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+        receiver.recv().unwrap()
+    }
+
+    pub fn set_tensor_with(&mut self, index: ShapedTensorIndex, mut f: impl FnMut() -> f32)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
         debug_assert_ne!(index, ShapedTensorIndex::undefined());
@@ -1769,17 +1901,7 @@ impl OperationsRecorder
         {
             let index: TensorIndex = index.into();
 
-            if USES_VALUE
-            {
-                verify_store_check(&self.memory.store_tensors_check, index, "tensor");
-
-                self.memory.verify_raw_ptr_use_index(index);
-            } else
-            {
-                self.memory.set_tensors_check.push(index.into());
-
-                self.memory.verify_raw_ptr_assign_index(index);
-            }
+            self.memory.set_tensors_check.push(index.into());
         }
 
         let info = self.memory.tensors[index.index.0];
@@ -1787,7 +1909,14 @@ impl OperationsRecorder
 
         let info = info.with_shape(index.shape);
 
-        LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, info)
+        let input_buffer = &self.memory.tensors_raw_data[info.raw_index.0].buffer;
+
+        let size = info.shape.size();
+        self.raw_array_memory.queue
+            .write_buffer_with(input_buffer, 0, NonZero::new((size * FLOAT_BYTES) as u64).unwrap())
+            .expect("must exist")
+            .slice(..)
+            .write_iter(iter::repeat_with(f).take(size).flat_map(f32::to_ne_bytes));
     }
 
     pub fn get_value(&self, index: ValueIndex) -> f32
@@ -1929,11 +2058,24 @@ impl OperationsRecorder
     pub fn copy(&mut self, src: DiffTensorPtr) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(src.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&src).unwrap_or(shape.batch_size);
 
-        let dst = self.new_tensor_op(shape, gradient_batch_size);
+        let dst = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Copy{src, dst});
+
+        dst
+    }
+
+    pub fn fill_batched(&mut self, shape: TensorShape, src: DiffTensorPtr) -> DiffTensorPtr
+    {
+        let src_shape = self.tensor_shape(src.as_value());
+
+        debug_assert!(src_shape.is_batched_scalar());
+        debug_assert_eq!(shape.batch_size, src_shape.batch_size);
+
+        let dst = self.new_tensor_op(shape);
+
+        self.add_recording_operation(Op::Fill{src, dst});
 
         dst
     }
@@ -1950,9 +2092,8 @@ impl OperationsRecorder
     pub fn add_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape, gradient_batch_size);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::AddScalar{lhs: a, rhs: b, output});
 
@@ -1972,9 +2113,8 @@ impl OperationsRecorder
     pub fn sub_from_scalar(&mut self, a: DiffScalar, b: DiffTensorPtr) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(b.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&b).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape, gradient_batch_size);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::SubFromScalar{lhs: a, rhs: b, output});
 
@@ -1993,9 +2133,8 @@ impl OperationsRecorder
     pub fn mul_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape, gradient_batch_size);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::MulScalar{lhs: a, rhs: b, output});
 
@@ -2013,20 +2152,9 @@ impl OperationsRecorder
         let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
 
         debug_assert_eq!(a_columns, b_rows);
+        debug_assert_eq!(a_batch_size, b_batch_size);
 
-        let output_batch_size = a_batch_size.max(b_batch_size);
-
-        let gradient_batch_size_of = |x: &DiffTensorPtr|
-        {
-            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
-        };
-
-        let gradient_batch_size = gradient_batch_size_of(&a).max(gradient_batch_size_of(&b));
-
-        let output = self.new_tensor_op(
-            TensorShape{rows: a_rows, columns: b_columns, batch_size: output_batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: a_batch_size});
 
         self.add_recording_operation(Op::Matmulv{lhs: a, rhs: b, output});
 
@@ -2038,26 +2166,17 @@ impl OperationsRecorder
         let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
         let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
 
-        let TensorShape{rows: added_rows, columns: added_columns, batch_size: added_batch_size} = self.tensor_shape(added.as_value());
+        let added_shape = self.tensor_shape(added.as_value());
 
         debug_assert_eq!(a_columns, b_rows);
 
-        debug_assert_eq!(a_rows, added_rows);
-        debug_assert_eq!(b_columns, added_columns);
+        debug_assert_eq!(a_rows, added_shape.rows);
+        debug_assert_eq!(b_columns, added_shape.columns);
 
-        let output_batch_size = a_batch_size.max(b_batch_size).max(added_batch_size);
+        debug_assert_eq!(a_batch_size, b_batch_size);
+        debug_assert_eq!(a_batch_size, added_shape.batch_size);
 
-        let gradient_batch_size_of = |x: &DiffTensorPtr|
-        {
-            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
-        };
-
-        let gradient_batch_size = gradient_batch_size_of(&a).max(gradient_batch_size_of(&b)).max(gradient_batch_size_of(&added));
-
-        let output = self.new_tensor_op(
-            TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(added_shape);
 
         self.add_recording_operation(Op::MatmulvAdd{lhs: a, rhs: b, added, output});
 
@@ -2069,19 +2188,7 @@ impl OperationsRecorder
         let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
         let b_columns = 1;
 
-        let output_batch_size = a_batch_size.max(self.one_hot_batch_size(b));
-
-        let gradient_batch_size_of = |x: &DiffTensorPtr|
-        {
-            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
-        };
-
-        let gradient_batch_size = gradient_batch_size_of(&a);
-
-        let output = self.new_tensor_op(
-            TensorShape{rows: a_rows, columns: b_columns, batch_size: output_batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: a_batch_size});
 
         self.add_recording_operation(Op::MatmulOneHotv{lhs: a, rhs: b, output});
 
@@ -2093,24 +2200,14 @@ impl OperationsRecorder
         let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
         let b_columns = 1;
 
-        let TensorShape{rows: added_rows, columns: added_columns, batch_size: added_batch_size} = self.tensor_shape(added.as_value());
+        let added_shape = self.tensor_shape(added.as_value());
 
-        debug_assert_eq!(a_rows, added_rows);
-        debug_assert_eq!(b_columns, added_columns);
+        debug_assert_eq!(a_rows, added_shape.rows);
+        debug_assert_eq!(b_columns, added_shape.columns);
 
-        let output_batch_size = a_batch_size.max(self.one_hot_batch_size(b)).max(added_batch_size);
+        debug_assert_eq!(a_batch_size, added_shape.batch_size);
 
-        let gradient_batch_size_of = |x: &DiffTensorPtr|
-        {
-            self.gradient_batch_size_of(x).unwrap_or(output_batch_size)
-        };
-
-        let gradient_batch_size = gradient_batch_size_of(&a).max(gradient_batch_size_of(&added));
-
-        let output = self.new_tensor_op(
-            TensorShape{rows: added_rows, columns: added_columns, batch_size: output_batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(added_shape);
 
         self.add_recording_operation(Op::MatmulOneHotvAdd{lhs: a, rhs: b, added, output});
 
@@ -2125,12 +2222,8 @@ impl OperationsRecorder
     pub fn sum_tensor(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
         let batch_size = self.tensor_shape(a.as_value()).batch_size;
-        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(batch_size);
 
-        let output = self.new_tensor_op(
-            TensorShape{rows: 1, columns: 1, batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
 
         self.add_recording_operation(Op::SumTensor{value: a, output});
 
@@ -2140,14 +2233,10 @@ impl OperationsRecorder
     pub fn dot(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
         debug_assert_eq!(shape, self.tensor_shape(b.as_value()));
 
-        let output = self.new_tensor_op(
-            TensorShape{rows: 1, columns: 1, batch_size: shape.batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size: shape.batch_size});
 
         self.add_recording_operation(Op::Dot{lhs: a, rhs: b, output});
 
@@ -2157,9 +2246,8 @@ impl OperationsRecorder
     pub fn pow(&mut self, a: DiffTensorPtr, power: i32) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&a).unwrap_or(shape.batch_size);
 
-        let output = self.new_tensor_op(shape, gradient_batch_size);
+        let output = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Pow{lhs: a, power, output});
 
@@ -2183,17 +2271,13 @@ impl OperationsRecorder
 
     pub fn softmax_cross_entropy(&mut self, values: DiffTensorPtr, targets: OneHotIndex) -> (DiffTensorPtr, DiffTensorPtr)
     {
-        let TensorShape{rows, columns, batch_size} = self.tensor_shape(values.as_value());
-        let gradient_batch_size = self.gradient_batch_size_of(&values).unwrap_or(batch_size);
+        let shape@TensorShape{rows: _, columns, batch_size} = self.tensor_shape(values.as_value());
 
         debug_assert_eq!(columns, 1);
 
-        let softmaxed_output = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
+        let softmaxed_output = self.memory.new_tensor(false, shape.into());
 
-        let output = self.new_tensor_op(
-            TensorShape{rows: 1, columns: 1, batch_size},
-            gradient_batch_size
-        );
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
 
         self.add_recording_operation(Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output});
 
@@ -2236,17 +2320,19 @@ impl OperationsRecorder
     {
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
 
-        #[cfg(debug_assertions)]
-        {
-            let key = StoreCheckKey::PreResolve(index_ptr);
-
-            if !self.memory.store_tensors_check.contains(&key)
-            {
-                self.memory.store_tensors_check.push(key);
-            }
-        }
-
         self.memory.tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
+    }
+
+    pub fn store_tensor_as_output(&mut self, index_ptr: TensorPtr)
+    {
+        self.store_tensor_until_end(index_ptr);
+
+        let key = StoreCheckKey::PreResolve(index_ptr);
+
+        if !self.memory.store_tensors_check.contains(&key)
+        {
+            self.memory.store_tensors_check.push(key);
+        }
     }
 
     pub fn store_value_until_end(&mut self, index: ValueIndex)
@@ -2345,7 +2431,7 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(|_, _| { unimplemented!() }, 0, count);
+        self.calculate_steps(|_, _| { unimplemented!() }, count);
     }
 
     pub fn calculate_feedforward_with_dependent(
@@ -2355,28 +2441,19 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(dependent_inputs, 0, count);
-    }
-
-    pub fn calculate_backpropagate(&mut self)
-    {
-        let total = self.raw_operations.len();
-        let count = self.feedforward_operations_count;
-
-        self.calculate_steps(|_, _| { unimplemented!() }, count, total);
+        self.calculate_steps(dependent_inputs, count);
     }
 
     pub fn calculate(&mut self)
     {
         let total = self.raw_operations.len();
 
-        self.calculate_steps(|_, _| { unimplemented!() }, 0, total);
+        self.calculate_steps(|_, _| { unimplemented!() }, total);
     }
 
     fn calculate_steps<DependentInputs: FnMut(usize, &OperationsRecorderMemory) -> OwnedInputType>(
         &mut self,
         mut dependent_inputs: DependentInputs,
-        start: usize,
         end: usize
     )
     {
@@ -2456,239 +2533,121 @@ impl OperationsRecorder
             });
         }
 
-        let mut current_index = start;
-        while current_index < end
+        let mut submit_buffers = Vec::new();
+
+        let raw_array_memory = &mut self.raw_array_memory;
+
+        fn get_raw_array(data: &[RawArray], raw_data_pointer: TensorRawDataPointer) -> &RawArray
         {
-            let gradient_op = &self.raw_operations[current_index];
-            macro_rules! copy_tensor
-            {
-                ($src:expr, $dst:expr) =>
-                {
-                    debug_assert_eq!($src.shape, $dst.shape);
+            &data[raw_data_pointer.raw_index.0]
+        }
 
-                    self.memory.tensors_raw_data.copy_within($src.range(), $dst.raw_index.0)
+        fn get_buffer(memory: &OperationsRecorderMemory, raw_data_pointer: TensorRawDataPointer) -> &wgpu::Buffer
+        {
+            &get_raw_array(&memory.tensors_raw_data, raw_data_pointer).buffer
+        }
+
+        let mut encoder = raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+
+        let mut compute_pass = None;
+
+        let mut input_buffer_index = 0;
+
+        let mut i = 0;
+        while i < end
+        {
+            fn create_bind_group_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_>
+            {
+                wgpu::BindGroupEntry{
+                    binding,
+                    resource: buffer.as_entire_binding()
                 }
             }
 
-            macro_rules! get_disjoint_mut
+            let bind_group_entry = |binding, raw_data_pointer: TensorRawDataPointer|
             {
-                ($(($target_type:ident, $name:ident, $tmp_name:ident)),+) =>
+                create_bind_group_entry(binding, &get_raw_array(&self.memory.tensors_raw_data, raw_data_pointer).buffer)
+            };
+
+            fn do_kernel_operation(
+                encoder: &mut wgpu::CommandEncoder,
+                compute_pass: &mut Option<wgpu::ComputePass>,
+                raw_array_memory: &RawArrayMemory,
+                kernel_layout: &KernelLayout,
+                kernel: OpKernel,
+                bind_group_entries: &[wgpu::BindGroupEntry]
+            )
+            {
+                if compute_pass.is_none()
                 {
-                    get_disjoint_mut_with!(self, $(($target_type, *$name, $tmp_name),)+)
+                    *compute_pass = Some(encoder.begin_compute_pass(&wgpu::ComputePassDescriptor{
+                        label: None,
+                        timestamp_writes: None
+                    }).forget_lifetime());
                 }
+
+                let compute_pass = compute_pass.as_mut().expect("must be inside a compute pass");
+
+                let bind_group = raw_array_memory.device.create_bind_group(&wgpu::BindGroupDescriptor{
+                    label: None,
+                    layout: &kernel_layout.bind_group_layout,
+                    entries: bind_group_entries
+                });
+
+                compute_pass.set_pipeline(&raw_array_memory.kernels[kernel as usize]);
+
+                compute_pass.set_bind_group(0, &bind_group, &[]);
             }
 
-            macro_rules! debug_calculate_common
+            const WORK_GROUP_SIZE: usize = 64;
+
+            fn single_work_group(compute_pass: &mut Option<wgpu::ComputePass>, size: usize)
             {
-                (($($t_name:ident),*$(,)?),($($v_name:ident),*$(,)?)) =>
-                {
-                    #[cfg(debug_assertions)]
-                    {
-                        #[allow(unused_assignments)]
-                        if _PRINT_CALCULATE_VALUES
-                        {
-                            #[allow(unused_variables, unused_mut)]
-                            let mut is_first = true;
-
-                            $(
-                                if !is_first { eprint!(", "); }
-
-                                let var_name = self.memory.format_tensor_raw_ptr(*$t_name);
-                                eprint!("{}: {} = {:?}", stringify!($t_name), var_name, &self.memory.tensors_raw_data[$t_name.range()]);
-
-                                is_first = false;
-                            )*
-
-                            $(
-                                if !is_first { eprint!(", "); }
-
-                                let var_name = self.memory.format_variable(*$v_name);
-                                eprint!("{}: {} = {:?}", stringify!($v_name), var_name, &self.memory.values[$v_name.0]);
-
-                                is_first = false;
-                            )*
-                        }
-                    }
-                }
+                compute_pass.as_mut().expect("must be inside compute pass")
+                    .dispatch_workgroups(size.div_ceil(WORK_GROUP_SIZE) as u32, 1, 1);
             }
 
-            macro_rules! debug_calculate_values
+            let try_end_compute_pass = |compute_pass: &mut Option<wgpu::ComputePass>|
             {
-                ($name:ident, ($($t_name:ident),*),($($v_name:ident),*)) =>
-                {
-                    let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
+                *compute_pass = None;
+            };
 
-                    #[cfg(debug_assertions)]
-                    {
-                        $(
-                            self.memory.verify_raw_ptr_use(*$t_name);
-                        )*
-
-                        if _PRINT_CALCULATE_VALUES
-                        {
-                            eprint!("{}", stringify!($name));
-
-                            if _count > 0
-                            {
-                                eprint!(" (BEFORE ");
-                            }
-                        }
-                    }
-
-                    {
-                        debug_calculate_common!(($($t_name,)*),($($v_name,)*));
-                    }
-
-                    #[cfg(debug_assertions)]
-                    {
-                        if _PRINT_CALCULATE_VALUES
-                        {
-                            if _count > 0
-                            {
-                                eprint!(")");
-                            }
-                        }
-                    }
-                }
-            }
-
-            macro_rules! debug_calculate_values_result
-            {
-                (($($t_name:ident),*),($($v_name:ident),*)) =>
-                {
-                    let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
-
-                    #[cfg(debug_assertions)]
-                    {
-                        if _PRINT_CALCULATE_VALUES
-                        {
-                            if _count > 0
-                            {
-                                eprint!(" (AFTER ");
-                            }
-                        }
-                    }
-
-                    {
-                        debug_calculate_common!(($($t_name,)*),($($v_name,)*));
-                    }
-
-                    #[cfg(debug_assertions)]
-                    {
-                        if _PRINT_CALCULATE_VALUES
-                        {
-                            if _count > 0
-                            {
-                                eprint!(")");
-                            }
-
-                            eprintln!();
-                        }
-
-                        $(
-                            self.memory.verify_raw_ptr_assign(*$t_name);
-                        )*
-                    }
-                }
-            }
-
-            macro_rules! debug_print_op
-            {
-                ($x:expr) =>
-                {
-                    #[cfg(debug_assertions)]
-                    {
-                        if _PRINT_CALCULATE_VALUES
-                        {
-                            eprintln!("{:?}", $x);
-                        }
-                    }
-                }
-            }
-
-            //let before_instant = std::time::Instant::now();
-            match gradient_op
+            match &self.raw_operations[i]
             {
                 GradientOp::None
                 | GradientOp::FeedforwardEndMarker => unreachable!(),
+                GradientOp::CopyScalar{src, dst} =>
+                {
+                    self.memory.values[dst.0] = self.memory.values[src.0];
+                },
+                GradientOp::Copy{src, dst} =>
+                {
+                    debug_assert_eq!(src.shape, dst.shape);
+
+                    try_end_compute_pass(&mut compute_pass);
+
+                    let src_buffer = get_buffer(&self.memory, *src);
+                    encoder.copy_buffer_to_buffer(
+                        src_buffer,
+                        0,
+                        get_buffer(&self.memory, *dst),
+                        0,
+                        src_buffer.size()
+                    );
+                },
                 GradientOp::ZeroValue(dst) =>
                 {
-                    debug_calculate_values!(ZeroValue, (),());
-
                     self.memory.values[dst.0] = 0.0;
-
-                    debug_calculate_values_result!((),(dst));
                 },
                 GradientOp::ZeroTensor(dst) =>
                 {
-                    debug_calculate_values!(ZeroTensor, (),());
+                    try_end_compute_pass(&mut compute_pass);
 
-                    self.memory.tensors_raw_data[dst.range()].fill(0.0);
-
-                    debug_calculate_values_result!((dst),());
-                },
-                GradientOp::PushStackValue{loop_index, value} =>
-                {
-                    debug_calculate_values!(PushStackValue, (),(value));
-
-                    let loop_stack_index = self.loops[loop_index.0].stack_values;
-
-                    #[allow(unused_mut)]
-                    let mut stack_value: LoopStackValue<_, _> = self.memory.values[value.0].into();
-                    stack_value.set_source(*value);
-
-                    self.loops_memory.loops_stack[loop_stack_index.0].values_stack.push(stack_value);
-
-                    debug_calculate_values_result!((),());
-                },
-                GradientOp::PushStackTensor{loop_index, tensor} =>
-                {
-                    debug_calculate_values!(PushStackTensor, (tensor),());
-
-                    let loop_stack_index = self.loops[loop_index.0].stack_values;
-
-                    let tensor_ref = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *tensor);
-
-                    #[allow(unused_mut)]
-                    let mut stack_value: LoopStackValue<_, _> = tensor_ref.clone_owned().into();
-                    stack_value.set_source(*tensor);
-
-                    self.loops_memory.loops_stack[loop_stack_index.0].tensors_stack.push(stack_value);
-
-                    debug_calculate_values_result!((),());
-                },
-                GradientOp::PopStackValue{loop_index, output} =>
-                {
-                    debug_calculate_values!(PopStackValue, (),());
-
-                    let loop_stack_index = self.loops[loop_index.0].stack_values;
-
-                    let stack_value = self.loops_memory.loops_stack[loop_stack_index.0].values_stack.pop()
-                        .expect("stack must not be empty");
-
-                    self.memory.values[output.0] = stack_value.get_stack_value_for(self, *loop_index, *output);
-
-                    debug_calculate_values_result!((),(output));
-                },
-                GradientOp::PopStackTensor{loop_index, output} =>
-                {
-                    debug_calculate_values!(PopStackTensor, (),());
-
-                    let loop_stack_index = self.loops[loop_index.0].stack_values;
-
-                    let stack_value = self.loops_memory.loops_stack[loop_stack_index.0].tensors_stack.pop()
-                        .expect("stack must not be empty");
-
-                    let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
-
-                    self.memory.set_tensor_raw(output.to_linear_pointer(), &tensor);
-
-                    debug_calculate_values_result!((output),());
+                    let dst_buffer = get_buffer(&self.memory, *dst);
+                    encoder.clear_buffer(dst_buffer, 0, None);
                 },
                 GradientOp::SetInputs(loop_index) =>
                 {
-                    debug_print_op!(gradient_op);
-
                     let loop_info = &self.loops[loop_index.0];
 
                     let inputs_count = loop_info.inputs.len();
@@ -2698,217 +2657,71 @@ impl OperationsRecorder
                         if let Some(input_ptr) = loop_info.inputs[input_index]
                         {
                             let values = &mut self.loops_memory.loops_values[loop_info.input_values.0].input_values;
-                            let value = match values
+                            match values
                             {
-                                LoopInputs::Values(values) => values[loop_info.current_index * inputs_count + input_index].clone(),
-                                LoopInputs::Dependent(i) => (dependent_inputs)(*i, &self.memory)
-                            };
+                                LoopInputs::Values(values) =>
+                                {
+                                    let value = values[loop_info.current_index * inputs_count + input_index].clone();
 
-                            self.memory.set_input(input_ptr, value);
+                                    match input_ptr
+                                    {
+                                        InputType::Normal(input) =>
+                                        {
+                                            try_end_compute_pass(&mut compute_pass);
+
+                                            let value = value.into_normal();
+
+                                            todo!("value itself should be the buffer so it gets shared between gradient and normal loop");
+                                            if raw_array_memory.input_buffers.len() == input_buffer_index
+                                            {
+                                                let new_input_buffer = raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                                                    label: None,
+                                                    size: value.shape().size() as u64,
+                                                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                                                    mapped_at_creation: false
+                                                });
+
+                                                raw_array_memory.input_buffers.push(new_input_buffer);
+                                            }
+
+                                            let src_buffer = &raw_array_memory.input_buffers[input_buffer_index];
+                                            input_buffer_index += 1;
+
+                                            raw_array_memory.queue.write_buffer(src_buffer, 0, value.as_ref().bytes_slice());
+
+                                            let raw_index = self.memory.tensors[input.index.0];
+                                            let dst_buffer = &self.memory.tensors_raw_data[raw_index.raw_index.0].buffer;
+
+                                            encoder.copy_buffer_to_buffer(
+                                                src_buffer,
+                                                0,
+                                                dst_buffer,
+                                                0,
+                                                dst_buffer.size()
+                                            );
+                                        },
+                                        InputType::OneHot(input) => self.memory.set_one_hot(input, value.into_one_hot())
+                                    }
+                                },
+                                LoopInputs::Dependent(i) =>
+                                {
+                                    todo!()
+                                    // (dependent_inputs)(*i, &self.memory)
+                                }
+                            }
                         }
                     });
                 },
                 GradientOp::SetOtherSelector(index) =>
                 {
-                    debug_print_op!(gradient_op);
-
                     self.memory.phi_other_selectors_values[index.0].is_set = true;
-                },
-                GradientOp::GetOtherSelectorValue{info: index, first, other, output} =>
-                {
-                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
-
-                    debug_assert_ne!(first, output);
-                    debug_assert_ne!(other, output);
-
-                    let src = if this_selector.is_set
-                    {
-                        debug_calculate_values!(GetOtherSelectorValue, (),(other));
-
-                        other
-                    } else
-                    {
-                        debug_calculate_values!(GetOtherSelectorValue, (),(first));
-
-                        first
-                    };
-
-                    self.memory.values[output.0] = self.memory.values[src.0];
-
-                    debug_calculate_values_result!((),(output));
-                },
-                GradientOp::GetOtherSelectorTensor{info: index, first, other, output} =>
-                {
-                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
-
-                    debug_assert_ne!(first, output);
-                    debug_assert_ne!(other, output);
-
-                    let src = if this_selector.is_set
-                    {
-                        debug_calculate_values!(GetOtherSelectorTensor, (other),());
-
-                        other
-                    } else
-                    {
-                        debug_calculate_values!(GetOtherSelectorTensor, (first),());
-
-                        first
-                    };
-
-                    copy_tensor!(src, output);
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::OtherSelectorValueGradient{index, first, other, src} =>
-                {
-                    debug_calculate_values!(OtherSelectorValueGradient, (),(src));
-
-                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
-
-                    let dst = if this_selector.is_set
-                    {
-                        first
-                    } else
-                    {
-                        other
-                    };
-
-                    self.memory.values[dst.0] = self.memory.values[src.0];
-
-                    if this_selector.is_set
-                    {
-                        debug_calculate_values_result!((),(first));
-                    } else
-                    {
-                        debug_calculate_values_result!((),(other));
-                    }
-                },
-                GradientOp::OtherSelectorTensorGradient{index, first, other, src} =>
-                {
-                    debug_calculate_values!(OtherSelectorTensorGradient, (src),());
-
-                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
-
-                    let dst = if this_selector.is_set
-                    {
-                        first
-                    } else
-                    {
-                        other
-                    };
-
-                    copy_tensor!(src, dst);
-
-                    if this_selector.is_set
-                    {
-                        debug_calculate_values_result!((first),());
-                    } else
-                    {
-                        debug_calculate_values_result!((other),());
-                    }
-                },
-                GradientOp::GradientSelectAddValue{index, first, other, src, added} =>
-                {
-                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
-
-                    let src_value = self.memory.values[src.0];
-
-                    let is_set = this_selector.is_set;
-
-                    if is_set
-                    {
-                        debug_calculate_values!(GradientSelectAddValue, (),(src, added));
-
-                        self.memory.values[other.0] = src_value + self.memory.values[added.0];
-                    } else
-                    {
-                        debug_calculate_values!(GradientSelectAddValue, (),(src));
-
-                        self.memory.values[first.0] = src_value;
-                    }
-
-                    if is_set
-                    {
-                        debug_calculate_values_result!((),(other));
-                    } else
-                    {
-                        debug_calculate_values_result!((),(first));
-                    }
-                },
-                GradientOp::GradientSelectAddTensor{index, first, other, src, added} =>
-                {
-                    let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
-
-                    let is_set = this_selector.is_set;
-
-                    if is_set
-                    {
-                        debug_calculate_values!(GradientSelectAddTensor, (src, added),());
-
-                        let (other, src, added) = get_disjoint_mut!(
-                            (LayerTypeMut, other, x0),
-                            (LayerTypeRef, src, x1),
-                            (LayerTypeRef, added, x2)
-                        );
-
-                        other.add_to(src, added);
-                    } else
-                    {
-                        debug_calculate_values!(GradientSelectAddTensor, (src),());
-
-                        copy_tensor!(src, first);
-                    }
-
-                    if is_set
-                    {
-                        debug_calculate_values_result!((other),());
-                    } else
-                    {
-                        debug_calculate_values_result!((first),());
-                    }
-                },
-                GradientOp::IfSetTensor{index, dst, src} =>
-                {
-                    if self.memory.phi_other_selectors_values[index.0].is_set
-                    {
-                        debug_calculate_values!(IfSetTensor, (src),());
-
-                        copy_tensor!(src, dst);
-
-                        debug_calculate_values_result!((dst),());
-                    }
-                },
-                GradientOp::IfNotSetTensor{index, dst, src} =>
-                {
-                    if !self.memory.phi_other_selectors_values[index.0].is_set
-                    {
-                        debug_calculate_values!(IfNotSetTensor, (src),());
-
-                        copy_tensor!(src, dst);
-
-                        debug_calculate_values_result!((dst),());
-                    }
-                },
-                GradientOp::SetOtherSelectorGradient{loop_index, selector_index} =>
-                {
-                    debug_print_op!(gradient_op);
-
-                    if self.loops[loop_index.0].times <= 1
-                    {
-                        debug_assert!(!self.memory.phi_other_selectors_values[selector_index.0].is_set);
-
-                        self.memory.phi_other_selectors_values[selector_index.0].is_set = true;
-                    }
                 },
                 GradientOp::Jump(RawJumpInfo{loop_index, operation_index}) =>
                 {
-                    debug_print_op!(gradient_op);
-
                     let loop_info = &mut self.loops[loop_index.0];
                     if loop_info.times > 1
                     {
-                        current_index = operation_index.0;
+                        i = operation_index.0;
 
                         loop_info.times -= 1;
 
@@ -2923,544 +2736,330 @@ impl OperationsRecorder
                         continue;
                     }
                 },
-                GradientOp::JumpIfLast(RawJumpInfo{loop_index, operation_index}) =>
+                GradientOp::MulComponentwise{lhs, rhs, output} =>
                 {
-                    debug_print_op!(gradient_op);
+                    debug_assert_eq!(lhs.shape, rhs.shape);
+                    debug_assert_eq!(rhs.shape, output.shape);
 
-                    if self.loops[loop_index.0].times == 1
-                    {
-                        current_index = operation_index.0;
-                        continue;
-                    }
-                },
-                GradientOp::Copy{src, dst} =>
-                {
-                    debug_calculate_values!(Copy, (src),());
-                    copy_tensor!(src, dst);
-                    debug_calculate_values_result!((dst),());
-                },
-                GradientOp::CopyScalar{src, dst} =>
-                {
-                    debug_calculate_values!(CopyScalar, (),(src));
-                    self.memory.values[dst.0] = self.memory.values[src.0];
-                    debug_calculate_values_result!((),(dst));
-                },
-                GradientOp::AddScalars{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(AddScalars, (),(lhs, rhs));
-                    self.memory.values[output.0] = self.memory.values[lhs.0] + self.memory.values[rhs.0];
-                    debug_calculate_values_result!((),(output));
-                },
-                GradientOp::AddScalar{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(AddScalar, (lhs),(rhs));
-                    copy_tensor!(lhs, output);
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::MulComponentwise,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).add_scalar_inplace(self.memory.values[rhs.0]);
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::Add{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(Add, (lhs, rhs),());
-
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2)
-                        );
-
-                        output.add_to(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::Sub{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(Sub, (lhs, rhs),());
-
-                    {
-                        let (mut output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2)
-                        );
-
-                        output.sub_to(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::SubFromScalar{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(SubFromScalar, (rhs),(lhs));
-
-                    {
-                        let (output, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, rhs, x1)
-                        );
-
-                        output.sub_from_scalar(self.memory.values[lhs.0], rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
+                    single_work_group(&mut compute_pass, lhs.size());
                 },
                 GradientOp::MulScalar{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulScalar, (lhs),(rhs));
-                    copy_tensor!(lhs, output);
+                    debug_assert_eq!(lhs.shape, output.shape);
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).mul_scalar_inplace(self.memory.values[rhs.0]);
-                    debug_calculate_values_result!((output),());
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.t_s_output,
+                        OpKernel::MulScalar,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
+
+                    single_work_group(&mut compute_pass, lhs.size());
                 },
-                GradientOp::MulScalars{lhs, rhs, output} =>
+                GradientOp::Add{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulScalars, (),(lhs, rhs));
-                    self.memory.values[output.0] = self.memory.values[lhs.0] * self.memory.values[rhs.0];
-                    debug_calculate_values_result!((),(output));
+                    debug_assert_eq!(lhs.shape, rhs.shape);
+                    debug_assert_eq!(rhs.shape, output.shape);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::Add,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, lhs.size());
                 },
-                GradientOp::MulComponentwise{lhs, rhs, output} =>
+                GradientOp::Sub{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulComponentwise, (lhs, rhs),());
+                    debug_assert_eq!(lhs.shape, rhs.shape);
+                    debug_assert_eq!(rhs.shape, output.shape);
 
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2)
-                        );
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::Sub,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
 
-                        output.component_mul_into(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
+                    single_work_group(&mut compute_pass, lhs.size());
                 },
-                GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} =>
+                GradientOp::SubFromScalar{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulComponentwise, (lhs, rhs, added),());
+                    debug_assert_eq!(rhs.shape, output.shape);
 
-                    {
-                        let (output, lhs, rhs, added) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2),
-                            (LayerTypeRef, added, x3)
-                        );
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.t_s_output,
+                        OpKernel::SubFromScalar,
+                        &[
+                            bind_group_entry(0, *rhs),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
 
-                        output.component_mul_add_into(lhs, rhs, added);
-                    }
+                    compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[lhs.0].to_ne_bytes());
 
-                    debug_calculate_values_result!((output),());
+                    single_work_group(&mut compute_pass, rhs.size());
                 },
                 GradientOp::SumTensor{value, output} =>
                 {
-                    debug_calculate_values!(SumTensor, (value),());
+                    debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
+                    debug_assert!(output.shape.is_batched_scalar());
 
-                    {
-                        let (output, value) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, value, x1)
-                        );
+                    let scratch_buffer = &raw_array_memory.scratch_buffers[&value.shape.size()];
 
-                        output.sum_tensor_into(value);
-                    }
+                    let input_buffer = &get_raw_array(&self.memory.tensors_raw_data, *value).buffer;
 
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::Dot{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(Dot, (lhs, rhs),());
+                    try_end_compute_pass(&mut compute_pass);
 
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeRef, rhs, x2)
-                        );
+                    encoder.copy_buffer_to_buffer(input_buffer, 0, scratch_buffer, 0, input_buffer.size());
 
-                        output.dot_into(lhs, rhs);
-                    }
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.reduction,
+                        OpKernel::SumTensor,
+                        &[
+                            create_bind_group_entry(0, scratch_buffer),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
 
-                    debug_calculate_values_result!((output),());
+                    compute_pass.as_mut()
+                        .expect("must be inside compute pass")
+                        .dispatch_workgroups(value.shape.batch_size as u32, 1, 1);
                 },
                 GradientOp::Fill{value, output} =>
                 {
-                    debug_calculate_values!(Fill, (value),());
+                    debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
+                    debug_assert!(value.shape.is_batched_scalar());
 
-                    {
-                        let (output, value) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, value, x1)
-                        );
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.src_dst,
+                        OpKernel::Fill,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
 
-                        output.fill_into(value);
-                    }
-
-                    debug_calculate_values_result!((output),());
+                    single_work_group(&mut compute_pass, output.size());
                 },
                 GradientOp::Pow{lhs, power, output} =>
                 {
-                    debug_calculate_values!(Pow, (lhs),());
-                    copy_tensor!(lhs, output);
+                    debug_assert_eq!(lhs.shape, output.shape);
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).pow_inplace(*power);
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::Sigmoid{value, output} =>
-                {
-                    debug_calculate_values!(Sigmoid, (value),());
-                    copy_tensor!(value, output);
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.t_s_output,
+                        OpKernel::Pow,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).sigmoid_inplace();
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::SigmoidDiff{value, gradient, output} =>
-                {
-                    debug_calculate_values!(SigmoidDiff, (value, gradient),());
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(*power as u32).to_ne_bytes());
 
-                    {
-                        let (output, value, gradient) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, value, x1),
-                            (LayerTypeRef, gradient, x2)
-                        );
-
-                        output.sigmoid_gradient_inplace(value, gradient);
-                    }
-
-                    debug_calculate_values_result!((output),());
+                    single_work_group(&mut compute_pass, lhs.size());
                 },
                 GradientOp::Tanh{value, output} =>
                 {
-                    debug_calculate_values!(Tanh, (value),());
-                    copy_tensor!(value, output);
+                    debug_assert_eq!(value.shape, output.shape);
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).tanh_inplace();
-                    debug_calculate_values_result!((output),());
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.src_dst,
+                        OpKernel::Tanh,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, value.size());
                 },
                 GradientOp::TanhDiff{value, gradient, output} =>
                 {
-                    debug_calculate_values!(TanhDiff, (value, gradient),());
+                    debug_assert_eq!(value.shape, output.shape);
+                    debug_assert_eq!(gradient.shape, output.shape);
 
-                    {
-                        let (output, value, gradient) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, value, x1),
-                            (LayerTypeRef, gradient, x2)
-                        );
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::TanhDiff,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *gradient),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
 
-                        output.tanh_gradient_inplace(value, gradient);
-                    }
+                    single_work_group(&mut compute_pass, value.size());
+                },
+                GradientOp::Sigmoid{value, output} =>
+                {
+                    debug_assert_eq!(value.shape, output.shape);
 
-                    debug_calculate_values_result!((output),());
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.src_dst,
+                        OpKernel::Sigmoid,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, value.size());
+                },
+                GradientOp::SigmoidDiff{value, gradient, output} =>
+                {
+                    debug_assert_eq!(value.shape, output.shape);
+                    debug_assert_eq!(gradient.shape, output.shape);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::SigmoidDiff,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *gradient),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, value.size());
                 },
                 GradientOp::LeakyRelu{value, output} =>
                 {
-                    debug_calculate_values!(LeakyRelu, (value),());
-                    copy_tensor!(value, output);
+                    debug_assert_eq!(value.shape, output.shape);
 
-                    LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output).leaky_relu_inplace();
-                    debug_calculate_values_result!((output),());
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.src_dst,
+                        OpKernel::LeakyRelu,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, value.size());
                 },
                 GradientOp::LeakyReluDiff{value, gradient, output} =>
                 {
-                    debug_calculate_values!(LeakyReluDiff, (value, gradient),());
+                    debug_assert_eq!(value.shape, output.shape);
+                    debug_assert_eq!(gradient.shape, output.shape);
 
-                    {
-                        let (output, value, gradient) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, value, x1),
-                            (LayerTypeRef, gradient, x2)
-                        );
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &raw_array_memory,
+                        &raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::LeakyReluDiff,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *gradient),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
 
-                        output.leaky_relu_gradient_inplace(value, gradient);
-                    }
-
-                    debug_calculate_values_result!((output),());
+                    single_work_group(&mut compute_pass, value.size());
                 },
-                GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
-                {
-                    debug_calculate_values!(SoftmaxCrossEntropy, (values),());
-
-                    {
-                        copy_tensor!(values, softmaxed_output);
-
-                        let (output, softmaxed_output) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeMut, softmaxed_output, x1)
-                        );
-
-                        output.softmax_cross_entropy_into(softmaxed_output, &self.memory.one_hot_layers[targets.0]);
-                    }
-
-                    debug_calculate_values_result!((softmaxed_output, output),());
-                },
-                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
-                {
-                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),());
-
-                    {
-                        let mut values = LayerTypeRef::from_data_with_start(&self.memory.tensors_raw_data, *values).clone_owned();
-                        let output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *output);
-
-                        output.softmax_cross_entropy_into(values.as_mut(), &self.memory.one_hot_layers[targets.0]);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output} =>
-                {
-                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),());
-
-                    {
-                        copy_tensor!(values, softmaxed_output);
-
-                        let mut output = {
-                            let batch_size = softmaxed_output.shape.batch_size;
-
-                            LayerType::from_raw(vec![0.0; batch_size].into_boxed_slice(), TensorShape{rows: 1, columns: 1, batch_size})
-                        };
-
-                        let softmaxed_output = LayerTypeMut::from_data_with_start(&mut self.memory.tensors_raw_data, *softmaxed_output);
-
-                        output.as_mut().softmax_cross_entropy_into(softmaxed_output, &self.memory.one_hot_layers[targets.0]);
-                    }
-
-                    debug_calculate_values_result!((softmaxed_output),());
-                },
-                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
-                {
-                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values, gradient),());
-
-                    {
-                        {
-                            let targets = &self.memory.one_hot_layers[targets.0];
-
-                            debug_assert_eq!(softmaxed_values.shape.batch_size, targets.batch_size());
-
-                            debug_assert_eq!(
-                                (softmaxed_values.shape.rows, softmaxed_values.shape.columns), (targets.size, 1),
-                                "softmaxed: {softmaxed_values:?}, targets: {targets:?}"
-                            );
-                        }
-
-                        let (mut output, softmaxed_values, gradient) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeRef, softmaxed_values, x1),
-                            (LayerTypeRef, gradient, x2)
-                        );
-
-                        output.sub_to(softmaxed_values, LayerTypeRef::from(&self.memory.one_hot_layers[targets.0].clone().into_layer()));
-
-                        output.mul_batched_scalar_inplace(gradient);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::Matmulv{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(Matmulv, (lhs, rhs),());
-
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeVectorMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeVectorRef, rhs, x2)
-                        );
-
-                        output.matmulv_into(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
-                {
-                    debug_calculate_values!(MatmulvAdd, (lhs, rhs, added),());
-
-                    {
-                        let (output, lhs, rhs, added) = get_disjoint_mut!(
-                            (LayerTypeVectorMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeVectorRef, rhs, x2),
-                            (LayerTypeVectorRef, added, x3)
-                        );
-
-                        output.matmulv_add_into(lhs, rhs, added);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::MatmulOneHotv{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(MatmulOneHotv, (lhs),());
-
-                    {
-                        let (output, lhs) = get_disjoint_mut!(
-                            (LayerTypeVectorMut, output, x0),
-                            (LayerTypeRef, lhs, x1)
-                        );
-
-                        output.matmul_onehotv_into(lhs, &self.memory.one_hot_layers[rhs.0]);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
-                {
-                    debug_calculate_values!(MatmulOneHotvAdd, (lhs, added),());
-
-                    {
-                        let (output, lhs, added) = get_disjoint_mut!(
-                            (LayerTypeVectorMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeVectorRef, added, x2)
-                        );
-
-                        output.matmul_onehotv_add_into(lhs, &self.memory.one_hot_layers[rhs.0], added);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::MatmulvTransposed{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
-
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeVectorMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeVectorRef, rhs, x2)
-                        );
-
-                        output.matmulv_transposed_into(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
-                {
-                    debug_calculate_values!(MatmulvTransposedAdd, (lhs, rhs, added),());
-
-                    debug_assert_eq!(added, output);
-
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeVectorMut, output, x0),
-                            (LayerTypeRef, lhs, x1),
-                            (LayerTypeVectorRef, rhs, x2)
-                        );
-
-                        output.matmulv_transposed_add_inplace(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::OuterProduct{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(OuterProduct, (lhs, rhs),());
-
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeVectorRef, lhs, x1),
-                            (LayerTypeVectorRef, rhs, x2)
-                        );
-
-                        output.outer_product_into(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
-                {
-                    debug_calculate_values!(OuterProductAdd, (lhs, rhs, added),());
-
-                    debug_assert_eq!(added, output);
-
-                    {
-                        let (output, lhs, rhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeVectorRef, lhs, x1),
-                            (LayerTypeVectorRef, rhs, x2)
-                        );
-
-                        output.outer_product_add_inplace(lhs, rhs);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::OuterProductOneHot{lhs, rhs, output} =>
-                {
-                    debug_calculate_values!(OuterProductOneHot, (lhs),());
-
-                    {
-                        let (output, lhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeVectorRef, lhs, x1)
-                        );
-
-                        output.outer_product_one_hot_into(lhs, &self.memory.one_hot_layers[rhs.0]);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
-                {
-                    debug_calculate_values!(OuterProductOneHotAdd, (lhs, added),());
-
-                    debug_assert_eq!(added, output);
-
-                    {
-                        let (output, lhs) = get_disjoint_mut!(
-                            (LayerTypeMut, output, x0),
-                            (LayerTypeVectorRef, lhs, x1)
-                        );
-
-                        output.outer_product_one_hot_add_inplace(lhs, &self.memory.one_hot_layers[rhs.0]);
-                    }
-
-                    debug_calculate_values_result!((output),());
-                }
+                x => unimplemented!("{x:?}")
             }
 
-            //eprintln!("{}, elapsed {:.3} us",format!("{gradient_op:?}").split(' ').next().unwrap(),before_instant.elapsed().as_nanos()as f64/1000.0);
-
-            current_index += 1;
+            i += 1;
         }
 
-        #[cfg(debug_assertions)]
+        drop(compute_pass);
+
+        self.memory.tensors_raw_data.iter().filter(|x| x.output_buffer.is_some()).for_each(|raw_array|
         {
-            let set_tensor_memory = self.memory.set_tensor_memory.borrow();
-
-            let unread_memory: Vec<_> = set_tensor_memory.unread_memory.iter().copied().filter(|x: &TensorIndex|
-            {
-                if self.memory.store_tensors_check.contains(&StoreCheckKey::Resolved(*x))
-                {
-                    return false;
-                }
-
-                if set_tensor_memory.allow_unread.contains(&StoreCheckKey::Resolved(*x))
-                {
-                    return false;
-                }
-
-                let is_input = self.loops.iter().any(|loop_info|
-                {
-                    loop_info.inputs.iter().cloned().filter_map(convert::identity).any(|input|
-                    {
-                        input.tensor_index() == Some(*x)
-                    })
-                });
-
-                !is_input
-            }).collect();
-
-            debug_assert!(
-                unread_memory.is_empty(),
-                "{:?} were calculated but never read",
-                unread_memory.into_iter().map(|x| DebugStringRaw(self.memory.format_tensor_index(x))).collect::<Vec<_>>()
+            encoder.copy_buffer_to_buffer(
+                &raw_array.buffer,
+                0,
+                raw_array.output_buffer.as_ref().expect("must exist"),
+                0,
+                raw_array.buffer.size()
             );
+        });
+
+        let command_buffer = encoder.finish();
+        submit_buffers.push(command_buffer);
+
+        self.raw_array_memory.queue.submit(submit_buffers);
+
+        if DUMP_MEMORY
+        {
+            self.memory.tensors.iter().enumerate().for_each(|(tensor_index, tensor_raw_ptr)|
+            {
+                let tensor_index = TensorIndex(tensor_index);
+
+                let shape = if let Some(tensor_ptr) = self.memory.memory_to_ptr(tensor_index)
+                {
+                    self.memory.tensor_shape(tensor_ptr)
+                } else
+                {
+                    TensorShape{rows: tensor_raw_ptr.size, columns: 1, batch_size: 1}
+                };
+
+                let tensor = self.get_tensor_blocking_unchecked(ShapedTensorIndex{index: tensor_index, shape});
+
+                eprintln!("{}: {tensor:?}", self.memory.format_tensor_index(tensor_index));
+            });
         }
     }
 
@@ -3487,6 +3086,10 @@ impl OperationsRecorder
                 Op::Copy{src, dst} =>
                 {
                     GradientOp::Copy{src: src.as_value(), dst: dst.as_value()}
+                },
+                Op::Fill{src, dst} =>
+                {
+                    GradientOp::Fill{value: src.as_value(), output: dst.as_value()}
                 },
                 Op::AddScalar{lhs, rhs, output} =>
                 {
@@ -4110,11 +3713,6 @@ impl OperationsRecorder
     pub fn is_ready(&self) -> bool
     {
         self.state == RecorderState::Ready
-    }
-
-    pub fn tensors_raw_data(&self) -> &[f32]
-    {
-        &self.memory.tensors_raw_data
     }
 
     fn calculate_live_ranges_once(&mut self) -> bool
@@ -4742,19 +4340,19 @@ impl OperationsRecorder
             debug_assert_eq!(self.memory.tensors[this_index.0], LinearRawDataPointer::undefined());
             self.memory.tensors[this_index.0] = this_tensor_raw_ptr;
 
-            match this_tensor
+            let raw_tensor = match this_tensor
             {
                 TensorMemoryValue::Value(x) =>
                 {
-                    #[cfg(debug_assertions)]
-                    {
-                        self.memory.verify_raw_ptr_assign(this_tensor_raw_ptr.with_shape(shape));
-                    }
-
-                    self.memory.tensors_raw_data.extend(x.as_slice())
+                    RawArray::from_slice(&self.raw_array_memory, x.as_slice(), shape)
                 },
-                TensorMemoryValue::Size{..} => self.memory.tensors_raw_data.resize(self.memory.tensors_raw_data.len() + size, 0.0)
-            }
+                TensorMemoryValue::Size{..} =>
+                {
+                    RawArray::uninit(&self.raw_array_memory, size)
+                }
+            };
+
+            self.memory.tensors_raw_data.push(raw_tensor)
         };
 
         usage_ordered.into_iter().rev().for_each(|(index, _count)| create_tensor(index));
@@ -4798,6 +4396,25 @@ impl OperationsRecorder
             next_must_exist = false;
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
+
+            match gradient_op
+            {
+                GradientOp::SumTensor{value, ..} =>
+                {
+                    let size = self.memory.tensor_shape(value).size();
+
+                    let scratch_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                        label: None,
+                        size: (size * FLOAT_BYTES) as u64,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false
+                    });
+
+                    self.raw_array_memory.scratch_buffers.insert(size, scratch_buffer);
+                },
+                _ => ()
+            }
+
             let new_op = match gradient_op
             {
                 GradientOp::None => None,
@@ -5089,9 +4706,154 @@ impl OperationsRecorder
         }).unwrap());
     }
 
+    fn initialize_output_buffers(&mut self)
+    {
+        let create_output_buffer = |store_tensor: TensorIndex|
+        {
+            let data_pointer = self.memory.tensors[store_tensor.0];
+
+            let this_raw_array = &mut self.memory.tensors_raw_data[data_pointer.raw_index.0];
+
+            let output_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                label: None,
+                size: this_raw_array.buffer.size(),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false
+            });
+
+            this_raw_array.output_buffer = Some(output_buffer);
+        };
+
+        if DUMP_MEMORY
+        {
+            (0..self.memory.tensors.len()).map(TensorIndex).for_each(create_output_buffer);
+
+            return;
+        }
+
+        self.memory.store_tensors_check.iter().map(|store_tensor|
+        {
+            let StoreCheckKey::Resolved(store_tensor) = store_tensor else {
+                panic!("{store_tensor:?} must be resolved");
+            };
+
+            *store_tensor
+        }).for_each(create_output_buffer);
+    }
+
+    fn initialize_operations(&mut self)
+    {
+        self.initialize_output_buffers();
+    }
+
+    fn resolve_store_tensors(&mut self)
+    {
+        let variable_names = self.memory.variable_names.clone();
+
+        let resolve_check_tensors = |tensors_list: &mut Vec<StoreCheckKey<TensorPtr, TensorIndex>>, must_resolve: bool|
+        {
+            struct ResolveError(TensorPtr);
+
+            let mut new_store_check = Vec::new();
+
+            let resolve_tensor_key = |
+                new_store_check: &[_],
+                k: StoreCheckKey<TensorPtr, TensorIndex>
+            | -> Result<Option<StoreCheckKey<TensorPtr, TensorIndex>>, ResolveError>
+            {
+                let this_index: TensorIndex = match k
+                {
+                    StoreCheckKey::PreResolve(ptr) =>
+                    {
+                        self.memory.tensors_memory[ptr.0].memory.ok_or(ResolveError(ptr))?
+                    },
+                    StoreCheckKey::Resolved(_) => unreachable!()
+                };
+
+                let new_k = StoreCheckKey::Resolved(this_index);
+
+                // new_k has overlap with other ptrs so this check will give some false negatives
+                // disable graph coloring for an exact check
+
+                Ok((!new_store_check.contains(&new_k)).then_some(new_k))
+            };
+
+            tensors_list.iter().for_each(|x|
+            {
+                let new_k = match resolve_tensor_key(&new_store_check, x.clone())
+                {
+                    Ok(x) => x,
+                    Err(ResolveError(ptr)) =>
+                    {
+                        if must_resolve
+                        {
+                            panic!("{} must be resolved", variable_names.format_variable(ptr));
+                        } else
+                        {
+                            return;
+                        }
+                    }
+                };
+
+                new_store_check.extend(new_k);
+            });
+
+            *tensors_list = new_store_check;
+        };
+
+        resolve_check_tensors(&mut self.memory.store_tensors_check, true);
+
+        #[cfg(debug_assertions)]
+        {
+            {
+                let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
+
+                resolve_check_tensors(&mut set_tensor_memory.allow_unread, false);
+                resolve_check_tensors(&mut set_tensor_memory.allow_reassign, true);
+            }
+
+            self.memory.store_values_check = self.memory.store_values_check.iter().map(|k|
+            {
+                match *k
+                {
+                    StoreCheckKey::PreResolve(x) => StoreCheckKey::Resolved(x),
+                    StoreCheckKey::Resolved(_) => unreachable!()
+                }
+            }).collect();
+
+            if self.raw_operations.len() > 0
+            {
+                self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
+                {
+                    let tensor_ptr = TensorPtr(tensor_ptr_index);
+
+                    if live_range.start == Some(-1) && live_range.end != Some(i32::MAX)
+                    {
+                        debug_assert!(
+                            self.memory.allow_discard.contains(&tensor_ptr),
+                            "{} will be discarded after running calculate once, either store the tensor or call allow_discard on it",
+                            self.memory.format_variable(tensor_ptr)
+                        );
+                    }
+                });
+            }
+
+            {
+                let resolved_set_ptrs: Vec<_> = {
+                    self.memory.set_tensor_memory.borrow().set_ptrs.iter().map(|x| self.resolve_tensor_ptr(*x)).collect()
+                };
+
+                let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
+
+                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter().map(TensorIndex::from));
+            }
+        }
+    }
+
     pub fn resolve_memory(&mut self, optional_info: bool)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
+        self.state = RecorderState::Ready;
 
         let start_live_ranges = self.save_live_ranges();
         self.calculate_live_ranges();
@@ -5129,6 +4891,10 @@ impl OperationsRecorder
         }
 
         self.operations_to_raw(&mut memory_assignments);
+
+        self.resolve_store_tensors();
+
+        self.initialize_operations();
 
         #[cfg(debug_assertions)]
         {
@@ -5200,109 +4966,6 @@ impl OperationsRecorder
                 .filter(|(_, x)| x.start == Some(-1))
                 .map(|(index, _)| TensorPtr(index))
                 .collect();
-        }
-
-        self.state = RecorderState::Ready;
-
-        #[cfg(debug_assertions)]
-        {
-            let variable_names = self.memory.variable_names.clone();
-
-            let resolve_check_tensors = |tensors_list: &mut Vec<StoreCheckKey<TensorPtr, TensorIndex>>, must_resolve: bool|
-            {
-                struct ResolveError(TensorPtr);
-
-                let mut new_store_check = Vec::new();
-
-                let resolve_tensor_key = |
-                    new_store_check: &[_],
-                    k: StoreCheckKey<TensorPtr, TensorIndex>
-                | -> Result<Option<StoreCheckKey<TensorPtr, TensorIndex>>, ResolveError>
-                {
-                    let this_index: TensorIndex = match k
-                    {
-                        StoreCheckKey::PreResolve(ptr) =>
-                        {
-                            self.memory.tensors_memory[ptr.0].memory.ok_or(ResolveError(ptr))?
-                        },
-                        StoreCheckKey::Resolved(_) => unreachable!()
-                    };
-
-                    let new_k = StoreCheckKey::Resolved(this_index);
-
-                    // new_k has overlap with other ptrs so this check will give some false negatives
-                    // disable graph coloring for an exact check
-
-                    Ok((!new_store_check.contains(&new_k)).then_some(new_k))
-                };
-
-                tensors_list.iter().for_each(|x|
-                {
-                    let new_k = match resolve_tensor_key(&new_store_check, x.clone())
-                    {
-                        Ok(x) => x,
-                        Err(ResolveError(ptr)) =>
-                        {
-                            if must_resolve
-                            {
-                                panic!("{} must be resolved", variable_names.format_variable(ptr));
-                            } else
-                            {
-                                return;
-                            }
-                        }
-                    };
-
-                    new_store_check.extend(new_k);
-                });
-
-                *tensors_list = new_store_check;
-            };
-
-            resolve_check_tensors(&mut self.memory.store_tensors_check, true);
-
-            {
-                let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
-
-                resolve_check_tensors(&mut set_tensor_memory.allow_unread, false);
-                resolve_check_tensors(&mut set_tensor_memory.allow_reassign, true);
-            }
-
-            self.memory.store_values_check = self.memory.store_values_check.iter().map(|k|
-            {
-                match *k
-                {
-                    StoreCheckKey::PreResolve(x) => StoreCheckKey::Resolved(x),
-                    StoreCheckKey::Resolved(_) => unreachable!()
-                }
-            }).collect();
-
-            if self.raw_operations.len() > 0
-            {
-                self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
-                {
-                    let tensor_ptr = TensorPtr(tensor_ptr_index);
-
-                    if live_range.start == Some(-1) && live_range.end != Some(i32::MAX)
-                    {
-                        debug_assert!(
-                            self.memory.allow_discard.contains(&tensor_ptr),
-                            "{} will be discarded after running calculate once, either store the tensor or call allow_discard on it",
-                            self.memory.format_variable(tensor_ptr)
-                        );
-                    }
-                });
-            }
-
-            {
-                let resolved_set_ptrs: Vec<_> = {
-                    self.memory.set_tensor_memory.borrow().set_ptrs.iter().map(|x| self.resolve_tensor_ptr(*x)).collect()
-                };
-
-                let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
-
-                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter().map(TensorIndex::from));
-            }
         }
 
         self.memory.value_live_ranges = Vec::new();
@@ -6226,6 +5889,15 @@ impl OperationsRecorder
                 if let Some(src_gradient) = src.as_gradient()
                 {
                     add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: src_gradient});
+                }
+            },
+            Op::Fill{src, dst} =>
+            {
+                let gradient = gradient_or_return!(dst);
+
+                if let Some(src_gradient) = src.as_gradient()
+                {
+                    add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: src_gradient});
                 }
             },
             Op::Add{lhs, output, ..}
@@ -7663,6 +7335,7 @@ pub enum Op
 {
     CopyScalar{src: DiffScalar, dst: DiffScalar},
     Copy{src: DiffTensorPtr, dst: DiffTensorPtr},
+    Fill{src: DiffTensorPtr, dst: DiffTensorPtr},
     AddScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     AddScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     Add{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
@@ -7696,6 +7369,7 @@ impl Op
         {
             Self::CopyScalar{dst, ..} => f(dst.into()),
             Self::Copy{dst, ..} => f(dst.into()),
+            Self::Fill{dst, ..} => f(dst.into()),
             Self::AddScalar{output, ..} => f(output.into()),
             Self::AddScalars{output, ..} => f(output.into()),
             Self::Add{output, ..} => f(output.into()),
@@ -7728,6 +7402,7 @@ impl Op
         {
             Self::CopyScalar{src, ..} => f(src.into()),
             Self::Copy{src, ..} => f(src.into()),
+            Self::Fill{src, ..} => f(src.into()),
             Self::AddScalar{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::AddScalars{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::Add{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
@@ -8013,6 +7688,11 @@ mod tests
             .for_each(|(correct, calculated)| compare_single(correct, calculated));
     }
 
+    fn init_log()
+    {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
     #[allow(dead_code)]
     fn check_tensor_with_dims(
         a_dims: (usize, usize),
@@ -8020,6 +7700,8 @@ mod tests
         f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
     )
     {
+        init_log();
+
         let mut recorder = OperationsRecorder::new();
 
         let a = random_tensor(&mut recorder, a_dims.0, a_dims.1);
@@ -8030,6 +7712,8 @@ mod tests
 
     fn check_vector(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
     {
+        init_log();
+
         let mut recorder = OperationsRecorder::new();
 
         let a = random_tensor(&mut recorder, 1, LAYER_CURR);
@@ -8040,6 +7724,8 @@ mod tests
 
     fn check_tensor(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
     {
+        init_log();
+
         let mut recorder = OperationsRecorder::new();
 
         let a = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
@@ -8070,8 +7756,8 @@ mod tests
 
         recorder.finish();
 
-        recorder.store_tensor_until_end(a_gradient);
-        recorder.store_tensor_until_end(b_gradient);
+        recorder.store_tensor_as_output(a_gradient);
+        recorder.store_tensor_as_output(b_gradient);
 
         recorder.gradient(out.into());
 
@@ -8084,8 +7770,8 @@ mod tests
 
         recorder.calculate();
 
-        let a_g = recorder.get_tensor(a_gradient).clone_owned();
-        let b_g = recorder.get_tensor(b_gradient).clone_owned();
+        let a_g = recorder.get_tensor_blocking(a_gradient);
+        let b_g = recorder.get_tensor_blocking(b_gradient);
 
         let mut new_recorder = OperationsRecorder::new();
 
@@ -8098,29 +7784,31 @@ mod tests
         let output = f(&mut new_recorder, new_a, new_b);
         let output_value = output.as_value();
 
-        new_recorder.store_tensor_until_end(output_value);
+        new_recorder.store_tensor_as_output(output_value);
 
         new_recorder.finish();
         new_recorder.no_gradient();
 
+        dbg!(&new_recorder);
         new_recorder.resolve_memory(false);
+        dbg!(&new_recorder);
 
         let output_value = new_recorder.resolve_tensor_ptr(output_value);
 
         let new_a = new_recorder.resolve_tensor_ptr(new_a.as_value());
         let new_b = new_recorder.resolve_tensor_ptr(new_b.as_value());
 
-        let mut vals = |a: &LayerType, b: &LayerType|
+        let mut vals = |a: LayerType, b: LayerType|
         {
             new_recorder.set_tensor(new_a, a);
             new_recorder.set_tensor(new_b, b);
 
             new_recorder.calculate();
 
-            new_recorder.get_tensor(output_value).clone_owned()
+            new_recorder.get_tensor_blocking(output_value)
         };
 
-        let orig = vals(&a_value, &b_value).as_ref().sum();
+        let orig = vals(a_value.clone(), b_value.clone()).as_ref().sum();
 
         let epsilon: f32 = 0.009;
 
@@ -8137,7 +7825,7 @@ mod tests
             let v = a_value.clone();
             let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = fg(vals(&(v.add(epsilon.as_ref())), &b_value));
+            let this_fg = fg(vals(v.add(epsilon.as_ref()), b_value.clone()));
 
             a_fg[index] = this_fg;
         }
@@ -8148,7 +7836,7 @@ mod tests
             let v = b_value.clone();
             let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = fg(vals(&a_value, &(v.add(epsilon.as_ref()))));
+            let this_fg = fg(vals(a_value.clone(), v.add(epsilon.as_ref())));
 
             b_fg[index] = this_fg;
         }
@@ -8275,7 +7963,10 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
 
-            recorder.mul_componentwise(a, s)
+            let a_shape = recorder.tensor_shape(a.as_value());
+            let s_filled = recorder.fill_batched(a_shape, s);
+
+            recorder.mul_componentwise(a, s_filled)
         })
     }
 
@@ -8286,7 +7977,10 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
 
-            recorder.add(a, s)
+            let a_shape = recorder.tensor_shape(a.as_value());
+            let s_filled = recorder.fill_batched(a_shape, s);
+
+            recorder.add(a, s_filled)
         })
     }
 
@@ -8297,8 +7991,11 @@ mod tests
         {
             let s = recorder.sum_tensor(b);
 
+            let a_shape = recorder.tensor_shape(a.as_value());
+            let s_filled = recorder.fill_batched(a_shape, s);
+
             let m1 = recorder.set_new_value(-1.0);
-            let sn = recorder.mul_scalar(s, m1);
+            let sn = recorder.mul_scalar(s_filled, m1);
 
             recorder.mul_componentwise(a, sn)
         })
@@ -8319,8 +8016,10 @@ mod tests
     {
         check_tensor(|recorder, a, b|
         {
-            let s = recorder.sum_tensor(a);
-            recorder.sub(s, b)
+            let s = recorder.set_new_value(13.12);
+            let subbed = recorder.sub_from_scalar(s, b);
+
+            recorder.add(a, subbed)
         })
     }
 
@@ -8330,7 +8029,11 @@ mod tests
         check_tensor(|recorder, a, b|
         {
             let s = recorder.sum_tensor(a);
-            let right = recorder.sub(s, b);
+
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let s_filled = recorder.fill_batched(b_shape, s);
+
+            let right = recorder.sub(s_filled, b);
 
             let two = recorder.set_new_value(2.0);
 
@@ -8385,9 +8088,13 @@ mod tests
         check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
+
             let mm = recorder.matmulv(a, b);
 
-            recorder.add(mm, s)
+            let mm_shape = recorder.tensor_shape(mm.as_value());
+            let s_filled = recorder.fill_batched(mm_shape, s);
+
+            recorder.add(mm, s_filled)
         })
     }
 
@@ -8397,8 +8104,13 @@ mod tests
         check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
+
             let mm = recorder.matmulv(a, b);
-            let left = recorder.add(mm, s);
+
+            let mm_shape = recorder.tensor_shape(mm.as_value());
+            let s_filled = recorder.fill_batched(mm_shape, s);
+
+            let left = recorder.add(mm, s_filled);
 
             let k = recorder.matmulv(a, b);
             let l = recorder.matmulv(a, b);
@@ -8415,8 +8127,13 @@ mod tests
         check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
+
             let mm = recorder.matmulv(a, b);
-            let left = recorder.add(mm, s);
+
+            let mm_shape = recorder.tensor_shape(mm.as_value());
+            let s_filled = recorder.fill_batched(mm_shape, s);
+
+            let left = recorder.add(mm, s_filled);
 
             let k = recorder.matmulv(a, b);
             let right = recorder.matmulv_add(a, b, k);
@@ -8448,8 +8165,13 @@ mod tests
             recorder.set_one_hot(targets_index, targets.clone());
 
             let s = recorder.sum_tensor(b);
+
             let mm = recorder.matmulv(a, b);
-            let left = recorder.add(mm, s);
+
+            let mm_shape = recorder.tensor_shape(mm.as_value());
+            let s_filled = recorder.fill_batched(mm_shape, s);
+
+            let left = recorder.add(mm, s_filled);
 
             let k = recorder.matmulv(a, b);
             let right = recorder.matmul_onehotv_add(a, targets_index, k);
@@ -8497,7 +8219,10 @@ mod tests
         {
             let a_sum = recorder.sum_tensor(a);
 
-            let a_sum_copy = recorder.copy(a_sum);
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let a_sum_filled = recorder.fill_batched(b_shape, a_sum);
+
+            let a_sum_copy = recorder.copy(a_sum_filled);
 
             recorder.add(b, a_sum_copy)
         })
