@@ -55,4 +55,4 @@ for (var half_stride = 1u; half_stride < lhs_columns; half_stride *= 2)
     }
 }
 
-output[workgroup_id.x] = lhs[batch_start + row * row_stride];
+output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row * row_stride]);

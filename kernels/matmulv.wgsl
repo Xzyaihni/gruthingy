@@ -11,6 +11,11 @@ const WORKGROUP_SIZE = 64;
 
 #include "div_ceil.wgsl"
 
+fn map_output(index: u32, value: f32) -> f32
+{
+    return value;
+}
+
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,

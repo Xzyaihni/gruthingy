@@ -1182,7 +1182,9 @@ struct KernelLayout
 struct KernelLayouts
 {
     a_b_output: KernelLayout,
+    a_b_c_output: KernelLayout,
     a_reduce_b_output: KernelLayout,
+    a_reduce_b_c_output: KernelLayout,
     t_s_output: KernelLayout,
     src_dst: KernelLayout,
     reduction: KernelLayout
@@ -1279,6 +1281,20 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
+            let a_b_c_output = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        input_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
             let a_reduce_b_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
                     label: None,
@@ -1286,6 +1302,20 @@ impl RawArrayMemory
                         output_layout_entry(0),
                         input_layout_entry(1),
                         output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            let a_reduce_b_c_output = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        output_layout_entry(0),
+                        input_layout_entry(1),
+                        input_layout_entry(2),
+                        output_layout_entry(3)
                     ]
                 });
 
@@ -1330,7 +1360,9 @@ impl RawArrayMemory
 
             KernelLayouts{
                 a_b_output,
+                a_b_c_output,
                 a_reduce_b_output,
+                a_reduce_b_c_output,
                 t_s_output,
                 src_dst,
                 reduction
@@ -1341,80 +1373,32 @@ impl RawArrayMemory
         {
             let (shader_path, kernel_layout) = match kernel
             {
-                OpKernel::Add =>
-                {
-                    ("kernels/add.wgsl", &kernel_layouts.a_b_output)
-                },
-                OpKernel::Sub =>
-                {
-                    ("kernels/sub.wgsl", &kernel_layouts.a_b_output)
-                },
-                OpKernel::SubFromScalar =>
-                {
-                    ("kernels/sub_from_scalar.wgsl", &kernel_layouts.t_s_output)
-                },
-                OpKernel::MulComponentwise =>
-                {
-                    ("kernels/mul_componentwise.wgsl", &kernel_layouts.a_b_output)
-                },
-                OpKernel::MulScalar =>
-                {
-                    ("kernels/mul_scalar.wgsl", &kernel_layouts.t_s_output)
-                },
-                OpKernel::SumTensor =>
-                {
-                    ("kernels/sum_tensor.wgsl", &kernel_layouts.reduction)
-                },
-                OpKernel::Fill =>
-                {
-                    ("kernels/fill.wgsl", &kernel_layouts.src_dst)
-                },
-                OpKernel::Pow =>
-                {
-                    ("kernels/pow.wgsl", &kernel_layouts.t_s_output)
-                },
-                OpKernel::Tanh =>
-                {
-                    ("kernels/tanh.wgsl", &kernel_layouts.src_dst)
-                },
-                OpKernel::TanhDiff =>
-                {
-                    ("kernels/tanh_diff.wgsl", &kernel_layouts.a_b_output)
-                },
-                OpKernel::Sigmoid =>
-                {
-                    ("kernels/sigmoid.wgsl", &kernel_layouts.src_dst)
-                },
-                OpKernel::SigmoidDiff =>
-                {
-                    ("kernels/sigmoid_diff.wgsl", &kernel_layouts.a_b_output)
-                },
-                OpKernel::LeakyRelu =>
-                {
-                    ("kernels/leaky_relu.wgsl", &kernel_layouts.src_dst)
-                },
-                OpKernel::LeakyReluDiff =>
-                {
-                    ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.a_b_output)
-                },
-                OpKernel::Matmulv =>
-                {
-                    ("kernels/matmulv.wgsl", &kernel_layouts.a_reduce_b_output)
-                },
-                OpKernel::MatmulvTransposed =>
-                {
-                    ("kernels/matmulv_transposed.wgsl", &kernel_layouts.a_reduce_b_output)
-                },
-                OpKernel::OuterProduct =>
-                {
-                    ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output)
-                }
+                OpKernel::Add => ("kernels/add.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::Sub => ("kernels/sub.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::SubFromScalar => ("kernels/sub_from_scalar.wgsl", &kernel_layouts.t_s_output),
+                OpKernel::MulComponentwise => ("kernels/mul_componentwise.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.t_s_output),
+                OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.reduction),
+                OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.src_dst),
+                OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.t_s_output),
+                OpKernel::Tanh => ("kernels/tanh.wgsl", &kernel_layouts.src_dst),
+                OpKernel::TanhDiff => ("kernels/tanh_diff.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::Sigmoid => ("kernels/sigmoid.wgsl", &kernel_layouts.src_dst),
+                OpKernel::SigmoidDiff => ("kernels/sigmoid_diff.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.src_dst),
+                OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.a_reduce_b_output),
+                OpKernel::MatmulvAdd => ("kernels/matmulv_add.wgsl", &kernel_layouts.a_reduce_b_output),
+                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.a_reduce_b_output),
+                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.a_reduce_b_output),
+                OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
             let shader_code_text = fs::read_to_string(shader_path).unwrap_or_else(|err|
             {
-                panic!("error reading compute kernel: {err}");
+                panic!("error reading compute kernel {shader_path}: {err}");
             });
 
             let shader_source = wgpu::ShaderSource::Wgsl(shader_preprocessor::process_includes(parent_dir, shader_code_text).into());
@@ -3199,7 +3183,8 @@ impl OperationsRecorder
 
                     single_work_group(&mut compute_pass, value.size());
                 },
-                GradientOp::Matmulv{lhs, rhs, output} =>
+                this_op@GradientOp::Matmulv{lhs, rhs, output}
+                | this_op@GradientOp::MatmulvAdd{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -3218,22 +3203,47 @@ impl OperationsRecorder
 
                     encoder.copy_buffer_to_buffer(lhs_buffer, 0, scratch_buffer, 0, lhs_buffer.size());
 
-                    do_kernel_operation(
-                        &mut encoder,
-                        &mut compute_pass,
-                        &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
-                        OpKernel::Matmulv,
-                        &[
-                            create_bind_group_entry(0, scratch_buffer),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
-                        ]
-                    );
+                    match this_op
+                    {
+                        GradientOp::Matmulv{lhs, rhs, output} =>
+                        {
+                            do_kernel_operation(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.raw_array_memory,
+                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                OpKernel::Matmulv,
+                                &[
+                                    create_bind_group_entry(0, scratch_buffer),
+                                    bind_group_entry(1, *rhs),
+                                    bind_group_entry(2, *output)
+                                ]
+                            );
+                        },
+                        GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
+                        {
+                            debug_assert_eq!(added, output);
+
+                            do_kernel_operation(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.raw_array_memory,
+                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                OpKernel::MatmulvAdd,
+                                &[
+                                    create_bind_group_entry(0, scratch_buffer),
+                                    bind_group_entry(1, *rhs),
+                                    bind_group_entry(2, *output)
+                                ]
+                            );
+                        },
+                        _ => unreachable!()
+                    }
 
                     exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                 },
-                GradientOp::MatmulvTransposed{lhs, rhs, output} =>
+                this_op@GradientOp::MatmulvTransposed{lhs, rhs, output}
+                | this_op@GradientOp::MatmulvTransposedAdd{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -3252,22 +3262,47 @@ impl OperationsRecorder
 
                     encoder.copy_buffer_to_buffer(lhs_buffer, 0, scratch_buffer, 0, lhs_buffer.size());
 
-                    do_kernel_operation(
-                        &mut encoder,
-                        &mut compute_pass,
-                        &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
-                        OpKernel::MatmulvTransposed,
-                        &[
-                            create_bind_group_entry(0, scratch_buffer),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
-                        ]
-                    );
+                    match this_op
+                    {
+                        GradientOp::MatmulvTransposed{lhs, rhs, output} =>
+                        {
+                            do_kernel_operation(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.raw_array_memory,
+                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                OpKernel::MatmulvTransposed,
+                                &[
+                                    create_bind_group_entry(0, scratch_buffer),
+                                    bind_group_entry(1, *rhs),
+                                    bind_group_entry(2, *output)
+                                ]
+                            );
+                        },
+                        GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+                        {
+                            debug_assert_eq!(added, output);
+
+                            do_kernel_operation(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.raw_array_memory,
+                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                OpKernel::MatmulvTransposedAdd,
+                                &[
+                                    create_bind_group_entry(0, scratch_buffer),
+                                    bind_group_entry(1, *rhs),
+                                    bind_group_entry(2, *output)
+                                ]
+                            );
+                        },
+                        _ => unreachable!()
+                    }
 
                     exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
                 },
-                GradientOp::OuterProduct{lhs, rhs, output} =>
+                this_op@GradientOp::OuterProduct{lhs, rhs, output}
+                | this_op@GradientOp::OuterProductAdd{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -3278,18 +3313,42 @@ impl OperationsRecorder
                     debug_assert_eq!(lhs.shape.rows, output.shape.rows);
                     debug_assert_eq!(rhs.shape.rows, output.shape.columns);
 
-                    do_kernel_operation(
-                        &mut encoder,
-                        &mut compute_pass,
-                        &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
-                        OpKernel::OuterProduct,
-                        &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
-                        ]
-                    );
+                    match this_op
+                    {
+                        GradientOp::OuterProduct{lhs, rhs, output} =>
+                        {
+                            do_kernel_operation(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.raw_array_memory,
+                                &self.raw_array_memory.kernel_layouts.a_b_output,
+                                OpKernel::OuterProduct,
+                                &[
+                                    bind_group_entry(0, *lhs),
+                                    bind_group_entry(1, *rhs),
+                                    bind_group_entry(2, *output)
+                                ]
+                            );
+                        },
+                        GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
+                        {
+                            debug_assert_eq!(added, output);
+
+                            do_kernel_operation(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.raw_array_memory,
+                                &self.raw_array_memory.kernel_layouts.a_b_output,
+                                OpKernel::OuterProductAdd,
+                                &[
+                                    bind_group_entry(0, *lhs),
+                                    bind_group_entry(1, *rhs),
+                                    bind_group_entry(2, *output)
+                                ]
+                            );
+                        },
+                        _ => unreachable!()
+                    }
 
                     single_work_group(&mut compute_pass, output.size());
                 },
@@ -4887,6 +4946,17 @@ impl OperationsRecorder
 
             match self.gradient_operations[i]
             {
+                GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
+                {
+                    let combined_output_add = combine_arg_output_tensors(self, added, output);
+
+                    self.gradient_operations[i] = GradientOp::MatmulvAdd{
+                        lhs,
+                        rhs,
+                        added: combined_output_add,
+                        output: combined_output_add
+                    };
+                },
                 GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
                 {
                     let combined_output_add = combine_arg_output_tensors(self, added, output);
@@ -5180,6 +5250,7 @@ impl OperationsRecorder
                 let allow_overlap = matches!(
                     op,
                     GradientOp::GetOtherSelectorValue{..}
+                    | GradientOp::MatmulvAdd{..}
                     | GradientOp::MatmulvTransposedAdd{..}
                     | GradientOp::OuterProductAdd{..}
                     | GradientOp::OuterProductOneHotAdd{..}
