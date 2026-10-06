@@ -6,10 +6,7 @@ var<storage, read_write> dst: array<f32>;
 
 const WORKGROUP_SIZE = 64;
 
-fn div_ceil(a: u32, b: u32) -> u32
-{
-    return (a + b - 1) / b;
-}
+#include "div_ceil.wgsl"
 
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(
@@ -36,7 +33,7 @@ fn run(
         {
             let src_index = span_id * strided_workgroup + stride * local_invocation_index;
 
-            if ((src_index + half_stride) >= src_single_length)
+            if (src_index + half_stride) >= src_single_length
             {
                 return;
             }

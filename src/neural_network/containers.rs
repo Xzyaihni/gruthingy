@@ -1,6 +1,8 @@
 use std::{
+    fs,
     f32,
     mem,
+    path::Path,
     num::NonZero,
     sync::mpsc,
     num::NonZeroU64,
@@ -19,6 +21,8 @@ use serde::{Serialize, Deserialize};
 
 use ywrapper::*;
 use rawarray::*;
+
+mod shader_preprocessor;
 
 mod ywrapper;
 mod rawarray;
@@ -1335,79 +1339,90 @@ impl RawArrayMemory
 
         let kernels = OpKernel::create_kernels(|kernel|
         {
-            let (shader_code, kernel_layout) = match kernel
+            let (shader_path, kernel_layout) = match kernel
             {
                 OpKernel::Add =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/add.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/add.wgsl", &kernel_layouts.a_b_output)
                 },
                 OpKernel::Sub =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/sub.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/sub.wgsl", &kernel_layouts.a_b_output)
                 },
                 OpKernel::SubFromScalar =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/sub_from_scalar.wgsl"), &kernel_layouts.t_s_output)
+                    ("kernels/sub_from_scalar.wgsl", &kernel_layouts.t_s_output)
                 },
                 OpKernel::MulComponentwise =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/mul_componentwise.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/mul_componentwise.wgsl", &kernel_layouts.a_b_output)
                 },
                 OpKernel::MulScalar =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/mul_scalar.wgsl"), &kernel_layouts.t_s_output)
+                    ("kernels/mul_scalar.wgsl", &kernel_layouts.t_s_output)
                 },
                 OpKernel::SumTensor =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/sum_tensor.wgsl"), &kernel_layouts.reduction)
+                    ("kernels/sum_tensor.wgsl", &kernel_layouts.reduction)
                 },
                 OpKernel::Fill =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/fill.wgsl"), &kernel_layouts.src_dst)
+                    ("kernels/fill.wgsl", &kernel_layouts.src_dst)
                 },
                 OpKernel::Pow =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/pow.wgsl"), &kernel_layouts.t_s_output)
+                    ("kernels/pow.wgsl", &kernel_layouts.t_s_output)
                 },
                 OpKernel::Tanh =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/tanh.wgsl"), &kernel_layouts.src_dst)
+                    ("kernels/tanh.wgsl", &kernel_layouts.src_dst)
                 },
                 OpKernel::TanhDiff =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/tanh_diff.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/tanh_diff.wgsl", &kernel_layouts.a_b_output)
                 },
                 OpKernel::Sigmoid =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/sigmoid.wgsl"), &kernel_layouts.src_dst)
+                    ("kernels/sigmoid.wgsl", &kernel_layouts.src_dst)
                 },
                 OpKernel::SigmoidDiff =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/sigmoid_diff.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/sigmoid_diff.wgsl", &kernel_layouts.a_b_output)
                 },
                 OpKernel::LeakyRelu =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/leaky_relu.wgsl"), &kernel_layouts.src_dst)
+                    ("kernels/leaky_relu.wgsl", &kernel_layouts.src_dst)
                 },
                 OpKernel::LeakyReluDiff =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/leaky_relu_diff.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.a_b_output)
                 },
                 OpKernel::Matmulv =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/matmulv.wgsl"), &kernel_layouts.a_reduce_b_output)
+                    ("kernels/matmulv.wgsl", &kernel_layouts.a_reduce_b_output)
                 },
                 OpKernel::MatmulvTransposed =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/matmulv_transposed.wgsl"), &kernel_layouts.a_reduce_b_output)
+                    ("kernels/matmulv_transposed.wgsl", &kernel_layouts.a_reduce_b_output)
                 },
                 OpKernel::OuterProduct =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/outer_product.wgsl"), &kernel_layouts.a_b_output)
+                    ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output)
                 }
             };
 
-            let shader = device.create_shader_module(shader_code);
+            let parent_dir = Path::new(shader_path).parent().unwrap();
+            let shader_code_text = fs::read_to_string(shader_path).unwrap_or_else(|err|
+            {
+                panic!("error reading compute kernel: {err}");
+            });
+
+            let shader_source = wgpu::ShaderSource::Wgsl(shader_preprocessor::process_includes(parent_dir, shader_code_text).into());
+
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
+                label: wgpu::Label::Some(shader_path),
+                source: shader_source
+            });
 
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
                 label: None,

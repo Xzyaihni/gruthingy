@@ -13,7 +13,7 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
     let index = global_id.x;
 
     let output_length = arrayLength(&output);
-    if (index >= output_length)
+    if index >= output_length
     {
         return;
     }

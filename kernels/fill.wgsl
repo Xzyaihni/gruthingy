@@ -15,7 +15,7 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
     let x = index % dst_length;
     let batch_index = index / dst_length;
 
-    if (x >= dst_length || batch_index >= batch_size)
+    if x >= dst_length || batch_index >= batch_size
     {
         return;
     }
