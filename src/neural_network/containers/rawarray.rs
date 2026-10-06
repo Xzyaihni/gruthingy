@@ -49,7 +49,8 @@ define_op_kernels!{
     Sigmoid,
     SigmoidDiff,
     LeakyRelu,
-    LeakyReluDiff
+    LeakyReluDiff,
+    Matmulv
 }
 
 #[derive(Debug, Clone)]

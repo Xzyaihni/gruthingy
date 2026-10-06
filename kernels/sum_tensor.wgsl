@@ -9,11 +9,10 @@ const WORKGROUP_SIZE = 64;
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
-    @builtin(local_invocation_index) local_invocation_index: u32,
-    @builtin(num_workgroups) num_workgroups: vec3<u32>
+    @builtin(local_invocation_index) local_invocation_index: u32
 )
 {
-    let batch_size = num_workgroups.x;
+    let batch_size = arrayLength(&dst);
     let src_length = arrayLength(&src);
     let src_single_length = src_length / batch_size;
 

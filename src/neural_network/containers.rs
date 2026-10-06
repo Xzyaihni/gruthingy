@@ -1377,6 +1377,10 @@ impl RawArrayMemory
                 OpKernel::LeakyReluDiff =>
                 {
                     (wgpu::include_wgsl!("../../kernels/leaky_relu_diff.wgsl"), &kernel_layouts.a_b_output)
+                },
+                OpKernel::Matmulv =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/matmulv.wgsl"), &kernel_layouts.a_b_output)
                 }
             };
 
@@ -3153,6 +3157,32 @@ impl OperationsRecorder
                     );
 
                     single_work_group(&mut compute_pass, value.size());
+                },
+                GradientOp::Matmulv{lhs, rhs, output} =>
+                {
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.columns, rhs.shape.rows);
+                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                    debug_assert_eq!(rhs.shape.columns, 1);
+                    debug_assert_eq!(output.shape.columns, 1);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::Matmulv,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                 },
                 x => unimplemented!("{x:?}")
             }
