@@ -1178,6 +1178,7 @@ struct KernelLayout
 struct KernelLayouts
 {
     a_b_output: KernelLayout,
+    a_reduce_b_output: KernelLayout,
     t_s_output: KernelLayout,
     src_dst: KernelLayout,
     reduction: KernelLayout
@@ -1274,6 +1275,19 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
+            let a_reduce_b_output = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: None,
+                    entries: &[
+                        output_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
             let t_s_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
                     label: None,
@@ -1312,6 +1326,7 @@ impl RawArrayMemory
 
             KernelLayouts{
                 a_b_output,
+                a_reduce_b_output,
                 t_s_output,
                 src_dst,
                 reduction
@@ -1380,7 +1395,15 @@ impl RawArrayMemory
                 },
                 OpKernel::Matmulv =>
                 {
-                    (wgpu::include_wgsl!("../../kernels/matmulv.wgsl"), &kernel_layouts.a_b_output)
+                    (wgpu::include_wgsl!("../../kernels/matmulv.wgsl"), &kernel_layouts.a_reduce_b_output)
+                },
+                OpKernel::MatmulvTransposed =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/matmulv_transposed.wgsl"), &kernel_layouts.a_reduce_b_output)
+                },
+                OpKernel::OuterProduct =>
+                {
+                    (wgpu::include_wgsl!("../../kernels/outer_product.wgsl"), &kernel_layouts.a_b_output)
                 }
             };
 
@@ -2603,10 +2626,15 @@ impl OperationsRecorder
 
             const WORK_GROUP_SIZE: usize = 64;
 
-            fn single_work_group(compute_pass: &mut Option<wgpu::ComputePass>, size: usize)
+            fn exact_workgroup(compute_pass: &mut Option<wgpu::ComputePass>, size: usize)
             {
                 compute_pass.as_mut().expect("must be inside compute pass")
-                    .dispatch_workgroups(size.div_ceil(WORK_GROUP_SIZE) as u32, 1, 1);
+                    .dispatch_workgroups(size as u32, 1, 1);
+            }
+
+            fn single_work_group(compute_pass: &mut Option<wgpu::ComputePass>, size: usize)
+            {
+                exact_workgroup(compute_pass, size.div_ceil(WORK_GROUP_SIZE))
             }
 
             let try_end_compute_pass = |compute_pass: &mut Option<wgpu::ComputePass>|
@@ -3001,9 +3029,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    compute_pass.as_mut()
-                        .expect("must be inside compute pass")
-                        .dispatch_workgroups(value.shape.batch_size as u32, 1, 1);
+                    exact_workgroup(&mut compute_pass, value.shape.batch_size);
                 },
                 GradientOp::Fill{value, output} =>
                 {
@@ -3169,12 +3195,80 @@ impl OperationsRecorder
                     debug_assert_eq!(rhs.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
+                    let scratch_buffer = &self.raw_array_memory.scratch_buffers[&lhs.shape.size()];
+
+                    let lhs_buffer = &get_raw_array(&self.memory.tensors_raw_data, *lhs).buffer;
+
+                    try_end_compute_pass(&mut compute_pass);
+
+                    encoder.copy_buffer_to_buffer(lhs_buffer, 0, scratch_buffer, 0, lhs_buffer.size());
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                        OpKernel::Matmulv,
+                        &[
+                            create_bind_group_entry(0, scratch_buffer),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+                },
+                GradientOp::MatmulvTransposed{lhs, rhs, output} =>
+                {
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.rows, rhs.shape.rows);
+                    debug_assert_eq!(lhs.shape.columns, output.shape.rows);
+
+                    debug_assert_eq!(rhs.shape.columns, 1);
+                    debug_assert_eq!(output.shape.columns, 1);
+
+                    let scratch_buffer = &self.raw_array_memory.scratch_buffers[&lhs.shape.size()];
+
+                    let lhs_buffer = &get_raw_array(&self.memory.tensors_raw_data, *lhs).buffer;
+
+                    try_end_compute_pass(&mut compute_pass);
+
+                    encoder.copy_buffer_to_buffer(lhs_buffer, 0, scratch_buffer, 0, lhs_buffer.size());
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                        OpKernel::MatmulvTransposed,
+                        &[
+                            create_bind_group_entry(0, scratch_buffer),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
+                },
+                GradientOp::OuterProduct{lhs, rhs, output} =>
+                {
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.columns, 1);
+                    debug_assert_eq!(rhs.shape.columns, 1);
+
+                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+                    debug_assert_eq!(rhs.shape.rows, output.shape.columns);
+
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
                         &self.raw_array_memory.kernel_layouts.a_b_output,
-                        OpKernel::Matmulv,
+                        OpKernel::OuterProduct,
                         &[
                             bind_group_entry(0, *lhs),
                             bind_group_entry(1, *rhs),
@@ -3182,7 +3276,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+                    single_work_group(&mut compute_pass, output.size());
                 },
                 x => unimplemented!("{x:?}")
             }
@@ -4563,22 +4657,24 @@ impl OperationsRecorder
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
-            match gradient_op
+            if let Some(shape_tensor) = match gradient_op
             {
-                GradientOp::SumTensor{value, ..} =>
-                {
-                    let size = self.memory.tensor_shape(value).size();
+                GradientOp::SumTensor{value, ..}
+                | GradientOp::Matmulv{lhs: value, ..}
+                | GradientOp::MatmulvTransposed{lhs: value, ..} => Some(value),
+                _ => None
+            }
+            {
+                let size = self.memory.tensor_shape(shape_tensor).size();
 
-                    let scratch_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
-                        label: None,
-                        size: (size * FLOAT_BYTES) as u64,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false
-                    });
+                let scratch_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                    label: None,
+                    size: (size * FLOAT_BYTES) as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false
+                });
 
-                    self.raw_array_memory.scratch_buffers.insert(size, scratch_buffer);
-                },
-                _ => ()
+                self.raw_array_memory.scratch_buffers.insert(size, scratch_buffer);
             }
 
             let new_op = match gradient_op

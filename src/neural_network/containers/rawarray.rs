@@ -50,7 +50,9 @@ define_op_kernels!{
     SigmoidDiff,
     LeakyRelu,
     LeakyReluDiff,
-    Matmulv
+    Matmulv,
+    MatmulvTransposed,
+    OuterProduct
 }
 
 #[derive(Debug, Clone)]

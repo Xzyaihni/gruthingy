@@ -6,6 +6,11 @@ var<storage, read_write> dst: array<f32>;
 
 const WORKGROUP_SIZE = 64;
 
+fn div_ceil(a: u32, b: u32) -> u32
+{
+    return (a + b - 1) / b;
+}
+
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
@@ -25,7 +30,7 @@ fn run(
 
         let strided_workgroup = WORKGROUP_SIZE * stride;
 
-        let inside_spans = (src_single_length + strided_workgroup - 1) / strided_workgroup;
+        let inside_spans = div_ceil(src_single_length, strided_workgroup);
 
         for (var span_id = 0u; span_id < inside_spans; span_id++)
         {
@@ -36,14 +41,12 @@ fn run(
                 return;
             }
 
-            src[batch_start + src_index] += src[batch_start + src_index + half_stride];
+            let start = batch_start + src_index;
+            src[start] += src[start + half_stride];
 
             storageBarrier();
         }
     }
 
-    if (local_invocation_index == 0)
-    {
-        dst[batch_index] = src[batch_start];
-    }
+    dst[batch_index] = src[batch_start];
 }
