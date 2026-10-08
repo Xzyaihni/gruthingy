@@ -55,7 +55,8 @@ define_op_kernels!{
     MatmulvTransposed,
     MatmulvTransposedAdd,
     OuterProduct,
-    OuterProductAdd
+    OuterProductAdd,
+    SoftmaxCrossEntropyNoEntropy
 }
 
 #[derive(Debug, Clone)]

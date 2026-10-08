@@ -1050,7 +1050,7 @@ impl OperationsRecorderMemory
 
     fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
     {
-        debug_assert_eq!(self.one_hot_layers[index.0].batch_size(), value.batch_size());
+        debug_assert_eq!(self.one_hot_layers[index.0].batch_size, value.batch_size);
 
         self.one_hot_layers[index.0] = value;
     }
@@ -1072,7 +1072,7 @@ impl OperationsRecorderMemory
 
     fn one_hot_batch_size(&self, index: OneHotIndex) -> usize
     {
-        self.one_hot_layers[index.0].batch_size()
+        self.one_hot_layers[index.0].batch_size
     }
 
     fn tensor_shape_value(&self, tensor: TensorPtr) -> TensorMemoryValue
@@ -1392,7 +1392,8 @@ impl RawArrayMemory
                 OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.a_reduce_b_output),
                 OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.a_reduce_b_output),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output)
+                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::SoftmaxCrossEntropyNoEntropy => ("kernels/softmax_cross_entropy_no_entropy.wgsl", &kernel_layouts.a_b_output)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -3205,7 +3206,7 @@ impl OperationsRecorder
 
                     match this_op
                     {
-                        GradientOp::Matmulv{lhs, rhs, output} =>
+                        GradientOp::Matmulv{lhs: _, rhs, output} =>
                         {
                             do_kernel_operation(
                                 &mut encoder,
@@ -3220,7 +3221,7 @@ impl OperationsRecorder
                                 ]
                             );
                         },
-                        GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
+                        GradientOp::MatmulvAdd{lhs: _, rhs, added, output} =>
                         {
                             debug_assert_eq!(added, output);
 
@@ -3264,7 +3265,7 @@ impl OperationsRecorder
 
                     match this_op
                     {
-                        GradientOp::MatmulvTransposed{lhs, rhs, output} =>
+                        GradientOp::MatmulvTransposed{lhs: _, rhs, output} =>
                         {
                             do_kernel_operation(
                                 &mut encoder,
@@ -3279,7 +3280,7 @@ impl OperationsRecorder
                                 ]
                             );
                         },
-                        GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+                        GradientOp::MatmulvTransposedAdd{lhs: _, rhs, added, output} =>
                         {
                             debug_assert_eq!(added, output);
 
@@ -4927,7 +4928,11 @@ impl OperationsRecorder
                 let combined_output = output;
 
                 {
-                    let arg_start = this.memory.tensor_live_ranges[arg.0].start;
+                    let arg_range = &this.memory.tensor_live_ranges[arg.0];
+                    let arg_start = arg_range.start;
+
+                    debug_assert_eq!(arg_range.end, this.memory.tensor_live_ranges[output.0].start);
+
                     let combined_start = &mut this.memory.tensor_live_ranges[combined_output.0].start;
 
                     *combined_start = if let Some(x) = *combined_start
@@ -6664,7 +6669,7 @@ impl OperationsRecorder
                         InputTypePtr::OneHot(one_hot) =>
                         {
                             let one_hot = &self.memory.one_hot_layers[one_hot.0];
-                            InputTypePtr::OneHot(self.new_one_hot_batched(one_hot.batch_size()))
+                            InputTypePtr::OneHot(self.new_one_hot_batched(one_hot.batch_size))
                         }
                     }
                 }).collect();
@@ -7782,43 +7787,54 @@ impl Op
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OneHotLayer
 {
-    pub positions: Box<[Box<[usize]>]>,
-    pub size: usize,
+    pub positions: Box<[u32]>,
+    pub count: usize,
+    pub layer_size: usize,
     pub batch_size: usize
 }
 
 impl OneHotLayer
 {
-    pub fn new(positions: Box<[Box<[usize]>]>, size: usize, batch_size: usize) -> Self
+    pub fn new(positions: Box<[Box<[usize]>]>, count: usize, layer_size: usize, batch_size: usize) -> Self
     {
-        let this = Self{positions: positions.into(), size, batch_size};
-
-        #[cfg(debug_assertions)]
-        {
-            this.positions.iter().for_each(|batch_positions|
+        let this = {
+            #[cfg(debug_assertions)]
             {
-                let s: HashSet<_> = batch_positions.iter().collect();
+                positions.iter().for_each(|batch_positions|
+                {
+                    let s: HashSet<_> = batch_positions.iter().collect();
 
-                debug_assert!(s.len() == batch_positions.len(), "positions must be unique: {:?}", this.positions.iter().collect::<Vec<_>>());
+                    debug_assert!(s.len() == batch_positions.len(), "positions must be unique: {:?}", positions.iter().collect::<Vec<_>>());
+                });
+            }
+
+            let mut flat_positions = Vec::new();
+
+            positions.into_iter().for_each(|batch_positions|
+            {
+                flat_positions.extend(batch_positions.into_iter().map(|x| x as u32));
+                flat_positions.resize(count, u32::MAX);
             });
-        }
+
+            Self{
+                positions: flat_positions.into_boxed_slice(),
+                count,
+                layer_size,
+                batch_size
+            }
+        };
 
         this
     }
 
     pub fn empty() -> Self
     {
-        Self::new([].into(), 0, 0)
+        Self::new([].into(), 0, 0, 0)
     }
 
     pub fn empty_batched(batch_size: usize) -> Self
     {
-        Self::new([].into(), 0, batch_size)
-    }
-
-    pub fn batch_size(&self) -> usize
-    {
-        self.batch_size
+        Self::new([].into(), 0, 0, batch_size)
     }
 
     pub fn batch_replicate(self, batch_size: usize) -> Self
@@ -7827,27 +7843,28 @@ impl OneHotLayer
 
         Self{
             positions: iter::repeat(&self.positions[0]).take(batch_size).cloned().collect(),
-            size: self.size,
+            count: self.count,
+            layer_size: self.layer_size,
             batch_size
         }
     }
 
     pub fn into_layer(self) -> LayerType
     {
-        let total_size = self.size * self.batch_size;
+        let total_size = self.layer_size * self.batch_size;
         let batch_size = self.positions.len();
 
         let mut layer = vec![0.0; total_size].into_boxed_slice();
 
-        for (batch_index, batch_positions) in self.positions.iter().enumerate()
+        for (batch_index, batch_positions) in self.positions.chunks_exact(self.count).enumerate()
         {
-            for position in batch_positions.iter()
+            for position in batch_positions.iter().filter(|x| **x != u32::MAX)
             {
-                layer[batch_index * self.size + *position] = 1.0;
+                layer[batch_index * self.layer_size + *position as usize] = 1.0;
             }
         }
 
-        LayerType::from_raw(layer, TensorShape{rows: self.size, columns: 1, batch_size})
+        LayerType::from_raw(layer, TensorShape{rows: self.layer_size, columns: 1, batch_size})
     }
 }
 
@@ -8499,7 +8516,7 @@ mod tests
     {
         let pos = fastrand::usize(0..size);
 
-        OneHotLayer::new([[pos].into()].into(), size, 1)
+        OneHotLayer::new([[pos].into()].into(), 1, size, 1)
     }
 
     #[test]
@@ -8702,7 +8719,7 @@ mod tests
 
         let targets: Vec<OneHotLayer> = (0..loops_count).map(|_|
         {
-            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
         check_tensor_with_dims((1, LAYER_CURR), (1, LAYER_CURR), |recorder, a, b|
@@ -9038,7 +9055,7 @@ mod tests
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
         let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
         {
-            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
@@ -9155,7 +9172,7 @@ mod tests
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
         let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
         {
-            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
@@ -9298,7 +9315,7 @@ mod tests
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
         let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
         {
-            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), output_size, 1)
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
         check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|

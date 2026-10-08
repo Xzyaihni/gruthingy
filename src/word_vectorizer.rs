@@ -194,6 +194,7 @@ pub trait NetworkDictionary: Debug
     {
         OneHotLayer::new(
             [words.into_iter().map(|word| word.index()).collect::<Box<[_]>>()].into(),
+            1,
             self.words_amount(),
             1
         )

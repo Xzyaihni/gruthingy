@@ -154,7 +154,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
         let column_size = column_major_orthonormal.rows();
 
         let column_major_orthonormal = column_major_orthonormal.as_vec();
-        let columns: Vec<LayerTypeRef> = column_major_orthonormal.chunks(column_size)
+        let columns: Vec<LayerTypeRef> = column_major_orthonormal.chunks_exact(column_size)
             .map(|x| LayerTypeRef::from_data(x, TensorShape{rows: column_size, columns: 1, batch_size: 1}))
             .collect();
 
@@ -1862,11 +1862,17 @@ where
                 OwnedInputType::Normal(x) => OwnedInputType::Normal(x),
                 OwnedInputType::OneHot(mut x) =>
                 {
-                    x.positions.iter_mut().enumerate().for_each(|(batch_index, batch_positions)|
+                    x.positions.chunks_exact_mut(x.count).enumerate().for_each(|(batch_index, batch_positions)|
                     {
                         let dropouts = &self.dropouts.input_dropouts[batch_index];
 
-                        *batch_positions = batch_positions.iter().copied().filter(|x| !dropouts.contains(x)).collect();
+                        batch_positions.iter_mut().for_each(|x|
+                        {
+                            if !dropouts.contains(&(*x as usize))
+                            {
+                                *x = u32::MAX;
+                            }
+                        });
                     });
 
                     OwnedInputType::OneHot(x)
@@ -1979,12 +1985,15 @@ where
 
         self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted, target)|
         {
-            assert_eq!(target.batch_size(), 1);
+            assert_eq!(target.batch_size, 1);
 
-            let positions = &target.positions[0];
-            assert_eq!(positions.len(), 1);
+            assert_eq!(target.positions.len(), 1);
 
-            let target_index = positions[0];
+            let target_index = target.positions[0];
+
+            assert_ne!(target_index, u32::MAX);
+
+            let target_index = target_index as usize;
 
             let predicted = predicted.borrow();
             let highest_index = predicted.highest_index();
@@ -2335,7 +2344,7 @@ mod tests
 
     fn inputs_outputs() -> (Vec<OwnedInputType>, Vec<OneHotLayer>)
     {
-        let oh = |v: usize| OneHotLayer::new([[v].into()].into(), SIZES.initial_input, 1);
+        let oh = |v: usize| OneHotLayer::new([[v].into()].into(), 1, SIZES.initial_input, 1);
 
         let inputs = vec![
             OwnedInputType::OneHot(oh(0)),

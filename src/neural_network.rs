@@ -538,7 +538,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
                 [self.inputs[self.index_of_batch_inputs(batch_index) + self.index].index()].into()
             }).collect::<Box<[_]>>();
 
-            OneHotLayer::new(words, words_amount, self.batch_size())
+            OneHotLayer::new(words, 1, words_amount, self.batch_size())
         };
 
         let this_input: OwnedInputType = self.dictionary.one_hot_to_input(this_input);
@@ -549,7 +549,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
                 [self.inputs[self.index_of_batch_inputs(batch_index) + self.index + 1].index()].into()
             }).collect::<Box<[_]>>();
 
-            OneHotLayer::new(words, words_amount, self.batch_size())
+            OneHotLayer::new(words, 1, words_amount, self.batch_size())
         };
 
         self.index += 1;
@@ -577,7 +577,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
                 Self::around_window(context, amount)
             }).collect::<Box<[_]>>();
 
-            OneHotLayer::new(words, words_amount, self.batch_size())
+            OneHotLayer::new(words, BAG_OF_WORDS_EMBEDDINGS_COUNT * 2 + 1, words_amount, self.batch_size())
         };
 
         let this_input: OwnedInputType = self.dictionary.one_hot_to_input(this_input);
@@ -588,7 +588,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
                 [self.inputs[self.index_of_batch_inputs(batch_index) + self.index + BAG_OF_WORDS_EMBEDDINGS_COUNT].index()].into()
             }).collect::<Box<[_]>>();
 
-            OneHotLayer::new(words, words_amount, self.batch_size())
+            OneHotLayer::new(words, 1, words_amount, self.batch_size())
         };
 
         self.index += 1;
