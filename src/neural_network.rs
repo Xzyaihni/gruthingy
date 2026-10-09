@@ -303,6 +303,8 @@ pub trait EmbeddingsTypeable
     fn min_len() -> usize;
 
     fn name() -> &'static str;
+
+    fn one_hot_count() -> usize { Self::min_len() }
 }
 
 impl EmbeddingsTypeable for OneHotEmbeddings
@@ -1242,7 +1244,7 @@ where
         {
             self.network.set_train_mode();
 
-            let total_loss = self.network.feedforward_no_gradient(input_outputs);
+            let total_loss = self.network.feedforward_no_gradient(OneHotEmbeddings::one_hot_count(), input_outputs);
             let loss = total_loss / inputs.len() as f32;
 
             Self::print_loss("testing".to_owned(), loss);
@@ -1285,7 +1287,7 @@ where
     {
         self.network.set_train_mode();
 
-        self.network.prepare(true);
+        self.network.prepare(EmbeddingType::one_hot_count(), true);
 
         if let Some(learning_rate) = info.learning_rate
         {
@@ -1572,7 +1574,7 @@ mod tests
 
         network_single.network.set_train_mode();
 
-        network_single.network.prepare(true);
+        network_single.network.prepare(ThisEmbeddings::one_hot_count(), true);
 
         fastrand::seed(111);
 
@@ -1706,7 +1708,7 @@ mod tests
 
         network_batched.network.set_train_mode();
 
-        network_batched.network.prepare(true);
+        network_batched.network.prepare(ThisEmbeddings::one_hot_count(), true);
 
         let batched_rng = PrecomputedRng{
             index: 0,

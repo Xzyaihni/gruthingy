@@ -1405,14 +1405,14 @@ where
         }
     }
 
-    pub fn prepare(&mut self, store_gradient: bool)
+    pub fn prepare(&mut self, one_hot_count: usize, store_gradient: bool)
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         if !self.recorder.is_ready()
         {
-            self.record_feedforward();
+            self.record_feedforward(one_hot_count);
 
             self.prepare_setup_shared();
 
@@ -1505,7 +1505,7 @@ where
         self.weights = Some(weights);
     }
 
-    fn record_feedforward(&mut self)
+    fn record_feedforward(&mut self, one_hot_count: usize)
     {
         assert!(self.network_mode.is_some());
 
@@ -1521,7 +1521,7 @@ where
             {
                 if is_input_one_hot
                 {
-                    InputTypePtr::OneHot(recorder.new_one_hot_batched(batch_size))
+                    InputTypePtr::OneHot(recorder.new_one_hot(one_hot_count, input_size, batch_size))
                 } else
                 {
                     InputTypePtr::Normal(recorder.new_tensor_batched_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size}).as_value())
@@ -1544,7 +1544,7 @@ where
 
         let this_target_first = if has_target
         {
-            let this_target_first = self.recorder.new_one_hot_batched(batch_size);
+            let this_target_first = self.recorder.new_one_hot(1, self.sizes.final_output, batch_size);
 
             self.recorder.name_one_hot(this_target_first, "target_first");
 
@@ -1577,7 +1577,7 @@ where
         {
             let this_input_loop = create_input(&mut self.recorder);
 
-            let this_target_loop = has_target.then(|| self.recorder.new_one_hot_batched(batch_size));
+            let this_target_loop = has_target.then(|| self.recorder.new_one_hot(1, self.sizes.final_output, batch_size));
 
             let final_loss_selector = no_state_loss.map(|no_state_loss| self.recorder.phi_other_selector(no_state_loss));
 
@@ -2102,13 +2102,14 @@ where
 
     pub fn feedforward_no_gradient(
         &mut self,
+        one_hot_count: usize,
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.prepare(false);
+        self.prepare(one_hot_count, false);
 
         self.feedforward_setup_dropout(&mut fastrand::Rng::new());
 
@@ -2145,7 +2146,7 @@ where
     {
         assert!(self.network_mode == Some(NetworkMode::Predict));
 
-        self.prepare(false);
+        self.prepare(1, false);
 
         self.feedforward_setup_dropout(&mut fastrand::Rng::new());
 
@@ -2388,7 +2389,7 @@ mod tests
         {
             assert!(IS_INPUT_ONE_HOT);
 
-            (InputTypePtr::OneHot(at_once.recorder.new_one_hot()), at_once.recorder.new_one_hot())
+            (InputTypePtr::OneHot(at_once.recorder.new_one_hot(1, SIZES.final_output, 1)), at_once.recorder.new_one_hot(1, SIZES.final_output, 1))
         }).collect();
 
         let mut previous_state = None;
@@ -2523,7 +2524,7 @@ mod tests
         let mut with_steps: NetworkType = Network::new(SIZES, INPUT_DROPOUT_PROBABILITY, DROPOUT_PROBABILITY, network_config);
         with_steps.set_train_mode();
 
-        with_steps.prepare(true);
+        with_steps.prepare(1, true);
 
         let with_steps_gradient = with_steps.gradients(fastrand::Rng::with_seed(SEED), input_outputs.clone());
 

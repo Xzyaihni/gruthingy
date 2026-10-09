@@ -23,7 +23,7 @@ let batch_start = batch_index * lhs_single_length;
 
         if column >= lhs_columns
         {
-            return;
+            break;
         }
 
         lhs[batch_start + row * row_stride + column * column_stride] *= rhs[batch_index * lhs_columns + column];
@@ -50,9 +50,9 @@ for (var half_stride = 1u; half_stride < lhs_columns; half_stride *= 2)
 
         let start = batch_start + row * row_stride + column * column_stride;
         lhs[start] += lhs[start + half_stride * column_stride];
-
-        storageBarrier();
     }
+
+    storageBarrier();
 }
 
 output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row * row_stride]);

@@ -8,21 +8,32 @@ use super::{
 use wgpu::util::DeviceExt;
 
 
-macro_rules! define_op_kernels
+macro_rules! define_op_enum
 {
-    ($($variant:ident),+) =>
+    ($name:ident, $($variant:ident),+$(,)?) =>
     {
-        pub enum OpKernel
+        pub enum $name
         {
             $(
                 $variant,
             )+
         }
 
-        impl OpKernel
+        impl $name
         {
             pub const COUNT: usize = 0 $(+ { stringify!($variant); 1 })+;
+        }
+    }
+}
 
+macro_rules! define_op_kernels
+{
+    ($($variant:ident),+) =>
+    {
+        define_op_enum!{OpKernel, $($variant,)+}
+
+        impl OpKernel
+        {
             pub fn create_kernels<T>(mut f: impl FnMut(OpKernel) -> T) -> [T; Self::COUNT]
             {
                 [
@@ -30,6 +41,16 @@ macro_rules! define_op_kernels
                         f(Self::$variant),
                     )+
                 ]
+            }
+
+            pub fn name(&self) -> &'static str
+            {
+                match self
+                {
+                    $(
+                        Self::$variant => stringify!($variant),
+                    )+
+                }
             }
         }
     }
@@ -56,7 +77,9 @@ define_op_kernels!{
     MatmulvTransposedAdd,
     OuterProduct,
     OuterProductAdd,
-    SoftmaxCrossEntropyNoEntropy
+    Softmax,
+    SoftmaxCrossEntropy,
+    SoftmaxCrossEntropyDiff
 }
 
 #[derive(Debug, Clone)]
@@ -68,12 +91,17 @@ pub struct RawArray
 
 impl RawArray
 {
-    pub fn from_slice(memory: &RawArrayMemory, values: &[f32], shape: TensorShape) -> Self
+    pub fn from_slice<T: bytemuck::Pod>(
+        memory: &RawArrayMemory,
+        label: Option<&str>,
+        values: &[T],
+        shape: TensorShape
+    ) -> Self
     {
         debug_assert_eq!(shape.size(), values.len());
 
         let buffer = memory.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-            label: None,
+            label,
             contents: bytemuck::cast_slice(&values),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST
         });
@@ -84,11 +112,15 @@ impl RawArray
         }
     }
 
-    pub fn uninit(memory: &RawArrayMemory, size: usize) -> Self
+    pub fn uninit<T>(
+        memory: &RawArrayMemory,
+        label: Option<&str>,
+        size: usize
+    ) -> Self
     {
         let buffer = memory.device.create_buffer(&wgpu::BufferDescriptor{
-            label: None,
-            size: size as u64 * mem::size_of::<f32>() as u64,
+            label,
+            size: size as u64 * mem::size_of::<T>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false
         });

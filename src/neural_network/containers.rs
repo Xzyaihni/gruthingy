@@ -634,6 +634,9 @@ struct LoopStackIndex(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopIndex(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScratchBufferIndex(usize);
+
 #[derive(Debug, Clone)]
 enum OperationsTarget
 {
@@ -1182,11 +1185,14 @@ struct KernelLayout
 struct KernelLayouts
 {
     a_b_output: KernelLayout,
+    a_b_s_output: KernelLayout,
     a_b_c_output: KernelLayout,
     a_reduce_b_output: KernelLayout,
     a_reduce_b_c_output: KernelLayout,
     t_s_output: KernelLayout,
     src_dst: KernelLayout,
+    src_double_dst: KernelLayout,
+    src_triple_dst: KernelLayout,
     reduction: KernelLayout
 }
 
@@ -1195,7 +1201,8 @@ struct RawArrayMemory
     device: wgpu::Device,
     queue: wgpu::Queue,
     input_buffers: Vec<wgpu::Buffer>,
-    scratch_buffers: HashMap<usize, wgpu::Buffer>,
+    scratch_buffers: Vec<wgpu::Buffer>,
+    scratch_buffers_locations: Vec<Vec<ScratchBufferIndex>>,
     kernel_layouts: KernelLayouts,
     kernels: [wgpu::ComputePipeline; KERNELS_COUNT]
 }
@@ -1270,7 +1277,7 @@ impl RawArrayMemory
 
             let a_b_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("a_b_output"),
                     entries: &[
                         input_layout_entry(0),
                         input_layout_entry(1),
@@ -1281,9 +1288,22 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
+            let a_b_s_output = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("a_b_s_output"),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 1)
+            };
+
             let a_b_c_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("a_b_c_output"),
                     entries: &[
                         input_layout_entry(0),
                         input_layout_entry(1),
@@ -1297,7 +1317,7 @@ impl RawArrayMemory
 
             let a_reduce_b_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("a_reduce_b_output"),
                     entries: &[
                         output_layout_entry(0),
                         input_layout_entry(1),
@@ -1310,7 +1330,7 @@ impl RawArrayMemory
 
             let a_reduce_b_c_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("a_reduce_b_c_output"),
                     entries: &[
                         output_layout_entry(0),
                         input_layout_entry(1),
@@ -1324,7 +1344,7 @@ impl RawArrayMemory
 
             let t_s_output = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("t_s_output"),
                     entries: &[
                         input_layout_entry(0),
                         output_layout_entry(1)
@@ -1336,7 +1356,7 @@ impl RawArrayMemory
 
             let src_dst = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("src_dst"),
                     entries: &[
                         input_layout_entry(0),
                         output_layout_entry(1)
@@ -1346,9 +1366,36 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
+            let src_double_dst = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("src_double_dst"),
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            let src_triple_dst = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("src_triple_dst"),
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1),
+                        output_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
             let reduction = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: None,
+                    label: Some("reduction"),
                     entries: &[
                         output_layout_entry(0),
                         output_layout_entry(1)
@@ -1360,11 +1407,14 @@ impl RawArrayMemory
 
             KernelLayouts{
                 a_b_output,
+                a_b_s_output,
                 a_b_c_output,
                 a_reduce_b_output,
                 a_reduce_b_c_output,
                 t_s_output,
                 src_dst,
+                src_double_dst,
+                src_triple_dst,
                 reduction
             }
         };
@@ -1393,7 +1443,9 @@ impl RawArrayMemory
                 OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.a_reduce_b_output),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output),
                 OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::SoftmaxCrossEntropyNoEntropy => ("kernels/softmax_cross_entropy_no_entropy.wgsl", &kernel_layouts.a_b_output)
+                OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.src_double_dst),
+                OpKernel::SoftmaxCrossEntropy => ("kernels/softmax_cross_entropy.wgsl", &kernel_layouts.src_triple_dst),
+                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.a_b_c_output)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -1422,7 +1474,8 @@ impl RawArrayMemory
         Self{
             device,
             queue,
-            scratch_buffers: HashMap::new(),
+            scratch_buffers: Vec::new(),
+            scratch_buffers_locations: Vec::new(),
             input_buffers: Vec::new(),
             kernel_layouts,
             kernels
@@ -1477,7 +1530,7 @@ impl Debug for OperationsRecorder
                 }, |v|
                 {
                     DebugStringRaw(self.memory.format_variable(v))
-                }, convert::identity, convert::identity))
+                }, convert::identity, convert::identity, convert::identity))
             }).collect::<Vec<_>>();
 
             loops = self.loops.iter().map(|info| LoopInfoDebug{memory: &self.memory, info}).collect::<Vec<_>>();
@@ -1594,16 +1647,11 @@ impl OperationsRecorder
         input
     }
 
-    pub fn new_one_hot(&mut self) -> OneHotIndex
-    {
-        self.new_one_hot_batched(1)
-    }
-
-    pub fn new_one_hot_batched(&mut self, batch_size: usize) -> OneHotIndex
+    pub fn new_one_hot(&mut self, count: usize, layer_size: usize, batch_size: usize) -> OneHotIndex
     {
         let id = self.memory.one_hot_layers.len();
 
-        self.memory.one_hot_layers.push(OneHotLayer::empty_batched(batch_size));
+        self.memory.one_hot_layers.push(OneHotLayer::new_empty(count, layer_size, batch_size));
 
         OneHotIndex(id)
     }
@@ -1681,6 +1729,8 @@ impl OperationsRecorder
 
     pub fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
     {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingResolve));
+
         self.memory.set_one_hot(index, value)
     }
 
@@ -1689,7 +1739,7 @@ impl OperationsRecorder
         match input
         {
             InputType::Normal(input) => self.set_tensor(input, value.into_normal()),
-            InputType::OneHot(input) => self.memory.set_one_hot(input, value.into_one_hot())
+            InputType::OneHot(input) => self.set_one_hot(input, value.into_one_hot())
         }
     }
 
@@ -2614,7 +2664,7 @@ impl OperationsRecorder
                 let compute_pass = compute_pass.as_mut().expect("must be inside a compute pass");
 
                 let bind_group = raw_array_memory.device.create_bind_group(&wgpu::BindGroupDescriptor{
-                    label: None,
+                    label: Some(kernel.name()),
                     layout: &kernel_layout.bind_group_layout,
                     entries: bind_group_entries
                 });
@@ -2637,20 +2687,69 @@ impl OperationsRecorder
                 exact_workgroup(compute_pass, size.div_ceil(WORK_GROUP_SIZE))
             }
 
-            let try_end_compute_pass = |compute_pass: &mut Option<wgpu::ComputePass>|
+            fn try_end_compute_pass(compute_pass: &mut Option<wgpu::ComputePass>)
             {
                 *compute_pass = None;
-            };
+            }
 
-            let mut copy_tensor = |memory: &OperationsRecorderMemory, src: TensorRawDataPointer, dst: TensorRawDataPointer|
+            fn copy_equal_buffers(encoder: &mut wgpu::CommandEncoder, src: &wgpu::Buffer, dst: &wgpu::Buffer)
+            {
+                encoder.copy_buffer_to_buffer(src, 0, dst, 0, src.size());
+            }
+
+            fn copy_tensor(
+                encoder: &mut wgpu::CommandEncoder,
+                compute_pass: &mut Option<wgpu::ComputePass>,
+                memory: &OperationsRecorderMemory,
+                src: TensorRawDataPointer,
+                dst: TensorRawDataPointer
+            )
             {
                 debug_assert_eq!(src.shape, dst.shape);
 
-                try_end_compute_pass(&mut compute_pass);
+                try_end_compute_pass(compute_pass);
 
-                let src_buffer = get_buffer(memory, src);
-                encoder.copy_buffer_to_buffer(src_buffer, 0, get_buffer(memory, dst), 0, src_buffer.size());
-            };
+                copy_equal_buffers(encoder, get_buffer(memory, src), get_buffer(memory, dst));
+            }
+
+            fn scratch_buffers_iter<'a, 'b, 'c, 'd, V: IntoIterator<Item=TensorRawDataPointer>>(
+                encoder: &'c mut wgpu::CommandEncoder,
+                compute_pass: &mut Option<wgpu::ComputePass>,
+                tensors_raw_data: &'b [RawArray],
+                scratch_buffers: &'a [wgpu::Buffer],
+                indices: &'d [ScratchBufferIndex],
+                values: V
+            ) -> impl Iterator<Item=&'a wgpu::Buffer> + use<'a, 'b, 'c, 'd, V>
+            {
+                try_end_compute_pass(compute_pass);
+
+                indices.iter().copied().zip(values).map(move |(index, value)|
+                {
+                    let scratch_buffer = &scratch_buffers[index.0];
+
+                    let input_buffer = &get_raw_array(tensors_raw_data, value).buffer;
+
+                    copy_equal_buffers(encoder, input_buffer, scratch_buffer);
+
+                    scratch_buffer
+                })
+            }
+
+            fn copy_scratch_buffer<'a>(
+                encoder: &mut wgpu::CommandEncoder,
+                compute_pass: &mut Option<wgpu::ComputePass>,
+                tensors_raw_data: &[RawArray],
+                scratch_buffers: &'a [wgpu::Buffer],
+                indices: &[ScratchBufferIndex],
+                values: TensorRawDataPointer
+            ) -> &'a wgpu::Buffer
+            {
+                debug_assert_eq!(indices.len(), 1, "must have 1 scratch buffer, has {}", indices.len());
+
+                scratch_buffers_iter(encoder, compute_pass, tensors_raw_data, scratch_buffers, indices, [values])
+                    .next()
+                    .unwrap()
+            }
 
             match &self.raw_operations[i]
             {
@@ -2662,7 +2761,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Copy{src, dst} =>
                 {
-                    copy_tensor(&self.memory, *src, *dst);
+                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
                 },
                 GradientOp::ZeroValue(dst) =>
                 {
@@ -2833,7 +2932,7 @@ impl OperationsRecorder
                         first
                     };
 
-                    copy_tensor(&self.memory, *src, *output);
+                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *output);
                 },
                 GradientOp::OtherSelectorValueGradient{index, first, other, src} =>
                 {
@@ -2861,7 +2960,7 @@ impl OperationsRecorder
                         other
                     };
 
-                    copy_tensor(&self.memory, *src, *dst);
+                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
                 },
                 GradientOp::SetOtherSelector(index) =>
                 {
@@ -3009,13 +3108,14 @@ impl OperationsRecorder
                     debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
                     debug_assert!(output.shape.is_batched_scalar());
 
-                    let scratch_buffer = &self.raw_array_memory.scratch_buffers[&value.shape.size()];
-
-                    let input_buffer = &get_raw_array(&self.memory.tensors_raw_data, *value).buffer;
-
-                    try_end_compute_pass(&mut compute_pass);
-
-                    encoder.copy_buffer_to_buffer(input_buffer, 0, scratch_buffer, 0, input_buffer.size());
+                    let scratch_buffer = copy_scratch_buffer(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.memory.tensors_raw_data,
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations[i],
+                        *value
+                    );
 
                     do_kernel_operation(
                         &mut encoder,
@@ -3184,6 +3284,142 @@ impl OperationsRecorder
 
                     single_work_group(&mut compute_pass, value.size());
                 },
+                GradientOp::Softmax{values, targets, softmaxed_output} =>
+                {
+                    debug_assert_eq!(values.shape, softmaxed_output.shape);
+                    debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
+
+                    debug_assert_eq!(targets.shape.rows, 1);
+
+                    let scratch_buffer = copy_scratch_buffer(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.memory.tensors_raw_data,
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations[i],
+                        *values
+                    );
+
+                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *values, *softmaxed_output);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_double_dst,
+                        OpKernel::Softmax,
+                        &[
+                            bind_group_entry(0, *targets),
+                            create_bind_group_entry(1, scratch_buffer),
+                            bind_group_entry(2, *softmaxed_output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                },
+                GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+                {
+                    debug_assert_eq!(values.shape, softmaxed_output.shape);
+                    debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
+                    debug_assert_eq!(values.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert!(output.shape.is_batched_scalar());
+
+                    debug_assert_eq!(targets.shape.rows, 1);
+
+                    let scratch_buffer = copy_scratch_buffer(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.memory.tensors_raw_data,
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations[i],
+                        *values
+                    );
+
+                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *values, *softmaxed_output);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_triple_dst,
+                        OpKernel::SoftmaxCrossEntropy,
+                        &[
+                            bind_group_entry(0, *targets),
+                            create_bind_group_entry(1, scratch_buffer),
+                            bind_group_entry(2, *softmaxed_output),
+                            bind_group_entry(3, *output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                },
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
+                {
+                    debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
+                    debug_assert_eq!(values.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert!(output.shape.is_batched_scalar());
+
+                    debug_assert_eq!(targets.shape.rows, 1);
+
+                    let mut scratch_buffers = scratch_buffers_iter(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.memory.tensors_raw_data,
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations[i],
+                        [*values, *values]
+                    );
+
+                    let scratch_buffer = scratch_buffers.next().unwrap();
+                    let secondary_scratch_buffer = scratch_buffers.next().unwrap();
+
+                    drop(scratch_buffers);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.src_triple_dst,
+                        OpKernel::SoftmaxCrossEntropy,
+                        &[
+                            bind_group_entry(0, *targets),
+                            create_bind_group_entry(1, scratch_buffer),
+                            create_bind_group_entry(2, secondary_scratch_buffer),
+                            bind_group_entry(3, *output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                },
+                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
+                {
+                    debug_assert_eq!(softmaxed_values.shape, output.shape);
+
+                    debug_assert_eq!(softmaxed_values.shape.batch_size, targets.shape.batch_size);
+                    debug_assert_eq!(softmaxed_values.shape.batch_size, gradient.shape.batch_size);
+
+                    debug_assert!(gradient.shape.is_batched_scalar());
+
+                    debug_assert_eq!(targets.shape.rows, 1);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_c_output,
+                        OpKernel::SoftmaxCrossEntropyDiff,
+                        &[
+                            bind_group_entry(0, *softmaxed_values),
+                            bind_group_entry(1, *gradient),
+                            bind_group_entry(2, *targets),
+                            bind_group_entry(3, *output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                },
                 this_op@GradientOp::Matmulv{lhs, rhs, output}
                 | this_op@GradientOp::MatmulvAdd{lhs, rhs, added: _, output} =>
                 {
@@ -3196,18 +3432,19 @@ impl OperationsRecorder
                     debug_assert_eq!(rhs.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
-                    let scratch_buffer = &self.raw_array_memory.scratch_buffers[&lhs.shape.size()];
-
-                    let lhs_buffer = &get_raw_array(&self.memory.tensors_raw_data, *lhs).buffer;
-
-                    try_end_compute_pass(&mut compute_pass);
-
-                    encoder.copy_buffer_to_buffer(lhs_buffer, 0, scratch_buffer, 0, lhs_buffer.size());
-
                     match this_op
                     {
                         GradientOp::Matmulv{lhs: _, rhs, output} =>
                         {
+                            let scratch_buffer = copy_scratch_buffer(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.memory.tensors_raw_data,
+                                &self.raw_array_memory.scratch_buffers,
+                                &self.raw_array_memory.scratch_buffers_locations[i],
+                                *lhs
+                            );
+
                             do_kernel_operation(
                                 &mut encoder,
                                 &mut compute_pass,
@@ -3224,6 +3461,15 @@ impl OperationsRecorder
                         GradientOp::MatmulvAdd{lhs: _, rhs, added, output} =>
                         {
                             debug_assert_eq!(added, output);
+
+                            let scratch_buffer = copy_scratch_buffer(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.memory.tensors_raw_data,
+                                &self.raw_array_memory.scratch_buffers,
+                                &self.raw_array_memory.scratch_buffers_locations[i],
+                                *lhs
+                            );
 
                             do_kernel_operation(
                                 &mut encoder,
@@ -3255,18 +3501,19 @@ impl OperationsRecorder
                     debug_assert_eq!(rhs.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
-                    let scratch_buffer = &self.raw_array_memory.scratch_buffers[&lhs.shape.size()];
-
-                    let lhs_buffer = &get_raw_array(&self.memory.tensors_raw_data, *lhs).buffer;
-
-                    try_end_compute_pass(&mut compute_pass);
-
-                    encoder.copy_buffer_to_buffer(lhs_buffer, 0, scratch_buffer, 0, lhs_buffer.size());
-
                     match this_op
                     {
                         GradientOp::MatmulvTransposed{lhs: _, rhs, output} =>
                         {
+                            let scratch_buffer = copy_scratch_buffer(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.memory.tensors_raw_data,
+                                &self.raw_array_memory.scratch_buffers,
+                                &self.raw_array_memory.scratch_buffers_locations[i],
+                                *lhs
+                            );
+
                             do_kernel_operation(
                                 &mut encoder,
                                 &mut compute_pass,
@@ -3283,6 +3530,15 @@ impl OperationsRecorder
                         GradientOp::MatmulvTransposedAdd{lhs: _, rhs, added, output} =>
                         {
                             debug_assert_eq!(added, output);
+
+                            let scratch_buffer = copy_scratch_buffer(
+                                &mut encoder,
+                                &mut compute_pass,
+                                &self.memory.tensors_raw_data,
+                                &self.raw_array_memory.scratch_buffers,
+                                &self.raw_array_memory.scratch_buffers_locations[i],
+                                *lhs
+                            );
 
                             do_kernel_operation(
                                 &mut encoder,
@@ -4316,7 +4572,7 @@ impl OperationsRecorder
                         output
                     } if is_tensor_unused(output) =>
                     {
-                        GradientOp::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output}
+                        GradientOp::Softmax{values, targets, softmaxed_output}
                     },
                     GradientOp::SoftmaxCrossEntropy{..} => op_cloned,
                     GradientOp::OtherSelectorValueGradient{..} => op_cloned,
@@ -4590,6 +4846,34 @@ impl OperationsRecorder
 
     fn operations_to_raw(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
     {
+        let one_hot_buffers: Box<[TensorRawDataPointer]> = (0..self.memory.one_hot_layers.len()).map(|one_hot_index|
+        {
+            let one_hot_layer = &self.memory.one_hot_layers[one_hot_index];
+
+            let label = self.memory.format_variable(OneHotIndex(one_hot_index));
+            let label = Some(label.as_ref());
+
+            let shape = TensorShape{rows: one_hot_layer.count, columns: 1, batch_size: one_hot_layer.batch_size};
+
+            let size = shape.size();
+            let raw_tensor = if one_hot_layer.positions.is_empty()
+            {
+                RawArray::uninit::<u32>(&self.raw_array_memory, label, size)
+            } else
+            {
+                RawArray::from_slice(&self.raw_array_memory, label, &one_hot_layer.positions, shape)
+            };
+
+            let this_tensor_raw_ptr = LinearRawDataPointer{
+                raw_index: TensorIndexRaw(self.memory.tensors_raw_data.len()),
+                size
+            };
+
+            self.memory.tensors_raw_data.push(raw_tensor);
+
+            this_tensor_raw_ptr.with_shape(shape)
+        }).collect();
+
         let mut usage_counts: Vec<(TensorIndex, usize, Vec<(TensorIndex, usize)>)> = (0..self.memory.tensors.len())
             .map(|x| (TensorIndex(x), 0, Vec::new()))
             .collect();
@@ -4665,6 +4949,9 @@ impl OperationsRecorder
             let shape = this_tensor.tensor_shape();
             let size = shape.size();
 
+            let label = self.memory.format_tensor_index(this_index);
+            let label = Some(label.as_ref());
+
             let id = TensorIndexRaw(self.memory.tensors_raw_data.len());
 
             let this_tensor_raw_ptr = LinearRawDataPointer{
@@ -4679,11 +4966,11 @@ impl OperationsRecorder
             {
                 TensorMemoryValue::Value(x) =>
                 {
-                    RawArray::from_slice(&self.raw_array_memory, x.as_slice(), shape)
+                    RawArray::from_slice(&self.raw_array_memory, label, x.as_slice(), shape)
                 },
                 TensorMemoryValue::Size{..} =>
                 {
-                    RawArray::uninit(&self.raw_array_memory, size)
+                    RawArray::uninit::<f32>(&self.raw_array_memory, label, size)
                 }
             };
 
@@ -4724,7 +5011,7 @@ impl OperationsRecorder
                     self.memory.format_variable(value)
                 );
 
-                gradient_op.map(&access_tensor, convert::identity, |_| unreachable!(), convert::identity)
+                gradient_op.map(&access_tensor, convert::identity, |_| unreachable!(), |_| unreachable!(), convert::identity)
             };
 
             let this_must_exist = next_must_exist;
@@ -4732,24 +5019,61 @@ impl OperationsRecorder
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
-            if let Some(shape_tensor) = match gradient_op
+            if let Some((count, shape_tensor)) = match gradient_op
             {
                 GradientOp::SumTensor{value, ..}
                 | GradientOp::Matmulv{lhs: value, ..}
-                | GradientOp::MatmulvTransposed{lhs: value, ..} => Some(value),
+                | GradientOp::MatmulvTransposed{lhs: value, ..}
+                | GradientOp::MatmulvTransposedAdd{lhs: value, ..}
+                | GradientOp::Softmax{values: value, ..}
+                | GradientOp::SoftmaxCrossEntropy{values: value, ..} => Some((1, value)),
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, ..} => Some((2, values)),
                 _ => None
             }
             {
                 let size = self.memory.tensor_shape(shape_tensor).size();
+                let size = (size * FLOAT_BYTES) as u64;
 
-                let scratch_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
-                    label: None,
-                    size: (size * FLOAT_BYTES) as u64,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false
+                let mut taken_indices = Vec::new();
+                (0..count).for_each(|count_index|
+                {
+                    let scratch_buffer_index = if let Some(x) = self.raw_array_memory.scratch_buffers.iter().enumerate().position(|(index, buffer)|
+                    {
+                        buffer.size() == size && !taken_indices.contains(&ScratchBufferIndex(index))
+                    })
+                    {
+                        ScratchBufferIndex(x)
+                    } else
+                    {
+                        let buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                            label: None,
+                            size,
+                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false
+                        });
+
+                        let index = ScratchBufferIndex(self.raw_array_memory.scratch_buffers.len());
+                        self.raw_array_memory.scratch_buffers.push(buffer);
+
+                        index
+                    };
+
+                    taken_indices.push(scratch_buffer_index);
+
+                    let raw_operation_index = self.raw_operations.len();
+                    if count_index > 0
+                    {
+                        self.raw_array_memory.scratch_buffers_locations[raw_operation_index].push(scratch_buffer_index);
+                    } else
+                    {
+                        while self.raw_array_memory.scratch_buffers_locations.len() < raw_operation_index
+                        {
+                            self.raw_array_memory.scratch_buffers_locations.push(Vec::new());
+                        }
+
+                        self.raw_array_memory.scratch_buffers_locations.push(vec![scratch_buffer_index]);
+                    }
                 });
-
-                self.raw_array_memory.scratch_buffers.insert(size, scratch_buffer);
             }
 
             let new_op = match gradient_op
@@ -4829,6 +5153,9 @@ impl OperationsRecorder
 
                             RawJumpInfo{loop_index: LoopIndex(usize::MAX), operation_index: GradientOperationIndex(usize::MAX)}
                         })
+                    }, |one_hot_index|
+                    {
+                        one_hot_buffers[one_hot_index.0]
                     }, convert::identity);
 
                     (!ignore_output).then_some(output)
@@ -6669,7 +6996,7 @@ impl OperationsRecorder
                         InputTypePtr::OneHot(one_hot) =>
                         {
                             let one_hot = &self.memory.one_hot_layers[one_hot.0];
-                            InputTypePtr::OneHot(self.new_one_hot_batched(one_hot.batch_size))
+                            InputTypePtr::OneHot(self.new_one_hot(one_hot.count, one_hot.layer_size, one_hot.batch_size))
                         }
                     }
                 }).collect();
@@ -7142,12 +7469,12 @@ impl<I> JumpInfo<I>
     }
 }
 
-struct NotationGradientOp<T, V, J, S>(GradientOp<T, V, J, S>);
+struct NotationGradientOp<T, V, J, O, S>(GradientOp<T, V, J, O, S>);
 
-impl<S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStringRaw>, S>
+impl<O, S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStringRaw>, O, S>
 {
     #[allow(dead_code)]
-    fn from_nameable(memory: &OperationsRecorderMemory, op: GradientOp<TensorPtr, ValueIndex, JumpInfo, S>) -> Self
+    fn from_nameable(memory: &OperationsRecorderMemory, op: GradientOp<TensorPtr, ValueIndex, JumpInfo, O, S>) -> Self
     {
         Self(op.map(|t|
         {
@@ -7158,11 +7485,11 @@ impl<S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStringR
         }, |jump_info|
         {
             jump_info.map_inputs(|input| DebugStringRaw(memory.format_variable(input)))
-        }, convert::identity))
+        }, convert::identity, convert::identity))
     }
 }
 
-impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<T, V, J, PhiOtherSelectorIndex>
+impl<T: Debug, V: Debug, J: Debug, O: Debug> Debug for NotationGradientOp<T, V, J, O, PhiOtherSelectorIndex>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
@@ -7203,11 +7530,11 @@ impl<T: Debug, V: Debug, J: Debug> Debug for NotationGradientOp<T, V, J, PhiOthe
     }
 }
 
-type RawGradientOp = GradientOp<TensorRawDataPointer, ValueIndex, RawJumpInfo, PhiOtherSelectorIndex>;
-type StandardGradientOp = GradientOp<TensorPtr, ValueIndex, JumpInfo, PhiOtherSelectorIndex>;
+type RawGradientOp = GradientOp<TensorRawDataPointer, ValueIndex, RawJumpInfo, TensorRawDataPointer, PhiOtherSelectorIndex>;
+type StandardGradientOp = GradientOp<TensorPtr, ValueIndex, JumpInfo, OneHotIndex, PhiOtherSelectorIndex>;
 
 #[derive(Debug, Clone)]
-pub enum GradientOp<T, V, J, S>
+pub enum GradientOp<T, V, J, O, S>
 {
     None,
     FeedforwardEndMarker,
@@ -7251,31 +7578,32 @@ pub enum GradientOp<T, V, J, S>
     Tanh{value: T, output: T},
     TanhDiff{value: T, gradient: T, output: T},
     Dot{lhs: T, rhs: T, output: T},
-    SoftmaxCrossEntropy{values: T, targets: OneHotIndex, softmaxed_output: T, output: T},
-    SoftmaxCrossEntropyNoSoftmaxed{values: T, targets: OneHotIndex, output: T},
-    SoftmaxCrossEntropyNoEntropy{values: T, targets: OneHotIndex, softmaxed_output: T},
-    SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: OneHotIndex, output: T},
+    SoftmaxCrossEntropy{values: T, targets: O, softmaxed_output: T, output: T},
+    SoftmaxCrossEntropyNoSoftmaxed{values: T, targets: O, output: T},
+    Softmax{values: T, targets: O, softmaxed_output: T},
+    SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: O, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
     MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
-    MatmulOneHotv{lhs: T, rhs: OneHotIndex, output: T},
-    MatmulOneHotvAdd{lhs: T, rhs: OneHotIndex, added: T, output: T},
+    MatmulOneHotv{lhs: T, rhs: O, output: T},
+    MatmulOneHotvAdd{lhs: T, rhs: O, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
     MatmulvTransposedAdd{lhs: T, rhs: T, added: T, output: T},
     OuterProduct{lhs: T, rhs: T, output: T},
     OuterProductAdd{lhs: T, rhs: T, added: T, output: T},
-    OuterProductOneHot{lhs: T, rhs: OneHotIndex, output: T},
-    OuterProductOneHotAdd{lhs: T, rhs: OneHotIndex, added: T, output: T}
+    OuterProductOneHot{lhs: T, rhs: O, output: T},
+    OuterProductOneHotAdd{lhs: T, rhs: O, added: T, output: T}
 }
 
-impl<T, V, J, S> GradientOp<T, V, J, S>
+impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
 {
-    fn map<U, W, K, SU>(
+    fn map<U, W, K, OU, SU>(
         self,
         mut tf: impl FnMut(T) -> U,
         mut vf: impl FnMut(V) -> W,
         jump_f: impl FnOnce(J) -> K,
+        onehot_f: impl FnOnce(O) -> OU,
         select_f: impl FnOnce(S) -> SU
-    ) -> GradientOp<U, W, K, SU>
+    ) -> GradientOp<U, W, K, OU, SU>
     {
         match self
         {
@@ -7341,21 +7669,31 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             Self::Dot{lhs, rhs, output} => GradientOp::Dot{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
             {
-                GradientOp::SoftmaxCrossEntropy{values: tf(values), targets, softmaxed_output: tf(softmaxed_output), output: tf(output)}
+                GradientOp::SoftmaxCrossEntropy{
+                    values: tf(values),
+                    targets: onehot_f(targets),
+                    softmaxed_output: tf(softmaxed_output),
+                    output: tf(output)
+                }
             },
             Self::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
             {
-                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values: tf(softmaxed_values), gradient: tf(gradient), targets, output: tf(output)}
+                GradientOp::SoftmaxCrossEntropyDiff{
+                    softmaxed_values: tf(softmaxed_values),
+                    gradient: tf(gradient),
+                    targets: onehot_f(targets),
+                    output: tf(output)
+                }
             },
             Self::Matmulv{lhs, rhs, output} => GradientOp::Matmulv{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::MatmulvAdd{lhs, rhs, added, output} => GradientOp::MatmulvAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)},
             Self::MatmulOneHotv{lhs, rhs, output} =>
             {
-                GradientOp::MatmulOneHotv{lhs: tf(lhs), rhs, output: tf(output)}
+                GradientOp::MatmulOneHotv{lhs: tf(lhs), rhs: onehot_f(rhs), output: tf(output)}
             },
             Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
             {
-                GradientOp::MatmulOneHotvAdd{lhs: tf(lhs), rhs, added: tf(added), output: tf(output)}
+                GradientOp::MatmulOneHotvAdd{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
@@ -7367,27 +7705,27 @@ impl<T, V, J, S> GradientOp<T, V, J, S>
             {
                 GradientOp::OuterProductAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
-            Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: tf(lhs), rhs, output: tf(output)},
+            Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: tf(lhs), rhs: onehot_f(rhs), output: tf(output)},
             Self::OuterProductOneHotAdd{lhs, rhs, added, output} =>
             {
-                GradientOp::OuterProductOneHotAdd{lhs: tf(lhs), rhs, added: tf(added), output: tf(output)}
+                GradientOp::OuterProductOneHotAdd{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::Jump(x) => GradientOp::Jump(jump_f(x)),
             Self::JumpIfLast(x) => GradientOp::JumpIfLast(jump_f(x)),
             Self::SetInputs(x) => GradientOp::SetInputs(x),
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
-                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: tf(values), targets, output: tf(output)}
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: tf(values), targets: onehot_f(targets), output: tf(output)}
             },
-            Self::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output} =>
+            Self::Softmax{values, targets, softmaxed_output} =>
             {
-                GradientOp::SoftmaxCrossEntropyNoEntropy{values: tf(values), targets, softmaxed_output: tf(softmaxed_output)}
+                GradientOp::Softmax{values: tf(values), targets: onehot_f(targets), softmaxed_output: tf(softmaxed_output)}
             }
         }
     }
 }
 
-impl<J, S> GradientOp<TensorPtr, ValueIndex, J, S>
+impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
 {
     fn map_outputs(self, f: impl FnMut(DiffValue) -> DiffValue) -> Self
     {
@@ -7451,7 +7789,7 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, S>
     }
 }
 
-impl<T, J, S> GradientOp<T, ValueIndex, J, S>
+impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
 {
     fn map_outputs_with_state<State>(
         self,
@@ -7511,9 +7849,9 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{output: tf(&mut state, output), targets, values}
             },
-            Self::SoftmaxCrossEntropyNoEntropy{softmaxed_output, targets, values} =>
+            Self::Softmax{softmaxed_output, targets, values} =>
             {
-                Self::SoftmaxCrossEntropyNoEntropy{softmaxed_output: tf(&mut state, softmaxed_output), targets, values}
+                Self::Softmax{softmaxed_output: tf(&mut state, softmaxed_output), targets, values}
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
@@ -7556,7 +7894,7 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
         mut state: State,
         mut tf: impl FnMut(&mut State, T) -> T,
         mut vf: impl FnMut(&mut State, ValueIndex) -> ValueIndex,
-        mut of: impl FnMut(&mut State, OneHotIndex) -> OneHotIndex
+        mut of: impl FnMut(&mut State, O) -> O
     ) -> Self
     {
         match self
@@ -7642,9 +7980,9 @@ impl<T, J, S> GradientOp<T, ValueIndex, J, S>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets, output}
             },
-            Self::SoftmaxCrossEntropyNoEntropy{values, targets, softmaxed_output} =>
+            Self::Softmax{values, targets, softmaxed_output} =>
             {
-                Self::SoftmaxCrossEntropyNoEntropy{values: tf(&mut state, values), targets, softmaxed_output}
+                Self::Softmax{values: tf(&mut state, values), targets, softmaxed_output}
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
@@ -7816,6 +8154,8 @@ impl OneHotLayer
                 flat_positions.resize(count, u32::MAX);
             });
 
+            debug_assert_eq!(flat_positions.len(), count * batch_size);
+
             Self{
                 positions: flat_positions.into_boxed_slice(),
                 count,
@@ -7827,14 +8167,14 @@ impl OneHotLayer
         this
     }
 
-    pub fn empty() -> Self
+    pub fn new_empty(count: usize, layer_size: usize, batch_size: usize) -> Self
     {
-        Self::new([].into(), 0, 0, 0)
-    }
-
-    pub fn empty_batched(batch_size: usize) -> Self
-    {
-        Self::new([].into(), 0, 0, batch_size)
+        Self{
+            positions: Box::new([]),
+            count,
+            layer_size,
+            batch_size
+        }
     }
 
     pub fn batch_replicate(self, batch_size: usize) -> Self
@@ -8526,7 +8866,7 @@ mod tests
         let targets = create_targets_with_size(a_columns);
         check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
-            let targets_index = recorder.new_one_hot();
+            let targets_index = recorder.new_one_hot(1, a_columns, 1);
             recorder.set_one_hot(targets_index, targets.clone());
 
             let s = recorder.sum_tensor(b);
@@ -8551,11 +8891,15 @@ mod tests
         let targets = create_targets();
         check_vector(|recorder, a, b|
         {
-            let targets_index = recorder.new_one_hot();
+            let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
             recorder.set_one_hot(targets_index, targets.clone());
 
             let sm = recorder.softmax_cross_entropy(a, targets_index).1;
-            recorder.add(b, sm)
+
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let sm_filled = recorder.fill_batched(b_shape, sm);
+
+            recorder.add(b, sm_filled)
         })
     }
 
@@ -8565,7 +8909,7 @@ mod tests
         let targets = create_targets();
         check_vector(|recorder, a, b|
         {
-            let targets_index = recorder.new_one_hot();
+            let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
             recorder.set_one_hot(targets_index, targets.clone());
 
             let two = recorder.set_new_value(2.0);
@@ -8573,7 +8917,10 @@ mod tests
 
             let sm = recorder.softmax_cross_entropy(btwo, targets_index).1;
 
-            recorder.add(a, sm)
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let sm_filled = recorder.fill_batched(b_shape, sm);
+
+            recorder.add(a, sm_filled)
         })
     }
 
@@ -8727,7 +9074,7 @@ mod tests
             let a_sum = recorder.sum_tensor(a);
             recorder.name_diff_tensor(a_sum, "a_sum");
 
-            let t = recorder.new_one_hot();
+            let t = recorder.new_one_hot(1, output_size, 1);
             recorder.name_one_hot(t, "t");
 
             let final_state_selector = recorder.phi_other_selector(a_sum);
@@ -9011,7 +9358,7 @@ mod tests
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
 
-            let target = recorder.new_one_hot();
+            let target = recorder.new_one_hot(1, output_size, 1);
             recorder.name_one_hot(target, "loop_target");
 
             let previous_state_selector = recorder.phi_other_selector(s1);
@@ -9075,7 +9422,7 @@ mod tests
 
             let mut create_target = |targets_values: OneHotLayer| -> OneHotIndex
             {
-                let targets = recorder.new_one_hot();
+                let targets = recorder.new_one_hot(1, output_size, 1);
                 recorder.name_one_hot(targets, "targets");
 
                 recorder.set_one_hot(targets, targets_values);
@@ -9118,7 +9465,7 @@ mod tests
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
 
-            let target = recorder.new_one_hot();
+            let target = recorder.new_one_hot(1, output_size, 1);
             recorder.name_one_hot(target, "loop_target");
 
             let final_state_selector = recorder.phi_other_selector(compound_loss);
@@ -9192,7 +9539,7 @@ mod tests
 
             let mut create_target = |targets_values: OneHotLayer| -> OneHotIndex
             {
-                let targets = recorder.new_one_hot();
+                let targets = recorder.new_one_hot(1, output_size, 1);
                 recorder.name_one_hot(targets, "targets");
 
                 recorder.set_one_hot(targets, targets_values);
@@ -9235,7 +9582,7 @@ mod tests
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
 
-            let target = recorder.new_one_hot();
+            let target = recorder.new_one_hot(1, output_size, 1);
             recorder.name_one_hot(target, "loop_target");
 
             let final_state_selector = recorder.phi_other_selector(compound_loss);
@@ -9335,7 +9682,7 @@ mod tests
 
             let mut create_target = |targets_values: OneHotLayer| -> OneHotIndex
             {
-                let targets = recorder.new_one_hot();
+                let targets = recorder.new_one_hot(1, output_size, 1);
                 recorder.name_one_hot(targets, "targets");
 
                 recorder.set_one_hot(targets, targets_values);
@@ -9386,7 +9733,7 @@ mod tests
             let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
             recorder.name_tensor(i, "loop_i");
 
-            let target = recorder.new_one_hot();
+            let target = recorder.new_one_hot(1, output_size, 1);
             recorder.name_one_hot(target, "loop_target");
 
             let final_state_selector = recorder.phi_other_selector(compound_loss);

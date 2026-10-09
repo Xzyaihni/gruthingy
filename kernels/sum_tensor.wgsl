@@ -40,9 +40,9 @@ fn run(
 
             let start = batch_start + src_index;
             src[start] += src[start + half_stride];
-
-            storageBarrier();
         }
+
+        storageBarrier();
     }
 
     dst[batch_index] = src[batch_start];

@@ -1,8 +1,7 @@
 use std::{
     f32,
     iter,
-    cmp::Ordering,
-    num::FpCategory
+    cmp::Ordering
 };
 
 use serde::{Serialize, Deserialize};
