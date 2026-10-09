@@ -1191,7 +1191,7 @@ struct KernelLayouts
     a_reduce_b_c_output: KernelLayout,
     t_s_output: KernelLayout,
     src_dst: KernelLayout,
-    src_double_dst: KernelLayout,
+    s_double_dst: KernelLayout,
     src_triple_dst: KernelLayout,
     reduction: KernelLayout
 }
@@ -1366,17 +1366,16 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let src_double_dst = {
+            let s_double_dst = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("src_double_dst"),
+                    label: Some("s_double_dst"),
                     entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1),
-                        output_layout_entry(2)
+                        output_layout_entry(0),
+                        output_layout_entry(1)
                     ]
                 });
 
-                from_bind_group_layout(bind_group_layout, 0)
+                from_bind_group_layout(bind_group_layout, 1)
             };
 
             let src_triple_dst = {
@@ -1413,7 +1412,7 @@ impl RawArrayMemory
                 a_reduce_b_c_output,
                 t_s_output,
                 src_dst,
-                src_double_dst,
+                s_double_dst,
                 src_triple_dst,
                 reduction
             }
@@ -1443,7 +1442,7 @@ impl RawArrayMemory
                 OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.a_reduce_b_output),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output),
                 OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.src_double_dst),
+                OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.s_double_dst),
                 OpKernel::SoftmaxCrossEntropy => ("kernels/softmax_cross_entropy.wgsl", &kernel_layouts.src_triple_dst),
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.a_b_c_output)
             };
@@ -1462,7 +1461,7 @@ impl RawArrayMemory
             });
 
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
-                label: None,
+                label: Some(kernel.name()),
                 layout: Some(&kernel_layout.pipeline_layout),
                 module: &shader,
                 entry_point: Some("run"),
@@ -3284,12 +3283,9 @@ impl OperationsRecorder
 
                     single_work_group(&mut compute_pass, value.size());
                 },
-                GradientOp::Softmax{values, targets, softmaxed_output} =>
+                GradientOp::Softmax{values, softmaxed_output} =>
                 {
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
-                    debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
-
-                    debug_assert_eq!(targets.shape.rows, 1);
 
                     let scratch_buffer = copy_scratch_buffer(
                         &mut encoder,
@@ -3306,16 +3302,17 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_double_dst,
+                        &self.raw_array_memory.kernel_layouts.s_double_dst,
                         OpKernel::Softmax,
                         &[
-                            bind_group_entry(0, *targets),
-                            create_bind_group_entry(1, scratch_buffer),
-                            bind_group_entry(2, *softmaxed_output)
+                            create_bind_group_entry(0, scratch_buffer),
+                            bind_group_entry(1, *softmaxed_output)
                         ]
                     );
 
-                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(values.shape.batch_size as u32).to_ne_bytes());
+
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
                 },
                 GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
@@ -4572,7 +4569,7 @@ impl OperationsRecorder
                         output
                     } if is_tensor_unused(output) =>
                     {
-                        GradientOp::Softmax{values, targets, softmaxed_output}
+                        GradientOp::Softmax{values, softmaxed_output}
                     },
                     GradientOp::SoftmaxCrossEntropy{..} => op_cloned,
                     GradientOp::OtherSelectorValueGradient{..} => op_cloned,
@@ -7580,7 +7577,7 @@ pub enum GradientOp<T, V, J, O, S>
     Dot{lhs: T, rhs: T, output: T},
     SoftmaxCrossEntropy{values: T, targets: O, softmaxed_output: T, output: T},
     SoftmaxCrossEntropyNoSoftmaxed{values: T, targets: O, output: T},
-    Softmax{values: T, targets: O, softmaxed_output: T},
+    Softmax{values: T, softmaxed_output: T},
     SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: O, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
     MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
@@ -7717,9 +7714,9 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             {
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: tf(values), targets: onehot_f(targets), output: tf(output)}
             },
-            Self::Softmax{values, targets, softmaxed_output} =>
+            Self::Softmax{values, softmaxed_output} =>
             {
-                GradientOp::Softmax{values: tf(values), targets: onehot_f(targets), softmaxed_output: tf(softmaxed_output)}
+                GradientOp::Softmax{values: tf(values), softmaxed_output: tf(softmaxed_output)}
             }
         }
     }
@@ -7849,9 +7846,9 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{output: tf(&mut state, output), targets, values}
             },
-            Self::Softmax{softmaxed_output, targets, values} =>
+            Self::Softmax{softmaxed_output, values} =>
             {
-                Self::Softmax{softmaxed_output: tf(&mut state, softmaxed_output), targets, values}
+                Self::Softmax{softmaxed_output: tf(&mut state, softmaxed_output), values}
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
@@ -7980,9 +7977,9 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets, output}
             },
-            Self::Softmax{values, targets, softmaxed_output} =>
+            Self::Softmax{values, softmaxed_output} =>
             {
-                Self::Softmax{values: tf(&mut state, values), targets, softmaxed_output}
+                Self::Softmax{values: tf(&mut state, values), softmaxed_output}
             },
             Self::None => Self::None,
             Self::SetOtherSelector(info) => Self::SetOtherSelector(info),
