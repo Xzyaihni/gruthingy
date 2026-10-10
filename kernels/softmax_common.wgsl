@@ -25,8 +25,7 @@ for (var half_stride = 1u; half_stride < values_length; half_stride *= 2)
     storageBarrier();
 }
 
-let biggest_value = sum_values[0];
-var z = 0.0;
+let biggest_value = sum_values[batch_start];
 
 let inside_spans = div_ceil(values_length, WORKGROUP_SIZE);
 
@@ -41,17 +40,17 @@ for (var span_id = 0u; span_id < inside_spans; span_id++)
 
     let start = batch_start + i;
 
-    // resets sum_values from the biggest value calculation back to values, softmaxed_values unchanged at this step
-    sum_values[start] = softmaxed_values[start];
-
     softmaxed_values[start] -= biggest_value;
 
     if i == target_of_batch(batch_index)
     {
-        z = softmaxed_values[start];
+        set_z(softmaxed_values[start]);
     }
 
     softmaxed_values[start] = exp(softmaxed_values[start]);
+
+    // resets sum_values from the biggest value calculation to softmaxed_values
+    sum_values[start] = softmaxed_values[start];
 }
 
 storageBarrier();

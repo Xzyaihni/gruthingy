@@ -26,4 +26,5 @@ strip = false
 debug = true
 
 [features]
+renderdocapi = []
 timedebug = []

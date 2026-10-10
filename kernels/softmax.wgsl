@@ -18,6 +18,10 @@ fn target_of_batch(batch_index: u32) -> u32
     return 4294967295;
 }
 
+fn set_z(value: f32)
+{
+}
+
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,

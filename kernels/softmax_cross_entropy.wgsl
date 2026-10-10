@@ -10,6 +10,8 @@ var<storage, read_write> softmaxed_values: array<f32>;
 @group(0) @binding(3)
 var<storage, read_write> entropies: array<f32>;
 
+var<workgroup> z: f32;
+
 const WORKGROUP_SIZE = 64;
 
 #include "div_ceil.wgsl"
@@ -19,6 +21,11 @@ const WORKGROUP_SIZE = 64;
 fn target_of_batch(batch_index: u32) -> u32
 {
     return targets[batch_index];
+}
+
+fn set_z(value: f32)
+{
+    z = value;
 }
 
 @compute @workgroup_size(WORKGROUP_SIZE)

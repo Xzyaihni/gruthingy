@@ -1444,7 +1444,7 @@ impl RawArrayMemory
                 OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output),
                 OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.s_double_dst),
                 OpKernel::SoftmaxCrossEntropy => ("kernels/softmax_cross_entropy.wgsl", &kernel_layouts.src_triple_dst),
-                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.a_b_c_output)
+                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.a_b_output)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -3401,17 +3401,18 @@ impl OperationsRecorder
 
                     debug_assert_eq!(targets.shape.rows, 1);
 
+                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *softmaxed_values, *output);
+
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_c_output,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
                         OpKernel::SoftmaxCrossEntropyDiff,
                         &[
-                            bind_group_entry(0, *softmaxed_values),
-                            bind_group_entry(1, *gradient),
-                            bind_group_entry(2, *targets),
-                            bind_group_entry(3, *output)
+                            bind_group_entry(0, *gradient),
+                            bind_group_entry(1, *targets),
+                            bind_group_entry(2, *output)
                         ]
                     );
 
@@ -8492,7 +8493,7 @@ mod tests
         new_recorder.no_gradient();
 
         dbg!(&new_recorder);
-        new_recorder.resolve_memory(false);
+        new_recorder.resolve_memory(true);
         dbg!(&new_recorder);
 
         let output_value = new_recorder.resolve_tensor_ptr(output_value);
@@ -8897,7 +8898,7 @@ mod tests
             let sm_filled = recorder.fill_batched(b_shape, sm);
 
             recorder.add(b, sm_filled)
-        })
+        });
     }
 
     #[test]

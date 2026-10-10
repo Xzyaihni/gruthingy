@@ -899,13 +899,54 @@ fn accuracy_data(config: Config)
     }
 }
 
+#[cfg(feature = "renderdocapi")]
+#[link(name = "renderdocapi")]
+unsafe extern "C"
+{
+    pub safe fn renderdoc_api_get() -> *mut core::ffi::c_void;
+
+    pub unsafe fn renderdoc_api_begin_capture(api: *mut core::ffi::c_void);
+    pub unsafe fn renderdoc_api_end_capture(api: *mut core::ffi::c_void);
+}
+
+#[cfg(feature = "renderdocapi")]
+struct RenderDocApi(*mut core::ffi::c_void);
+
+#[cfg(feature = "renderdocapi")]
+unsafe impl Send for RenderDocApi {}
+
+#[cfg(feature = "renderdocapi")]
+unsafe impl Sync for RenderDocApi {}
+
+#[cfg(feature = "renderdocapi")]
+impl RenderDocApi
+{
+    fn init() -> Self
+    {
+        Self(renderdoc_api_get())
+    }
+
+    fn begin_capture(&self)
+    {
+        unsafe{ renderdoc_api_begin_capture(self.0); }
+    }
+
+    fn end_capture(&self)
+    {
+        unsafe{ renderdoc_api_end_capture(self.0); }
+    }
+}
+
+#[cfg(feature = "renderdocapi")]
+static RENDERDOC_API: std::sync::LazyLock<RenderDocApi> = std::sync::LazyLock::new(|| RenderDocApi::init());
+
 fn main()
 {
     #[cfg(debug_assertions)]
     {
         fastrand::seed(7777);
 
-        env_logger::init();
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     }
 
     let config = Config::parse(env::args().skip(1));

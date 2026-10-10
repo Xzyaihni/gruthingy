@@ -1,5 +1,6 @@
 Cargo.lock
 perf.data*
+/librenderdocapi.so
 /dictionary.txt
 /target
 /callgrind.*
@@ -8,5 +9,6 @@ perf.data*
 /embeddings.nn
 /*.ppm
 /test*
+/capture*
 /backup_networks
 /output
