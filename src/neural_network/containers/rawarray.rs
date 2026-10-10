@@ -58,6 +58,7 @@ macro_rules! define_op_kernels
 
 define_op_kernels!{
     Add,
+    AddScalar,
     Sub,
     SubFromScalar,
     MulComponentwise,

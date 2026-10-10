@@ -1423,6 +1423,7 @@ impl RawArrayMemory
             let (shader_path, kernel_layout) = match kernel
             {
                 OpKernel::Add => ("kernels/add.wgsl", &kernel_layouts.a_b_output),
+                OpKernel::AddScalar => ("kernels/add_scalar.wgsl", &kernel_layouts.t_s_output),
                 OpKernel::Sub => ("kernels/sub.wgsl", &kernel_layouts.a_b_output),
                 OpKernel::SubFromScalar => ("kernels/sub_from_scalar.wgsl", &kernel_layouts.t_s_output),
                 OpKernel::MulComponentwise => ("kernels/mul_componentwise.wgsl", &kernel_layouts.a_b_output),
@@ -3062,6 +3063,26 @@ impl OperationsRecorder
 
                     single_work_group(&mut compute_pass, lhs.size());
                 },
+                GradientOp::AddScalar{lhs, rhs, output} =>
+                {
+                    debug_assert_eq!(lhs.shape, output.shape);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.t_s_output,
+                        OpKernel::AddScalar,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
+
+                    single_work_group(&mut compute_pass, lhs.size());
+                },
                 GradientOp::Sub{lhs, rhs, output} =>
                 {
                     debug_assert_eq!(lhs.shape, rhs.shape);
@@ -3129,6 +3150,52 @@ impl OperationsRecorder
                     );
 
                     exact_workgroup(&mut compute_pass, value.shape.batch_size);
+                },
+                GradientOp::Dot{lhs, rhs, output} =>
+                {
+                    debug_assert_eq!(lhs.shape, rhs.shape);
+
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert!(output.shape.is_batched_scalar());
+
+                    let scratch_buffer = copy_scratch_buffer(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.memory.tensors_raw_data,
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations[i],
+                        *lhs
+                    );
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        OpKernel::MulComponentwise,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            create_bind_group_entry(2, scratch_buffer),
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, lhs.size());
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.reduction,
+                        OpKernel::SumTensor,
+                        &[
+                            create_bind_group_entry(0, scratch_buffer),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, output.shape.batch_size);
                 },
                 GradientOp::Fill{value, output} =>
                 {
@@ -5020,6 +5087,7 @@ impl OperationsRecorder
             if let Some((count, shape_tensor)) = match gradient_op
             {
                 GradientOp::SumTensor{value, ..}
+                | GradientOp::Dot{lhs: value, ..}
                 | GradientOp::Matmulv{lhs: value, ..}
                 | GradientOp::MatmulvTransposed{lhs: value, ..}
                 | GradientOp::MatmulvTransposedAdd{lhs: value, ..}
@@ -6750,14 +6818,30 @@ impl OperationsRecorder
             {
                 let gradient = gradient_or_return!(output);
 
+                let shape = self.memory.tensor_shape_value(lhs.as_value());
+
                 if let Some(lhs_gradient) = lhs.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
+                    let filled_gradient = self.memory.new_tensor_index(shape.clone());
+                    self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
+
+                    add_gradient_operation(
+                        self,
+                        selectors,
+                        GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: filled_gradient, output: lhs_gradient}
+                    );
                 }
 
                 if let Some(rhs_gradient) = rhs.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: rhs_gradient});
+                    let filled_gradient = self.memory.new_tensor_index(shape);
+                    self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
+
+                    add_gradient_operation(
+                        self,
+                        selectors,
+                        GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: filled_gradient, output: rhs_gradient}
+                    );
                 }
             },
             Op::Pow{lhs, power, output} =>
@@ -8710,7 +8794,11 @@ mod tests
         check_vector(|recorder, a, b|
         {
             let a_dot_b = recorder.dot(a, b);
-            recorder.add(a, a_dot_b)
+
+            let a_shape = recorder.tensor_shape(a.as_value());
+            let a_dot_b_filled = recorder.fill_batched(a_shape, a_dot_b);
+
+            recorder.add(a, a_dot_b_filled)
         })
     }
 
