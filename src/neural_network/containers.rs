@@ -5400,6 +5400,8 @@ impl OperationsRecorder
                     let arg_range = &this.memory.tensor_live_ranges[arg.0];
                     let arg_start = arg_range.start;
 
+                    debug_assert!(arg_start.is_some());
+                    debug_assert_ne!(arg_start, Some(-1));
                     debug_assert_eq!(arg_range.end, this.memory.tensor_live_ranges[output.0].start);
 
                     let combined_start = &mut this.memory.tensor_live_ranges[combined_output.0].start;
@@ -7683,12 +7685,12 @@ impl<T: Debug, V: Debug, J: Debug, O: Debug> Debug for NotationGradientOp<T, V, 
             GradientOp::MatmulvTransposed{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?}"),
             GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?} + {added:?}"),
             GradientOp::MatmulvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
-            GradientOp::MatmulOneHotv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
-            GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
+            GradientOp::MatmulOneHotv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} (one hot)"),
+            GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} (one hot) + {added:?}"),
             GradientOp::OuterProduct{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
             GradientOp::OuterProductAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
-            GradientOp::OuterProductOneHot{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
-            GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
+            GradientOp::OuterProductOneHot{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} (one hot)"),
+            GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} (one hot) + {added:?}"),
             GradientOp::SumTensor{value, output} => write!(f, "{output:?} ← ∑{value:?}"),
             GradientOp::GetOtherSelectorValue{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),
             GradientOp::GetOtherSelectorTensor{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),

@@ -42,6 +42,6 @@ fn run(
     {
         let one_hot_index = rhs[workgroup_id.x * one_hot_count + o];
 
-        output[workgroup_id.x] += lhs[batch_start + row * row_stride + one_hot_index];
+        output[workgroup_id.x] += lhs[batch_start + row * row_stride + one_hot_index * column_stride];
     }
 }
