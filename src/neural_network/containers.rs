@@ -1184,16 +1184,17 @@ struct KernelLayout
 
 struct KernelLayouts
 {
-    a_b_output: KernelLayout,
-    a_b_s_output: KernelLayout,
-    a_b_c_output: KernelLayout,
-    a_reduce_b_output: KernelLayout,
-    a_reduce_b_c_output: KernelLayout,
-    t_s_output: KernelLayout,
-    src_dst: KernelLayout,
-    s_double_dst: KernelLayout,
-    src_triple_dst: KernelLayout,
-    reduction: KernelLayout
+    r0_w2_i0: KernelLayout,
+    r0_w2_i1: KernelLayout,
+    r1_w1_i0: KernelLayout,
+    r1_w1_i1: KernelLayout,
+    r1_w2_i0: KernelLayout,
+    r1_w2_i1: KernelLayout,
+    r1_w3_i0: KernelLayout,
+    r2_w1_i0: KernelLayout,
+    r2_w1_i1: KernelLayout,
+    r2_w2_i0: KernelLayout,
+    r3_w1_i0: KernelLayout
 }
 
 struct RawArrayMemory
@@ -1275,49 +1276,57 @@ impl RawArrayMemory
                 }
             };
 
-            let a_b_output = {
+            let r0_w2_i0 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("a_b_output"),
+                    label: Some("r0_w2_i0"),
                     entries: &[
-                        input_layout_entry(0),
-                        input_layout_entry(1),
-                        output_layout_entry(2)
+                        output_layout_entry(0),
+                        output_layout_entry(1)
                     ]
                 });
 
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let a_b_s_output = {
+            let r0_w2_i1 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("a_b_s_output"),
+                    label: Some("r0_w2_i1"),
                     entries: &[
-                        input_layout_entry(0),
-                        input_layout_entry(1),
-                        output_layout_entry(2)
+                        output_layout_entry(0),
+                        output_layout_entry(1)
                     ]
                 });
 
                 from_bind_group_layout(bind_group_layout, 1)
             };
 
-            let a_b_c_output = {
+            let r1_w1_i0 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("a_b_c_output"),
+                    label: Some("r1_w1_i0"),
                     entries: &[
                         input_layout_entry(0),
-                        input_layout_entry(1),
-                        input_layout_entry(2),
-                        output_layout_entry(3)
+                        output_layout_entry(1)
                     ]
                 });
 
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let a_reduce_b_output = {
+            let r1_w1_i1 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("a_reduce_b_output"),
+                    label: Some("r1_w1_i1"),
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 1)
+            };
+
+            let r1_w2_i0 = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("r1_w2_i0"),
                     entries: &[
                         output_layout_entry(0),
                         input_layout_entry(1),
@@ -1328,59 +1337,22 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let a_reduce_b_c_output = {
+            let r1_w2_i1 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("a_reduce_b_c_output"),
+                    label: Some("r1_w2_i1"),
                     entries: &[
                         output_layout_entry(0),
                         input_layout_entry(1),
-                        input_layout_entry(2),
-                        output_layout_entry(3)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, 0)
-            };
-
-            let t_s_output = {
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("t_s_output"),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1)
+                        output_layout_entry(2)
                     ]
                 });
 
                 from_bind_group_layout(bind_group_layout, 1)
             };
 
-            let src_dst = {
+            let r1_w3_i0 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("src_dst"),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, 0)
-            };
-
-            let s_double_dst = {
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("s_double_dst"),
-                    entries: &[
-                        output_layout_entry(0),
-                        output_layout_entry(1)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, 1)
-            };
-
-            let src_triple_dst = {
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("src_triple_dst"),
+                    label: Some("r1_w3_i0"),
                     entries: &[
                         input_layout_entry(0),
                         output_layout_entry(1),
@@ -1392,12 +1364,54 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let reduction = {
+            let r2_w1_i0 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("reduction"),
+                    label: Some("r2_w1_i0"),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            let r2_w1_i1 = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("r2_w1_i1"),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 1)
+            };
+
+            let r2_w2_i0 = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("r2_w2_i0"),
                     entries: &[
                         output_layout_entry(0),
-                        output_layout_entry(1)
+                        input_layout_entry(1),
+                        input_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
+            let r3_w1_i0 = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("r3_w1_i0"),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        input_layout_entry(2),
+                        output_layout_entry(3)
                     ]
                 });
 
@@ -1405,16 +1419,17 @@ impl RawArrayMemory
             };
 
             KernelLayouts{
-                a_b_output,
-                a_b_s_output,
-                a_b_c_output,
-                a_reduce_b_output,
-                a_reduce_b_c_output,
-                t_s_output,
-                src_dst,
-                s_double_dst,
-                src_triple_dst,
-                reduction
+                r0_w2_i0,
+                r0_w2_i1,
+                r1_w1_i0,
+                r1_w1_i1,
+                r1_w2_i0,
+                r1_w2_i1,
+                r1_w3_i0,
+                r2_w1_i0,
+                r2_w1_i1,
+                r2_w2_i0,
+                r3_w1_i0
             }
         };
 
@@ -1422,30 +1437,32 @@ impl RawArrayMemory
         {
             let (shader_path, kernel_layout) = match kernel
             {
-                OpKernel::Add => ("kernels/add.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::AddScalar => ("kernels/add_scalar.wgsl", &kernel_layouts.t_s_output),
-                OpKernel::Sub => ("kernels/sub.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::SubFromScalar => ("kernels/sub_from_scalar.wgsl", &kernel_layouts.t_s_output),
-                OpKernel::MulComponentwise => ("kernels/mul_componentwise.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.t_s_output),
-                OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.reduction),
-                OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.src_dst),
-                OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.t_s_output),
-                OpKernel::Tanh => ("kernels/tanh.wgsl", &kernel_layouts.src_dst),
-                OpKernel::TanhDiff => ("kernels/tanh_diff.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::Sigmoid => ("kernels/sigmoid.wgsl", &kernel_layouts.src_dst),
-                OpKernel::SigmoidDiff => ("kernels/sigmoid_diff.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.src_dst),
-                OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.a_reduce_b_output),
-                OpKernel::MatmulvAdd => ("kernels/matmulv_add.wgsl", &kernel_layouts.a_reduce_b_output),
-                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.a_reduce_b_output),
-                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.a_reduce_b_output),
-                OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.a_b_output),
-                OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.s_double_dst),
-                OpKernel::SoftmaxCrossEntropy => ("kernels/softmax_cross_entropy.wgsl", &kernel_layouts.src_triple_dst),
-                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.a_b_output)
+                OpKernel::Add => ("kernels/add.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::AddScalar => ("kernels/add_scalar.wgsl", &kernel_layouts.r1_w1_i1),
+                OpKernel::Sub => ("kernels/sub.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::SubFromScalar => ("kernels/sub_from_scalar.wgsl", &kernel_layouts.r1_w1_i1),
+                OpKernel::MulComponentwise => ("kernels/mul_componentwise.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.r1_w1_i1),
+                OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.r0_w2_i0),
+                OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.r1_w1_i1),
+                OpKernel::Tanh => ("kernels/tanh.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::TanhDiff => ("kernels/tanh_diff.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::Sigmoid => ("kernels/sigmoid.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::SigmoidDiff => ("kernels/sigmoid_diff.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r1_w2_i0),
+                OpKernel::MatmulvAdd => ("kernels/matmulv_add.wgsl", &kernel_layouts.r1_w2_i0),
+                OpKernel::MatmulOneHotvAdd => ("kernels/matmul_onehotv_add.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r1_w2_i0),
+                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r1_w2_i0),
+                OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.r0_w2_i1),
+                OpKernel::SoftmaxCrossEntropy => ("kernels/softmax_cross_entropy.wgsl", &kernel_layouts.r1_w3_i0),
+                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -3012,7 +3029,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::MulComponentwise,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3031,7 +3048,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i1,
                         OpKernel::MulScalar,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3052,7 +3069,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::Add,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3071,7 +3088,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i1,
                         OpKernel::AddScalar,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3092,7 +3109,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::Sub,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3111,7 +3128,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i1,
                         OpKernel::SubFromScalar,
                         &[
                             bind_group_entry(0, *rhs),
@@ -3141,7 +3158,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.reduction,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i0,
                         OpKernel::SumTensor,
                         &[
                             create_bind_group_entry(0, scratch_buffer),
@@ -3172,7 +3189,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::MulComponentwise,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3187,7 +3204,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.reduction,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i0,
                         OpKernel::SumTensor,
                         &[
                             create_bind_group_entry(0, scratch_buffer),
@@ -3206,7 +3223,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
                         OpKernel::Fill,
                         &[
                             bind_group_entry(0, *value),
@@ -3224,7 +3241,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.t_s_output,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i1,
                         OpKernel::Pow,
                         &[
                             bind_group_entry(0, *lhs),
@@ -3244,7 +3261,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
                         OpKernel::Tanh,
                         &[
                             bind_group_entry(0, *value),
@@ -3263,7 +3280,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::TanhDiff,
                         &[
                             bind_group_entry(0, *value),
@@ -3282,7 +3299,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
                         OpKernel::Sigmoid,
                         &[
                             bind_group_entry(0, *value),
@@ -3301,7 +3318,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::SigmoidDiff,
                         &[
                             bind_group_entry(0, *value),
@@ -3320,7 +3337,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_dst,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
                         OpKernel::LeakyRelu,
                         &[
                             bind_group_entry(0, *value),
@@ -3339,7 +3356,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::LeakyReluDiff,
                         &[
                             bind_group_entry(0, *value),
@@ -3369,7 +3386,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.s_double_dst,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i1,
                         OpKernel::Softmax,
                         &[
                             create_bind_group_entry(0, scratch_buffer),
@@ -3406,7 +3423,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_triple_dst,
+                        &self.raw_array_memory.kernel_layouts.r1_w3_i0,
                         OpKernel::SoftmaxCrossEntropy,
                         &[
                             bind_group_entry(0, *targets),
@@ -3445,7 +3462,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.src_triple_dst,
+                        &self.raw_array_memory.kernel_layouts.r1_w3_i0,
                         OpKernel::SoftmaxCrossEntropy,
                         &[
                             bind_group_entry(0, *targets),
@@ -3474,7 +3491,7 @@ impl OperationsRecorder
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.a_b_output,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                         OpKernel::SoftmaxCrossEntropyDiff,
                         &[
                             bind_group_entry(0, *gradient),
@@ -3484,6 +3501,34 @@ impl OperationsRecorder
                     );
 
                     exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                },
+                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+                {
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                    debug_assert_eq!(output.shape.columns, 1);
+
+                    debug_assert_eq!(added, output);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i1,
+                        OpKernel::MatmulOneHotvAdd,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes());
+
+                    exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                 },
                 this_op@GradientOp::Matmulv{lhs, rhs, output}
                 | this_op@GradientOp::MatmulvAdd{lhs, rhs, added: _, output} =>
@@ -3514,7 +3559,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                &self.raw_array_memory.kernel_layouts.r1_w2_i0,
                                 OpKernel::Matmulv,
                                 &[
                                     create_bind_group_entry(0, scratch_buffer),
@@ -3540,7 +3585,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                &self.raw_array_memory.kernel_layouts.r1_w2_i0,
                                 OpKernel::MatmulvAdd,
                                 &[
                                     create_bind_group_entry(0, scratch_buffer),
@@ -3583,7 +3628,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                &self.raw_array_memory.kernel_layouts.r1_w2_i0,
                                 OpKernel::MatmulvTransposed,
                                 &[
                                     create_bind_group_entry(0, scratch_buffer),
@@ -3609,7 +3654,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.a_reduce_b_output,
+                                &self.raw_array_memory.kernel_layouts.r1_w2_i0,
                                 OpKernel::MatmulvTransposedAdd,
                                 &[
                                     create_bind_group_entry(0, scratch_buffer),
@@ -3622,6 +3667,36 @@ impl OperationsRecorder
                     }
 
                     exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
+                },
+                GradientOp::OuterProductOneHot{lhs, rhs, output} =>
+                {
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.columns, 1);
+
+                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                    try_end_compute_pass(&mut compute_pass);
+
+                    encoder.clear_buffer(get_buffer(&self.memory, *output), 0, None);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r2_w1_i1,
+                        OpKernel::OuterProductOneHot,
+                        &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ]
+                    );
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes());
+
+                    single_work_group(&mut compute_pass, lhs.size());
                 },
                 this_op@GradientOp::OuterProduct{lhs, rhs, output}
                 | this_op@GradientOp::OuterProductAdd{lhs, rhs, added: _, output} =>
@@ -3643,7 +3718,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.a_b_output,
+                                &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                                 OpKernel::OuterProduct,
                                 &[
                                     bind_group_entry(0, *lhs),
@@ -3660,7 +3735,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.a_b_output,
+                                &self.raw_array_memory.kernel_layouts.r2_w1_i0,
                                 OpKernel::OuterProductAdd,
                                 &[
                                     bind_group_entry(0, *lhs),
@@ -5089,6 +5164,7 @@ impl OperationsRecorder
                 GradientOp::SumTensor{value, ..}
                 | GradientOp::Dot{lhs: value, ..}
                 | GradientOp::Matmulv{lhs: value, ..}
+                | GradientOp::MatmulvAdd{lhs: value, ..}
                 | GradientOp::MatmulvTransposed{lhs: value, ..}
                 | GradientOp::MatmulvTransposedAdd{lhs: value, ..}
                 | GradientOp::Softmax{values: value, ..}
@@ -5349,6 +5425,17 @@ impl OperationsRecorder
                     let combined_output_add = combine_arg_output_tensors(self, added, output);
 
                     self.gradient_operations[i] = GradientOp::MatmulvAdd{
+                        lhs,
+                        rhs,
+                        added: combined_output_add,
+                        output: combined_output_add
+                    };
+                },
+                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+                {
+                    let combined_output_add = combine_arg_output_tensors(self, added, output);
+
+                    self.gradient_operations[i] = GradientOp::MatmulOneHotvAdd{
                         lhs,
                         rhs,
                         added: combined_output_add,
@@ -5649,6 +5736,7 @@ impl OperationsRecorder
                     op,
                     GradientOp::GetOtherSelectorValue{..}
                     | GradientOp::MatmulvAdd{..}
+                    | GradientOp::MatmulOneHotvAdd{..}
                     | GradientOp::MatmulvTransposedAdd{..}
                     | GradientOp::OuterProductAdd{..}
                     | GradientOp::OuterProductOneHotAdd{..}

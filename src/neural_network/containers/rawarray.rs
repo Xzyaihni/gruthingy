@@ -74,10 +74,12 @@ define_op_kernels!{
     LeakyReluDiff,
     Matmulv,
     MatmulvAdd,
+    MatmulOneHotvAdd,
     MatmulvTransposed,
     MatmulvTransposedAdd,
     OuterProduct,
     OuterProductAdd,
+    OuterProductOneHot,
     Softmax,
     SoftmaxCrossEntropy,
     SoftmaxCrossEntropyDiff
