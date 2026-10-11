@@ -2983,6 +2983,20 @@ impl OperationsRecorder
                 {
                     self.memory.phi_other_selectors_values[index.0].is_set = true;
                 },
+                GradientOp::IfSetTensor{index, dst, src} =>
+                {
+                    if self.memory.phi_other_selectors_values[index.0].is_set
+                    {
+                        copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
+                    }
+                },
+                GradientOp::IfNotSetTensor{index, dst, src} =>
+                {
+                    if !self.memory.phi_other_selectors_values[index.0].is_set
+                    {
+                        copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
+                    }
+                },
                 GradientOp::SetOtherSelectorGradient{loop_index, selector_index} =>
                 {
                     if self.loops[loop_index.0].times <= 1
@@ -5392,7 +5406,12 @@ impl OperationsRecorder
     {
         for i in (0..self.gradient_operations.len()).rev()
         {
-            let combine_arg_output_tensors = |this: &mut Self, arg: TensorPtr, output: TensorPtr| -> TensorPtr
+            fn combine_arg_output_tensors_inner(
+                this: &mut OperationsRecorder,
+                arg: TensorPtr,
+                output: TensorPtr,
+                i: usize
+            ) -> TensorPtr
             {
                 let combined_output = output;
 
@@ -5402,6 +5421,7 @@ impl OperationsRecorder
 
                     debug_assert!(arg_start.is_some());
                     debug_assert_ne!(arg_start, Some(-1));
+
                     debug_assert_eq!(arg_range.end, this.memory.tensor_live_ranges[output.0].start);
 
                     let combined_start = &mut this.memory.tensor_live_ranges[combined_output.0].start;
@@ -5418,7 +5438,9 @@ impl OperationsRecorder
                 this.swap_assignment(i, arg.into(), output.into());
 
                 combined_output
-            };
+            }
+
+            let combine_arg_output_tensors = |this, arg, output| combine_arg_output_tensors_inner(this, arg, output, i);
 
             match self.gradient_operations[i]
             {
@@ -9214,7 +9236,10 @@ mod tests
                 let bc_added = recorder.add(bc_selected, b);
                 recorder.name_diff_tensor(bc_added, "bc_added");
 
-                let bis = recorder.mul_componentwise(bc_added, is);
+                let bc_added_shape = recorder.tensor_shape(bc_added.as_value());
+                let is_filled = recorder.fill_batched(bc_added_shape, is);
+
+                let bis = recorder.mul_componentwise(bc_added, is_filled);
                 recorder.name_diff_tensor(bis, "bis");
 
                 recorder.add(bis, b)
