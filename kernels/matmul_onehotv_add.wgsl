@@ -40,7 +40,7 @@ fn run(
 
     for (var o = 0u; o < one_hot_count; o++)
     {
-        let one_hot_index = rhs[workgroup_id.x * one_hot_count + o];
+        let one_hot_index = rhs[batch_index * one_hot_count + o];
 
         output[workgroup_id.x] += lhs[batch_start + row * row_stride + one_hot_index * column_stride];
     }
