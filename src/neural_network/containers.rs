@@ -4541,7 +4541,9 @@ impl OperationsRecorder
 
                 let any_after = this.gradient_operations[(i + 1)..].iter().any(|x| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
 
-                (any_after || any_before).then(||
+                let is_output = this.memory.tensor_live_ranges[src.0].end == Some(i32::MAX);
+
+                (any_after || any_before || is_output).then(||
                 {
                     let shape = this.tensor_shape(src);
                     let new_src = this.memory.new_tensor(false, shape.into()).as_value();
