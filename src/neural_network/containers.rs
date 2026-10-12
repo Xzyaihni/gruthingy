@@ -9923,26 +9923,6 @@ mod tests
 
             let loop_index = recorder.begin_loop(vec![i.into(), target.into()]);
 
-            let bc = {
-                let is = recorder.sum_tensor(DiffTensorPtr::no_gradient(i));
-                recorder.name_diff_tensor(is, "is");
-
-                let bc_selected = recorder.select_tensor(bc_selector);
-                recorder.name_diff_tensor(bc_selected, "bc_selected");
-
-                let bc_added = recorder.add(bc_selected, b);
-                recorder.name_diff_tensor(bc_added, "bc_added");
-
-                let bis = recorder.mul_componentwise(bc_added, is);
-                recorder.name_diff_tensor(bis, "bis");
-
-                recorder.add(bis, b)
-            };
-
-            recorder.name_diff_tensor(bc, "bc");
-
-            recorder.set_phi_other_selector(bc_selector, bc);
-
             let previous_state_selected = recorder.select_tensor(previous_state_selector);
 
             let (s2, s2_loss) = do_one(recorder, Some(previous_state_selected), i, target);
