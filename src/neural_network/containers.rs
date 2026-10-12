@@ -1104,9 +1104,28 @@ impl OperationsRecorderMemory
         self.phi_other_selectors_values[selector_index.0].loop_index
     }
 
+    fn raw_ptr_to_diff_value_raw(&self, raw_ptr: LinearRawDataPointer) -> DiffValueRaw
+    {
+        if let Some(x) = self.try_raw_ptr_to_memory(raw_ptr)
+        {
+            DiffValueRaw::Tensor(x)
+        } else
+        {
+            self.one_hot_buffers.iter().position(|ptr| ptr.to_linear_pointer() == raw_ptr)
+                .map(OneHotIndex)
+                .map(DiffValueRaw::OneHot)
+                .unwrap_or_else(|| unimplemented!())
+        }
+    }
+
+    fn try_raw_ptr_to_memory(&self, raw_ptr: LinearRawDataPointer) -> Option<TensorIndex>
+    {
+        self.tensors.iter().position(|x| *x == raw_ptr).map(TensorIndex)
+    }
+
     fn raw_ptr_to_memory(&self, raw_ptr: LinearRawDataPointer) -> TensorIndex
     {
-        TensorIndex(self.tensors.iter().position(|x| *x == raw_ptr).expect("must be a real ptr"))
+        self.try_raw_ptr_to_memory(raw_ptr).expect("must be a real ptr")
     }
 
     fn raw_ptr_to_ptr(&self, raw_ptr: LinearRawDataPointer) -> Option<TensorPtr>
@@ -1171,7 +1190,7 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_use(&self, raw_ptr: TensorRawDataPointer)
     {
-        let memory_index = self.raw_ptr_to_memory(raw_ptr.to_linear_pointer());
+        let memory_index = self.raw_ptr_to_diff_value_raw(raw_ptr.to_linear_pointer());
 
         self.verify_raw_ptr_use_index(memory_index)
     }
@@ -1203,7 +1222,7 @@ impl OperationsRecorderMemory
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_assign(&mut self, raw_ptr: TensorRawDataPointer)
     {
-        let memory_index = self.raw_ptr_to_memory(raw_ptr.to_linear_pointer());
+        let memory_index = self.raw_ptr_to_diff_value_raw(raw_ptr.to_linear_pointer());
 
         self.verify_raw_ptr_assign_index(memory_index)
     }
