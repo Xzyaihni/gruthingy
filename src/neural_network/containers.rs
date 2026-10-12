@@ -3068,7 +3068,13 @@ impl OperationsRecorder
 
                                             self.raw_array_memory.queue.write_buffer(src_buffer, 0, value.as_ref().bytes_slice());
 
+                                            #[cfg(debug_assertions)]
+                                            {
+                                                self.memory.verify_raw_ptr_assign_index(input.index);
+                                            }
+
                                             let raw_index = self.memory.tensors[input.index.0];
+
                                             let dst_buffer = &self.memory.tensors_raw_data[raw_index.raw_index.0].buffer;
 
                                             debug_assert_eq!(src_buffer.size(), dst_buffer.size());
