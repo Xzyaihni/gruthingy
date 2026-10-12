@@ -222,6 +222,8 @@ pub fn dropout_weights(
 {
     let dropout = recorder.new_tensor_no_gradient(shape);
 
+    recorder.name_diff_tensor(dropout, "dropout");
+
     WeightInfoPtr{
         weight_dropped: DiffTensorPtr::undefined(),
         weight_original,
@@ -2363,6 +2365,7 @@ mod tests
             oh(2)
         ];
 
+        assert_eq!(SIZES.initial_input, SIZES.final_output);
         assert_eq!(inputs.len(), outputs.len());
 
         (inputs, outputs)
@@ -2389,7 +2392,7 @@ mod tests
         {
             assert!(IS_INPUT_ONE_HOT);
 
-            (InputTypePtr::OneHot(at_once.recorder.new_one_hot(1, SIZES.final_output, 1)), at_once.recorder.new_one_hot(1, SIZES.final_output, 1))
+            (InputTypePtr::OneHot(at_once.recorder.new_one_hot(1, SIZES.initial_input, 1)), at_once.recorder.new_one_hot(1, SIZES.final_output, 1))
         }).collect();
 
         let mut previous_state = None;

@@ -2034,6 +2034,8 @@ impl OperationsRecorder
             let index: TensorIndex = index.into();
 
             self.memory.set_tensors_check.push(index.into());
+
+            self.memory.verify_raw_ptr_use_index(index);
         }
 
         let info = self.memory.tensors[index.index.0];
