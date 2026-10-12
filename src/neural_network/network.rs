@@ -220,7 +220,7 @@ pub fn dropout_weights(
     shape: TensorShape
 ) -> WeightInfoPtr
 {
-    let dropout = recorder.new_tensor_batched_no_gradient(shape);
+    let dropout = recorder.new_tensor_no_gradient(shape);
 
     WeightInfoPtr{
         weight_dropped: DiffTensorPtr::undefined(),
@@ -1524,7 +1524,7 @@ where
                     InputTypePtr::OneHot(recorder.new_one_hot(one_hot_count, input_size, batch_size))
                 } else
                 {
-                    InputTypePtr::Normal(recorder.new_tensor_batched_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size}).as_value())
+                    InputTypePtr::Normal(recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size}).as_value())
                 }
             }
         };

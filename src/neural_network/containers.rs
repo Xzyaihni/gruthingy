@@ -1640,15 +1640,7 @@ impl OperationsRecorder
         input
     }
 
-    pub fn new_tensor_no_gradient(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
-    {
-        let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size: 1});
-        self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
-
-        input
-    }
-
-    pub fn new_tensor_batched_no_gradient(&mut self, TensorShape{rows, columns, batch_size}: TensorShape) -> DiffTensorPtr
+    pub fn new_tensor_no_gradient(&mut self, TensorShape{rows, columns, batch_size}: TensorShape) -> DiffTensorPtr
     {
         let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
         self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
@@ -4174,7 +4166,7 @@ impl OperationsRecorder
 
                     if was_defined.is_some()
                     {
-                        self.gradient_operations[j].for_args(|arg| if arg == selector_other { was_used = true });
+                        was_used |= self.gradient_operations[j].is_any_arg(|x| x == selector_other);
                     }
 
                     if was_used { break; }
@@ -4248,7 +4240,7 @@ impl OperationsRecorder
                         continue;
                     }
 
-                    self.gradient_operations[j].for_args(|arg| if arg == output { was_used = true });
+                    was_used = self.gradient_operations[j].is_any_arg(|x| x == output);
 
                     if was_used
                     {
@@ -4293,9 +4285,7 @@ impl OperationsRecorder
                 {
                     let operation_index = GradientOperationIndex(operation_index);
 
-                    let mut any_args_removed = false;
-
-                    op.for_args(|arg| if removed_outputs.contains(&arg) { any_args_removed = true });
+                    let any_args_removed = op.is_any_arg(|x| removed_outputs.contains(&x));
 
                     if any_args_removed
                     {
@@ -4455,6 +4445,67 @@ impl OperationsRecorder
         }
     }
 
+    fn copy_reuse_conflicts(&mut self)
+    {
+        let mut i = 0;
+        while i < self.gradient_operations.len()
+        {
+            let copy_if_src_reused = |this: &mut Self, src: TensorPtr| -> Option<TensorPtr>
+            {
+                let any_before = this.gradient_operations[..i].iter().filter(|x|
+                {
+                    x.can_use_future()
+                }).any(|x| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
+
+                let any_after = this.gradient_operations[(i + 1)..].iter().any(|x| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
+
+                (any_after || any_before).then(||
+                {
+                    let shape = this.tensor_shape(src);
+                    let new_src = this.memory.new_tensor(false, shape.into()).as_value();
+
+                    this.gradient_operations.insert(i, GradientOp::Copy{src, dst: new_src});
+
+                    new_src
+                })
+            };
+
+            macro_rules! for_added_output
+            {
+                ($($name:ident),+) =>
+                {
+                    match self.gradient_operations[i]
+                    {
+                        $(
+                            GradientOp::$name{added, ..} =>
+                            {
+                                if let Some(new_added) = copy_if_src_reused(self, added)
+                                {
+                                    let GradientOp::$name{added, ..} = &mut self.gradient_operations[i + 1] else {
+                                        unreachable!()
+                                    };
+
+                                    *added = new_added;
+                                }
+                            },
+                        )+
+                        _ => ()
+                    }
+                }
+            }
+
+            for_added_output!{
+                MatmulvAdd,
+                MatmulOneHotvAdd,
+                MatmulvTransposedAdd,
+                OuterProductAdd,
+                OuterProductOneHotAdd
+            }
+
+            i += 1;
+        }
+    }
+
     pub fn is_ready(&self) -> bool
     {
         self.state == RecorderState::Ready
@@ -4539,7 +4590,7 @@ impl OperationsRecorder
                     *start = Some(start.map(|start| start.min(new_start)).unwrap_or(new_start));
                 } else
                 {
-                    debug_assert!(start.is_none(), "{err_name} was reused at operation {} and {op_index}", start.unwrap());
+                    debug_assert!(start.is_none(), "{err_name} was defined at operation {} and {op_index}", start.unwrap());
 
                     *start = Some(new_start);
                 }
@@ -4574,14 +4625,7 @@ impl OperationsRecorder
 
         self.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
-            let allow_end_before = match op
-            {
-                GradientOp::GetOtherSelectorValue{..}
-                | GradientOp::GetOtherSelectorTensor{..}
-                | GradientOp::GradientSelectAddValue{..}
-                | GradientOp::GradientSelectAddTensor{..} => true,
-                _ => false
-            };
+            let allow_end_before = op.can_use_future();
 
             let handle_arg = |live_range: &mut LiveRange, err_name: String|
             {
@@ -4721,9 +4765,9 @@ impl OperationsRecorder
                     },
                     GradientOp::SoftmaxCrossEntropy{
                         values,
-                        targets,
                         softmaxed_output,
-                        output
+                        output,
+                        ..
                     } if is_tensor_unused(output) =>
                     {
                         GradientOp::Softmax{values, softmaxed_output}
@@ -5422,7 +5466,12 @@ impl OperationsRecorder
                     debug_assert!(arg_start.is_some());
                     debug_assert_ne!(arg_start, Some(-1));
 
-                    debug_assert_eq!(arg_range.end, this.memory.tensor_live_ranges[output.0].start);
+                    debug_assert_eq!(
+                        arg_range.end,
+                        Some(i as i32),
+                        "{} is used after its coalescing, reuse copying is broken",
+                        this.memory.format_variable(arg)
+                    );
 
                     let combined_start = &mut this.memory.tensor_live_ranges[combined_output.0].start;
 
@@ -5442,63 +5491,35 @@ impl OperationsRecorder
 
             let combine_arg_output_tensors = |this, arg, output| combine_arg_output_tensors_inner(this, arg, output, i);
 
+            macro_rules! combine_added_output
+            {
+                ($($name:ident),+) =>
+                {
+                    match self.gradient_operations[i]
+                    {
+                        $(
+                            GradientOp::$name{lhs, rhs, added, output} =>
+                            {
+                                let combined_output_add = combine_arg_output_tensors(self, added, output);
+
+                                self.gradient_operations[i] = GradientOp::$name{lhs, rhs, added: combined_output_add, output: combined_output_add};
+                            },
+                        )+
+                        _ => ()
+                    }
+                }
+            }
+
+            combine_added_output!{
+                MatmulvAdd,
+                MatmulOneHotvAdd,
+                MatmulvTransposedAdd,
+                OuterProductAdd,
+                OuterProductOneHotAdd
+            }
+
             match self.gradient_operations[i]
             {
-                GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
-                {
-                    let combined_output_add = combine_arg_output_tensors(self, added, output);
-
-                    self.gradient_operations[i] = GradientOp::MatmulvAdd{
-                        lhs,
-                        rhs,
-                        added: combined_output_add,
-                        output: combined_output_add
-                    };
-                },
-                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
-                {
-                    let combined_output_add = combine_arg_output_tensors(self, added, output);
-
-                    self.gradient_operations[i] = GradientOp::MatmulOneHotvAdd{
-                        lhs,
-                        rhs,
-                        added: combined_output_add,
-                        output: combined_output_add
-                    };
-                },
-                GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
-                {
-                    let combined_output_add = combine_arg_output_tensors(self, added, output);
-
-                    self.gradient_operations[i] = GradientOp::MatmulvTransposedAdd{
-                        lhs,
-                        rhs,
-                        added: combined_output_add,
-                        output: combined_output_add
-                    };
-                },
-                GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
-                {
-                    let combined_output_add = combine_arg_output_tensors(self, added, output);
-
-                    self.gradient_operations[i] = GradientOp::OuterProductAdd{
-                        lhs,
-                        rhs,
-                        added: combined_output_add,
-                        output: combined_output_add
-                    };
-                },
-                GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
-                {
-                    let combined_output_add = combine_arg_output_tensors(self, added, output);
-
-                    self.gradient_operations[i] = GradientOp::OuterProductOneHotAdd{
-                        lhs,
-                        rhs,
-                        added: combined_output_add,
-                        output: combined_output_add
-                    };
-                },
                 GradientOp::GetOtherSelectorTensor{info, first, other, output} if other == output =>
                 {
                     self.gradient_operations[i] = GradientOp::IfNotSetTensor{index: info, src: first, dst: output};
@@ -5840,6 +5861,8 @@ impl OperationsRecorder
 
         self.copy_coalesce();
 
+        self.copy_reuse_conflicts();
+
         self.recording_operations = Vec::new();
 
         self.state = RecorderState::AwaitingResolve;
@@ -6067,10 +6090,7 @@ impl OperationsRecorder
         {
             GradientOperationIndex(gradient_operations.iter().position(|op|
             {
-                let mut is_found = false;
-                op.for_args(|arg| if arg == target { is_found = true });
-
-                is_found
+                op.is_any_arg(|x| x == target)
             }).expect("pop argument must exist"))
         }
 
@@ -6221,6 +6241,8 @@ impl OperationsRecorder
 
         self.copy_coalesce();
 
+        self.copy_reuse_conflicts();
+
         self.recording_operations = Vec::new();
 
         self.state = RecorderState::AwaitingResolve;
@@ -6343,10 +6365,7 @@ impl OperationsRecorder
 
             let gradient_op = if let Some(this_selector) = selectors.iter().find(|info|
             {
-                let mut any_args_match = false;
-                gradient_op.for_args(|arg| if arg == info.other { any_args_match = true; });
-
-                any_args_match
+                gradient_op.is_any_arg(|x| x == info.other)
             })
             {
                 let selector_index = add_selector(this);
@@ -7177,7 +7196,7 @@ impl OperationsRecorder
                         {
                             let shape = self.memory.tensor_shape(*tensor);
 
-                            let gradient_input = self.new_tensor_batched_no_gradient(shape).as_value();
+                            let gradient_input = self.new_tensor_no_gradient(shape).as_value();
                             self.name_tensor_suffix(gradient_input, *tensor, "_grad");
 
                             #[cfg(debug_assertions)]
@@ -7790,6 +7809,18 @@ pub enum GradientOp<T, V, J, O, S>
 
 impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
 {
+    fn can_use_future(&self) -> bool
+    {
+        match self
+        {
+            Self::GetOtherSelectorValue{..}
+            | Self::GetOtherSelectorTensor{..}
+            | Self::GradientSelectAddValue{..}
+            | Self::GradientSelectAddTensor{..} => true,
+            _ => false
+        }
+    }
+
     fn map<U, W, K, OU, SU>(
         self,
         mut tf: impl FnMut(T) -> U,
@@ -7944,6 +7975,18 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
         {
             inner_f(DiffValue::OneHot(o_arg)).into_one_hot()
         })
+    }
+
+    fn is_any_arg(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
+    where
+        J: Clone,
+        S: Clone
+    {
+        let mut is_any = false;
+
+        self.for_args(|x| if f(x) { is_any = true; });
+
+        is_any
     }
 
     fn for_args(&self, f: impl FnMut(DiffValue))
@@ -8674,8 +8717,8 @@ mod tests
 
         let mut new_recorder = OperationsRecorder::new();
 
-        let new_a = new_recorder.new_tensor_no_gradient(a_value.rows(), a_value.columns());
-        let new_b = new_recorder.new_tensor_no_gradient(b_value.rows(), b_value.columns());
+        let new_a = new_recorder.new_tensor_no_gradient(a_value.shape());
+        let new_b = new_recorder.new_tensor_no_gradient(b_value.shape());
 
         new_recorder.allow_discard(new_a.as_value());
         new_recorder.allow_discard(new_b.as_value());
@@ -9168,7 +9211,7 @@ mod tests
 
             let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(i, "i");
 
             let final_state_selector = recorder.phi_other_selector(a_sum);
@@ -9215,7 +9258,7 @@ mod tests
 
             let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(i, "i");
 
             let zeros = recorder.set_new_tensor_gradientable(zeros.clone(), 1);
@@ -9325,10 +9368,10 @@ mod tests
 
             let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(i, "i");
 
-            let m = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+            let m = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(m, "m");
 
             let final_state_selector = recorder.phi_other_selector(a_sum);
@@ -9382,7 +9425,7 @@ mod tests
 
             let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(i, "i");
 
             recorder.allow_reassign(i);
@@ -9471,7 +9514,7 @@ mod tests
 
             let shape = recorder.tensor_shape(a.as_value());
 
-            let i = recorder.new_tensor_no_gradient(shape.rows, shape.columns).as_value();
+            let i = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(i, "i");
 
             let final_state_selector = recorder.phi_other_selector(combined_state);
@@ -9556,7 +9599,7 @@ mod tests
             let s1 = do_one(recorder, Some(s0), i1);
             recorder.name_diff_tensor(s1, "s1");
 
-            let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
+            let i = recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size: 1}).as_value();
             recorder.name_tensor(i, "loop_i");
 
             let target = recorder.new_one_hot(1, output_size, 1);
@@ -9663,7 +9706,7 @@ mod tests
             let compound_loss = recorder.add(s0_loss, s1_loss);
             recorder.name_diff_tensor(compound_loss, "compound_loss");
 
-            let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
+            let i = recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size: 1}).as_value();
             recorder.name_tensor(i, "loop_i");
 
             let target = recorder.new_one_hot(1, output_size, 1);
@@ -9780,7 +9823,7 @@ mod tests
             let compound_loss = recorder.add(s0_loss, s1_loss);
             recorder.name_diff_tensor(compound_loss, "compound_loss");
 
-            let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
+            let i = recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size: 1}).as_value();
             recorder.name_tensor(i, "loop_i");
 
             let target = recorder.new_one_hot(1, output_size, 1);
@@ -9931,7 +9974,7 @@ mod tests
             let compound_loss = recorder.add(s0_loss, s1_loss);
             recorder.name_diff_tensor(compound_loss, "compound_loss");
 
-            let i = recorder.new_tensor_no_gradient(input_size, 1).as_value();
+            let i = recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size: 1}).as_value();
             recorder.name_tensor(i, "loop_i");
 
             let target = recorder.new_one_hot(1, output_size, 1);
