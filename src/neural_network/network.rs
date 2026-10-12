@@ -2295,11 +2295,20 @@ mod tests
 
     const IS_INPUT_ONE_HOT: bool = true;
 
-    const SIZES: LayerSizes = LayerSizes{
+    /*const SIZES: LayerSizes = LayerSizes{
         hidden: 10,
         initial_input: 3,
         input: 3,
         layers: 2,
+        output: 3,
+        final_output: 3,
+        batch_size: 1
+    };*/const put_me_back: () = ();
+    const SIZES: LayerSizes = LayerSizes{
+        hidden: 2,
+        initial_input: 3,
+        input: 3,
+        layers: 1,
         output: 3,
         final_output: 3,
         batch_size: 1

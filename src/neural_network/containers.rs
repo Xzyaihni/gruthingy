@@ -750,11 +750,11 @@ impl VariableNames
 struct SetTensorMemoryChecks
 {
     set_ptrs: Vec<TensorPtr>,
-    allow_unread: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
-    allow_reassign: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
-    unread_memory: Vec<TensorIndex>,
-    read_memory: Vec<TensorIndex>,
-    set_memory: Vec<TensorIndex>
+    allow_unread: Vec<StoreCheckKey<TensorPtr, DiffValueRaw>>,
+    allow_reassign: Vec<StoreCheckKey<TensorPtr, DiffValueRaw>>,
+    unread_memory: Vec<DiffValueRaw>,
+    read_memory: Vec<DiffValueRaw>,
+    set_memory: Vec<DiffValueRaw>
 }
 
 #[cfg(debug_assertions)]
@@ -769,12 +769,12 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
     {
-        let fm = |x: &TensorIndex|
+        let fm = |x: &DiffValueRaw|
         {
-            DebugStringRaw(self.memory.format_tensor_index(*x))
+            DebugStringRaw(self.memory.format_diff_value_raw(*x))
         };
 
-        let fv = |x: &[TensorIndex]| -> Vec<_>
+        let fv = |x: &[DiffValueRaw]| -> Vec<_>
         {
             x.iter().map(fm).collect()
         };
@@ -786,7 +786,7 @@ impl Debug for SetTensorMemoryChecksDebug<'_>
                 DebugStringRaw(match *x
                 {
                     StoreCheckKey::PreResolve(x) => self.memory.format_variable(x),
-                    StoreCheckKey::Resolved(x) => self.memory.format_tensor_index(x)
+                    StoreCheckKey::Resolved(x) => self.memory.format_diff_value_raw(x)
                 })
             }).collect()
         };
@@ -1158,6 +1158,16 @@ impl OperationsRecorderMemory
         }
     }
 
+    fn format_diff_value_raw(&self, tensor_index: DiffValueRaw) -> String
+    {
+        match tensor_index
+        {
+            DiffValueRaw::Tensor(index) => self.format_tensor_index(index),
+            DiffValueRaw::Value(index) => self.format_variable(index),
+            DiffValueRaw::OneHot(index) => self.format_variable(index)
+        }
+    }
+
     #[cfg(debug_assertions)]
     fn verify_raw_ptr_use(&self, raw_ptr: TensorRawDataPointer)
     {
@@ -1167,14 +1177,16 @@ impl OperationsRecorderMemory
     }
 
     #[cfg(debug_assertions)]
-    fn verify_raw_ptr_use_index(&self, memory_index: TensorIndex)
+    fn verify_raw_ptr_use_index(&self, memory_index: impl Into<DiffValueRaw>)
     {
+        let memory_index = memory_index.into();
+
         let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
 
         debug_assert!(
             set_tensor_memory.set_memory.contains(&memory_index),
             "{} was used without being set",
-            self.format_tensor_index(memory_index)
+            self.format_diff_value_raw(memory_index)
         );
 
         if !set_tensor_memory.read_memory.contains(&memory_index)
@@ -1197,8 +1209,10 @@ impl OperationsRecorderMemory
     }
 
     #[cfg(debug_assertions)]
-    fn verify_raw_ptr_assign_index(&mut self, memory_index: TensorIndex)
+    fn verify_raw_ptr_assign_index(&mut self, memory_index: impl Into<DiffValueRaw>)
     {
+        let memory_index = memory_index.into();
+
         let mut set_tensor_memory = self.set_tensor_memory.borrow_mut();
 
         if let Some(read_index) = set_tensor_memory.read_memory.iter().position(|x| *x == memory_index)
@@ -1210,7 +1224,7 @@ impl OperationsRecorderMemory
 
             if is_no_read_reassigned && !set_tensor_memory.allow_reassign.contains(&StoreCheckKey::Resolved(memory_index))
             {
-                panic!("{} was reassigned without being read", self.format_tensor_index(memory_index));
+                panic!("{} was reassigned without being read", self.format_diff_value_raw(memory_index));
             }
         }
 
@@ -1987,10 +2001,15 @@ impl OperationsRecorder
         let info = self.memory.tensors[index.index.0].with_shape(index.shape);
         debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
 
-        let output_buffer = self.memory.tensors_raw_data[info.raw_index.0].output_buffer.as_ref().unwrap_or_else(||
+        self.get_tensor_blocking_ptr(info).unwrap_or_else(||
         {
             panic!("tried to get non output tensor: {}", self.memory.format_tensor_index(index.index));
-        });
+        })
+    }
+
+    fn get_tensor_blocking_ptr(&self, info: TensorRawDataPointer) -> Option<LayerType>
+    {
+        let output_buffer = self.memory.tensors_raw_data[info.raw_index.0].output_buffer.as_ref()?;
 
         let (sender, receiver) = mpsc::channel();
 
@@ -2010,7 +2029,7 @@ impl OperationsRecorder
                     let data: &[u8] = &view;
                     let data: &[f32] = bytemuck::cast_slice(data);
 
-                    LayerType::from_raw(data.into(), index.shape)
+                    LayerType::from_raw(data.into(), info.shape)
                 };
 
                 output_buffer.unmap();
@@ -2021,7 +2040,7 @@ impl OperationsRecorder
 
         self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
-        receiver.recv().unwrap()
+        Some(receiver.recv().unwrap())
     }
 
     pub fn set_tensor_with(&mut self, index: ShapedTensorIndex, mut f: impl FnMut() -> f32)
@@ -2659,8 +2678,6 @@ impl OperationsRecorder
             });
         }
 
-        let mut submit_buffers = Vec::new();
-
         fn get_raw_array(data: &[RawArray], raw_data_pointer: TensorRawDataPointer) -> &RawArray
         {
             &data[raw_data_pointer.raw_index.0]
@@ -2682,7 +2699,7 @@ impl OperationsRecorder
         {
             macro_rules! debug_calculate_common
             {
-                (($($t_name:ident),*$(,)?),($($v_name:ident),*$(,)?)) =>
+                ($has_value:expr, ($($t_name:ident),*$(,)?),($($v_name:ident),*$(,)?)) =>
                 {
                     #[cfg(debug_assertions)]
                     {
@@ -2697,6 +2714,11 @@ impl OperationsRecorder
 
                                 let var_name = self.memory.format_tensor_raw_ptr(*$t_name);
                                 eprint!("{}: {}", stringify!($t_name), var_name);
+
+                                if $has_value
+                                {
+                                    eprint!(" = {:?}", self.get_tensor_blocking_ptr(*$t_name).unwrap().as_slice());
+                                }
 
                                 is_first = false;
                             )*
@@ -2738,7 +2760,7 @@ impl OperationsRecorder
                     }
 
                     {
-                        debug_calculate_common!(($($t_name,)*),($($v_name,)*));
+                        debug_calculate_common!(false, ($($t_name,)*),($($v_name,)*));
                     }
 
                     #[cfg(debug_assertions)]
@@ -2768,11 +2790,33 @@ impl OperationsRecorder
                             {
                                 eprint!(" (AFTER ");
                             }
+
+                            if DUMP_MEMORY
+                            {
+                                compute_pass = None;
+
+                                $(
+                                {
+                                    let raw_array = get_raw_array(&self.memory.tensors_raw_data, *$t_name);
+                                    encoder.copy_buffer_to_buffer(
+                                        &raw_array.buffer,
+                                        0,
+                                        raw_array.output_buffer.as_ref().expect("must exist"),
+                                        0,
+                                        raw_array.buffer.size()
+                                    );
+                                }
+                                )*
+
+                                self.raw_array_memory.queue.submit([encoder.finish()]);
+
+                                encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+                            }
                         }
                     }
 
                     {
-                        debug_calculate_common!(($($t_name,)*),($($v_name,)*));
+                        debug_calculate_common!(true, ($($t_name,)*),($($v_name,)*));
                     }
 
                     #[cfg(debug_assertions)]
@@ -3820,7 +3864,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropy, (values),());
+                    debug_calculate_values!(SoftmaxCrossEntropy, (values, targets),());
 
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
                     debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
@@ -3861,7 +3905,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values),());
+                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values, targets),());
 
                     debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
                     debug_assert_eq!(values.shape.batch_size, output.shape.batch_size);
@@ -3904,7 +3948,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values, gradient),());
+                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values, gradient, targets),());
 
                     debug_assert_eq!(softmaxed_values.shape, output.shape);
 
@@ -3948,7 +3992,7 @@ impl OperationsRecorder
                     {
                         GradientOp::MatmulOneHotv{lhs, rhs, output} =>
                         {
-                            debug_calculate_values!(MatmulOneHotv, (lhs),());
+                            debug_calculate_values!(MatmulOneHotv, (lhs, rhs),());
 
                             do_kernel_operation(
                                 &mut encoder,
@@ -3965,7 +4009,7 @@ impl OperationsRecorder
                         },
                         GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(MatmulOneHotvAdd, (lhs, added),());
+                            debug_calculate_values!(MatmulOneHotvAdd, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
@@ -4157,7 +4201,7 @@ impl OperationsRecorder
                     {
                         GradientOp::OuterProductOneHot{lhs, rhs, output} =>
                         {
-                            debug_calculate_values!(OuterProductOneHot, (lhs),());
+                            debug_calculate_values!(OuterProductOneHot, (lhs, rhs),());
 
                             encoder.clear_buffer(get_buffer(&self.memory, *output), 0, None);
 
@@ -4176,7 +4220,7 @@ impl OperationsRecorder
                         },
                         GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(OuterProductOneHotAdd, (lhs, added),());
+                            debug_calculate_values!(OuterProductOneHotAdd, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
@@ -4277,10 +4321,7 @@ impl OperationsRecorder
             );
         });
 
-        let command_buffer = encoder.finish();
-        submit_buffers.push(command_buffer);
-
-        self.raw_array_memory.queue.submit(submit_buffers);
+        self.raw_array_memory.queue.submit([encoder.finish()]);
 
         if DUMP_MEMORY
         {
@@ -6142,37 +6183,43 @@ impl OperationsRecorder
     {
         let variable_names = self.memory.variable_names.clone();
 
-        let resolve_check_tensors = |tensors_list: &mut Vec<StoreCheckKey<TensorPtr, TensorIndex>>, must_resolve: bool|
+        fn resolve_check_tensors<T: From<TensorIndex> + PartialEq + Clone>(
+            variable_names: &VariableNames,
+            tensors_memory: &[TensorMemorySlot],
+            tensors_list: &mut Vec<StoreCheckKey<TensorPtr, T>>,
+            must_resolve: bool
+        )
         {
             struct ResolveError(TensorPtr);
 
             let mut new_store_check = Vec::new();
 
-            let resolve_tensor_key = |
-                new_store_check: &[_],
-                k: StoreCheckKey<TensorPtr, TensorIndex>
-            | -> Result<Option<StoreCheckKey<TensorPtr, TensorIndex>>, ResolveError>
+            fn resolve_tensor_key<T: From<TensorIndex> + PartialEq>(
+                tensors_memory: &[TensorMemorySlot],
+                new_store_check: &[StoreCheckKey<TensorPtr, T>],
+                k: StoreCheckKey<TensorPtr, T>
+            ) -> Result<Option<StoreCheckKey<TensorPtr, T>>, ResolveError>
             {
                 let this_index: TensorIndex = match k
                 {
                     StoreCheckKey::PreResolve(ptr) =>
                     {
-                        self.memory.tensors_memory[ptr.0].memory.ok_or(ResolveError(ptr))?
+                        tensors_memory[ptr.0].memory.ok_or(ResolveError(ptr))?
                     },
                     StoreCheckKey::Resolved(_) => unreachable!()
                 };
 
-                let new_k = StoreCheckKey::Resolved(this_index);
+                let new_k = StoreCheckKey::Resolved(this_index.into());
 
                 // new_k has overlap with other ptrs so this check will give some false negatives
                 // disable graph coloring for an exact check
 
                 Ok((!new_store_check.contains(&new_k)).then_some(new_k))
-            };
+            }
 
             tensors_list.iter().for_each(|x|
             {
-                let new_k = match resolve_tensor_key(&new_store_check, x.clone())
+                let new_k = match resolve_tensor_key(tensors_memory, &new_store_check, x.clone())
                 {
                     Ok(x) => x,
                     Err(ResolveError(ptr)) =>
@@ -6191,17 +6238,17 @@ impl OperationsRecorder
             });
 
             *tensors_list = new_store_check;
-        };
+        }
 
-        resolve_check_tensors(&mut self.memory.store_tensors_check, true);
+        resolve_check_tensors(&variable_names, &self.memory.tensors_memory, &mut self.memory.store_tensors_check, true);
 
         #[cfg(debug_assertions)]
         {
             {
                 let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
 
-                resolve_check_tensors(&mut set_tensor_memory.allow_unread, false);
-                resolve_check_tensors(&mut set_tensor_memory.allow_reassign, true);
+                resolve_check_tensors(&variable_names, &self.memory.tensors_memory, &mut set_tensor_memory.allow_unread, false);
+                resolve_check_tensors(&variable_names, &self.memory.tensors_memory, &mut set_tensor_memory.allow_reassign, true);
             }
 
             self.memory.store_values_check = self.memory.store_values_check.iter().map(|k|
@@ -6237,7 +6284,7 @@ impl OperationsRecorder
 
                 let mut set_tensor_memory = self.memory.set_tensor_memory.borrow_mut();
 
-                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter().map(TensorIndex::from));
+                set_tensor_memory.set_memory.extend(resolved_set_ptrs.into_iter().map(TensorIndex::from).map(DiffValueRaw::from));
             }
         }
     }
@@ -7888,8 +7935,33 @@ impl ValueIndex
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffValueRaw
 {
-    Tensor(TensorRawDataPointer),
-    Value(ValueIndex)
+    Tensor(TensorIndex),
+    Value(ValueIndex),
+    OneHot(OneHotIndex)
+}
+
+impl From<TensorIndex> for DiffValueRaw
+{
+    fn from(index: TensorIndex) -> Self
+    {
+        Self::Tensor(index)
+    }
+}
+
+impl From<ValueIndex> for DiffValueRaw
+{
+    fn from(index: ValueIndex) -> Self
+    {
+        Self::Value(index)
+    }
+}
+
+impl From<OneHotIndex> for DiffValueRaw
+{
+    fn from(index: OneHotIndex) -> Self
+    {
+        Self::OneHot(index)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -8213,10 +8285,10 @@ impl<I> JumpInfo<I>
 
 struct NotationGradientOp<T, V, J, O, S>(GradientOp<T, V, J, O, S>);
 
-impl<O, S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStringRaw>, O, S>
+impl<S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStringRaw>, DebugStringRaw, S>
 {
     #[allow(dead_code)]
-    fn from_nameable(memory: &OperationsRecorderMemory, op: GradientOp<TensorPtr, ValueIndex, JumpInfo, O, S>) -> Self
+    fn from_nameable(memory: &OperationsRecorderMemory, op: GradientOp<TensorPtr, ValueIndex, JumpInfo, OneHotIndex, S>) -> Self
     {
         Self(op.map(|t|
         {
@@ -8227,7 +8299,10 @@ impl<O, S> NotationGradientOp<DebugStringRaw, DebugStringRaw, JumpInfo<DebugStri
         }, |jump_info|
         {
             jump_info.map_inputs(|input| DebugStringRaw(memory.format_variable(input)))
-        }, convert::identity, convert::identity))
+        }, |o|
+        {
+            DebugStringRaw(memory.format_variable(o))
+        }, convert::identity))
     }
 }
 
