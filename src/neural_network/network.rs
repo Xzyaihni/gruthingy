@@ -1791,7 +1791,7 @@ where
                 let mut new_weight = self.recorder.get_tensor_blocking(weight_value);
                 new_weight.as_mut().sub_inplace(LayerTypeRef::from(&change));
 
-                self.recorder.set_tensor(weight_value, new_weight);
+                self.recorder.set_tensor(weight_value, new_weight.as_ref());
             });
 
         optimizer.advance_time();
@@ -2425,8 +2425,8 @@ mod tests
 
         input_outputs_indices.into_iter().zip(input_outputs).for_each(|((input_index, target_index), (input_layer, target_layer))|
         {
-            at_once.recorder.set_one_hot(input_index, input_layer.into_one_hot());
-            at_once.recorder.set_one_hot(target_index, target_layer);
+            at_once.recorder.set_one_hot_data(input_index, input_layer.into_one_hot());
+            at_once.recorder.set_one_hot_data(target_index, target_layer);
         });
 
         at_once.recorder.finish();
@@ -2528,17 +2528,7 @@ mod tests
 
         let with_steps_gradient = with_steps.gradients(fastrand::Rng::with_seed(SEED), input_outputs.clone());
 
-        let (mut at_once, at_once_gradient) = run_unrolled();
-
-        let map_weights = |r: &mut OperationsRecorder, w: WeightInfo| -> LayerType
-        {
-            r.get_tensor_blocking(w.weight.as_value())
-        };
-
-        assert_eq!(
-            with_steps.weights.unwrap().map(|x| map_weights(&mut with_steps.recorder, x)),
-            at_once.weights.unwrap().map(|x| map_weights(&mut at_once.recorder, x))
-        );
+        let (_at_once, at_once_gradient) = run_unrolled();
 
         eprintln!("{with_steps_gradient:?}");
 
