@@ -212,7 +212,7 @@ mod tests
     {
         let mut recorder = OperationsRecorder::new();
 
-        let mut one_weight = |value: f32|
+        let mut one_weight = |recorder: &mut OperationsRecorder, value: f32|
         {
             let w = recorder.set_new_tensor_gradientable(LayerType::from_boxed([value].into(), 1, 1).into(), 1);
 
@@ -221,15 +221,19 @@ mod tests
             w
         };
 
-        let mut one_weight_info = |is_bias: bool, value: f32|
+        let mut one_weight_info = |name: &'static str, is_bias: bool, value: f32|
         {
-            let weight = one_weight(value);
+            let weight = one_weight(&mut recorder, value);
 
-            WeightInfoPtr{
+            let weight_info = WeightInfoPtr{
                 weight_dropped: if is_bias { DiffTensorPtr::undefined() } else { weight.clone() },
                 weight_original: weight,
                 dropout: None
-            }
+            };
+
+            recorder.name_diff_tensor(weight_info.weight_original, name);
+
+            weight_info
         };
 
         /*
@@ -252,28 +256,30 @@ mod tests
         {
             sizes: LayerSizes{hidden: 1, initial_input: 1, input: 1, output: 1, final_output: 1, layers: 1, batch_size: 1},
 
-            input_update: one_weight_info(false, 1.65),
-            input_forget: one_weight_info(false, 1.63),
-            input_output: one_weight_info(false, -0.19),
-            input_memory: one_weight_info(false, 0.94),
+            input_update: one_weight_info("input_update", false, 1.65),
+            input_forget: one_weight_info("input_forget", false, 1.63),
+            input_output: one_weight_info("input_output", false, -0.19),
+            input_memory: one_weight_info("input_memory", false, 0.94),
 
-            hidden_update: one_weight_info(false, 2.00),
-            hidden_forget: one_weight_info(false, 2.70),
-            hidden_output: one_weight_info(false, 4.38),
-            hidden_memory: one_weight_info(false, 1.41),
+            hidden_update: one_weight_info("hidden_update", false, 2.00),
+            hidden_forget: one_weight_info("hidden_forget", false, 2.70),
+            hidden_output: one_weight_info("hidden_output", false, 4.38),
+            hidden_memory: one_weight_info("hidden_memory", false, 1.41),
 
-            update_bias: one_weight_info(true, 0.62),
-            forget_bias: one_weight_info(true, 1.62),
-            output_bias: one_weight_info(true, 0.59),
-            memory_bias: one_weight_info(true, -0.32)
+            update_bias: one_weight_info("update_bias", true, 0.62),
+            forget_bias: one_weight_info("forget_bias", true, 1.62),
+            output_bias: one_weight_info("output_bias", true, 0.59),
+            memory_bias: one_weight_info("memory_bias", true, -0.32)
         };
 
         let state = LSTMState::<DiffTensorPtr>{
-            memory: one_weight(2.0),
-            hidden: one_weight(1.0)
+            memory: one_weight(&mut recorder, 2.0),
+            hidden: one_weight(&mut recorder, 1.0)
         };
 
-        let input = one_weight(1.0);
+        let input = one_weight(&mut recorder, 1.0);
+
+        recorder.name_diff_tensor(input, "input");
 
         let output = {
             let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input));
@@ -291,12 +297,12 @@ mod tests
         let memory = output.state.memory.as_value();
         let hidden = output.state.hidden.as_value();
 
-        recorder.store_tensor_until_end(memory);
-        recorder.store_tensor_until_end(hidden);
+        recorder.store_tensor_as_output(memory);
+        recorder.store_tensor_as_output(hidden);
 
         recorder.gradient(output.output.into());
 
-        recorder.resolve_memory(false);
+        recorder.resolve_memory(true);
 
         let memory = recorder.resolve_tensor_ptr(memory);
         let hidden = recorder.resolve_tensor_ptr(hidden);

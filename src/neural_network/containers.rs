@@ -330,7 +330,7 @@ fn verify_store_check<T: Eq, K: Eq + Debug + Copy>(
 {
     debug_assert!(
         store_checks.contains(&StoreCheckKey::Resolved(index)),
-        "store_{name}_until_end must be called on {index:?}"
+        "store_{name}_as_output must be called on {index:?}"
     );
 }
 
@@ -5528,12 +5528,13 @@ impl OperationsRecorder
         }
     }
 
-    fn combine_inplace_assignments(&mut self)
+    fn combine_inplace_assignments(&mut self, input_remaps: &mut Vec<(TensorPtr, TensorPtr)>)
     {
         for i in (0..self.gradient_operations.len()).rev()
         {
             fn combine_arg_output_tensors_inner(
                 this: &mut OperationsRecorder,
+                input_remaps: &mut Vec<(TensorPtr, TensorPtr)>,
                 arg: TensorPtr,
                 output: TensorPtr,
                 i: usize
@@ -5546,7 +5547,11 @@ impl OperationsRecorder
                     let arg_start = arg_range.start;
 
                     debug_assert!(arg_start.is_some());
-                    debug_assert_ne!(arg_start, Some(-1));
+
+                    if arg_start == Some(-1)
+                    {
+                        input_remaps.push((arg, combined_output));
+                    }
 
                     debug_assert_eq!(
                         arg_range.end,
@@ -5571,7 +5576,7 @@ impl OperationsRecorder
                 combined_output
             }
 
-            let combine_arg_output_tensors = |this, arg, output| combine_arg_output_tensors_inner(this, arg, output, i);
+            let mut combine_arg_output_tensors = |this, arg, output| combine_arg_output_tensors_inner(this, input_remaps, arg, output, i);
 
             macro_rules! combine_added_output
             {
@@ -5822,12 +5827,26 @@ impl OperationsRecorder
         self.load_live_ranges(start_live_ranges);
         self.calculate_live_ranges();
 
-        self.combine_inplace_assignments();
+        let mut input_remaps = Vec::new();
+
+        self.combine_inplace_assignments(&mut input_remaps);
 
         let mut memory_assignments = Vec::new();
         self.graph_color(&mut memory_assignments, optional_info);
 
         self.memory.tensors.resize(memory_assignments.len(), LinearRawDataPointer::undefined());
+
+        input_remaps.into_iter().for_each(|(input, parent)|
+        {
+            self.memory.tensors_memory[parent.0].memory = self.memory.tensors_memory[input.0].memory;
+
+            self.allow_discard(parent);
+
+            #[cfg(debug_assertions)]
+            {
+                self.memory.set_tensors_check.push(parent.into());
+            }
+        });
 
         if optional_info
         {
@@ -9918,8 +9937,6 @@ mod tests
             recorder.name_diff_tensor(zeros, "zeros");
 
             recorder.store_tensor_until_end(zeros.as_value());
-
-            let bc_selector = recorder.phi_other_selector(zeros);
 
             let loop_index = recorder.begin_loop(vec![i.into(), target.into()]);
 
