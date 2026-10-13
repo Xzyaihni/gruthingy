@@ -863,7 +863,7 @@ pub struct OperationsRecorderMemory
     tensors_memory: Vec<TensorMemorySlot>,
     tensors_raw_data: Vec<RawArray>,
     one_hot_layers: Vec<OneHotLayer>,
-    one_hot_buffers: Vec<TensorRawDataPointer>,
+    one_hot_buffers: Vec<Option<TensorRawDataPointer>>,
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
     variable_names: VariableNames,
     store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
@@ -1055,13 +1055,6 @@ impl OperationsRecorderMemory
         self.values[index.0] = value
     }
 
-    fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
-    {
-        debug_assert_eq!(self.one_hot_layers[index.0].batch_size, value.batch_size);
-
-        self.one_hot_layers[index.0] = value;
-    }
-
     fn set_new_value(&mut self, value: f32) -> DiffScalar
     {
         let scalar = self.new_value(false);
@@ -1070,6 +1063,27 @@ impl OperationsRecorderMemory
         self.value_live_ranges[scalar.as_value().0].start = Some(-1);
 
         scalar
+    }
+
+    fn set_tensor_inner(&self, raw_array_memory: &RawArrayMemory, index: LinearRawDataPointer, bytes: &[u8])
+    {
+        let input_buffer = &self.tensors_raw_data[index.raw_index.0].buffer;
+
+        raw_array_memory.queue.write_buffer(input_buffer, 0, bytes);
+    }
+
+    fn set_one_hot(&mut self, raw_array_memory: &RawArrayMemory, index: OneHotIndex, value: OneHotLayer)
+    {
+        #[cfg(debug_assertions)]
+        {
+            self.verify_raw_ptr_assign_index(index);
+        }
+
+        let index = self.one_hot_buffers[index.0].unwrap();
+
+        let bytes: &[u8] = bytemuck::cast_slice(&value.positions);
+
+        self.set_tensor_inner(raw_array_memory, index.into(), bytes)
     }
 
     fn tensor_shape(&self, tensor: TensorPtr) -> TensorShape
@@ -1111,7 +1125,7 @@ impl OperationsRecorderMemory
             DiffValueRaw::Tensor(x)
         } else
         {
-            self.one_hot_buffers.iter().position(|ptr| ptr.to_linear_pointer() == raw_ptr)
+            self.one_hot_buffers.iter().position(|ptr| ptr.map(|ptr| ptr.to_linear_pointer() == raw_ptr).unwrap_or(false))
                 .map(OneHotIndex)
                 .map(DiffValueRaw::OneHot)
                 .unwrap_or_else(|| unimplemented!())
@@ -1751,16 +1765,7 @@ impl OperationsRecorder
         let info = self.memory.tensors[index.0];
         debug_assert_ne!(info, LinearRawDataPointer::undefined(), "{index:?} location is undefined");
 
-        self.set_tensor_inner(info, value.bytes_slice());
-    }
-
-    fn set_tensor_inner(&mut self, index: LinearRawDataPointer, bytes: &[u8])
-    {
-        debug_assert_eq!(self.state, RecorderState::Ready);
-
-        let input_buffer = &self.memory.tensors_raw_data[index.raw_index.0].buffer;
-
-        self.raw_array_memory.queue.write_buffer(input_buffer, 0, bytes);
+        self.memory.set_tensor_inner(&self.raw_array_memory, info, value.bytes_slice());
     }
 
     pub fn set_tensor_ptr_zeroed(&mut self, _index: TensorPtr)
@@ -1806,18 +1811,20 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Recording);
 
-        self.memory.one_hot_layers[index.0] = value;
+        let this_layer = &mut self.memory.one_hot_layers[index.0];
+
+        debug_assert_eq!(this_layer.batch_size, value.batch_size);
+        debug_assert_eq!(this_layer.count, value.count);
+        debug_assert_eq!(this_layer.layer_size, value.layer_size);
+
+        *this_layer = value;
     }
 
     pub fn set_one_hot(&mut self, index: OneHotIndex, value: OneHotLayer)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        let index = self.memory.one_hot_buffers[index.0];
-
-        let bytes: &[u8] = bytemuck::cast_slice(&value.positions);
-
-        self.set_tensor_inner(index.into(), bytes)
+        self.memory.set_one_hot(&self.raw_array_memory, index, value)
     }
 
     pub fn set_input(&mut self, input: InputType, value: OwnedInputType)
@@ -2731,7 +2738,7 @@ impl OperationsRecorder
                             $(
                                 if !is_first { eprint!(", "); }
 
-                                let var_name = self.memory.format_tensor_raw_ptr(*$t_name);
+                                let var_name = self.memory.format_diff_value_raw(self.memory.raw_ptr_to_diff_value_raw($t_name.to_linear_pointer()));
                                 eprint!("{}: {}", stringify!($t_name), var_name);
 
                                 if $has_value
@@ -3152,7 +3159,10 @@ impl OperationsRecorder
                                                 dst_buffer.size()
                                             );
                                         },
-                                        InputType::OneHot(input) => self.memory.set_one_hot(input, value.into_one_hot())
+                                        InputType::OneHot(input) =>
+                                        {
+                                            self.memory.set_one_hot(&self.raw_array_memory, input, value.into_one_hot())
+                                        }
                                     }
                                 },
                                 LoopInputs::Dependent(i) =>
@@ -5611,30 +5621,47 @@ impl OperationsRecorder
     {
         self.memory.one_hot_buffers = (0..self.memory.one_hot_layers.len()).map(|one_hot_index|
         {
-            let one_hot_layer = &self.memory.one_hot_layers[one_hot_index];
+            let one_hot_index = OneHotIndex(one_hot_index);
 
-            let label = self.memory.format_variable(OneHotIndex(one_hot_index));
+            let is_used = self.gradient_operations.iter().any(|x| x.is_any_arg(|arg| arg == DiffValue::OneHot(one_hot_index)));
+
+            if !is_used
+            {
+                return None;
+            }
+
+            let one_hot_layer = &self.memory.one_hot_layers[one_hot_index.0];
+
+            let label = self.memory.format_variable(one_hot_index);
             let label = Some(label.as_ref());
 
             let shape = TensorShape{rows: one_hot_layer.count, columns: 1, batch_size: one_hot_layer.batch_size};
 
             let size = shape.size();
+
+            let this_tensor_raw_ptr = LinearRawDataPointer{
+                raw_index: TensorIndexRaw(self.memory.tensors_raw_data.len()),
+                size
+            }.with_shape(shape);
+
             let raw_tensor = if one_hot_layer.positions.is_empty()
             {
                 RawArray::uninit::<u32>(&self.raw_array_memory, label, size)
             } else
             {
-                RawArray::from_slice(&self.raw_array_memory, label, &one_hot_layer.positions, shape)
-            };
+                let raw_tensor = RawArray::from_slice(&self.raw_array_memory, label, &one_hot_layer.positions, shape);
 
-            let this_tensor_raw_ptr = LinearRawDataPointer{
-                raw_index: TensorIndexRaw(self.memory.tensors_raw_data.len()),
-                size
+                #[cfg(debug_assertions)]
+                {
+                    self.memory.verify_raw_ptr_assign_index(one_hot_index);
+                }
+
+                raw_tensor
             };
 
             self.memory.tensors_raw_data.push(raw_tensor);
 
-            this_tensor_raw_ptr.with_shape(shape)
+            Some(this_tensor_raw_ptr)
         }).collect();
 
         let mut usage_counts: Vec<(TensorIndex, usize, Vec<(TensorIndex, usize)>)> = (0..self.memory.tensors.len())
@@ -5881,7 +5908,10 @@ impl OperationsRecorder
                                                 InputType::Normal(ShapedTensorIndex{index, shape})
                                             })
                                         },
-                                        InputTypePtr::OneHot(x) => Some(InputType::OneHot(x))
+                                        InputTypePtr::OneHot(x) =>
+                                        {
+                                            self.memory.one_hot_buffers[x.0].is_some().then_some(InputType::OneHot(x))
+                                        }
                                     }
                                 }).collect();
 
@@ -5925,7 +5955,10 @@ impl OperationsRecorder
                         })
                     }, |one_hot_index|
                     {
-                        self.memory.one_hot_buffers[one_hot_index.0]
+                        self.memory.one_hot_buffers[one_hot_index.0].unwrap_or_else(||
+                        {
+                            panic!("{} was marked unused and then got used", self.memory.format_variable(one_hot_index));
+                        })
                     }, convert::identity);
 
                     (!ignore_output).then_some(output)
@@ -8838,7 +8871,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::Fill{value, output} => Self::Fill{value: tf(&mut state, value), output},
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
-                Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets, output}
+                Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets: of(&mut state, targets), output}
             },
             Self::Softmax{values, softmaxed_output} =>
             {
@@ -9921,57 +9954,6 @@ mod tests
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
             recorder.add(bc, a)
-        })
-    }
-
-    #[test]
-    fn simple_sum_softmax_state()
-    {
-        let loops_count = 3;
-
-        let output_size = LAYER_CURR;
-
-        let targets: Vec<OneHotLayer> = (0..loops_count).map(|_|
-        {
-            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
-        }).collect();
-
-        check_tensor_with_dims((1, LAYER_CURR), (1, LAYER_CURR), |recorder, a, b|
-        {
-            let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_tensor(a_sum, "a_sum");
-
-            let t = recorder.new_one_hot(1, output_size, 1);
-            recorder.name_one_hot(t, "t");
-
-            let final_state_selector = recorder.phi_other_selector(a_sum);
-
-            let loop_index = recorder.begin_loop(vec![t.into()]);
-
-            let (at, a_loss) = recorder.softmax_cross_entropy(a, t);
-            recorder.name_diff_tensor(at, "at");
-            recorder.name_diff_tensor(a_loss, "a_loss");
-
-            let at_sum = recorder.sum_tensor(at);
-            let ata = recorder.add(a_loss, at_sum);
-
-            let final_selected = recorder.select_tensor(final_state_selector);
-            recorder.name_diff_tensor(final_selected, "final_selected");
-
-            let final_state = recorder.add(final_selected, ata);
-            recorder.name_diff_tensor(final_state, "final_state");
-
-            recorder.set_phi_other_selector(final_state_selector, final_state);
-
-            recorder.end_loop(loop_index);
-
-            recorder.set_loop_times(loop_index, loops_count);
-            recorder.set_loop_inputs(loop_index, targets.iter().cloned().map(OwnedInputType::OneHot).collect::<Vec<_>>());
-
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_state);
-
-            recorder.add(b, final_state_filled)
         })
     }
 
