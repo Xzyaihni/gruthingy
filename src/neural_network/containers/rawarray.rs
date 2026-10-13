@@ -136,4 +136,16 @@ impl RawArray
             buffer
         }
     }
+
+    pub fn create_output(&mut self, memory: &RawArrayMemory)
+    {
+        let output_buffer = memory.device.create_buffer(&wgpu::BufferDescriptor{
+            label: None,
+            size: self.buffer.size(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false
+        });
+
+        self.output_buffer = Some(output_buffer);
+    }
 }

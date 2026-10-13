@@ -2027,13 +2027,16 @@ impl OperationsRecorder
         let info = self.memory.tensors[index.index.0].with_shape(index.shape);
         debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
 
-        self.get_tensor_blocking_ptr(info).unwrap_or_else(||
+        self.get_tensor_blocking_ptr(info).map(|(data, shape)|
+        {
+            LayerType::from_raw(data, shape)
+        }).unwrap_or_else(||
         {
             panic!("tried to get non output tensor: {}", self.memory.format_tensor_index(index.index));
         })
     }
 
-    fn get_tensor_blocking_ptr(&self, info: TensorRawDataPointer) -> Option<LayerType>
+    fn get_tensor_blocking_ptr<T: bytemuck::Pod + Send>(&self, info: TensorRawDataPointer) -> Option<(Box<[T]>, TensorShape)>
     {
         let output_buffer = self.memory.tensors_raw_data[info.raw_index.0].output_buffer.as_ref()?;
 
@@ -2049,18 +2052,18 @@ impl OperationsRecorder
                     panic!("error mapping tensor: {err}");
                 }
 
-                let tensor = {
+                let output = {
                     let view: wgpu::BufferView = output_buffer.get_mapped_range(..).unwrap();
 
                     let data: &[u8] = &view;
-                    let data: &[f32] = bytemuck::cast_slice(data);
+                    let data: &[T] = bytemuck::cast_slice(data);
 
-                    LayerType::from_raw(data.into(), info.shape)
+                    (data.into(), info.shape)
                 };
 
                 output_buffer.unmap();
 
-                sender.send(tensor).unwrap();
+                sender.send(output).unwrap();
             }
         });
 
@@ -2743,7 +2746,7 @@ impl OperationsRecorder
 
                                 if $has_value
                                 {
-                                    eprint!(" = {:?}", self.get_tensor_blocking_ptr(*$t_name).unwrap().as_slice());
+                                    eprint!(" = {:?}", &self.get_tensor_blocking_ptr::<f32>(*$t_name).unwrap().0);
                                 }
 
                                 is_first = false;
@@ -4369,6 +4372,21 @@ impl OperationsRecorder
                 let tensor = self.get_tensor_blocking_unchecked(ShapedTensorIndex{index: tensor_index, shape});
 
                 eprintln!("{}: {tensor:?}", self.memory.format_tensor_index(tensor_index));
+            });
+
+            self.memory.one_hot_buffers.iter().enumerate().for_each(|(one_hot_index, tensor_raw_ptr)|
+            {
+                let one_hot_index = OneHotIndex(one_hot_index);
+
+                let Some(tensor_raw_ptr) = tensor_raw_ptr else {
+                    return;
+                };
+
+                let shape = tensor_raw_ptr.shape;
+
+                let (values, _): (Box<[u32]>, _) = self.get_tensor_blocking_ptr(*tensor_raw_ptr).unwrap();
+
+                eprintln!("{}: {values:?}", self.memory.format_variable(one_hot_index));
             });
         }
     }
@@ -6193,25 +6211,12 @@ impl OperationsRecorder
 
     fn initialize_output_buffers(&mut self)
     {
-        let create_output_buffer = |store_tensor: TensorIndex|
-        {
-            let data_pointer = self.memory.tensors[store_tensor.0];
-
-            let this_raw_array = &mut self.memory.tensors_raw_data[data_pointer.raw_index.0];
-
-            let output_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
-                label: None,
-                size: this_raw_array.buffer.size(),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false
-            });
-
-            this_raw_array.output_buffer = Some(output_buffer);
-        };
-
         if DUMP_MEMORY
         {
-            (0..self.memory.tensors.len()).map(TensorIndex).for_each(create_output_buffer);
+            self.memory.tensors_raw_data.iter_mut().for_each(|this_raw_array|
+            {
+                this_raw_array.create_output(&self.raw_array_memory);
+            });
 
             return;
         }
@@ -6223,12 +6228,12 @@ impl OperationsRecorder
             };
 
             *store_tensor
-        }).for_each(create_output_buffer);
-    }
+        }).for_each(|store_tensor: TensorIndex|
+        {
+            let data_pointer = self.memory.tensors[store_tensor.0];
 
-    fn initialize_operations(&mut self)
-    {
-        self.initialize_output_buffers();
+            self.memory.tensors_raw_data[data_pointer.raw_index.0].create_output(&self.raw_array_memory);
+        });
     }
 
     fn resolve_store_tensors(&mut self)
@@ -6399,7 +6404,7 @@ impl OperationsRecorder
 
         self.resolve_store_tensors();
 
-        self.initialize_operations();
+        self.initialize_output_buffers();
 
         #[cfg(debug_assertions)]
         {

@@ -1870,7 +1870,7 @@ where
 
                         batch_positions.iter_mut().for_each(|x|
                         {
-                            if !dropouts.contains(&(*x as usize))
+                            if dropouts.contains(&(*x as usize))
                             {
                                 *x = u32::MAX;
                             }
