@@ -1516,7 +1516,9 @@ impl RawArrayMemory
                 OpKernel::MulComponentwiseAdd => ("kernels/mul_componentwise_add.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.r0_w2_i0),
+                OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::Tanh => ("kernels/tanh.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::TanhDiff => ("kernels/tanh_diff.wgsl", &kernel_layouts.r2_w1_i0),
@@ -2239,6 +2241,19 @@ impl OperationsRecorder
         let dst = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Copy{src, dst});
+
+        dst
+    }
+
+    pub fn batch_replicate(&mut self, target_batch_size: usize, src: DiffTensorPtr) -> DiffTensorPtr
+    {
+        let src_shape = self.tensor_shape(src.as_value());
+
+        debug_assert_eq!(src_shape.batch_size, 1);
+
+        let dst = self.new_tensor_op(TensorShape{batch_size: target_batch_size, ..src_shape});
+
+        self.add_recording_operation(Op::BatchReplicate{src, dst});
 
         dst
     }
@@ -3627,6 +3642,31 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
+                GradientOp::SumBatch{value, output} =>
+                {
+                    debug_calculate_values!(SumBatch, (value),());
+
+                    debug_assert_eq!(output.shape.batch_size, 1);
+
+                    debug_assert_eq!(value.shape.rows, output.shape.rows);
+                    debug_assert_eq!(value.shape.columns, output.shape.columns);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
+                        OpKernel::SumBatch,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, value.shape.single_size());
+
+                    debug_calculate_values_result!((output),());
+                },
                 GradientOp::Dot{lhs, rhs, output} =>
                 {
                     debug_calculate_values!(Dot, (lhs, rhs),());
@@ -3690,6 +3730,31 @@ impl OperationsRecorder
                         &self.raw_array_memory,
                         &self.raw_array_memory.kernel_layouts.r1_w1_i0,
                         OpKernel::Fill,
+                        &[
+                            bind_group_entry(0, *value),
+                            bind_group_entry(1, *output)
+                        ]
+                    );
+
+                    single_work_group(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::BatchReplicate{value, output} =>
+                {
+                    debug_calculate_values!(BatchReplicate, (value),());
+
+                    debug_assert_eq!(value.shape.batch_size, 1);
+
+                    debug_assert_eq!(value.shape.rows, output.shape.rows);
+                    debug_assert_eq!(value.shape.columns, output.shape.columns);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
+                        OpKernel::BatchReplicate,
                         &[
                             bind_group_entry(0, *value),
                             bind_group_entry(1, *output)
@@ -4421,6 +4486,10 @@ impl OperationsRecorder
                 Op::Fill{src, dst} =>
                 {
                     GradientOp::Fill{value: src.as_value(), output: dst.as_value()}
+                },
+                Op::BatchReplicate{src, dst} =>
+                {
+                    GradientOp::BatchReplicate{value: src.as_value(), output: dst.as_value()}
                 },
                 Op::AddScalar{lhs, rhs, output} =>
                 {
@@ -7413,6 +7482,15 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: src_gradient});
                 }
             },
+            Op::BatchReplicate{src, dst} =>
+            {
+                let gradient = gradient_or_return!(dst);
+
+                if let Some(src_gradient) = src.as_gradient()
+                {
+                    add_gradient_operation(self, selectors, GradientOp::SumBatch{value: gradient, output: src_gradient});
+                }
+            },
             Op::Add{lhs, output, ..}
             | Op::AddScalar{lhs, output, ..} =>
             {
@@ -8446,7 +8524,9 @@ pub enum GradientOp<T, V, J, O, S>
     MulComponentwise{lhs: T, rhs: T, output: T},
     MulComponentwiseAdd{lhs: T, rhs: T, added: T, output: T},
     SumTensor{value: T, output: T},
+    SumBatch{value: T, output: T},
     Fill{value: T, output: T},
+    BatchReplicate{value: T, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -8547,7 +8627,9 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
                 GradientOp::MulComponentwiseAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
             Self::SumTensor{value, output} => GradientOp::SumTensor{value: tf(value), output: tf(output)},
+            Self::SumBatch{value, output} => GradientOp::SumBatch{value: tf(value), output: tf(output)},
             Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
+            Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
             Self::LeakyReluDiff{value, gradient, output} => GradientOp::LeakyReluDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
@@ -8716,6 +8798,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulComponentwise{output, lhs, rhs} => Self::MulComponentwise{output: tf(&mut state, output), lhs, rhs},
             Self::MulComponentwiseAdd{output, lhs, rhs, added} => Self::MulComponentwiseAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::Fill{output, value} => Self::Fill{output: tf(&mut state, output), value},
+            Self::BatchReplicate{output, value} => Self::BatchReplicate{output: tf(&mut state, output), value},
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(&mut state, output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(&mut state, output), value},
             Self::SigmoidDiff{output, gradient, value} => Self::SigmoidDiff{output: tf(&mut state, output), gradient, value},
@@ -8741,6 +8824,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(&mut state, output), lhs, rhs},
             Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(&mut state, output), lhs, rhs},
             Self::SumTensor{output, value} => Self::SumTensor{output: tf(&mut state, output), value},
+            Self::SumBatch{output, value} => Self::SumBatch{output: tf(&mut state, output), value},
             Self::Dot{output, lhs, rhs} => Self::Dot{output: tf(&mut state, output), lhs, rhs},
             Self::SoftmaxCrossEntropy{softmaxed_output, output, targets, values} =>
             {
@@ -8818,6 +8902,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
                 Self::MulComponentwiseAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::SumTensor{value, output} => Self::SumTensor{value: tf(&mut state, value), output},
+            Self::SumBatch{value, output} => Self::SumBatch{value: tf(&mut state, value), output},
             Self::Pow{lhs, power, output} => Self::Pow{lhs: tf(&mut state, lhs), power, output},
             Self::LeakyRelu{value, output} => Self::LeakyRelu{value: tf(&mut state, value), output},
             Self::LeakyReluDiff{value, gradient, output} =>
@@ -8877,6 +8962,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::Fill{value, output} => Self::Fill{value: tf(&mut state, value), output},
+            Self::BatchReplicate{value, output} => Self::BatchReplicate{value: tf(&mut state, value), output},
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets: of(&mut state, targets), output}
@@ -8928,6 +9014,7 @@ pub enum Op
     CopyScalar{src: DiffScalar, dst: DiffScalar},
     Copy{src: DiffTensorPtr, dst: DiffTensorPtr},
     Fill{src: DiffTensorPtr, dst: DiffTensorPtr},
+    BatchReplicate{src: DiffTensorPtr, dst: DiffTensorPtr},
     AddScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     AddScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     Add{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
@@ -8962,6 +9049,7 @@ impl Op
             Self::CopyScalar{dst, ..} => f(dst.into()),
             Self::Copy{dst, ..} => f(dst.into()),
             Self::Fill{dst, ..} => f(dst.into()),
+            Self::BatchReplicate{dst, ..} => f(dst.into()),
             Self::AddScalar{output, ..} => f(output.into()),
             Self::AddScalars{output, ..} => f(output.into()),
             Self::Add{output, ..} => f(output.into()),
@@ -8995,6 +9083,7 @@ impl Op
             Self::CopyScalar{src, ..} => f(src.into()),
             Self::Copy{src, ..} => f(src.into()),
             Self::Fill{src, ..} => f(src.into()),
+            Self::BatchReplicate{src, ..} => f(src.into()),
             Self::AddScalar{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::AddScalars{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::Add{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },

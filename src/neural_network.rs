@@ -579,7 +579,7 @@ impl<'a, EmbeddingsType, D> InputOutputEmbeddingsIter<'a, EmbeddingsType, D>
                 Self::around_window(context, amount)
             }).collect::<Box<[_]>>();
 
-            OneHotLayer::new(words, BAG_OF_WORDS_EMBEDDINGS_COUNT * 2 + 1, words_amount, self.batch_size())
+            OneHotLayer::new(words, BAG_OF_WORDS_EMBEDDINGS_COUNT * 2, words_amount, self.batch_size())
         };
 
         let this_input: OwnedInputType = self.dictionary.one_hot_to_input(this_input);
@@ -1492,17 +1492,17 @@ mod tests
 
     type Unit = LstmUnitFactory;
 
-    type ThisEmbeddings = BagOfWordsEmbeddings;
-
     type ThisDictionary = CharDictionary;
 
-    fn gradient_with_batch_size(
+    fn gradient_with_batch_size<ThisEmbeddings: EmbeddingsTypeable>(
         rng: PrecomputedRng,
         network: &mut NeuralNetwork<Network<Unit, ()>, (), ThisDictionary>,
         inputs: &Vec<VectorWord>,
         batch_starts: &Vec<usize>,
         inputs_per_batch: usize
     ) -> WeightsFullContainer<Unit, LayerType>
+    where
+        for<'b> InputOutputEmbeddingsIter<'b, ThisEmbeddings, ThisDictionary>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         let values = InputOutput::new(
             &network.dictionary,
@@ -1516,6 +1516,14 @@ mod tests
 
     #[test]
     fn batch_equivalent()
+    {
+        batch_equivalent_with::<BagOfWordsEmbeddings>();
+        batch_equivalent_with::<OneHotEmbeddings>();
+    }
+
+    fn batch_equivalent_with<ThisEmbeddings: EmbeddingsTypeable>()
+    where
+        for<'b> InputOutputEmbeddingsIter<'b, ThisEmbeddings, ThisDictionary>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         let inputs_amount = 5;
         let batch_size = 32;
@@ -1676,7 +1684,7 @@ mod tests
             };
 
             let inputs = inputs[start..(start + count)].to_vec();
-            gradient_with_batch_size(single_rng, &mut network_single, &inputs, &vec![0], inputs_per_batch)
+            gradient_with_batch_size::<ThisEmbeddings>(single_rng, &mut network_single, &inputs, &vec![0], inputs_per_batch)
         }).reduce(|mut acc, this|
         {
             acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
@@ -1716,7 +1724,15 @@ mod tests
         };
 
         let batch_starts: Vec<usize> = (0..batch_size).map(|i| i * inputs_per_batch).collect();
-        let batched_gradients_batch = gradient_with_batch_size(batched_rng, &mut network_batched, &inputs, &batch_starts, inputs_per_batch);
+
+        let batched_gradients_batch = gradient_with_batch_size::<ThisEmbeddings>(
+            batched_rng,
+            &mut network_batched,
+            &inputs,
+            &batch_starts,
+            inputs_per_batch
+        );
+
         let batched_gradients = batched_gradients_batch.average_batch();
 
         eprintln!("calculated batched_gradients");

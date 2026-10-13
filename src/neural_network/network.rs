@@ -1366,8 +1366,10 @@ where
         {
             if let Some(dropout) = weights.dropout
             {
+                let weight_replicated = recorder.batch_replicate(self.sizes.batch_size, weights.weight_original);
+
                 let weight_dropped = recorder.mul_componentwise(
-                    weights.weight_original,
+                    weight_replicated,
                     DiffTensorPtr::no_gradient(dropout)
                 );
 
