@@ -1081,6 +1081,9 @@ impl OperationsRecorderMemory
 
         let index = self.one_hot_buffers[index.0].unwrap();
 
+        debug_assert_eq!(index.shape.batch_size, value.batch_size);
+        debug_assert_eq!(index.shape.rows, value.count);
+
         let bytes: &[u8] = bytemuck::cast_slice(&value.positions);
 
         self.set_tensor_inner(raw_array_memory, index.into(), bytes)
