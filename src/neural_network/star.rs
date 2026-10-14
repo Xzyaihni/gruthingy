@@ -53,7 +53,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
             debug_assert!(bias.weight_dropped.is_undefined());
             debug_assert!(bias.dropout.is_none());
 
-            let bias = bias.weight_original;
+            let bias = bias.weight_replicated;
 
             match input
             {
