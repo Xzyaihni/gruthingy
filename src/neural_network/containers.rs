@@ -2183,6 +2183,16 @@ impl OperationsRecorder
         self.name_suffix_generic(tensor.into(), inherit.into(), suffix)
     }
 
+    pub fn name_diff_tensor_suffix(&mut self, tensor: DiffTensorPtr, inherit: DiffTensorPtr, suffix: &str)
+    {
+        self.name_tensor_suffix(tensor.as_value(), inherit.as_value(), suffix);
+
+        if let (Some(tensor), Some(inherit)) = (tensor.as_gradient(), inherit.as_gradient())
+        {
+            self.name_tensor_suffix(tensor, inherit, suffix);
+        }
+    }
+
     pub fn name_input(&mut self, value: InputTypePtr, name: impl Into<String>)
     {
         self.name_diff_value(value.into(), name.into().to_uppercase());

@@ -204,6 +204,7 @@ pub fn maybe_dropout_weights(
     if is_skip
     {
         let weight_replicated = recorder.batch_replicate(shape.batch_size, weights);
+        recorder.name_diff_tensor_suffix(weight_replicated, weights, "_replicated");
 
         WeightInfoPtr{
             weight_dropped: DiffTensorPtr::undefined(),
@@ -224,10 +225,10 @@ pub fn dropout_weights(
 ) -> WeightInfoPtr
 {
     let dropout = recorder.new_tensor_no_gradient(shape);
-
     recorder.name_diff_tensor(dropout, "dropout");
 
     let weight_replicated = recorder.batch_replicate(shape.batch_size, weight_original);
+    recorder.name_diff_tensor_suffix(weight_replicated, weight_original, "_replicated");
 
     WeightInfoPtr{
         weight_dropped: DiffTensorPtr::undefined(),
