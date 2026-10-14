@@ -38,7 +38,7 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 pub const LEAKY_SLOPE: f32 = 0.01;
 
 const NO_COLORING: bool = true; const remove_me: () = ();
-const DUMP_MEMORY: bool = true; const remove_me1: () = ();
+const DUMP_MEMORY: bool = false;
 const _PRINT_CALCULATE_VALUES: bool = false;
 
 const FLOAT_BYTES: usize = mem::size_of::<f32>();
@@ -5181,7 +5181,17 @@ impl OperationsRecorder
 
                 let is_output = this.memory.tensor_live_ranges[src.0].end == Some(i32::MAX);
 
-                (is_used || is_output).then(||
+                let is_inside_loop = this.gradient_operations[(i + 1)..].iter().find_map(|x|
+                {
+                    match x
+                    {
+                        GradientOp::Jump(JumpInfo::JumpFrom(_)) => Some(true),
+                        GradientOp::Jump(JumpInfo::JumpTo{..}) => Some(false),
+                        _ => None
+                    }
+                }).unwrap_or(false);
+
+                (is_used || is_output || is_inside_loop).then(||
                 {
                     let shape = this.tensor_shape(src);
                     let new_src = this.memory.new_tensor(false, shape.into()).as_value();
@@ -5208,6 +5218,8 @@ impl OperationsRecorder
                                     };
 
                                     *added = new_added;
+
+                                    i += 1;
                                 }
                             },
                         )+
@@ -9195,10 +9207,10 @@ impl OneHotLayer
 
             let mut flat_positions = Vec::new();
 
-            positions.into_iter().for_each(|batch_positions|
+            positions.into_iter().enumerate().for_each(|(batch_index, batch_positions)|
             {
                 flat_positions.extend(batch_positions.into_iter().map(|x| x as u32));
-                flat_positions.resize(count, u32::MAX);
+                flat_positions.resize(count * (batch_index + 1), u32::MAX);
             });
 
             debug_assert_eq!(flat_positions.len(), count * batch_size);

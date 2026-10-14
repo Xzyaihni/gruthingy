@@ -1425,7 +1425,6 @@ where
             self.record_feedforward(one_hot_count);
 
             self.prepare_setup_shared();
-            dbg!(&self.recorder);
 
             self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
             {
