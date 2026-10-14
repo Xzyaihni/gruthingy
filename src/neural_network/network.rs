@@ -203,8 +203,11 @@ pub fn maybe_dropout_weights(
 {
     if is_skip
     {
+        let weight_replicated = recorder.batch_replicate(shape.batch_size, weights);
+
         WeightInfoPtr{
             weight_dropped: DiffTensorPtr::undefined(),
+            weight_replicated,
             weight_original: weights,
             dropout: None
         }
@@ -224,8 +227,11 @@ pub fn dropout_weights(
 
     recorder.name_diff_tensor(dropout, "dropout");
 
+    let weight_replicated = recorder.batch_replicate(shape.batch_size, weight_original);
+
     WeightInfoPtr{
         weight_dropped: DiffTensorPtr::undefined(),
+        weight_replicated,
         weight_original,
         dropout: Some(dropout.as_value())
     }
@@ -910,6 +916,7 @@ impl<N: UnitFactory> WeightsFullContainer<N, LayerType>
 pub struct WeightInfoGeneric<D, I>
 {
     pub weight_dropped: D,
+    pub weight_replicated: D,
     pub weight_original: D,
     pub dropout: Option<I>
 }
@@ -1366,10 +1373,8 @@ where
         {
             if let Some(dropout) = weights.dropout
             {
-                let weight_replicated = recorder.batch_replicate(self.sizes.batch_size, weights.weight_original);
-
                 let weight_dropped = recorder.mul_componentwise(
-                    weight_replicated,
+                    weights.weight_replicated,
                     DiffTensorPtr::no_gradient(dropout)
                 );
 
@@ -1498,10 +1503,10 @@ where
 
         let weights = self.weights_ptr.take().unwrap().map(|mut weight_info|
         {
-            if !store_gradient { weight_info.weight_original.clear_gradient(); }
+            if !store_gradient { weight_info.weight_replicated.clear_gradient(); }
 
             WeightInfo{
-                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
+                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_replicated),
                 dropout: weight_info.dropout.map(|x| self.recorder.resolve_tensor_ptr(x))
             }
         });
@@ -1694,7 +1699,7 @@ where
                     debug_assert!(embeddings.input.weight_dropped.is_undefined());
                     debug_assert!(embeddings.input.dropout.is_none());
 
-                    return DiffInputType::Normal(self.recorder.matmul_onehotv(embeddings.input.weight_original, input.into_one_hot()));
+                    return DiffInputType::Normal(self.recorder.matmul_onehotv(embeddings.input.weight_replicated, input.into_one_hot()));
                 }
 
                 match input

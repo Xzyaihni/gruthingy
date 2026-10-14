@@ -39,7 +39,7 @@ pub const LEAKY_SLOPE: f32 = 0.01;
 
 const NO_COLORING: bool = true; const remove_me: () = ();
 const DUMP_MEMORY: bool = true; const remove_me1: () = ();
-const _PRINT_CALCULATE_VALUES: bool = true; const remove_me2: () = ();
+const _PRINT_CALCULATE_VALUES: bool = false;
 
 const FLOAT_BYTES: usize = mem::size_of::<f32>();
 
@@ -1812,6 +1812,13 @@ impl OperationsRecorder
         self.memory.set_value(index, value);
     }
 
+    pub fn get_one_hot_data(&mut self, index: OneHotIndex) -> &OneHotLayer
+    {
+        debug_assert_eq!(self.state, RecorderState::Recording);
+
+        &self.memory.one_hot_layers[index.0]
+    }
+
     pub fn set_one_hot_data(&mut self, index: OneHotIndex, value: OneHotLayer)
     {
         debug_assert_eq!(self.state, RecorderState::Recording);
@@ -2735,6 +2742,24 @@ impl OperationsRecorder
             &get_raw_array(&memory.tensors_raw_data, raw_data_pointer).buffer
         }
 
+        struct WgpuInfo<'a, 'b, 'c, 's>
+        {
+            command_buffers: &'a mut Vec<wgpu::CommandBuffer>,
+            encoder: &'b mut wgpu::CommandEncoder,
+            compute_pass: &'c mut Option<wgpu::ComputePass<'static>>,
+            device: &'s wgpu::Device
+        }
+
+        fn try_end_compute_pass(wgpu_info: WgpuInfo)
+        {
+            *wgpu_info.compute_pass = None;
+
+            let encoder = mem::replace(wgpu_info.encoder, wgpu_info.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
+
+            wgpu_info.command_buffers.push(encoder.finish());
+        }
+
+        let mut command_buffers = Vec::new();
         let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
 
         let mut compute_pass = None;
@@ -2941,19 +2966,13 @@ impl OperationsRecorder
                 exact_workgroup(compute_pass, size.div_ceil(WORK_GROUP_SIZE))
             }
 
-            fn try_end_compute_pass(compute_pass: &mut Option<wgpu::ComputePass>)
-            {
-                *compute_pass = None;
-            }
-
             fn copy_equal_buffers(encoder: &mut wgpu::CommandEncoder, src: &wgpu::Buffer, dst: &wgpu::Buffer)
             {
                 encoder.copy_buffer_to_buffer(src, 0, dst, 0, src.size());
             }
 
             fn copy_tensor(
-                encoder: &mut wgpu::CommandEncoder,
-                compute_pass: &mut Option<wgpu::ComputePass>,
+                wgpu_info: WgpuInfo,
                 memory: &OperationsRecorderMemory,
                 src: TensorRawDataPointer,
                 dst: TensorRawDataPointer
@@ -2961,21 +2980,26 @@ impl OperationsRecorder
             {
                 debug_assert_eq!(src.shape, dst.shape);
 
-                try_end_compute_pass(compute_pass);
+                try_end_compute_pass(WgpuInfo{
+                    encoder: &mut *wgpu_info.encoder,
+                    ..wgpu_info
+                });
 
-                copy_equal_buffers(encoder, get_buffer(memory, src), get_buffer(memory, dst));
+                copy_equal_buffers(wgpu_info.encoder, get_buffer(memory, src), get_buffer(memory, dst));
             }
 
-            fn scratch_buffers_iter<'a, 'b, 'c, 'd, V: IntoIterator<Item=TensorRawDataPointer>>(
-                encoder: &'c mut wgpu::CommandEncoder,
-                compute_pass: &mut Option<wgpu::ComputePass>,
-                tensors_raw_data: &'b [RawArray],
-                scratch_buffers: &'a [wgpu::Buffer],
-                indices: &'d [ScratchBufferIndex],
+            fn scratch_buffers_iter<'a, 'b, 'c, 's, 'w, V: IntoIterator<Item=TensorRawDataPointer>>(
+                wgpu_info: WgpuInfo<'a, 'b, 'c, 's>,
+                tensors_raw_data: &'s [RawArray],
+                scratch_buffers: &'w [wgpu::Buffer],
+                indices: &'s [ScratchBufferIndex],
                 values: V
-            ) -> impl Iterator<Item=&'a wgpu::Buffer> + use<'a, 'b, 'c, 'd, V>
+            ) -> impl Iterator<Item=&'w wgpu::Buffer> + use<'a, 'b, 'c, 's, 'w, V>
             {
-                try_end_compute_pass(compute_pass);
+                try_end_compute_pass(WgpuInfo{
+                    encoder: &mut *wgpu_info.encoder,
+                    ..wgpu_info
+                });
 
                 indices.iter().copied().zip(values).map(move |(index, value)|
                 {
@@ -2983,15 +3007,14 @@ impl OperationsRecorder
 
                     let input_buffer = &get_raw_array(tensors_raw_data, value).buffer;
 
-                    copy_equal_buffers(encoder, input_buffer, scratch_buffer);
+                    copy_equal_buffers(wgpu_info.encoder, input_buffer, scratch_buffer);
 
                     scratch_buffer
                 })
             }
 
             fn copy_scratch_buffer<'a>(
-                encoder: &mut wgpu::CommandEncoder,
-                compute_pass: &mut Option<wgpu::ComputePass>,
+                wgpu_info: WgpuInfo,
                 tensors_raw_data: &[RawArray],
                 scratch_buffers: &'a [wgpu::Buffer],
                 indices: &[ScratchBufferIndex],
@@ -3000,10 +3023,17 @@ impl OperationsRecorder
             {
                 debug_assert_eq!(indices.len(), 1, "must have 1 scratch buffer, has {}", indices.len());
 
-                scratch_buffers_iter(encoder, compute_pass, tensors_raw_data, scratch_buffers, indices, [values])
+                scratch_buffers_iter(wgpu_info, tensors_raw_data, scratch_buffers, indices, [values])
                     .next()
                     .unwrap()
             }
+
+            let wgpu_info = WgpuInfo{
+                command_buffers: &mut command_buffers,
+                encoder: &mut encoder,
+                compute_pass: &mut compute_pass,
+                device: &self.raw_array_memory.device
+            };
 
             match &self.raw_operations[i]
             {
@@ -3013,7 +3043,7 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(Copy, (src),());
 
-                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
+                    copy_tensor(wgpu_info, &self.memory, *src, *dst);
 
                     debug_calculate_values_result!((dst),());
                 },
@@ -3037,7 +3067,7 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(ZeroTensor, (),());
 
-                    try_end_compute_pass(&mut compute_pass);
+                    try_end_compute_pass(wgpu_info);
 
                     let dst_buffer = get_buffer(&self.memory, *dst);
                     encoder.clear_buffer(dst_buffer, 0, None);
@@ -3075,7 +3105,7 @@ impl OperationsRecorder
                         mapped_at_creation: false
                     });
 
-                    try_end_compute_pass(&mut compute_pass);
+                    try_end_compute_pass(wgpu_info);
 
                     encoder.copy_buffer_to_buffer(get_buffer(&self.memory, *tensor), 0, &stack_tensor_buffer, 0, buffer_size);
 
@@ -3112,7 +3142,7 @@ impl OperationsRecorder
 
                     let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
 
-                    try_end_compute_pass(&mut compute_pass);
+                    try_end_compute_pass(wgpu_info);
 
                     encoder.copy_buffer_to_buffer(&tensor, 0, get_buffer(&self.memory, *output), 0, tensor.size());
 
@@ -3139,7 +3169,12 @@ impl OperationsRecorder
                                     {
                                         InputType::Normal(input) =>
                                         {
-                                            try_end_compute_pass(&mut compute_pass);
+                                            try_end_compute_pass(WgpuInfo{
+                                                command_buffers: &mut command_buffers,
+                                                encoder: &mut encoder,
+                                                compute_pass: &mut compute_pass,
+                                                device: &self.raw_array_memory.device
+                                            });
 
                                             let value = value.into_normal();
 
@@ -3237,7 +3272,7 @@ impl OperationsRecorder
                         first
                     };
 
-                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *output);
+                    copy_tensor(wgpu_info, &self.memory, *src, *output);
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3280,7 +3315,7 @@ impl OperationsRecorder
                         other
                     };
 
-                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
+                    copy_tensor(wgpu_info, &self.memory, *src, *dst);
 
                     if is_set
                     {
@@ -3353,7 +3388,7 @@ impl OperationsRecorder
                     {
                         debug_calculate_values!(GradientSelectAddTensor, (src),());
 
-                        copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *first);
+                        copy_tensor(wgpu_info, &self.memory, *src, *first);
                     }
 
                     if is_set
@@ -3370,7 +3405,7 @@ impl OperationsRecorder
                     {
                         debug_calculate_values!(IfSetTensor, (src),());
 
-                        copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
+                        copy_tensor(wgpu_info, &self.memory, *src, *dst);
 
                         debug_calculate_values_result!((dst),());
                     }
@@ -3381,7 +3416,7 @@ impl OperationsRecorder
                     {
                         debug_calculate_values!(IfNotSetTensor, (src),());
 
-                        copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *src, *dst);
+                        copy_tensor(wgpu_info, &self.memory, *src, *dst);
 
                         debug_calculate_values_result!((dst),());
                     }
@@ -3618,8 +3653,7 @@ impl OperationsRecorder
                     debug_assert!(output.shape.is_batched_scalar());
 
                     let scratch_buffer = copy_scratch_buffer(
-                        &mut encoder,
-                        &mut compute_pass,
+                        wgpu_info,
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -3678,8 +3712,7 @@ impl OperationsRecorder
                     debug_assert!(output.shape.is_batched_scalar());
 
                     let scratch_buffer = copy_scratch_buffer(
-                        &mut encoder,
-                        &mut compute_pass,
+                        wgpu_info,
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -3934,15 +3967,24 @@ impl OperationsRecorder
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
 
                     let scratch_buffer = copy_scratch_buffer(
-                        &mut encoder,
-                        &mut compute_pass,
+                        wgpu_info,
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
                         *values
                     );
 
-                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *values, *softmaxed_output);
+                    copy_tensor(
+                        WgpuInfo{
+                            command_buffers: &mut command_buffers,
+                            encoder: &mut encoder,
+                            compute_pass: &mut compute_pass,
+                            device: &self.raw_array_memory.device
+                        },
+                        &self.memory,
+                        *values,
+                        *softmaxed_output
+                    );
 
                     do_kernel_operation(
                         &mut encoder,
@@ -3975,15 +4017,24 @@ impl OperationsRecorder
                     debug_assert_eq!(targets.shape.rows, 1);
 
                     let scratch_buffer = copy_scratch_buffer(
-                        &mut encoder,
-                        &mut compute_pass,
+                        wgpu_info,
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
                         *values
                     );
 
-                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *values, *softmaxed_output);
+                    copy_tensor(
+                        WgpuInfo{
+                            command_buffers: &mut command_buffers,
+                            encoder: &mut encoder,
+                            compute_pass: &mut compute_pass,
+                            device: &self.raw_array_memory.device
+                        },
+                        &self.memory,
+                        *values,
+                        *softmaxed_output
+                    );
 
                     do_kernel_operation(
                         &mut encoder,
@@ -4015,8 +4066,7 @@ impl OperationsRecorder
                     debug_assert_eq!(targets.shape.rows, 1);
 
                     let mut scratch_buffers = scratch_buffers_iter(
-                        &mut encoder,
-                        &mut compute_pass,
+                        wgpu_info,
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4059,7 +4109,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(targets.shape.rows, 1);
 
-                    copy_tensor(&mut encoder, &mut compute_pass, &self.memory, *softmaxed_values, *output);
+                    copy_tensor(wgpu_info, &self.memory, *softmaxed_values, *output);
 
                     do_kernel_operation(
                         &mut encoder,
@@ -4154,8 +4204,7 @@ impl OperationsRecorder
                             debug_calculate_values!(Matmulv, (lhs, rhs),());
 
                             let scratch_buffer = copy_scratch_buffer(
-                                &mut encoder,
-                                &mut compute_pass,
+                                wgpu_info,
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4182,8 +4231,7 @@ impl OperationsRecorder
                             debug_assert_eq!(added, output);
 
                             let scratch_buffer = copy_scratch_buffer(
-                                &mut encoder,
-                                &mut compute_pass,
+                                wgpu_info,
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4229,8 +4277,7 @@ impl OperationsRecorder
                             debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
 
                             let scratch_buffer = copy_scratch_buffer(
-                                &mut encoder,
-                                &mut compute_pass,
+                                wgpu_info,
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4257,8 +4304,7 @@ impl OperationsRecorder
                             debug_assert_eq!(added, output);
 
                             let scratch_buffer = copy_scratch_buffer(
-                                &mut encoder,
-                                &mut compute_pass,
+                                wgpu_info,
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4295,7 +4341,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(lhs.shape.rows, output.shape.rows);
 
-                    try_end_compute_pass(&mut compute_pass);
+                    try_end_compute_pass(wgpu_info);
 
                     match this_op
                     {
@@ -4408,7 +4454,12 @@ impl OperationsRecorder
             i += 1;
         }
 
-        drop(compute_pass);
+        try_end_compute_pass(WgpuInfo{
+            command_buffers: &mut command_buffers,
+            encoder: &mut encoder,
+            compute_pass: &mut compute_pass,
+            device: &self.raw_array_memory.device
+        });
 
         self.memory.tensors_raw_data.iter().filter(|x| x.output_buffer.is_some()).for_each(|raw_array|
         {
@@ -4421,7 +4472,7 @@ impl OperationsRecorder
             );
         });
 
-        self.raw_array_memory.queue.submit([encoder.finish()]);
+        self.raw_array_memory.queue.submit(command_buffers);
 
         if DUMP_MEMORY
         {
@@ -9367,7 +9418,7 @@ mod tests
 
     fn compare_single(correct: f32, calculated: f32)
     {
-        let epsilon = 0.2;
+        let epsilon = 0.3;
         assert!(
             close_enough(correct, calculated, epsilon),
             "correct: {}, calculated: {}",
@@ -9503,24 +9554,26 @@ mod tests
             new_recorder.get_tensor_blocking(output_value)
         };
 
-        let orig = vals(a_value.as_ref(), b_value.as_ref()).as_ref().sum();
-
-        let epsilon: f32 = 0.009;
-
-        let fg = |value: LayerType|
+        fn finite_difference(mut f: impl FnMut(f32) -> LayerType) -> f32
         {
-            let value = value.as_ref().sum();
+            let epsilon: f32 = 0.0003;
 
-            (value - orig) / epsilon
-        };
+            let mut f = |x| f(x).as_ref().sum();
+
+            (-f(epsilon * 2.0) + 8.0 * f(epsilon) - 8.0 * f(-epsilon) + f(-2.0 * epsilon)) / (12.0 * epsilon)
+        }
 
         let mut a_fg = vec![0.0; a_value.total_len()];
         for index in 0..a_fg.len()
         {
             let v = a_value.clone();
-            let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = fg(vals(v.add(epsilon.as_ref()).as_ref(), b_value.as_ref()));
+            let this_fg = finite_difference(|epsilon|
+            {
+                let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
+
+                vals(v.add(epsilon.as_ref()).as_ref(), b_value.as_ref())
+            });
 
             a_fg[index] = this_fg;
         }
@@ -9529,9 +9582,13 @@ mod tests
         for index in 0..b_fg.len()
         {
             let v = b_value.clone();
-            let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            let this_fg = fg(vals(a_value.as_ref(), v.add(epsilon.as_ref()).as_ref()));
+            let this_fg = finite_difference(|epsilon|
+            {
+                let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
+
+                vals(a_value.as_ref(), v.add(epsilon.as_ref()).as_ref())
+            });
 
             b_fg[index] = this_fg;
         }
@@ -9582,7 +9639,7 @@ mod tests
 
     fn random_value() -> f32
     {
-        fastrand::u32(1..5) as f32
+        fastrand::f32() * 2.0 - 0.5
     }
 
     fn random_tensor(recorder: &mut OperationsRecorder, columns: usize, rows: usize) -> (LayerType, DiffTensorPtr)
@@ -10333,6 +10390,100 @@ mod tests
             let f_sum_filled = recorder.fill_batched(b_shape, f_sum);
 
             recorder.add(b, f_sum_filled)
+        })
+    }
+
+    #[test]
+    fn stateful_bisected()
+    {
+        let loops_count = 2;
+
+        let input_size = LAYER_PREV;
+        let hidden_size = LAYER_CURR;
+        let output_size = 2;
+
+        let is: Vec<OwnedInputType> = (0..loops_count + 1).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
+        let targets: Vec<OneHotLayer> = (0..loops_count + 1).map(|_|
+        {
+            OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
+        }).collect();
+
+        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        {
+            let mut create_input = |input: OwnedInputType| -> TensorPtr
+            {
+                let input = recorder.set_new_tensor(input.into_normal());
+                recorder.name_diff_tensor(input, "input");
+
+                recorder.store_tensor_until_end(input.as_value());
+
+                input.as_value()
+            };
+
+            let i0 = create_input(is[0].clone());
+
+            let mut create_target = |targets_values: OneHotLayer| -> OneHotIndex
+            {
+                let targets = recorder.new_one_hot(1, output_size, 1);
+                recorder.name_one_hot(targets, "targets");
+
+                recorder.set_one_hot_data(targets, targets_values);
+
+                targets
+            };
+
+            let t0 = create_target(targets[0].clone());
+
+            let do_one = |
+                recorder: &mut OperationsRecorder,
+                input: TensorPtr,
+                targets: OneHotIndex
+            | -> DiffTensorPtr
+            {
+                let gate = recorder.matmulv(a, DiffTensorPtr::no_gradient(input));
+                recorder.name_diff_tensor(gate, "gate");
+
+                recorder.softmax_cross_entropy(gate, targets).1
+            };
+
+            let s0_loss = do_one(recorder, i0, t0);
+            recorder.name_diff_tensor(s0_loss, "s0_loss");
+
+            let i = recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size: 1}).as_value();
+            recorder.name_tensor(i, "loop_i");
+
+            let target = recorder.new_one_hot(1, output_size, 1);
+            recorder.name_one_hot(target, "loop_target");
+
+            let final_state_selector = recorder.phi_other_selector(s0_loss);
+
+            let loop_index = recorder.begin_loop(vec![i.into(), target.into()]);
+
+            let s2_loss = do_one(recorder, i, target);
+            recorder.name_diff_tensor(s2_loss, "s2_loss");
+
+            let final_combined_selected = recorder.select_tensor(final_state_selector);
+            recorder.name_diff_tensor(final_combined_selected, "final_combined_selected");
+
+            let final_combined_state = recorder.add(final_combined_selected, s2_loss);
+            recorder.name_diff_tensor(final_combined_state, "final_combined_state");
+
+            recorder.set_phi_other_selector(final_state_selector, final_combined_state);
+
+            recorder.end_loop(loop_index);
+
+            recorder.set_loop_times(loop_index, loops_count);
+
+            let inputs_targets: Vec<_> = is.iter().cloned().zip(targets.iter().cloned()).skip(1)
+                .flat_map(|(i, t)| [i, OwnedInputType::OneHot(t)])
+                .collect();
+
+            recorder.set_loop_inputs(loop_index, inputs_targets);
+
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
+
+            recorder.add(b, final_state_filled)
         })
     }
 
