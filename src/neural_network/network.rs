@@ -437,7 +437,7 @@ macro_rules! create_weights_container
                         {
                             LayerSize::One =>
                             {
-                                let bias = recorder.new_tensor(this_size, previous_size, sizes.batch_size);
+                                let bias = recorder.new_tensor(this_size, previous_size);
 
                                 recorder.set_tensor_ptr_zeroed(bias.as_value());
 
@@ -447,7 +447,7 @@ macro_rules! create_weights_container
                             {
                                 let weights = initialize_orthogonal(this_size, previous_size);
 
-                                recorder.set_new_tensor_gradientable(weights, sizes.batch_size)
+                                recorder.set_new_tensor_gradientable(weights)
                             }
                         };
 
@@ -1146,7 +1146,7 @@ where
                 recorder.set_new_tensor(value)
             } else
             {
-                recorder.set_new_tensor_gradientable(value, batch_size)
+                recorder.set_new_tensor_gradientable(value)
             };
 
             maybe_dropout_weights(recorder, is_skip, weights, TensorShape{
@@ -1253,7 +1253,7 @@ where
     {
         let mut create_weights = |name: &'static str, is_skip: bool, previous: usize, current: usize| -> WeightInfoPtr
         {
-            let weights = self.recorder.set_new_tensor_gradientable(initialize_orthogonal(current, previous), sizes.batch_size);
+            let weights = self.recorder.set_new_tensor_gradientable(initialize_orthogonal(current, previous));
 
             self.recorder.name_diff_tensor(weights, name);
 

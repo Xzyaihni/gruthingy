@@ -214,7 +214,7 @@ mod tests
 
         let one_weight = |recorder: &mut OperationsRecorder, value: f32|
         {
-            let w = recorder.set_new_tensor_gradientable(LayerType::from_boxed([value].into(), 1, 1).into(), 1);
+            let w = recorder.set_new_tensor_gradientable(LayerType::from_boxed([value].into(), 1, 1).into());
 
             recorder.allow_discard(w.as_value());
 
