@@ -1425,6 +1425,7 @@ where
             self.record_feedforward(one_hot_count);
 
             self.prepare_setup_shared();
+            dbg!(&self.recorder);
 
             self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
             {
@@ -1507,7 +1508,7 @@ where
             if !store_gradient { weight_info.weight_replicated.clear_gradient(); }
 
             WeightInfo{
-                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_replicated),
+                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
                 dropout: weight_info.dropout.map(|x| self.recorder.resolve_tensor_ptr(x))
             }
         });

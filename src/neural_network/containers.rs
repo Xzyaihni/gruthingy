@@ -5174,16 +5174,14 @@ impl OperationsRecorder
         {
             let copy_if_src_reused = |this: &mut Self, src: TensorPtr| -> Option<TensorPtr>
             {
-                let any_before = this.gradient_operations[..i].iter().filter(|x|
-                {
-                    x.can_use_future()
-                }).any(|x| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
-
-                let any_after = this.gradient_operations[(i + 1)..].iter().any(|x| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
+                let is_used = this.gradient_operations.iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .any(|(_, x)| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
 
                 let is_output = this.memory.tensor_live_ranges[src.0].end == Some(i32::MAX);
 
-                (any_after || any_before || is_output).then(||
+                (is_used || is_output).then(||
                 {
                     let shape = this.tensor_shape(src);
                     let new_src = this.memory.new_tensor(false, shape.into()).as_value();
