@@ -4454,12 +4454,7 @@ impl OperationsRecorder
             i += 1;
         }
 
-        try_end_compute_pass(WgpuInfo{
-            command_buffers: &mut command_buffers,
-            encoder: &mut encoder,
-            compute_pass: &mut compute_pass,
-            device: &self.raw_array_memory.device
-        });
+        drop(compute_pass);
 
         self.memory.tensors_raw_data.iter().filter(|x| x.output_buffer.is_some()).for_each(|raw_array|
         {
@@ -4471,6 +4466,8 @@ impl OperationsRecorder
                 raw_array.buffer.size()
             );
         });
+
+        command_buffers.push(encoder.finish());
 
         self.raw_array_memory.queue.submit(command_buffers);
 
