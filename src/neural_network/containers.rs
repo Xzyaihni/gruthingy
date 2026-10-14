@@ -2742,24 +2742,18 @@ impl OperationsRecorder
             &get_raw_array(&memory.tensors_raw_data, raw_data_pointer).buffer
         }
 
-        struct WgpuInfo<'a, 'b, 'c, 's>
+        struct WgpuInfo<'a, 'b, 's>
         {
-            command_buffers: &'a mut Vec<wgpu::CommandBuffer>,
-            encoder: &'b mut wgpu::CommandEncoder,
-            compute_pass: &'c mut Option<wgpu::ComputePass<'static>>,
+            encoder: &'a mut wgpu::CommandEncoder,
+            compute_pass: &'b mut Option<wgpu::ComputePass<'static>>,
             device: &'s wgpu::Device
         }
 
         fn try_end_compute_pass(wgpu_info: WgpuInfo)
         {
             *wgpu_info.compute_pass = None;
-
-            let encoder = mem::replace(wgpu_info.encoder, wgpu_info.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
-
-            wgpu_info.command_buffers.push(encoder.finish());
         }
 
-        let mut command_buffers = Vec::new();
         let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
 
         let mut compute_pass = None;
@@ -2988,13 +2982,13 @@ impl OperationsRecorder
                 copy_equal_buffers(wgpu_info.encoder, get_buffer(memory, src), get_buffer(memory, dst));
             }
 
-            fn scratch_buffers_iter<'a, 'b, 'c, 's, 'w, V: IntoIterator<Item=TensorRawDataPointer>>(
-                wgpu_info: WgpuInfo<'a, 'b, 'c, 's>,
+            fn scratch_buffers_iter<'a, 'b, 's, 'w, V: IntoIterator<Item=TensorRawDataPointer>>(
+                wgpu_info: WgpuInfo<'a, 'b, 's>,
                 tensors_raw_data: &'s [RawArray],
                 scratch_buffers: &'w [wgpu::Buffer],
                 indices: &'s [ScratchBufferIndex],
                 values: V
-            ) -> impl Iterator<Item=&'w wgpu::Buffer> + use<'a, 'b, 'c, 's, 'w, V>
+            ) -> impl Iterator<Item=&'w wgpu::Buffer> + use<'a, 'b, 's, 'w, V>
             {
                 try_end_compute_pass(WgpuInfo{
                     encoder: &mut *wgpu_info.encoder,
@@ -3029,7 +3023,6 @@ impl OperationsRecorder
             }
 
             let wgpu_info = WgpuInfo{
-                command_buffers: &mut command_buffers,
                 encoder: &mut encoder,
                 compute_pass: &mut compute_pass,
                 device: &self.raw_array_memory.device
@@ -3163,63 +3156,75 @@ impl OperationsRecorder
                             {
                                 LoopInputs::Values(values) =>
                                 {
-                                    let value = values[loop_info.current_index * inputs_count + input_index].clone();
+                                    try_end_compute_pass(WgpuInfo{
+                                        encoder: &mut encoder,
+                                        compute_pass: &mut compute_pass,
+                                        device: &self.raw_array_memory.device
+                                    });
 
-                                    match input_ptr
+                                    let value = &values[loop_info.current_index * inputs_count + input_index];
+
+                                    let size = match value
                                     {
-                                        InputType::Normal(input) =>
+                                        OwnedInputType::Normal(tensor) => tensor.shape().size(),
+                                        OwnedInputType::OneHot(one_hot) => one_hot.batch_size * one_hot.count
+                                    };
+
+                                    if self.raw_array_memory.input_buffers.len() == input_buffer_index
+                                    {
+                                        let new_input_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                                            label: None,
+                                            size: (size * FLOAT_BYTES) as u64,
+                                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                                            mapped_at_creation: false
+                                        });
+
+                                        self.raw_array_memory.input_buffers.push(new_input_buffer);
+                                    }
+
+                                    let src_buffer = &self.raw_array_memory.input_buffers[input_buffer_index];
+                                    input_buffer_index += 1;
+
+                                    match value
+                                    {
+                                        OwnedInputType::Normal(tensor) =>
                                         {
-                                            try_end_compute_pass(WgpuInfo{
-                                                command_buffers: &mut command_buffers,
-                                                encoder: &mut encoder,
-                                                compute_pass: &mut compute_pass,
-                                                device: &self.raw_array_memory.device
-                                            });
-
-                                            let value = value.into_normal();
-
-                                            let reminder = "value itself should be the buffer so it gets shared between gradient and normal loop";
-                                            if self.raw_array_memory.input_buffers.len() == input_buffer_index
-                                            {
-                                                let new_input_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
-                                                    label: None,
-                                                    size: (value.shape().size() * FLOAT_BYTES) as u64,
-                                                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                                                    mapped_at_creation: false
-                                                });
-
-                                                self.raw_array_memory.input_buffers.push(new_input_buffer);
-                                            }
-
-                                            let src_buffer = &self.raw_array_memory.input_buffers[input_buffer_index];
-                                            input_buffer_index += 1;
-
-                                            self.raw_array_memory.queue.write_buffer(src_buffer, 0, value.as_ref().bytes_slice());
-
-                                            #[cfg(debug_assertions)]
-                                            {
-                                                self.memory.verify_raw_ptr_assign_index(input.index);
-                                            }
-
-                                            let raw_index = self.memory.tensors[input.index.0];
-
-                                            let dst_buffer = &self.memory.tensors_raw_data[raw_index.raw_index.0].buffer;
-
-                                            debug_assert_eq!(src_buffer.size(), dst_buffer.size());
-
-                                            encoder.copy_buffer_to_buffer(
-                                                src_buffer,
-                                                0,
-                                                dst_buffer,
-                                                0,
-                                                dst_buffer.size()
-                                            );
+                                            self.raw_array_memory.queue.write_buffer(src_buffer, 0, tensor.as_ref().bytes_slice())
                                         },
-                                        InputType::OneHot(input) =>
+                                        OwnedInputType::OneHot(one_hot) =>
                                         {
-                                            self.memory.set_one_hot(&self.raw_array_memory, input, value.into_one_hot())
+                                            let bytes: &[u8] = bytemuck::cast_slice(&one_hot.positions);
+
+                                            self.raw_array_memory.queue.write_buffer(src_buffer, 0, bytes);
                                         }
                                     }
+
+                                    #[cfg(debug_assertions)]
+                                    {
+                                        match input_ptr
+                                        {
+                                            InputType::Normal(tensor) => self.memory.verify_raw_ptr_assign_index(tensor.index),
+                                            InputType::OneHot(one_hot) => self.memory.verify_raw_ptr_assign_index(one_hot)
+                                        }
+                                    }
+
+                                    let raw_index = match input_ptr
+                                    {
+                                        InputType::Normal(tensor) => self.memory.tensors[tensor.index.0],
+                                        InputType::OneHot(one_hot) => self.memory.one_hot_buffers[one_hot.0].unwrap().to_linear_pointer()
+                                    };
+
+                                    let dst_buffer = &self.memory.tensors_raw_data[raw_index.raw_index.0].buffer;
+
+                                    debug_assert_eq!(src_buffer.size(), dst_buffer.size());
+
+                                    encoder.copy_buffer_to_buffer(
+                                        src_buffer,
+                                        0,
+                                        dst_buffer,
+                                        0,
+                                        dst_buffer.size()
+                                    );
                                 },
                                 LoopInputs::Dependent(i) =>
                                 {
@@ -3976,7 +3981,6 @@ impl OperationsRecorder
 
                     copy_tensor(
                         WgpuInfo{
-                            command_buffers: &mut command_buffers,
                             encoder: &mut encoder,
                             compute_pass: &mut compute_pass,
                             device: &self.raw_array_memory.device
@@ -4026,7 +4030,6 @@ impl OperationsRecorder
 
                     copy_tensor(
                         WgpuInfo{
-                            command_buffers: &mut command_buffers,
                             encoder: &mut encoder,
                             compute_pass: &mut compute_pass,
                             device: &self.raw_array_memory.device
@@ -4467,9 +4470,7 @@ impl OperationsRecorder
             );
         });
 
-        command_buffers.push(encoder.finish());
-
-        self.raw_array_memory.queue.submit(command_buffers);
+        self.raw_array_memory.queue.submit([encoder.finish()]);
 
         if DUMP_MEMORY
         {
@@ -9484,6 +9485,9 @@ mod tests
         mut f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
     )
     {
+        #[cfg(feature = "renderdocapi")]
+        crate::RENDERDOC_API.begin_capture();
+
         recorder.name_diff_tensor(a, "a");
         recorder.name_diff_tensor(b, "b");
 
@@ -9602,6 +9606,9 @@ mod tests
 
         eprintln!("derivative of a ({a_fg:?} vs {a_g:?})");
         eprintln!("derivative of b ({b_fg:?} vs {b_g:?})");
+
+        #[cfg(feature = "renderdocapi")]
+        crate::RENDERDOC_API.end_capture();
 
         eprintln!("CHECKING derivative of a");
         compare_tensor(a_fg, a_g);
