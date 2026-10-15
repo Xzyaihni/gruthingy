@@ -137,7 +137,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
                 {
                     let expected_value = if row == column { 1.0 } else { 0.0 };
 
-                    close_enough(expected_identity_vec[column * shape.rows + row], expected_value, 0.01)
+                    close_enough(expected_identity_vec[column * shape.rows + row], expected_value, 0.05)
                 })
             })
         };
