@@ -37,9 +37,9 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = true; const remove_me: () = ();
-const DUMP_MEMORY: bool = true; const remove_me2: () = ();
-const _PRINT_CALCULATE_VALUES: bool = true; const remove_me3: () = ();
+const NO_COLORING: bool = false;
+const DUMP_MEMORY: bool = false;
+const _PRINT_CALCULATE_VALUES: bool = false;
 
 const FLOAT_BYTES: usize = mem::size_of::<f32>();
 
@@ -2748,7 +2748,7 @@ impl OperationsRecorder
 
         let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
 
-        let mut compute_pass = None;
+        let mut compute_pass: Option<wgpu::ComputePass> = None;
 
         let mut input_buffer_index = 0;
 
@@ -2802,7 +2802,10 @@ impl OperationsRecorder
 
                     #[cfg(debug_assertions)]
                     {
-                        encoder.push_debug_group(stringify!($name));
+                        if _PRINT_CALCULATE_VALUES && DUMP_MEMORY
+                        {
+                            encoder.push_debug_group(stringify!($name));
+                        }
 
                         $(
                             self.memory.verify_raw_ptr_use(*$t_name);
@@ -2896,11 +2899,6 @@ impl OperationsRecorder
                         $(
                             self.memory.verify_raw_ptr_assign(*$t_name);
                         )*
-
-                        if !(_PRINT_CALCULATE_VALUES && DUMP_MEMORY)
-                        {
-                            encoder.pop_debug_group();
-                        }
                     }
                 }
             }
