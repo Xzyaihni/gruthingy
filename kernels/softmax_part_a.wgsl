@@ -1,26 +1,12 @@
 @group(0) @binding(0)
-var<storage, read_write> sum_values: array<f32>;
+var<storage, read> max_values: array<f32>;
 
 @group(0) @binding(1)
 var<storage, read_write> softmaxed_values: array<f32>;
 
 const WORKGROUP_SIZE = 64;
 
-var<immediate> batch_size: u32;
-
 #include "div_ceil.wgsl"
-
-#include "tensor_sum.wgsl"
-
-fn target_of_batch(batch_index: u32) -> u32
-{
-    // u32::MAX cuz this one has no target
-    return 4294967295;
-}
-
-fn set_z(value: f32)
-{
-}
 
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(
@@ -28,7 +14,13 @@ fn run(
     @builtin(local_invocation_index) local_invocation_index: u32
 )
 {
+    let batch_size = arrayLength(&max_values);
     let values_length = arrayLength(&softmaxed_values) / batch_size;
 
-    #include "softmax_common.wgsl"
+    let batch_index = workgroup_id.x;
+    let batch_start = batch_index * values_length;
+
+    let biggest_value = max_values[batch_index];
+
+    #include "softmax_common_a.wgsl"
 }

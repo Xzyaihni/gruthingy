@@ -37,7 +37,7 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = false;
+const NO_COLORING: bool = true; const remove_me: () = ();
 const DUMP_MEMORY: bool = false;
 const _PRINT_CALCULATE_VALUES: bool = false;
 
@@ -1294,13 +1294,12 @@ struct KernelLayout
 struct KernelLayouts
 {
     r0_w2_i0: KernelLayout,
-    r0_w2_i1: KernelLayout,
     r1_w1_i0: KernelLayout,
     r1_w1_i1: KernelLayout,
     r1_w2_i0: KernelLayout,
-    r1_w3_i0: KernelLayout,
     r2_w1_i0: KernelLayout,
-    r2_w1_i1: KernelLayout
+    r2_w1_i1: KernelLayout,
+    r2_w2_i0: KernelLayout
 }
 
 struct RawArrayMemory
@@ -1394,18 +1393,6 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let r0_w2_i1 = {
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("r0_w2_i1"),
-                    entries: &[
-                        output_layout_entry(0),
-                        output_layout_entry(1)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, 1)
-            };
-
             let r1_w1_i0 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
                     label: Some("r1_w1_i0"),
@@ -1443,20 +1430,6 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 0)
             };
 
-            let r1_w3_i0 = {
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("r1_w3_i0"),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1),
-                        output_layout_entry(2),
-                        output_layout_entry(3)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, 0)
-            };
-
             let r2_w1_i0 = {
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
                     label: Some("r2_w1_i0"),
@@ -1483,15 +1456,28 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, 1)
             };
 
+            let r2_w2_i0 = {
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("r2_w2_i0"),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, 0)
+            };
+
             KernelLayouts{
                 r0_w2_i0,
-                r0_w2_i1,
                 r1_w1_i0,
                 r1_w1_i1,
                 r1_w2_i0,
-                r1_w3_i0,
                 r2_w1_i0,
-                r2_w1_i1
+                r2_w1_i1,
+                r2_w2_i0
             }
         };
 
@@ -1527,8 +1513,11 @@ impl RawArrayMemory
                 OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHotAdd => ("kernels/outer_product_one_hot_add.wgsl", &kernel_layouts.r2_w1_i1),
-                OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.r0_w2_i1),
-                OpKernel::SoftmaxCrossEntropy => ("kernels/softmax_cross_entropy.wgsl", &kernel_layouts.r1_w3_i0),
+                OpKernel::MaxTensor => ("kernels/max_tensor.wgsl", &kernel_layouts.r0_w2_i0),
+                OpKernel::SoftmaxPartA => ("kernels/softmax_part_a.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::SoftmaxPartB => ("kernels/softmax_part_b.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::SoftmaxCrossEntropyPartA => ("kernels/softmax_cross_entropy_part_a.wgsl", &kernel_layouts.r2_w2_i0),
+                OpKernel::SoftmaxCrossEntropyPartB => ("kernels/softmax_cross_entropy_part_b.wgsl", &kernel_layouts.r2_w2_i0),
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0)
             };
 
@@ -2746,7 +2735,7 @@ impl OperationsRecorder
             *wgpu_info.compute_pass = None;
         }
 
-        let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+        let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("main_encoder")});
 
         let mut compute_pass: Option<wgpu::ComputePass> = None;
 
@@ -2875,7 +2864,9 @@ impl OperationsRecorder
 
                                 self.raw_array_memory.queue.submit([encoder.finish()]);
 
-                                encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+                                encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
+                                    label: Some(&(stringify!($name).to_owned() + "_dump_encoder"))
+                                });
                             }
                         }
                     }
@@ -2928,7 +2919,7 @@ impl OperationsRecorder
                 if compute_pass.is_none()
                 {
                     *compute_pass = Some(encoder.begin_compute_pass(&wgpu::ComputePassDescriptor{
-                        label: None,
+                        label: Some(&(kernel.name().to_owned() + "_compute_pass")),
                         timestamp_writes: None
                     }).forget_lifetime());
                 }
@@ -2954,7 +2945,7 @@ impl OperationsRecorder
                     .dispatch_workgroups(size as u32, 1, 1);
             }
 
-            fn single_work_group(compute_pass: &mut Option<wgpu::ComputePass>, size: usize)
+            fn single_workgroup(compute_pass: &mut Option<wgpu::ComputePass>, size: usize)
             {
                 exact_workgroup(compute_pass, size.div_ceil(WORK_GROUP_SIZE))
             }
@@ -3389,7 +3380,7 @@ impl OperationsRecorder
                             ]
                         );
 
-                        single_work_group(&mut compute_pass, src.size());
+                        single_workgroup(&mut compute_pass, src.size());
                     } else
                     {
                         debug_calculate_values!(GradientSelectAddTensor, (src),());
@@ -3511,7 +3502,7 @@ impl OperationsRecorder
                         _ => ()
                     }
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3535,7 +3526,7 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3567,7 +3558,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3591,7 +3582,7 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3623,7 +3614,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3647,7 +3638,7 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[lhs.0].to_ne_bytes());
 
-                    single_work_group(&mut compute_pass, rhs.size());
+                    single_workgroup(&mut compute_pass, rhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3703,7 +3694,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.shape.single_size());
+                    single_workgroup(&mut compute_pass, value.shape.single_size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3738,7 +3729,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     do_kernel_operation(
                         &mut encoder,
@@ -3775,7 +3766,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, output.size());
+                    single_workgroup(&mut compute_pass, output.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3800,7 +3791,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, output.size());
+                    single_workgroup(&mut compute_pass, output.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3824,7 +3815,7 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(*power as u32).to_ne_bytes());
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3846,7 +3837,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.size());
+                    single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3870,7 +3861,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.size());
+                    single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3892,7 +3883,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.size());
+                    single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3916,7 +3907,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.size());
+                    single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3938,7 +3929,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.size());
+                    single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3962,7 +3953,7 @@ impl OperationsRecorder
                         ]
                     );
 
-                    single_work_group(&mut compute_pass, value.size());
+                    single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3972,87 +3963,108 @@ impl OperationsRecorder
 
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
 
-                    let scratch_buffer = copy_scratch_buffer(
+                    let max_scratch_buffer = scratch_buffers_iter(
                         wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        *values
-                    );
+                        &self.raw_array_memory.scratch_buffers_locations[i][..1],
+                        [*values]
+                    ).next().unwrap();
 
-                    copy_tensor(
-                        wgpu_info!(),
-                        &self.memory,
-                        *values,
-                        *softmaxed_output
-                    );
+                    let max_buffer = {
+                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][1];
+
+                        &self.raw_array_memory.scratch_buffers[index.0]
+                    };
+
+                    copy_tensor(wgpu_info!(), &self.memory, *values, *softmaxed_output);
 
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.r0_w2_i1,
-                        OpKernel::Softmax,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i0,
+                        OpKernel::MaxTensor,
                         &[
-                            create_bind_group_entry(0, scratch_buffer),
+                            create_bind_group_entry(0, max_scratch_buffer),
+                            create_bind_group_entry(1, max_buffer)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
+                        OpKernel::SoftmaxPartA,
+                        &[
+                            create_bind_group_entry(0, max_buffer),
                             bind_group_entry(1, *softmaxed_output)
                         ]
                     );
 
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(values.shape.batch_size as u32).to_ne_bytes());
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
+
+                    try_end_compute_pass(wgpu_info!());
+
+                    let sum_scratch_buffer = {
+                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][2];
+
+                        &self.raw_array_memory.scratch_buffers[index.0]
+                    };
+
+                    copy_equal_buffers(&mut encoder, get_buffer(&self.memory, *softmaxed_output), sum_scratch_buffer);
+
+                    let sum_buffer = max_buffer;
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i0,
+                        OpKernel::SumTensor,
+                        &[
+                            create_bind_group_entry(0, sum_scratch_buffer),
+                            create_bind_group_entry(1, sum_buffer)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r1_w1_i0,
+                        OpKernel::SoftmaxPartB,
+                        &[
+                            create_bind_group_entry(0, sum_buffer),
+                            bind_group_entry(1, *softmaxed_output)
+                        ]
+                    );
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
                     debug_calculate_values_result!((softmaxed_output),());
                 },
-                GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+                this_op@GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output: _, output}
+                | this_op@GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropy, (values, targets),());
+                    match this_op
+                    {
+                        GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, ..} =>
+                        {
+                            debug_calculate_values!(SoftmaxCrossEntropy, (values, targets),());
 
-                    debug_assert_eq!(values.shape, softmaxed_output.shape);
-                    debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
-                    debug_assert_eq!(values.shape.batch_size, output.shape.batch_size);
-
-                    debug_assert!(output.shape.is_batched_scalar());
-
-                    debug_assert_eq!(targets.shape.rows, 1);
-
-                    let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        *values
-                    );
-
-                    copy_tensor(
-                        wgpu_info!(),
-                        &self.memory,
-                        *values,
-                        *softmaxed_output
-                    );
-
-                    do_kernel_operation(
-                        &mut encoder,
-                        &mut compute_pass,
-                        &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.r1_w3_i0,
-                        OpKernel::SoftmaxCrossEntropy,
-                        &[
-                            bind_group_entry(0, *targets),
-                            create_bind_group_entry(1, scratch_buffer),
-                            bind_group_entry(2, *softmaxed_output),
-                            bind_group_entry(3, *output)
-                        ]
-                    );
-
-                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
-
-                    debug_calculate_values_result!((softmaxed_output, output),());
-                },
-                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
-                {
-                    debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values, targets),());
+                            debug_assert_eq!(values.shape, softmaxed_output.shape);
+                        },
+                        GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, ..} =>
+                        {
+                            debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values, targets),());
+                        },
+                        _ => unreachable!()
+                    }
 
                     debug_assert_eq!(values.shape.batch_size, targets.shape.batch_size);
                     debug_assert_eq!(values.shape.batch_size, output.shape.batch_size);
@@ -4061,36 +4073,131 @@ impl OperationsRecorder
 
                     debug_assert_eq!(targets.shape.rows, 1);
 
-                    let mut scratch_buffers = scratch_buffers_iter(
+                    let max_scratch_buffer = scratch_buffers_iter(
                         wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        [*values, *values]
-                    );
+                        &self.raw_array_memory.scratch_buffers_locations[i][..1],
+                        [*values]
+                    ).next().unwrap();
 
-                    let scratch_buffer = scratch_buffers.next().unwrap();
-                    let secondary_scratch_buffer = scratch_buffers.next().unwrap();
+                    try_end_compute_pass(wgpu_info!());
 
-                    drop(scratch_buffers);
+                    let softmaxed_output_buffer = match this_op
+                    {
+                        GradientOp::SoftmaxCrossEntropy{softmaxed_output, ..} =>
+                        {
+                            get_buffer(&self.memory, *softmaxed_output)
+                        },
+                        GradientOp::SoftmaxCrossEntropyNoSoftmaxed{..} =>
+                        {
+                            let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][3];
+
+                            &self.raw_array_memory.scratch_buffers[index.0]
+                        },
+                        _ => unreachable!()
+                    };
+
+                    copy_equal_buffers(&mut encoder, get_buffer(&self.memory, *values), softmaxed_output_buffer);
+
+                    let (max_buffer, z_buffer) = {
+                        let indices = &self.raw_array_memory.scratch_buffers_locations[i];
+                        let index_max: ScratchBufferIndex = indices[1];
+                        let index_z: ScratchBufferIndex = indices[2];
+
+                        (&self.raw_array_memory.scratch_buffers[index_max.0], &self.raw_array_memory.scratch_buffers[index_z.0])
+                    };
 
                     do_kernel_operation(
                         &mut encoder,
                         &mut compute_pass,
                         &self.raw_array_memory,
-                        &self.raw_array_memory.kernel_layouts.r1_w3_i0,
-                        OpKernel::SoftmaxCrossEntropy,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i0,
+                        OpKernel::MaxTensor,
+                        &[
+                            create_bind_group_entry(0, max_scratch_buffer),
+                            create_bind_group_entry(1, max_buffer)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r2_w2_i0,
+                        OpKernel::SoftmaxCrossEntropyPartA,
                         &[
                             bind_group_entry(0, *targets),
-                            create_bind_group_entry(1, scratch_buffer),
-                            create_bind_group_entry(2, secondary_scratch_buffer),
+                            create_bind_group_entry(1, max_buffer),
+                            create_bind_group_entry(2, softmaxed_output_buffer),
+                            create_bind_group_entry(3, z_buffer)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
+
+                    try_end_compute_pass(wgpu_info!());
+
+                    let sum_scratch_buffer = {
+                        let index = match this_op
+                        {
+                            GradientOp::SoftmaxCrossEntropy{..} => 3,
+                            GradientOp::SoftmaxCrossEntropyNoSoftmaxed{..} => 4,
+                            _ => unreachable!()
+                        };
+
+                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][index];
+
+                        &self.raw_array_memory.scratch_buffers[index.0]
+                    };
+
+                    copy_equal_buffers(&mut encoder, softmaxed_output_buffer, sum_scratch_buffer);
+
+                    let sum_buffer = max_buffer;
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r0_w2_i0,
+                        OpKernel::SumTensor,
+                        &[
+                            create_bind_group_entry(0, sum_scratch_buffer),
+                            create_bind_group_entry(1, sum_buffer)
+                        ]
+                    );
+
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
+
+                    do_kernel_operation(
+                        &mut encoder,
+                        &mut compute_pass,
+                        &self.raw_array_memory,
+                        &self.raw_array_memory.kernel_layouts.r2_w2_i0,
+                        OpKernel::SoftmaxCrossEntropyPartB,
+                        &[
+                            create_bind_group_entry(0, sum_buffer),
+                            create_bind_group_entry(1, z_buffer),
+                            create_bind_group_entry(2, softmaxed_output_buffer),
                             bind_group_entry(3, *output)
                         ]
                     );
 
-                    exact_workgroup(&mut compute_pass, targets.shape.batch_size);
+                    exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
-                    debug_calculate_values_result!((output),());
+                    match this_op
+                    {
+                        GradientOp::SoftmaxCrossEntropy{softmaxed_output, output, ..} =>
+                        {
+                            debug_calculate_values_result!((softmaxed_output, output),());
+                        },
+                        GradientOp::SoftmaxCrossEntropyNoSoftmaxed{output, ..} =>
+                        {
+                            debug_calculate_values_result!((output),());
+                        },
+                        _ => unreachable!()
+                    }
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
@@ -4384,7 +4491,7 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes());
 
-                    single_work_group(&mut compute_pass, lhs.size());
+                    single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -4443,7 +4550,7 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(output.shape.batch_size as u32).to_ne_bytes());
 
-                    single_work_group(&mut compute_pass, output.size());
+                    single_workgroup(&mut compute_pass, output.size());
 
                     debug_calculate_values_result!((output),());
                 }
@@ -5956,26 +6063,40 @@ impl OperationsRecorder
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
-            if let Some((count, shape_tensor)) = match gradient_op
+            if let Some(sizes) = match gradient_op
             {
                 GradientOp::SumTensor{value, ..}
                 | GradientOp::Dot{lhs: value, ..}
                 | GradientOp::Matmulv{lhs: value, ..}
                 | GradientOp::MatmulvAdd{lhs: value, ..}
                 | GradientOp::MatmulvTransposed{lhs: value, ..}
-                | GradientOp::MatmulvTransposedAdd{lhs: value, ..}
-                | GradientOp::Softmax{values: value, ..}
-                | GradientOp::SoftmaxCrossEntropy{values: value, ..} => Some((1, value)),
-                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, ..} => Some((2, values)),
+                | GradientOp::MatmulvTransposedAdd{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size()]),
+                GradientOp::Softmax{values: value, ..} =>
+                {
+                    let shape = self.memory.tensor_shape(value);
+
+                    Some(vec![shape.size(), shape.batch_size, shape.size()])
+                },
+                GradientOp::SoftmaxCrossEntropy{values: value, ..} =>
+                {
+                    let shape = self.memory.tensor_shape(value);
+
+                    Some(vec![shape.size(), shape.batch_size, shape.batch_size, shape.size()])
+                },
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: value, ..} =>
+                {
+                    let shape = self.memory.tensor_shape(value);
+
+                    Some(vec![shape.size(), shape.batch_size, shape.batch_size, shape.size(), shape.size()])
+                },
                 _ => None
             }
             {
-                let size = self.memory.tensor_shape(shape_tensor).size();
-                let size = (size * FLOAT_BYTES) as u64;
-
                 let mut taken_indices = Vec::new();
-                (0..count).for_each(|count_index|
+                sizes.iter().enumerate().for_each(|(count_index, size)|
                 {
+                    let size = (size * FLOAT_BYTES) as u64;
+
                     let scratch_buffer_index = if let Some(x) = self.raw_array_memory.scratch_buffers.iter().enumerate().position(|(index, buffer)|
                     {
                         buffer.size() == size && !taken_indices.contains(&ScratchBufferIndex(index))

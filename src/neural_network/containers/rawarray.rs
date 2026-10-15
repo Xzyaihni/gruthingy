@@ -85,8 +85,11 @@ define_op_kernels!{
     OuterProductAdd,
     OuterProductOneHot,
     OuterProductOneHotAdd,
-    Softmax,
-    SoftmaxCrossEntropy,
+    MaxTensor,
+    SoftmaxPartA,
+    SoftmaxPartB,
+    SoftmaxCrossEntropyPartA,
+    SoftmaxCrossEntropyPartB,
     SoftmaxCrossEntropyDiff
 }
 

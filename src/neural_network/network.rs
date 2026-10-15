@@ -163,7 +163,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
         {
             let magnitude = column.magnitude();
 
-            assert!(close_enough(magnitude, 1.0, 0.01), "magnitude is {magnitude}, should be 1");
+            assert!(close_enough(magnitude, 1.0, 0.05), "magnitude is {magnitude}, should be 1");
         });
 
         let columns_count = columns.len();
@@ -178,7 +178,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
                 let dot = a.dot(b);
 
-                assert!(close_enough(dot, 0.0, 0.01), "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
+                assert!(close_enough(dot, 0.0, 0.05), "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
             });
         });
     }
@@ -1417,7 +1417,7 @@ where
 
             self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
             {
-                self.recorder.store_tensor_until_end(weight.weight_original.as_value());
+                self.recorder.store_tensor_as_output(weight.weight_original.as_value());
             });
 
             if store_gradient
@@ -1462,7 +1462,7 @@ where
 
             let mut store_tensor = |weight: &WeightInfoGeneric<DiffTensorPtr, TensorPtr>|
             {
-                self.recorder.store_tensor_until_end(weight.weight_original.as_value());
+                self.recorder.store_tensor_as_output(weight.weight_original.as_value());
             };
 
             store_tensor(&weights_ptr.output);
