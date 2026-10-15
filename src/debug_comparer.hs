@@ -10,6 +10,11 @@ data DebugOperand = DebugOperand String String [Float] deriving Show;
 
 data DebugOperation = DebugOperation Int String [DebugOperand] [DebugOperand] deriving Show;
 
+takeBeforePrefix :: Eq a => [a] -> [a] -> [a]
+takeBeforePrefix p s = case findIndex (\x -> isPrefixOf p x) $ tails s of
+      Just x -> take x s
+      Nothing -> []
+
 splitBy :: Eq a => a -> [a] -> [[a]]
 splitBy separator text = let (before, after) = break (\x -> x == separator) text
                              in if (null after) then [before] else (before : (splitBy separator (drop 1 after)))
@@ -25,7 +30,7 @@ splitByUnless :: Eq a => (s -> a -> s) -> (s -> Bool) -> s -> a -> [a] -> [[a]]
 splitByUnless splitStateGetter decide startState separator text = splitByUnlessStateful splitStateGetter decide startState separator text []
 
 parseData :: String -> Either String [Float]
-parseData [] = Left "empty string"
+parseData [] = Right []
 parseData dataText = fromMaybe (Left ("error parsing " ++ dataText))
                       $ sequence
                       $ Right
@@ -37,7 +42,7 @@ parseOperand operand = let (name, afterName) = break (\c -> c == ':') operand
                            values = (parseData (drop 2 dataRaw))
                        in values >>= \values -> Right $ DebugOperand
                             name
-                            (drop 2 (take ((length variableNameRaw) - 1) variableNameRaw))
+                            (takeWhile (\c -> c /= ' ') (drop 2 variableNameRaw))
                             values
 
 ignoreInsideBrackets :: Char -> Char -> (Bool -> Char -> Bool)
@@ -54,11 +59,20 @@ beforeOperandsState (aState, bState) c = (if (c == '=') then True else (if (c ==
 beforeOperandsDecide :: (Bool, Bool) -> Bool
 beforeOperandsDecide (a, b) = a && b
 
+splitBeforeOperation :: String -> (String, String)
+splitBeforeOperation s = if any (\c -> c == '=') (takeBeforePrefix "AFTER" s)
+  then (\(a:b) -> (a, head b)) (splitByUnless beforeOperandsState beforeOperandsDecide (False, True) ')' s)
+  else (\(a,b) -> (a, drop 2 (take ((length b) - 1) b))) $ break (\c -> c == ')') s
+
+splitBeforeAfter :: Int -> String -> (String, String)
+splitBeforeAfter nameLength operation = if isInfixOf "BEFORE " operation
+  then splitBeforeOperation $ drop (nameLength + 1 + (length "BEFORE ")) operation
+  else ("", take ((length operation) - 1 - nameLength) (drop nameLength operation))
+
 splitUpOperationRaw :: String -> (String, String, String)
 splitUpOperationRaw operation = let nameRaw = takeWhile (\x -> x /= '(') operation
-                                    operationBefore = drop ((length nameRaw) + 1 + (length "BEFORE ")) operation
-                                    (beforeOperands:afterOperandsStart) = splitByUnless beforeOperandsState beforeOperandsDecide (False, True) ')' operationBefore
-                                    afterOperands = drop (length " AFTER ") (head afterOperandsStart)
+                                    (beforeOperands, afterOperandsStart) = splitBeforeAfter (length nameRaw) operation
+                                    afterOperands = drop (length " AFTER ") afterOperandsStart
                                 in ((take ((length nameRaw) - 1) nameRaw), beforeOperands, afterOperands)
 
 unwrapErrorAt :: Int -> Either String a -> a
