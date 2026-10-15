@@ -33,6 +33,9 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
     {
         let column = rhs[batch_index * one_hot_count + o];
 
-        output[batch_index * output_single_length + row + column * lhs_single_length] = lhs[index];
+        if column != 4294967295
+        {
+            output[batch_index * output_single_length + row + column * lhs_single_length] = lhs[index];
+        }
     }
 }

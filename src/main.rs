@@ -71,8 +71,12 @@ use word_vectorizer::{
     InputData
 };
 
+pub use renderdocapi::*;
+
 mod config;
 mod word_vectorizer;
+
+mod renderdocapi;
 
 pub mod neural_network;
 
@@ -898,47 +902,6 @@ fn accuracy_data(config: Config)
         eprintln!("error saving accuracy data: {err}");
     }
 }
-
-#[cfg(feature = "renderdocapi")]
-#[link(name = "renderdocapi")]
-unsafe extern "C"
-{
-    pub safe fn renderdoc_api_get() -> *mut core::ffi::c_void;
-
-    pub unsafe fn renderdoc_api_begin_capture(api: *mut core::ffi::c_void);
-    pub unsafe fn renderdoc_api_end_capture(api: *mut core::ffi::c_void);
-}
-
-#[cfg(feature = "renderdocapi")]
-struct RenderDocApi(*mut core::ffi::c_void);
-
-#[cfg(feature = "renderdocapi")]
-unsafe impl Send for RenderDocApi {}
-
-#[cfg(feature = "renderdocapi")]
-unsafe impl Sync for RenderDocApi {}
-
-#[cfg(feature = "renderdocapi")]
-impl RenderDocApi
-{
-    fn init() -> Self
-    {
-        Self(renderdoc_api_get())
-    }
-
-    fn begin_capture(&self)
-    {
-        unsafe{ renderdoc_api_begin_capture(self.0); }
-    }
-
-    fn end_capture(&self)
-    {
-        unsafe{ renderdoc_api_end_capture(self.0); }
-    }
-}
-
-#[cfg(feature = "renderdocapi")]
-static RENDERDOC_API: std::sync::LazyLock<RenderDocApi> = std::sync::LazyLock::new(|| RenderDocApi::init());
 
 fn main()
 {

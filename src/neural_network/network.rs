@@ -1817,6 +1817,9 @@ where
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
         for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
+        #[cfg(feature = "renderdocapi")]
+        crate::RENDERDOC_API.begin_capture();
+
         let inputs_count = input.len();
 
         self.feedforward_setup_dropout(&mut rng);
@@ -1852,6 +1855,9 @@ where
         {
             self.weights.as_ref().unwrap().map_ref(f)
         };
+
+        #[cfg(feature = "renderdocapi")]
+        crate::RENDERDOC_API.end_capture();
 
         (total_loss, gradients)
     }

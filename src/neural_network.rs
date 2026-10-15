@@ -1526,7 +1526,8 @@ mod tests
         for<'b> InputOutputEmbeddingsIter<'b, ThisEmbeddings, ThisDictionary>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         let inputs_amount = 5;
-        let batch_size = 32;
+        let change_me_to_32 = ();
+        let batch_size = 2;
 
         let dictionary = CharDictionary::new(InputData::String("abcde".to_owned()));
 
@@ -1544,9 +1545,11 @@ mod tests
             VectorWord::from_raw(fastrand::usize(0..output_size))
         }).take(batch_size * inputs_per_batch).collect();
 
-        let layers = 3;
+        let change_me_to_3 = ();
+        let layers = 2;
 
-        let hidden = 32;
+        let change_me_to_32 = ();
+        let hidden = 3;
 
         let layer_sizes = LayerSizes{
             hidden,

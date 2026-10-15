@@ -23,8 +23,12 @@ use word_vectorizer::{NetworkDictionary, WordDictionary};
 
 pub use config::Config;
 
+pub use renderdocapi::*;
+
 mod config;
 mod word_vectorizer;
+
+mod renderdocapi;
 
 pub mod neural_network;
 

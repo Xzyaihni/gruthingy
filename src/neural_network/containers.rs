@@ -38,8 +38,8 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 pub const LEAKY_SLOPE: f32 = 0.01;
 
 const NO_COLORING: bool = true; const remove_me: () = ();
-const DUMP_MEMORY: bool = false;
-const _PRINT_CALCULATE_VALUES: bool = false;
+const DUMP_MEMORY: bool = true; const remove_me2: () = ();
+const _PRINT_CALCULATE_VALUES: bool = true; const remove_me3: () = ();
 
 const FLOAT_BYTES: usize = mem::size_of::<f32>();
 
@@ -2802,6 +2802,8 @@ impl OperationsRecorder
 
                     #[cfg(debug_assertions)]
                     {
+                        encoder.push_debug_group(stringify!($name));
+
                         $(
                             self.memory.verify_raw_ptr_use(*$t_name);
                         )*
@@ -2866,6 +2868,8 @@ impl OperationsRecorder
                                 }
                                 )*
 
+                                encoder.pop_debug_group();
+
                                 self.raw_array_memory.queue.submit([encoder.finish()]);
 
                                 encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
@@ -2892,6 +2896,11 @@ impl OperationsRecorder
                         $(
                             self.memory.verify_raw_ptr_assign(*$t_name);
                         )*
+
+                        if !(_PRINT_CALCULATE_VALUES && DUMP_MEMORY)
+                        {
+                            encoder.pop_debug_group();
+                        }
                     }
                 }
             }
@@ -3014,11 +3023,17 @@ impl OperationsRecorder
                     .unwrap()
             }
 
-            let wgpu_info = WgpuInfo{
-                encoder: &mut encoder,
-                compute_pass: &mut compute_pass,
-                device: &self.raw_array_memory.device
-            };
+            macro_rules! wgpu_info
+            {
+                () =>
+                {
+                    WgpuInfo{
+                        encoder: &mut encoder,
+                        compute_pass: &mut compute_pass,
+                        device: &self.raw_array_memory.device
+                    }
+                }
+            }
 
             match &self.raw_operations[i]
             {
@@ -3028,7 +3043,7 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(Copy, (src),());
 
-                    copy_tensor(wgpu_info, &self.memory, *src, *dst);
+                    copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
                     debug_calculate_values_result!((dst),());
                 },
@@ -3052,7 +3067,7 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(ZeroTensor, (),());
 
-                    try_end_compute_pass(wgpu_info);
+                    try_end_compute_pass(wgpu_info!());
 
                     let dst_buffer = get_buffer(&self.memory, *dst);
                     encoder.clear_buffer(dst_buffer, 0, None);
@@ -3090,7 +3105,7 @@ impl OperationsRecorder
                         mapped_at_creation: false
                     });
 
-                    try_end_compute_pass(wgpu_info);
+                    try_end_compute_pass(wgpu_info!());
 
                     encoder.copy_buffer_to_buffer(get_buffer(&self.memory, *tensor), 0, &stack_tensor_buffer, 0, buffer_size);
 
@@ -3127,7 +3142,7 @@ impl OperationsRecorder
 
                     let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
 
-                    try_end_compute_pass(wgpu_info);
+                    try_end_compute_pass(wgpu_info!());
 
                     encoder.copy_buffer_to_buffer(&tensor, 0, get_buffer(&self.memory, *output), 0, tensor.size());
 
@@ -3148,11 +3163,7 @@ impl OperationsRecorder
                             {
                                 LoopInputs::Values(values) =>
                                 {
-                                    try_end_compute_pass(WgpuInfo{
-                                        encoder: &mut encoder,
-                                        compute_pass: &mut compute_pass,
-                                        device: &self.raw_array_memory.device
-                                    });
+                                    try_end_compute_pass(wgpu_info!());
 
                                     let value = &values[loop_info.current_index * inputs_count + input_index];
 
@@ -3269,7 +3280,7 @@ impl OperationsRecorder
                         first
                     };
 
-                    copy_tensor(wgpu_info, &self.memory, *src, *output);
+                    copy_tensor(wgpu_info!(), &self.memory, *src, *output);
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3312,7 +3323,7 @@ impl OperationsRecorder
                         other
                     };
 
-                    copy_tensor(wgpu_info, &self.memory, *src, *dst);
+                    copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
                     if is_set
                     {
@@ -3385,7 +3396,7 @@ impl OperationsRecorder
                     {
                         debug_calculate_values!(GradientSelectAddTensor, (src),());
 
-                        copy_tensor(wgpu_info, &self.memory, *src, *first);
+                        copy_tensor(wgpu_info!(), &self.memory, *src, *first);
                     }
 
                     if is_set
@@ -3402,7 +3413,7 @@ impl OperationsRecorder
                     {
                         debug_calculate_values!(IfSetTensor, (src),());
 
-                        copy_tensor(wgpu_info, &self.memory, *src, *dst);
+                        copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
                         debug_calculate_values_result!((dst),());
                     }
@@ -3413,7 +3424,7 @@ impl OperationsRecorder
                     {
                         debug_calculate_values!(IfNotSetTensor, (src),());
 
-                        copy_tensor(wgpu_info, &self.memory, *src, *dst);
+                        copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
                         debug_calculate_values_result!((dst),());
                     }
@@ -3650,7 +3661,7 @@ impl OperationsRecorder
                     debug_assert!(output.shape.is_batched_scalar());
 
                     let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info,
+                        wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -3709,7 +3720,7 @@ impl OperationsRecorder
                     debug_assert!(output.shape.is_batched_scalar());
 
                     let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info,
+                        wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -3964,7 +3975,7 @@ impl OperationsRecorder
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
 
                     let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info,
+                        wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -3972,11 +3983,7 @@ impl OperationsRecorder
                     );
 
                     copy_tensor(
-                        WgpuInfo{
-                            encoder: &mut encoder,
-                            compute_pass: &mut compute_pass,
-                            device: &self.raw_array_memory.device
-                        },
+                        wgpu_info!(),
                         &self.memory,
                         *values,
                         *softmaxed_output
@@ -4013,7 +4020,7 @@ impl OperationsRecorder
                     debug_assert_eq!(targets.shape.rows, 1);
 
                     let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info,
+                        wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4021,11 +4028,7 @@ impl OperationsRecorder
                     );
 
                     copy_tensor(
-                        WgpuInfo{
-                            encoder: &mut encoder,
-                            compute_pass: &mut compute_pass,
-                            device: &self.raw_array_memory.device
-                        },
+                        wgpu_info!(),
                         &self.memory,
                         *values,
                         *softmaxed_output
@@ -4061,7 +4064,7 @@ impl OperationsRecorder
                     debug_assert_eq!(targets.shape.rows, 1);
 
                     let mut scratch_buffers = scratch_buffers_iter(
-                        wgpu_info,
+                        wgpu_info!(),
                         &self.memory.tensors_raw_data,
                         &self.raw_array_memory.scratch_buffers,
                         &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4104,7 +4107,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(targets.shape.rows, 1);
 
-                    copy_tensor(wgpu_info, &self.memory, *softmaxed_values, *output);
+                    copy_tensor(wgpu_info!(), &self.memory, *softmaxed_values, *output);
 
                     do_kernel_operation(
                         &mut encoder,
@@ -4199,7 +4202,7 @@ impl OperationsRecorder
                             debug_calculate_values!(Matmulv, (lhs, rhs),());
 
                             let scratch_buffer = copy_scratch_buffer(
-                                wgpu_info,
+                                wgpu_info!(),
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4226,7 +4229,7 @@ impl OperationsRecorder
                             debug_assert_eq!(added, output);
 
                             let scratch_buffer = copy_scratch_buffer(
-                                wgpu_info,
+                                wgpu_info!(),
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4272,7 +4275,7 @@ impl OperationsRecorder
                             debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
 
                             let scratch_buffer = copy_scratch_buffer(
-                                wgpu_info,
+                                wgpu_info!(),
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4299,7 +4302,7 @@ impl OperationsRecorder
                             debug_assert_eq!(added, output);
 
                             let scratch_buffer = copy_scratch_buffer(
-                                wgpu_info,
+                                wgpu_info!(),
                                 &self.memory.tensors_raw_data,
                                 &self.raw_array_memory.scratch_buffers,
                                 &self.raw_array_memory.scratch_buffers_locations[i],
@@ -4336,7 +4339,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(lhs.shape.rows, output.shape.rows);
 
-                    try_end_compute_pass(wgpu_info);
+                    try_end_compute_pass(wgpu_info!());
 
                     match this_op
                     {

@@ -18,5 +18,8 @@ for (var o = 0u; o < one_hot_count; o++)
 {
     let one_hot_index = rhs[batch_index * one_hot_count + o];
 
-    output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row + one_hot_index * column_stride]);
+    if one_hot_index != 4294967295
+    {
+        output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row + one_hot_index * column_stride]);
+    }
 }
