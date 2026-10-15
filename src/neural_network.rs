@@ -1358,7 +1358,7 @@ where
                     Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
                 }
 
-                let gradients = gradients_batch.average_batch();
+                let gradients = gradients_batch.average_batch(info.batch_size);
                 self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
@@ -1736,7 +1736,7 @@ mod tests
             inputs_per_batch
         );
 
-        let batched_gradients = batched_gradients_batch.average_batch();
+        let batched_gradients = batched_gradients_batch.average_batch(batch_size);
 
         eprintln!("calculated batched_gradients");
 

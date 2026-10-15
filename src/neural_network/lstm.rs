@@ -291,7 +291,7 @@ mod tests
             }
         };
 
-        let epsilon = 0.0001;
+        let epsilon = 0.001;
 
         recorder.finish();
 

@@ -889,24 +889,13 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 
 impl<N: UnitFactory> WeightsFullContainer<N, LayerType>
 {
-    pub fn average_batch(mut self) -> Self
+    pub fn average_batch(mut self, batch_size: usize) -> Self
     where
         for<'a> &'a mut N::Unit<LayerType>: IntoIterator<Item=&'a mut LayerType>
     {
         self.iter_mut().for_each(|gradient|
         {
-            let batch_size = gradient.shape().batch_size;
-
-            let mut new_gradient = gradient.as_ref().batch_slice_ref(0).clone_owned();
-
-            for batch_index in 1..batch_size
-            {
-                new_gradient.add_inplace(gradient.as_ref().batch_slice_ref(batch_index));
-            }
-
-            new_gradient.mul_scalar_inplace((batch_size as f32).recip());
-
-            *gradient = new_gradient;
+            gradient.mul_scalar_inplace((batch_size as f32).recip());
         });
 
         self
