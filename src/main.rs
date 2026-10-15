@@ -71,6 +71,7 @@ use word_vectorizer::{
     InputData
 };
 
+#[allow(unused_imports)]
 pub use renderdocapi::*;
 
 mod config;

@@ -1523,8 +1523,8 @@ impl RawArrayMemory
                 OpKernel::MatmulOneHotvAdd => ("kernels/matmul_onehotv_add.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r1_w2_i0),
                 OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r1_w2_i0),
-                OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHotAdd => ("kernels/outer_product_one_hot_add.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::Softmax => ("kernels/softmax.wgsl", &kernel_layouts.r0_w2_i1),
@@ -4412,7 +4412,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.r2_w1_i0,
+                                &self.raw_array_memory.kernel_layouts.r2_w1_i1,
                                 OpKernel::OuterProduct,
                                 &[
                                     bind_group_entry(0, *lhs),
@@ -4431,7 +4431,7 @@ impl OperationsRecorder
                                 &mut encoder,
                                 &mut compute_pass,
                                 &self.raw_array_memory,
-                                &self.raw_array_memory.kernel_layouts.r2_w1_i0,
+                                &self.raw_array_memory.kernel_layouts.r2_w1_i1,
                                 OpKernel::OuterProductAdd,
                                 &[
                                     bind_group_entry(0, *lhs),
@@ -4442,6 +4442,8 @@ impl OperationsRecorder
                         },
                         _ => unreachable!()
                     }
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(output.shape.batch_size as u32).to_ne_bytes());
 
                     single_work_group(&mut compute_pass, output.size());
 
@@ -4493,8 +4495,6 @@ impl OperationsRecorder
                 let Some(tensor_raw_ptr) = tensor_raw_ptr else {
                     return;
                 };
-
-                let shape = tensor_raw_ptr.shape;
 
                 let (values, _): (Box<[u32]>, _) = self.get_tensor_blocking_ptr(*tensor_raw_ptr).unwrap();
 

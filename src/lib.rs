@@ -23,6 +23,7 @@ use word_vectorizer::{NetworkDictionary, WordDictionary};
 
 pub use config::Config;
 
+#[allow(unused_imports)]
 pub use renderdocapi::*;
 
 mod config;

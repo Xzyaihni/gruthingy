@@ -7,6 +7,8 @@ var<storage, read> rhs: array<f32>;
 @group(0) @binding(2)
 var<storage, read_write> output: array<f32>;
 
+var<immediate> batch_size: u32;
+
 @compute @workgroup_size(64)
 fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
 {
@@ -18,10 +20,13 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
         return;
     }
 
-    let lhs_length = arrayLength(&lhs);
+    let lhs_length = arrayLength(&lhs) / batch_size;
+    let rhs_length = arrayLength(&rhs) / batch_size;
 
     let row = index % lhs_length;
     let column = index / lhs_length;
 
-    output[index] = lhs[row] * rhs[column];
+    let batch_index = column / rhs_length;
+
+    output[index] = lhs[batch_index * lhs_length + row] * rhs[column];
 }
