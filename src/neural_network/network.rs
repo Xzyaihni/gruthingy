@@ -1493,7 +1493,7 @@ where
 
         let weights = self.weights_ptr.take().unwrap().map(|mut weight_info|
         {
-            if !store_gradient { weight_info.weight_replicated.clear_gradient(); }
+            if !store_gradient { weight_info.weight_original.clear_gradient(); }
 
             WeightInfo{
                 weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
