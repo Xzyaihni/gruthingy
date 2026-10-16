@@ -13,7 +13,6 @@ use crate::{
     EmbeddingsUnitFactory,
     neural_network::{
         OperationsRecorder,
-        OperationsRecorderMemory,
         TensorShape,
         Softmaxer,
         PhiOtherSelectorRecordingIndex,
@@ -2190,21 +2189,21 @@ where
             let first_output_value = self.outputs.first_output_value;
 
             let mut is_first_input = true;
-            self.recorder.calculate_feedforward_with_dependent(|_, memory: &OperationsRecorderMemory|
+            self.recorder.calculate_feedforward_with_dependent(|inputs_specifier|
             {
-                /*let output = if is_first_input
+                let output = inputs_specifier.specify_get_input(if is_first_input
                 {
                     is_first_input = false;
 
-                    memory.get_tensor_blocking(first_output_value)
+                    first_output_value
                 } else
                 {
-                    memory.get_tensor_blocking(output_value)
-                };
+                    output_value
+                });
 
                 consume_output(output);
 
-                input.next().expect("must be called the same amount of times as there are inputs")*/todo!()
+                input.next().expect("must be called the same amount of times as there are inputs")
             });
         }
 
