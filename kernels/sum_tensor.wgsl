@@ -34,16 +34,14 @@ fn run(
         {
             let i = span_id * strided_workgroup + stride * local_invocation_index;
 
-            if (i + half_stride) >= src_single_length
+            if (i + half_stride) < src_single_length
             {
-                return;
+                let start = batch_start + i;
+                sum_values[start] += sum_values[start + half_stride];
             }
 
-            let start = batch_start + i;
-            sum_values[start] += sum_values[start + half_stride];
+            storageBarrier();
         }
-
-        storageBarrier();
     }
 
     dst[batch_index] = sum_values[batch_index * src_single_length];

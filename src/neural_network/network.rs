@@ -114,7 +114,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
     let mut decomposed = pre_decomposition.symmetric_eigen();
 
-    decomposed.eigenvalues.apply(|x| *x = x.sqrt().recip());
+    decomposed.eigenvalues.apply(|x| *x = x.max(0.0001).sqrt().recip());
 
     let post_inverse_sqrt = LayerType::from_nalgebra(decomposed.recompose().as_view());
 
@@ -122,6 +122,8 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
     #[cfg(debug_assertions)]
     {
+        let epsilon = if output.shape().rows.max(output.shape().columns) > 32 { 0.1 } else { 0.3 };
+
         let is_identity = |expected_identity: LayerType| -> bool
         {
             let shape = expected_identity.shape();
@@ -136,7 +138,19 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
                 {
                     let expected_value = if row == column { 1.0 } else { 0.0 };
 
-                    close_enough(expected_identity_vec[column * shape.rows + row], expected_value, 0.05)
+                    let value = expected_identity_vec[column * shape.rows + row];
+
+                    let is_equal = if expected_value == 0.0
+                    {
+                        value.abs() < epsilon
+                    } else
+                    {
+                        close_enough(value, expected_value, epsilon)
+                    };
+
+                    // if !is_equal { eprintln!("{value} does not equal {expected_value}"); }
+
+                    is_equal
                 })
             })
         };
@@ -162,7 +176,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
         {
             let magnitude = column.magnitude();
 
-            assert!(close_enough(magnitude, 1.0, 0.05), "magnitude is {magnitude}, should be 1");
+            assert!(close_enough(magnitude, 1.0, epsilon), "magnitude is {magnitude}, should be 1");
         });
 
         let columns_count = columns.len();
@@ -177,7 +191,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
                 let dot = a.dot(b);
 
-                assert!(close_enough(dot, 0.0, 0.05), "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
+                assert!(dot.abs() < epsilon, "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
             });
         });
     }

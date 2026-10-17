@@ -1,5 +1,6 @@
 Cargo.lock
 perf.data*
+/heaptrack*
 /librenderdocapi.so
 /dictionary.txt
 /target

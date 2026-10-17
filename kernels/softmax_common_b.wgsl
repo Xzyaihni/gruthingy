@@ -7,11 +7,9 @@ for (var span_id = 0u; span_id < inside_spans; span_id++)
 {
     let i = span_id * WORKGROUP_SIZE + local_invocation_index;
 
-    if i >= values_length
+    if i < values_length
     {
-        return;
+        let start = batch_start + i;
+        softmaxed_values[start] *= s_r;
     }
-
-    let start = batch_start + i;
-    softmaxed_values[start] *= s_r;
 }

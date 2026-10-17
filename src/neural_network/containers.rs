@@ -37,7 +37,7 @@ pub type LayerTypeVectorMut<'a> = YVectorWrapperMut<'a>;
 
 pub const LEAKY_SLOPE: f32 = 0.01;
 
-const NO_COLORING: bool = true; const remove_me: () = ();
+const NO_COLORING: bool = false;
 const DUMP_MEMORY: bool = false;
 const _PRINT_CALCULATE_VALUES: bool = false;
 
@@ -46,16 +46,6 @@ const FLOAT_BYTES: usize = mem::size_of::<f32>();
 
 pub fn close_enough(a: f32, b: f32, epsilon: f32) -> bool
 {
-    if a == 0.0 || a == -0.0
-    {
-        return b.abs() <= epsilon;
-    }
-
-    if b == 0.0 || b == -0.0
-    {
-        return a.abs() <= epsilon;
-    }
-
     (a - b).abs() <= epsilon * a.abs().max(b.abs())
 }
 
@@ -4122,6 +4112,7 @@ impl OperationsRecorder
                 this_op@GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output: _, output}
                 | this_op@GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
+                    #[allow(unused_variables)]
                     match this_op
                     {
                         GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, ..} =>
@@ -4151,8 +4142,6 @@ impl OperationsRecorder
                         &self.raw_array_memory.scratch_buffers_locations[i][..1],
                         [*values]
                     ).next().unwrap();
-
-                    try_end_compute_pass(wgpu_info!());
 
                     let softmaxed_output_buffer = match this_op
                     {
@@ -4257,6 +4246,7 @@ impl OperationsRecorder
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
+                    #[allow(unused_variables)]
                     match this_op
                     {
                         GradientOp::SoftmaxCrossEntropy{softmaxed_output, output, ..} =>
@@ -10133,6 +10123,26 @@ mod tests
 
             recorder.mul_componentwise(left, right)
         })
+    }
+
+    #[test]
+    fn softmax_easy()
+    {
+        let targets = create_targets();
+        check_vector(|recorder, a, b|
+        {
+            let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
+            recorder.set_one_hot_data(targets_index, targets.clone());
+
+            let (sm, entropy) = recorder.softmax_cross_entropy(a, targets_index);
+
+            let b_shape = recorder.tensor_shape(b.as_value());
+            let entropy_filled = recorder.fill_batched(b_shape, entropy);
+
+            let bsm = recorder.add(b, sm);
+
+            recorder.add(bsm, entropy_filled)
+        });
     }
 
     #[test]

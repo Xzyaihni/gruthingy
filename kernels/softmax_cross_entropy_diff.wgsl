@@ -29,18 +29,16 @@ fn run(
     {
         let i = span_id * WORKGROUP_SIZE + local_invocation_index;
 
-        if i >= values_length
+        if i < values_length
         {
-            return;
+            let start = batch_start + i;
+
+            if i == targets[batch_index]
+            {
+                output[start] -= 1.0;
+            }
+
+            output[start] *= gradient[batch_index];
         }
-
-        let start = batch_start + i;
-
-        if i == targets[batch_index]
-        {
-            output[start] -= 1.0;
-        }
-
-        output[start] *= gradient[batch_index];
     }
 }

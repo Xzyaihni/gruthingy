@@ -32,16 +32,14 @@ fn run(
         {
             let i = span_id * strided_workgroup + stride * local_invocation_index;
 
-            if (i + half_stride) >= values_length
+            if (i + half_stride) < values_length
             {
-                return;
+                let start = batch_start + i;
+                max_values[start] = max(max_values[start], max_values[start + half_stride]);
             }
 
-            let start = batch_start + i;
-            max_values[start] = max(max_values[start], max_values[start + half_stride]);
+            storageBarrier();
         }
-
-        storageBarrier();
     }
 
     dst[batch_index] = max_values[batch_index * values_length];

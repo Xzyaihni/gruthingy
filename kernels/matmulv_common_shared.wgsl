@@ -21,15 +21,13 @@ let batch_start = batch_index * lhs_single_length;
     {
         let column = span_id * WORKGROUP_SIZE + local_invocation_index;
 
-        if column >= lhs_columns
+        if column < lhs_columns
         {
-            break;
+            lhs[batch_start + row * row_stride + column * column_stride] *= rhs[batch_index * lhs_columns + column];
         }
 
-        lhs[batch_start + row * row_stride + column * column_stride] *= rhs[batch_index * lhs_columns + column];
+        storageBarrier();
     }
-
-    storageBarrier();
 }
 
 for (var half_stride = 1u; half_stride < lhs_columns; half_stride *= 2)
@@ -43,16 +41,17 @@ for (var half_stride = 1u; half_stride < lhs_columns; half_stride *= 2)
     {
         let column = span_id * strided_workgroup + stride * local_invocation_index;
 
-        if (column + half_stride) >= lhs_columns
+        if (column + half_stride) < lhs_columns
         {
-            return;
+            let start = batch_start + row * row_stride + column * column_stride;
+            lhs[start] += lhs[start + half_stride * column_stride];
         }
 
-        let start = batch_start + row * row_stride + column * column_stride;
-        lhs[start] += lhs[start + half_stride * column_stride];
+        storageBarrier();
     }
-
-    storageBarrier();
 }
 
-output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row * row_stride]);
+if local_invocation_index == 0
+{
+    output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row * row_stride]);
+}

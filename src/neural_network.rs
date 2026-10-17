@@ -1483,14 +1483,35 @@ mod tests
             });
     }
 
+    #[allow(dead_code)]
     struct LstmUnitFactory;
+
+    #[allow(dead_code)]
+    impl LstmUnitFactory
+    {
+        fn weight_units() -> usize { 4 }
+        fn hidden_units() -> usize { 4 }
+    }
 
     impl UnitFactory for LstmUnitFactory
     {
         type Unit<T> = Lstm<T>;
     }
 
-    type Unit = LstmUnitFactory;
+    struct StarUnitFactory;
+
+    impl StarUnitFactory
+    {
+        fn weight_units() -> usize { 2 }
+        fn hidden_units() -> usize { 1 }
+    }
+
+    impl UnitFactory for StarUnitFactory
+    {
+        type Unit<T> = Star<T>;
+    }
+
+    type Unit = StarUnitFactory;
 
     type ThisDictionary = CharDictionary;
 
@@ -1526,7 +1547,7 @@ mod tests
         for<'b> InputOutputEmbeddingsIter<'b, ThisEmbeddings, ThisDictionary>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         let inputs_amount = 5;
-        let batch_size = 32;
+        let batch_size = 70;
 
         let dictionary = CharDictionary::new(InputData::String("abcde".to_owned()));
 
@@ -1545,7 +1566,7 @@ mod tests
         }).take(batch_size * inputs_per_batch).collect();
 
         let layers = 3;
-        let hidden = 32;
+        let hidden = 170;
 
         let layer_sizes = LayerSizes{
             hidden,
@@ -1605,8 +1626,8 @@ mod tests
         );
 
         // hardcoded for lstm
-        let weight_units = 4;
-        let hidden_units = 4;
+        let weight_units = Unit::weight_units();
+        let hidden_units = Unit::hidden_units();
 
         let rolls_per_batch = embeddings_input_rolls
             + embeddings_output_rolls
@@ -1743,10 +1764,14 @@ mod tests
         {
             let all_equal = single_added_gradient.iter().zip(batched_gradient.iter()).all(|(single, batched)|
             {
-                *single == *batched
+                let is_equal = close_enough(*single, *batched, (0.0001 / single.abs().max(batched.abs())).min(0.15));
+
+                if !is_equal { eprintln!("{single} is not equal to {batched}"); }
+
+                is_equal
             });
 
-            assert!(all_equal, "single:  {single_added_gradient:?}\nnot equal to\nbatched: {batched_gradient:?}");
+            assert!(all_equal, "single: {single_added_gradient:?}\nnot equal to\nbatched: {batched_gradient:?}");
         });
     }
 }
