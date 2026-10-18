@@ -3151,7 +3151,7 @@ impl OperationsRecorder
                         let stack_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
                             label: None,
                             size: buffer_size,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
                             mapped_at_creation: false
                         });
 
@@ -10041,7 +10041,7 @@ mod tests
     {
         check_tensor(|recorder, a, b|
         {
-            let output = recorder.pow(a, 3);
+            let output = recorder.pow(a, 2);
             recorder.add(output, b)
         })
     }
