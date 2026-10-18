@@ -611,7 +611,7 @@ impl Default for LoopValues
 struct LoopStack
 {
     values_stack: Vec<LoopStackValue<f32, ValueIndex>>,
-    tensors_stack: Vec<LoopStackValue<wgpu::Buffer, TensorRawDataPointer>>
+    tensors_stack: Vec<LoopStackValue<usize, TensorRawDataPointer>>
 }
 
 #[derive(Debug, Clone)]
@@ -1417,6 +1417,7 @@ struct RawArrayMemory
     device: wgpu::Device,
     queue: wgpu::Queue,
     input_buffers: Vec<wgpu::Buffer>,
+    stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
     scratch_buffers: Vec<wgpu::Buffer>,
     scratch_buffers_locations: Vec<Vec<ScratchBufferIndex>>,
     kernel_layouts: KernelLayouts,
@@ -1657,9 +1658,10 @@ impl RawArrayMemory
         Self{
             device,
             queue,
+            input_buffers: Vec::new(),
+            stack_buffers: HashMap::new(),
             scratch_buffers: Vec::new(),
             scratch_buffers_locations: Vec::new(),
-            input_buffers: Vec::new(),
             kernel_layouts,
             kernels
         }
@@ -2785,6 +2787,8 @@ impl OperationsRecorder
             *wgpu_info.compute_pass = None;
         }
 
+        let mut stack_buffer_indices: HashMap<u64, usize> = HashMap::new();
+
         let mut encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("main_encoder")});
 
         let mut compute_pass: Option<wgpu::ComputePass> = None;
@@ -3133,23 +3137,35 @@ impl OperationsRecorder
 
                     let loop_stack_index = self.loops[loop_index.0].stack_values;
 
-                    let reminder = "reuse buffers by storing them in a hashmap with vecs of wgpu::Buffer";
-
                     let buffer_size = (tensor.shape.size() * FLOAT_BYTES) as u64;
 
-                    let stack_tensor_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
-                        label: None,
-                        size: buffer_size,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false
-                    });
+                    let this_size_buffers = self.raw_array_memory.stack_buffers.entry(buffer_size).or_default();
+
+                    let this_stack_buffer_index_spot: &mut usize = stack_buffer_indices.entry(buffer_size).or_default();
+                    let this_stack_buffer_index = *this_stack_buffer_index_spot;
+
+                    *this_stack_buffer_index_spot += 1;
+
+                    if this_size_buffers.len() == this_stack_buffer_index
+                    {
+                        let stack_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                            label: None,
+                            size: buffer_size,
+                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false
+                        });
+
+                        this_size_buffers.push(stack_buffer);
+                    }
+
+                    let stack_tensor_buffer = &this_size_buffers[this_stack_buffer_index];
 
                     try_end_compute_pass(wgpu_info!());
 
-                    encoder.copy_buffer_to_buffer(get_buffer(&self.memory, *tensor), 0, &stack_tensor_buffer, 0, buffer_size);
+                    encoder.copy_buffer_to_buffer(get_buffer(&self.memory, *tensor), 0, stack_tensor_buffer, 0, buffer_size);
 
                     #[allow(unused_mut)]
-                    let mut stack_value: LoopStackValue<_, _> = stack_tensor_buffer.into();
+                    let mut stack_value: LoopStackValue<_, _> = this_stack_buffer_index.into();
                     stack_value.set_source(*tensor);
 
                     self.loops_memory.loops_stack[loop_stack_index.0].tensors_stack.push(stack_value);
@@ -3173,13 +3189,16 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(PopStackTensor, (),());
 
-                    let reminder = "this could be a noop";
                     let loop_stack_index = self.loops[loop_index.0].stack_values;
 
                     let stack_value = self.loops_memory.loops_stack[loop_stack_index.0].tensors_stack.pop()
                         .expect("stack must not be empty");
 
-                    let tensor = stack_value.get_stack_value_for(self, *loop_index, *output);
+                    let stack_buffer_index = stack_value.get_stack_value_for(self, *loop_index, *output);
+
+                    let buffer_size = (output.shape.size() * FLOAT_BYTES) as u64;
+
+                    let tensor = &self.raw_array_memory.stack_buffers[&buffer_size][stack_buffer_index];
 
                     try_end_compute_pass(wgpu_info!());
 
