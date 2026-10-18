@@ -6143,6 +6143,20 @@ impl OperationsRecorder
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
+            struct ScratchInfo
+            {
+                is_copy_src: bool,
+                size: usize
+            }
+
+            impl From<usize> for ScratchInfo
+            {
+                fn from(size: usize) -> Self
+                {
+                    ScratchInfo{is_copy_src: false, size}
+                }
+            }
+
             if let Some(sizes) = match gradient_op
             {
                 GradientOp::SumTensor{value, ..}
@@ -6150,30 +6164,31 @@ impl OperationsRecorder
                 | GradientOp::Matmulv{lhs: value, ..}
                 | GradientOp::MatmulvAdd{lhs: value, ..}
                 | GradientOp::MatmulvTransposed{lhs: value, ..}
-                | GradientOp::MatmulvTransposedAdd{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size()]),
+                | GradientOp::MatmulvTransposedAdd{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
                 GradientOp::Softmax{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
 
-                    Some(vec![shape.size(), shape.batch_size, shape.size()])
+                    Some(vec![shape.size().into(), shape.batch_size.into(), shape.size().into()])
                 },
                 GradientOp::SoftmaxCrossEntropy{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
 
-                    Some(vec![shape.size(), shape.batch_size, shape.batch_size, shape.size()])
+                    Some(vec![shape.size().into(), shape.batch_size.into(), shape.batch_size.into(), shape.size().into()])
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
 
-                    Some(vec![shape.size(), shape.batch_size, shape.batch_size, shape.size(), shape.size()])
+                    let softmaxed_values = ScratchInfo{is_copy_src: true, size: shape.size()};
+                    Some(vec![shape.size().into(), shape.batch_size.into(), shape.batch_size.into(), softmaxed_values, shape.size().into()])
                 },
                 _ => None
             }
             {
                 let mut taken_indices = Vec::new();
-                sizes.iter().enumerate().for_each(|(count_index, size)|
+                sizes.iter().enumerate().for_each(|(count_index, ScratchInfo{is_copy_src, size})|
                 {
                     let size = (size * FLOAT_BYTES) as u64;
 
@@ -6185,10 +6200,14 @@ impl OperationsRecorder
                         ScratchBufferIndex(x)
                     } else
                     {
+                        let usage = wgpu::BufferUsages::STORAGE
+                            | wgpu::BufferUsages::COPY_DST
+                            | if *is_copy_src { wgpu::BufferUsages::COPY_SRC } else { wgpu::BufferUsages::empty() };
+
                         let buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
                             label: None,
                             size,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                            usage,
                             mapped_at_creation: false
                         });
 
