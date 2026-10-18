@@ -863,6 +863,7 @@ pub struct OperationsRecorderMemory
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
     variable_names: VariableNames,
     store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
+    input_raw_check: Vec<DiffValue>,
     #[cfg(debug_assertions)]
     set_tensor_memory: RefCell<SetTensorMemoryChecks>,
     #[cfg(debug_assertions)]
@@ -892,7 +893,8 @@ impl Debug for OperationsRecorderMemory
             .field("one_hot_layers", &self.one_hot_layers)
             .field("one_hot_buffers", &self.one_hot_buffers)
             .field("phi_other_selectors_values", &self.phi_other_selectors_values)
-            .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
+            .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            .field("input_raw_check", &self.input_raw_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
 
         #[cfg(debug_assertions)]
         {
@@ -955,6 +957,7 @@ impl OperationsRecorderMemory
             phi_other_selectors_values: Vec::new(),
             variable_names: VariableNames::new(),
             store_tensors_check: Vec::new(),
+            input_raw_check: Vec::new(),
             #[cfg(debug_assertions)]
             set_tensor_memory: RefCell::new(SetTensorMemoryChecks::new()),
             #[cfg(debug_assertions)]
@@ -1072,6 +1075,14 @@ impl OperationsRecorderMemory
         }
 
         self.get_tensor_blocking_unchecked(raw_array_memory, index)
+    }
+
+    fn resolve_tensor_ptr(&self, index_ptr: TensorPtr) -> TensorIndex
+    {
+        self.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
+        {
+            panic!("{} must be resolved", self.format_variable(index_ptr))
+        })
     }
 
     fn resolve_shaped_tensor_index(&self, index: ShapedTensorIndex) -> TensorRawDataPointer
@@ -1416,6 +1427,8 @@ struct RawArrayMemory
 {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    tensor_usages: Vec<wgpu::BufferUsages>,
+    one_hot_usages: Vec<wgpu::BufferUsages>,
     input_buffers: Vec<wgpu::Buffer>,
     stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
     scratch_buffers: Vec<wgpu::Buffer>,
@@ -1658,6 +1671,8 @@ impl RawArrayMemory
         Self{
             device,
             queue,
+            tensor_usages: Vec::new(),
+            one_hot_usages: Vec::new(),
             input_buffers: Vec::new(),
             stack_buffers: HashMap::new(),
             scratch_buffers: Vec::new(),
@@ -2110,6 +2125,13 @@ impl OperationsRecorder
         self.memory.get_tensor_blocking(&self.raw_array_memory, index)
     }
 
+    pub fn host_settable(&mut self, value: impl Into<DiffValue>)
+    {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingResolve));
+
+        self.memory.input_raw_check.push(value.into());
+    }
+
     pub fn set_tensor_with(&mut self, index: ShapedTensorIndex, f: impl FnMut() -> f32)
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
@@ -2535,10 +2557,7 @@ impl OperationsRecorder
 
         let shape = self.memory.tensor_shape(index_ptr);
 
-        let index = self.memory.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
-        {
-            panic!("{} must be resolved", self.memory.format_variable(index_ptr))
-        });
+        let index = self.memory.resolve_tensor_ptr(index_ptr);
 
         ShapedTensorIndex{index, shape}
     }
@@ -3254,7 +3273,7 @@ impl OperationsRecorder
                                 let new_input_buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
                                     label: None,
                                     size: (size * FLOAT_BYTES) as u64,
-                                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
                                     mapped_at_creation: false
                                 });
 
@@ -3788,13 +3807,11 @@ impl OperationsRecorder
 
                     debug_assert!(output.shape.is_batched_scalar());
 
-                    let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        *lhs
-                    );
+                    let scratch_buffer = {
+                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][0];
+
+                        &self.raw_array_memory.scratch_buffers[index.0]
+                    };
 
                     do_kernel_operation(
                         &mut encoder,
@@ -4526,13 +4543,13 @@ impl OperationsRecorder
 
                     try_end_compute_pass(wgpu_info!());
 
+                    encoder.clear_buffer(get_buffer(&self.memory, *output), 0, None);
+
                     match this_op
                     {
                         GradientOp::OuterProductOneHot{lhs, rhs, output} =>
                         {
                             debug_calculate_values!(OuterProductOneHot, (lhs, rhs),());
-
-                            encoder.clear_buffer(get_buffer(&self.memory, *output), 0, None);
 
                             do_kernel_operation(
                                 &mut encoder,
@@ -5946,13 +5963,197 @@ impl OperationsRecorder
         });
     }
 
-    fn operations_to_raw(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
+    fn resolve_tensor_usages(&mut self, one_hot_buffers_used: &[bool])
+    {
+        let tensor_usages = &mut self.raw_array_memory.tensor_usages;
+        let one_hot_usages = &mut self.raw_array_memory.one_hot_usages;
+
+        *tensor_usages = vec![wgpu::BufferUsages::empty(); self.memory.tensors.len()];
+        *one_hot_usages = vec![wgpu::BufferUsages::empty(); self.memory.one_hot_layers.len()];
+
+        let t = |tensor_ptr: TensorPtr| -> TensorIndex
+        {
+            self.memory.resolve_tensor_ptr(tensor_ptr)
+        };
+
+        fn add_usage(usages: &mut [wgpu::BufferUsages], index: usize, usage: wgpu::BufferUsages)
+        {
+            usages[index] |= usage;
+        }
+
+        macro_rules! o_storage
+        {
+            ($($one_hot_index:ident),+) =>
+            {
+                { $( add_usage(one_hot_usages, $one_hot_index.0, wgpu::BufferUsages::STORAGE); )+ }
+            }
+        }
+
+        let t_add = |tensor_usages: &mut [wgpu::BufferUsages], tensor_ptr: TensorPtr, usage: wgpu::BufferUsages|
+        {
+            add_usage(tensor_usages, t(tensor_ptr).0, usage);
+        };
+
+        macro_rules! t_src
+        {
+            ($($tensor_ptr:ident),+) =>
+            {
+                { $( t_add(tensor_usages, $tensor_ptr, wgpu::BufferUsages::COPY_SRC); )+ }
+            }
+        }
+
+        macro_rules! t_dst
+        {
+            ($($tensor_ptr:ident),+) =>
+            {
+                { $( t_add(tensor_usages, $tensor_ptr, wgpu::BufferUsages::COPY_DST); )+ }
+            }
+        }
+
+        macro_rules! t_storage
+        {
+            ($($tensor_ptr:ident),+) =>
+            {
+                { $( t_add(tensor_usages, $tensor_ptr, wgpu::BufferUsages::STORAGE); )+ }
+            }
+        }
+
+        self.memory.input_raw_check.iter().copied().for_each(|value: DiffValue|
+        {
+            match value
+            {
+                DiffValue::Tensor(tensor) => t_dst!(tensor),
+                DiffValue::OneHot(one_hot) => add_usage(one_hot_usages, one_hot.0, wgpu::BufferUsages::COPY_DST),
+                DiffValue::Value(_) => unreachable!()
+            }
+        });
+
+        self.memory.store_tensors_check.iter().map(|store_tensor|
+        {
+            let StoreCheckKey::Resolved(store_tensor) = store_tensor else { unreachable!() };
+
+            *store_tensor
+        }).for_each(|store_tensor: TensorIndex|
+        {
+            add_usage(tensor_usages, store_tensor.0, wgpu::BufferUsages::COPY_SRC);
+        });
+
+        self.gradient_operations.iter().for_each(|op|
+        {
+            match op.clone()
+            {
+                GradientOp::None
+                | GradientOp::FeedforwardEndMarker
+                | GradientOp::SetInputs(_)
+                | GradientOp::JumpIfLast(_)
+                | GradientOp::SetOtherSelector(_)
+                | GradientOp::GetOtherSelectorValue{..}
+                | GradientOp::OtherSelectorValueGradient{..}
+                | GradientOp::GradientSelectAddValue{..}
+                | GradientOp::SetOtherSelectorGradient{..}
+                | GradientOp::PushStackValue{..}
+                | GradientOp::PopStackValue{..}
+                | GradientOp::ZeroValue(_)
+                | GradientOp::CopyScalar{..}
+                | GradientOp::AddScalars{..}
+                | GradientOp::MulScalars{..} => (),
+                GradientOp::Jump(JumpInfo::JumpTo{inputs, ..}) =>
+                {
+                    inputs.iter().copied().for_each(|input_ptr|
+                    {
+                        match input_ptr
+                        {
+                            InputTypePtr::Normal(tensor) if self.memory.tensors_memory[tensor.0].memory.is_some() =>
+                            {
+                                t_dst!(tensor)
+                            },
+                            InputTypePtr::OneHot(one_hot) if one_hot_buffers_used[one_hot.0] =>
+                            {
+                                add_usage(one_hot_usages, one_hot.0, wgpu::BufferUsages::COPY_DST)
+                            },
+                            _ => ()
+                        }
+                    });
+                },
+                GradientOp::Jump(_) => (),
+                GradientOp::GetOtherSelectorTensor{info: _, first, other, output} => { t_src!(first, other); t_dst!(output) },
+                GradientOp::OtherSelectorTensorGradient{index: _, first, other, src} => { t_src!(src); t_dst!(first, other) },
+                GradientOp::GradientSelectAddTensor{index: _, first, other, src, added} =>
+                {
+                    t_src!(src); t_dst!(first); t_storage!(src, added, other)
+                },
+                GradientOp::IfSetTensor{index: _, dst, src} => { t_src!(src); t_dst!(dst) },
+                GradientOp::IfNotSetTensor{index: _, dst, src} => { t_src!(src); t_dst!(dst) },
+                GradientOp::PushStackTensor{loop_index: _, tensor} => t_src!(tensor),
+                GradientOp::PopStackTensor{loop_index: _, output} => t_dst!(output),
+                GradientOp::ZeroTensor(x) => t_dst!(x),
+                GradientOp::Copy{src, dst} => { t_src!(src); t_dst!(dst) },
+                GradientOp::AddScalar{lhs, rhs: _, output} => t_storage!(lhs, output),
+                GradientOp::Add{lhs, rhs, output} => t_storage!(lhs, rhs, output),
+                GradientOp::Sub{lhs, rhs, output} => t_storage!(lhs, rhs, output),
+                GradientOp::SubFromScalar{lhs: _, rhs, output} => t_storage!(rhs, output),
+                GradientOp::MulScalar{lhs, rhs: _, output} => t_storage!(lhs, output),
+                GradientOp::MulComponentwise{lhs, rhs, output}
+                | GradientOp::MulComponentwiseAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                GradientOp::SumTensor{value, output} => { t_storage!(output); t_src!(value) },
+                GradientOp::SumBatch{value, output} => t_storage!(value, output),
+                GradientOp::Fill{value, output} => t_storage!(value, output),
+                GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
+                GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
+                GradientOp::LeakyRelu{value, output} => t_storage!(value, output),
+                GradientOp::LeakyReluDiff{value, gradient, output} => t_storage!(value, gradient, output),
+                GradientOp::Sigmoid{value, output} => t_storage!(value, output),
+                GradientOp::SigmoidDiff{value, gradient, output} => t_storage!(value, gradient, output),
+                GradientOp::Tanh{value, output} => t_storage!(value, output),
+                GradientOp::TanhDiff{value, gradient, output} => t_storage!(value, gradient, output),
+                GradientOp::Dot{lhs, rhs, output} => t_storage!(lhs, rhs, output),
+                GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
+                {
+                    t_src!(values, softmaxed_output); t_dst!(softmaxed_output); t_storage!(softmaxed_output, output); o_storage!(targets)
+                },
+                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
+                {
+                    t_src!(values); t_storage!(output); o_storage!(targets)
+                },
+                GradientOp::Softmax{values, softmaxed_output} =>
+                {
+                    t_src!(values, softmaxed_output); t_dst!(softmaxed_output); t_storage!(softmaxed_output)
+                },
+                GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
+                {
+                    t_src!(softmaxed_values); t_dst!(output); t_storage!(softmaxed_values, gradient, output); o_storage!(targets)
+                },
+                GradientOp::Matmulv{lhs, rhs, output}
+                | GradientOp::MatmulvAdd{lhs, rhs, added: _, output} => { t_src!(lhs); t_storage!(rhs, output) },
+                GradientOp::MatmulOneHotv{lhs, rhs, output}
+                | GradientOp::MatmulOneHotvAdd{lhs, rhs, added: _, output} => { t_storage!(lhs, output); o_storage!(rhs) },
+                GradientOp::MatmulvTransposed{lhs, rhs, output}
+                | GradientOp::MatmulvTransposedAdd{lhs, rhs, added: _, output} => { t_src!(lhs); t_storage!(rhs, output) },
+                GradientOp::OuterProduct{lhs, rhs, output}
+                | GradientOp::OuterProductAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                GradientOp::OuterProductOneHot{lhs, rhs, output}
+                | GradientOp::OuterProductOneHotAdd{lhs, rhs, added: _, output} => { t_dst!(output); t_storage!(lhs, output); o_storage!(rhs) }
+            }
+        });
+    }
+
+    fn check_one_hot_buffers_used(&self, one_hot_buffers_used: &mut Vec<bool>)
+    {
+        *one_hot_buffers_used = (0..self.memory.one_hot_layers.len()).map(|one_hot_index|
+        {
+            let one_hot_index = OneHotIndex(one_hot_index);
+
+            self.gradient_operations.iter().any(|x| x.is_any_arg(|arg| arg == DiffValue::OneHot(one_hot_index)))
+        }).collect();
+    }
+
+    fn create_one_hot_buffers(&mut self, one_hot_buffers_used: &[bool])
     {
         self.memory.one_hot_buffers = (0..self.memory.one_hot_layers.len()).map(|one_hot_index|
         {
             let one_hot_index = OneHotIndex(one_hot_index);
 
-            let is_used = self.gradient_operations.iter().any(|x| x.is_any_arg(|arg| arg == DiffValue::OneHot(one_hot_index)));
+            let is_used = one_hot_buffers_used[one_hot_index.0];
 
             if !is_used
             {
@@ -5968,17 +6169,20 @@ impl OperationsRecorder
 
             let size = shape.size();
 
+            let raw_index = TensorIndexRaw(self.memory.tensors_raw_data.len());
             let this_tensor_raw_ptr = LinearRawDataPointer{
-                raw_index: TensorIndexRaw(self.memory.tensors_raw_data.len()),
+                raw_index,
                 size
             }.with_shape(shape);
 
+            let usage = self.raw_array_memory.one_hot_usages[one_hot_index.0];
+
             let raw_tensor = if one_hot_layer.positions.is_empty()
             {
-                RawArray::uninit::<u32>(&self.raw_array_memory, label, size)
+                RawArray::uninit::<u32>(&self.raw_array_memory, label, usage, size)
             } else
             {
-                let raw_tensor = RawArray::from_slice(&self.raw_array_memory, label, &one_hot_layer.positions, shape);
+                let raw_tensor = RawArray::from_slice(&self.raw_array_memory, label, usage, &one_hot_layer.positions, shape);
 
                 #[cfg(debug_assertions)]
                 {
@@ -5992,7 +6196,10 @@ impl OperationsRecorder
 
             Some(this_tensor_raw_ptr)
         }).collect();
+    }
 
+    fn operations_to_raw(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>)
+    {
         let mut usage_counts: Vec<(TensorIndex, usize, Vec<(TensorIndex, usize)>)> = (0..self.memory.tensors.len())
             .map(|x| (TensorIndex(x), 0, Vec::new()))
             .collect();
@@ -6081,6 +6288,13 @@ impl OperationsRecorder
             debug_assert_eq!(self.memory.tensors[this_index.0], LinearRawDataPointer::undefined());
             self.memory.tensors[this_index.0] = this_tensor_raw_ptr;
 
+            let usage = self.raw_array_memory.tensor_usages[this_index.0];
+
+            if usage.is_empty()
+            {
+                return;
+            }
+
             let raw_tensor = match this_tensor
             {
                 TensorMemoryValue::Value(x) =>
@@ -6090,11 +6304,11 @@ impl OperationsRecorder
                         self.memory.verify_raw_ptr_assign(this_tensor_raw_ptr.with_shape(shape));
                     }
 
-                    RawArray::from_slice(&self.raw_array_memory, label, x.as_slice(), shape)
+                    RawArray::from_slice(&self.raw_array_memory, label, usage, x.as_slice(), shape)
                 },
                 TensorMemoryValue::Size{..} =>
                 {
-                    RawArray::uninit::<f32>(&self.raw_array_memory, label, size)
+                    RawArray::uninit::<f32>(&self.raw_array_memory, label, usage, size)
                 }
             };
 
@@ -6744,9 +6958,16 @@ impl OperationsRecorder
             eprintln!("using {} memory spots", self.memory.tensors.len());
         }
 
-        self.operations_to_raw(&mut memory_assignments);
+        let mut one_hot_buffers_used: Vec<bool> = Vec::new();
+        self.check_one_hot_buffers_used(&mut one_hot_buffers_used);
 
         self.resolve_store_tensors();
+
+        self.resolve_tensor_usages(&one_hot_buffers_used);
+
+        self.create_one_hot_buffers(&one_hot_buffers_used);
+
+        self.operations_to_raw(&mut memory_assignments);
 
         self.initialize_output_buffers();
 
@@ -9758,6 +9979,9 @@ mod tests
 
         new_recorder.finish();
         new_recorder.no_gradient();
+
+        new_recorder.host_settable(new_a.as_value());
+        new_recorder.host_settable(new_b.as_value());
 
         dbg!(&new_recorder);
         new_recorder.resolve_memory(true);

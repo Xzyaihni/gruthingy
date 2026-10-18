@@ -240,6 +240,8 @@ pub fn dropout_weights(
     let dropout = recorder.new_tensor_no_gradient(shape);
     recorder.name_diff_tensor(dropout, "dropout");
 
+    recorder.host_settable(dropout.as_value());
+
     let weight_replicated = recorder.batch_replicate(shape.batch_size, weight_original);
     recorder.name_diff_tensor_suffix(weight_replicated, weight_original, "_replicated");
 
@@ -463,6 +465,8 @@ macro_rules! create_weights_container
                                 recorder.set_new_tensor_gradientable(weights)
                             }
                         };
+
+                        recorder.host_settable(weights.as_value());
 
                         recorder.name_diff_tensor(weights, stringify!($name));
 
@@ -1151,6 +1155,8 @@ where
                 recorder.set_new_tensor_gradientable(value)
             };
 
+            recorder.host_settable(weights.as_value());
+
             maybe_dropout_weights(recorder, is_skip, weights, TensorShape{
                 batch_size,
                 ..shape
@@ -1257,6 +1263,7 @@ where
         {
             let weights = self.recorder.set_new_tensor_gradientable(initialize_orthogonal(current, previous));
 
+            self.recorder.host_settable(weights.as_value());
             self.recorder.name_diff_tensor(weights, name);
 
             maybe_dropout_weights(&mut self.recorder, is_skip, weights, TensorShape{
@@ -1531,13 +1538,17 @@ where
 
             move |recorder: &mut OperationsRecorder| -> InputTypePtr
             {
-                if is_input_one_hot
+                let input = if is_input_one_hot
                 {
                     InputTypePtr::OneHot(recorder.new_one_hot(one_hot_count, input_size, batch_size))
                 } else
                 {
                     InputTypePtr::Normal(recorder.new_tensor_no_gradient(TensorShape{rows: input_size, columns: 1, batch_size}).as_value())
-                }
+                };
+
+                recorder.host_settable(input);
+
+                input
             }
         };
 
@@ -1558,6 +1569,7 @@ where
         {
             let this_target_first = self.recorder.new_one_hot(1, self.sizes.final_output, batch_size);
 
+            self.recorder.host_settable(this_target_first);
             self.recorder.name_one_hot(this_target_first, "target_first");
 
             self.inputs.initial_target = this_target_first.into();
@@ -1589,7 +1601,14 @@ where
         {
             let this_input_loop = create_input(&mut self.recorder);
 
-            let this_target_loop = has_target.then(|| self.recorder.new_one_hot(1, self.sizes.final_output, batch_size));
+            let this_target_loop = has_target.then(||
+            {
+                let target = self.recorder.new_one_hot(1, self.sizes.final_output, batch_size);
+
+                self.recorder.host_settable(target);
+
+                target
+            });
 
             let final_loss_selector = no_state_loss.map(|no_state_loss| self.recorder.phi_other_selector(no_state_loss));
 

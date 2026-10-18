@@ -105,6 +105,7 @@ impl RawArray
     pub fn from_slice<T: bytemuck::Pod>(
         memory: &RawArrayMemory,
         label: Option<&str>,
+        usage: wgpu::BufferUsages,
         values: &[T],
         shape: TensorShape
     ) -> Self
@@ -114,7 +115,7 @@ impl RawArray
         let buffer = memory.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
             label,
             contents: bytemuck::cast_slice(&values),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST
+            usage
         });
 
         Self{
@@ -126,13 +127,14 @@ impl RawArray
     pub fn uninit<T>(
         memory: &RawArrayMemory,
         label: Option<&str>,
+        usage: wgpu::BufferUsages,
         size: usize
     ) -> Self
     {
         let buffer = memory.device.create_buffer(&wgpu::BufferDescriptor{
             label,
             size: size as u64 * mem::size_of::<T>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage,
             mapped_at_creation: false
         });
 
