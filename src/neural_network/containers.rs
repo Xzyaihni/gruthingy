@@ -1653,10 +1653,12 @@ impl RawArrayMemory
 
             let shader_source = wgpu::ShaderSource::Wgsl(shader_preprocessor::process_includes(parent_dir, shader_code_text).into());
 
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
-                label: wgpu::Label::Some(shader_path),
-                source: shader_source
-            });
+            let shader = unsafe{
+                device.create_shader_module_trusted(wgpu::ShaderModuleDescriptor{
+                    label: wgpu::Label::Some(shader_path),
+                    source: shader_source
+                }, if cfg!(debug_assertions) { wgpu::ShaderRuntimeChecks::checked() } else { wgpu::ShaderRuntimeChecks::unchecked() })
+            };
 
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
                 label: Some(kernel.name()),
