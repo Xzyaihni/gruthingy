@@ -1082,7 +1082,8 @@ impl Default for NetworkOutputsData
 enum NetworkMode
 {
     Predict,
-    Train
+    Train,
+    Test
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1330,6 +1331,18 @@ where
         }
     }
 
+    pub fn set_test_mode(&mut self)
+    {
+        if self.network_mode == Some(NetworkMode::Test)
+        {
+            return;
+        }
+
+        assert!(self.network_mode.is_none());
+
+        self.network_mode = Some(NetworkMode::Test);
+    }
+
     pub fn set_train_mode(&mut self)
     {
         if self.network_mode == Some(NetworkMode::Train)
@@ -1489,7 +1502,7 @@ where
             weights_ptr.embeddings.as_ref().map(|embeddings| embeddings.map_ref(|x| store_tensor(x)));
         }
 
-        if self.network_mode == Some(NetworkMode::Train)
+        if self.network_mode == Some(NetworkMode::Train) || self.network_mode == Some(NetworkMode::Test)
         {
             self.recorder.store_tensor_as_output(self.outputs.loss_ptr.expect("must be initialized").as_value());
         }
@@ -1563,7 +1576,7 @@ where
 
         self.inputs.input_ptr = Some(this_input_first);
 
-        let has_target = self.network_mode == Some(NetworkMode::Train);
+        let has_target = self.network_mode == Some(NetworkMode::Train) || self.network_mode == Some(NetworkMode::Test);
 
         let this_target_first = if has_target
         {
@@ -1889,7 +1902,7 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
-        assert_eq!(self.network_mode, Some(NetworkMode::Train));
+        assert!(self.network_mode == Some(NetworkMode::Train) || self.network_mode == Some(NetworkMode::Test));
 
         let inputs_count = input.len();
         let mut inputs = input.flat_map(|(input, target)|

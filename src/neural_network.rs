@@ -1244,7 +1244,7 @@ where
             accuracy
         } else
         {
-            self.network.set_train_mode();
+            self.network.set_test_mode();
 
             let total_loss = self.network.feedforward_no_gradient(OneHotEmbeddings::one_hot_count(), inputs_in_flight, input_outputs);
             let loss = total_loss / inputs.len() as f32;
