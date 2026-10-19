@@ -616,7 +616,7 @@ impl Config
         let mut output = None;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
-        let mut inputs_in_flight = 5;
+        let mut inputs_in_flight = 1000;
         let mut validation_attempts = 10;
         let mut bpe_limit = None;
         let mut input_dropout_probability = 0.2;
