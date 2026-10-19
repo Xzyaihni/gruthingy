@@ -28,3 +28,6 @@ debug = true
 [features]
 renderdocapi = []
 timedebug = []
+nocoloring = []
+dumpmemory = []
+printcalculations = []
