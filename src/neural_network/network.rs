@@ -2153,7 +2153,7 @@ where
         let batch_size = self.sizes.batch_size;
         let input = input.map(move |(a, b)| (a.batch_replicate(batch_size), b.batch_replicate(batch_size)));
 
-        self.feedforward_with(OperationsRecorder::calculate_feedforward, input)
+        self.feedforward_with(|recorder| recorder.calculate_feedforward(Some(1)), input)
     }
 
     fn predict(
