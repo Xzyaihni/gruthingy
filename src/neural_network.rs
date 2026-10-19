@@ -1206,6 +1206,7 @@ where
     pub fn test_loss<R>(
         &mut self,
         reader: R,
+        inputs_in_flight: Option<usize>,
         calculate_accuracy: bool
     ) -> f32
     where
@@ -1216,12 +1217,13 @@ where
     {
         let inputs = self.vectorized(reader);
 
-        self.test_loss_inner(&inputs, calculate_accuracy)
+        self.test_loss_inner(&inputs, inputs_in_flight, calculate_accuracy)
     }
 
     fn test_loss_inner(
         &mut self,
         inputs: &[VectorWord],
+        inputs_in_flight: Option<usize>,
         calculate_accuracy: bool
     ) -> f32
     where
@@ -1244,7 +1246,7 @@ where
         {
             self.network.set_train_mode();
 
-            let total_loss = self.network.feedforward_no_gradient(OneHotEmbeddings::one_hot_count(), input_outputs);
+            let total_loss = self.network.feedforward_no_gradient(OneHotEmbeddings::one_hot_count(), inputs_in_flight, input_outputs);
             let loss = total_loss / inputs.len() as f32;
 
             Self::print_loss("testing".to_owned(), loss);

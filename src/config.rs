@@ -578,6 +578,7 @@ pub struct Config
     pub output: Option<String>,
     pub tokens_amount: usize,
     pub temperature: f32,
+    pub inputs_in_flight: Option<usize>,
     pub validation_attempts: usize,
     pub bpe_limit: Option<usize>,
     pub input_dropout_probability: f32,
@@ -615,6 +616,7 @@ impl Config
         let mut output = None;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
+        let mut inputs_in_flight = 5;
         let mut validation_attempts = 10;
         let mut bpe_limit = None;
         let mut input_dropout_probability = 0.2;
@@ -649,6 +651,7 @@ impl Config
         parser.push(&mut test_path, None, "test-path", "path to validation file");
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
+        parser.push(&mut inputs_in_flight, None, "in-flight", "inputs in flight for inference, more is faster but uses more memory, 0 for unlimited");
         parser.push(&mut validation_attempts, None, "validation-attempts", "n of increasing validation loss in test_until_best until stop");
         parser.push(&mut bpe_limit, None, "bpe-limit", "maximum amount of ngrams in a bpe, dynamic by default");
         parser.push(&mut input_dropout_probability, None, "input-dropout", "input dropout probability");
@@ -678,6 +681,8 @@ impl Config
 
         let gradient_clip = (gradient_clip != 0.0).then_some(gradient_clip);
 
+        let inputs_in_flight = (inputs_in_flight != 0).then_some(inputs_in_flight);
+
         Self{
             iterations,
             batch_size,
@@ -696,6 +701,7 @@ impl Config
             output,
             tokens_amount,
             temperature,
+            inputs_in_flight,
             validation_attempts,
             bpe_limit,
             input_dropout_probability,

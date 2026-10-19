@@ -1885,7 +1885,7 @@ where
 
     fn feedforward_with(
         &mut self,
-        calculate_function: fn(&mut OperationsRecorder),
+        calculate_function: impl Fn(&mut OperationsRecorder),
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     {
@@ -2140,6 +2140,7 @@ where
     pub fn feedforward_no_gradient(
         &mut self,
         one_hot_count: usize,
+        inputs_in_flight: Option<usize>,
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
@@ -2153,7 +2154,7 @@ where
         let batch_size = self.sizes.batch_size;
         let input = input.map(move |(a, b)| (a.batch_replicate(batch_size), b.batch_replicate(batch_size)));
 
-        self.feedforward_with(|recorder| recorder.calculate_feedforward(Some(1)), input)
+        self.feedforward_with(|recorder| recorder.calculate_feedforward(inputs_in_flight), input)
     }
 
     fn predict(
