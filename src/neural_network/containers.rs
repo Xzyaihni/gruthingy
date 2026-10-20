@@ -1446,7 +1446,10 @@ impl RawArrayMemory
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap_or_else(|err| panic!("no compatible adapter found: {err}"));
 
-        eprintln!("using adapter: {}", adapter.get_info().name);
+        if !cfg!(test)
+        {
+            eprintln!("using adapter: {}", adapter.get_info().name);
+        }
 
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
         {
@@ -11277,5 +11280,83 @@ mod tests
 
             final_combined_state
         })
+    }
+
+    fn run_single_operation(
+        a: LayerType,
+        b: LayerType,
+        f: impl FnOnce(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
+    ) -> LayerType
+    {
+        let mut recorder = OperationsRecorder::new();
+
+        let a = recorder.set_new_tensor(a);
+        let b = recorder.set_new_tensor(b);
+
+        recorder.allow_discard(a.as_value());
+        recorder.allow_discard(b.as_value());
+
+        let output = f(&mut recorder, a, b);
+        let output_value = output.as_value();
+
+        recorder.store_tensor_as_output(output_value);
+
+        recorder.finish();
+        recorder.no_gradient();
+
+        recorder.resolve_memory(false);
+
+        let output_value = recorder.resolve_tensor_ptr(output_value);
+
+        recorder.calculate();
+
+        recorder.get_tensor_blocking(output_value)
+    }
+
+    fn big_random_value() -> f32
+    {
+        (fastrand::f32() - 0.5) * 10.0
+    }
+
+    #[test]
+    fn matmulv_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let columns = fastrand::usize(1..i);
+            let batch_size = fastrand::usize(1..i);
+
+            let a_shape = TensorShape{rows, columns, batch_size};
+            let b_shape = TensorShape{rows: columns, columns: 1, batch_size};
+            let output_shape = TensorShape{rows, columns: 1, batch_size};
+
+            let a = LayerType::new_with_full(a_shape, big_random_value);
+            let b = LayerType::new_with_full(b_shape, big_random_value);
+
+            let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
+            cpu_output.as_mut().as_vector_mut().matmulv_into(a.as_ref(), b.as_ref().as_vector_ref());
+
+            let gpu_output = run_single_operation(a, b, |recorder, a, b| recorder.matmulv(a, b));
+
+            let mut difference = (0.0, 0.0);
+            let is_equal = cpu_output.iter().zip(gpu_output.iter()).all(|(a, b)|
+            {
+                let is_equal = if (*a - *b).abs() < (0.000001 * i as f32) { true } else { close_enough(*a, *b, 0.001) };
+
+                if !is_equal { difference = (*a, *b) }
+
+                is_equal
+            });
+
+            let status = if is_equal { "correct" } else { "wrong" };
+
+            eprintln!("rows: {rows}, columns: {columns}, batch_size: {batch_size} = {status}");
+
+            if !is_equal
+            {
+                panic!("different:\n{difference:?}\n{cpu_output:?}\ndoes not equal\n{gpu_output:?}");
+            }
+        }
     }
 }

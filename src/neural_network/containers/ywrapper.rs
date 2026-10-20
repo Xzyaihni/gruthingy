@@ -91,6 +91,11 @@ impl YWrapper
         Self::from_boxed(iter::repeat_with(f).take(rows * columns).collect(), rows, columns)
     }
 
+    pub fn new_with_full(shape: TensorShape, f: impl Fn() -> f32) -> Self
+    {
+        Self::from_raw(iter::repeat_with(f).take(shape.size()).collect(), shape)
+    }
+
     pub fn from_boxed(values: Box<[f32]>, rows: usize, columns: usize) -> Self
     {
         Self::from_raw(values, TensorShape{rows, columns, batch_size: 1})

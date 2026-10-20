@@ -26,6 +26,9 @@ for (var span_id = 0u; span_id < inside_spans; span_id++)
         let rhs_offset = batch_index * lhs_columns;
 
         workgroup_chunk[local_invocation_index] = lhs[lhs_offset + spanned_column * column_stride] * rhs[rhs_offset + spanned_column];
+    } else
+    {
+        workgroup_chunk[local_invocation_index] = 0.0;
     }
 
     workgroupBarrier();
@@ -40,5 +43,13 @@ for (var span_id = 0u; span_id < inside_spans; span_id++)
         workgroupBarrier();
     }
 
-    output[workgroup_id.x] = map_output(workgroup_id.x, workgroup_chunk[0]);
+    if local_invocation_index == 0
+    {
+        total += workgroup_chunk[0];
+    }
+}
+
+if local_invocation_index == 0
+{
+    output[workgroup_id.x] = map_output(workgroup_id.x, total);
 }

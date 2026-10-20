@@ -10,6 +10,7 @@ var<storage, read_write> output: array<f32>;
 const WORKGROUP_SIZE = 64;
 
 var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
+var<private> total: f32;
 
 #include "div_ceil.wgsl"
 
