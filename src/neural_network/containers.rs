@@ -137,7 +137,10 @@ impl Softmaxer
     #[allow(dead_code)]
     pub fn softmax_temperature(mut layer: LayerTypeMut, temperature: f32)
     {
-        layer.mul_scalar_inplace(temperature.recip());
+        if temperature != 1.0
+        {
+            layer.mul_scalar_inplace(temperature.recip());
+        }
 
         Self::softmax(layer)
     }

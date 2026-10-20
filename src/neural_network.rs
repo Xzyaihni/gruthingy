@@ -45,7 +45,18 @@ pub use network_unit::{
     OptimizerUnit
 };
 
-pub use network::{PrecomputedRng, Network, SaveNetwork, UnitState, SaveWeightType, LayerSizes, WeightsNamed, NetworkConfigInfo};
+pub use network::{
+    AccuracyCertaintyInfo,
+    PrecomputedRng,
+    Network,
+    SaveNetwork,
+    UnitState,
+    SaveWeightType,
+    LayerSizes,
+    WeightsNamed,
+    NetworkConfigInfo
+};
+
 pub use containers::{
     PhiOtherSelectorRecordingIndex,
     OperationsRecorder,
@@ -885,7 +896,7 @@ where
     }
 }
 
-impl<N, O> FromGuesses<N, O> for f32
+impl<N, O> FromGuesses<N, O> for AccuracyCertaintyInfo
 where
     N: UnitFactory,
     O: Optimizer,
@@ -1193,7 +1204,7 @@ where
         self.with_guesses(reader)
     }
 
-    pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, f32, Box<[u8]>)>
+    pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, AccuracyCertaintyInfo, Box<[u8]>)>
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,

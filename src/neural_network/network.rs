@@ -3,8 +3,7 @@ use std::{
     vec,
     iter,
     fmt::{self, Debug},
-    cmp::Ordering,
-    borrow::Borrow
+    cmp::Ordering
 };
 
 use serde::{Serialize, Deserialize};
@@ -47,6 +46,15 @@ use crate::{
 #[allow(unused_imports)]
 use super::close_enough;
 
+
+#[derive(Serialize)]
+pub struct AccuracyCertaintyInfo
+{
+    pub correct_probability: f32,
+    pub wrong_probability: f32,
+    pub correct_certainty: f32,
+    pub wrong_certainty: f32
+}
 
 pub trait DropoutRoll: Debug
 {
@@ -2045,10 +2053,9 @@ where
 
             let target_index = target_index as usize;
 
-            let predicted = predicted.borrow();
             let highest_index = predicted.highest_index();
 
-            (highest_index, f(predicted, highest_index, target_index))
+            (highest_index, f(&predicted, highest_index, target_index))
         })
     }
 
@@ -2078,14 +2085,53 @@ where
     pub fn certainty_guesses(
         &mut self,
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, f32)>
+    ) -> impl Iterator<Item=(usize, AccuracyCertaintyInfo)>
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.with_predict(input, |predicted, _highest_index, target_index|
+        debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
+
+        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
+
+        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
+
+        self.predict_temperature_inner(1.0, input.into_iter(), |output| outputs.push(output.clone()));
+
+        outputs.into_iter().zip(output).map(move |(predicted_batch, target)|
         {
-            *predicted.iter().nth(target_index).unwrap()
+            assert_eq!(target.batch_size, 1);
+            assert_eq!(target.positions.len(), 1);
+
+            let target_index = target.positions[0];
+
+            assert_ne!(target_index, u32::MAX);
+
+            let target_index = target_index as usize;
+
+            let predicted = predicted_batch.as_ref().average_tensor();
+            let highest_index = predicted.highest_index();
+
+            let batch_size = predicted_batch.shape().batch_size;
+
+            let mut predict_times = vec![0; predicted.shape().size()];
+            (0..batch_size).for_each(|batch_index|
+            {
+                let this_highest = predicted_batch.as_ref().batch_slice_ref(batch_index).highest_index();
+                predict_times[this_highest] += 1;
+            });
+
+            let correct_certainty = predict_times[target_index] as f32 / batch_size as f32;
+            let wrong_certainty = predict_times[highest_index] as f32 / batch_size as f32;
+
+            let info = AccuracyCertaintyInfo{
+                correct_probability: *predicted.iter().nth(target_index).unwrap(),
+                wrong_probability: *predicted.iter().nth(highest_index).unwrap(),
+                correct_certainty,
+                wrong_certainty
+            };
+
+            (highest_index, info)
         })
     }
 
@@ -2195,7 +2241,35 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
+        self.predict_temperature_inner(temperature, input, |output: &LayerType|
+        {
+            f_output(output.as_ref().average_tensor());
+        })
+    }
+
+    fn predict_temperature_inner(
+        &mut self,
+        temperature: f32,
+        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator,
+        mut f_output: impl FnMut(&LayerType)
+    )
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    {
         assert!(self.network_mode == Some(NetworkMode::Predict));
+
+        let mut f_output = move |mut output: LayerType| -> LayerType
+        {
+            (0..output.shape().batch_size).for_each(|batch_index|
+            {
+                Softmaxer::softmax_temperature(output.as_mut().batch_slice_mut(batch_index), temperature)
+            });
+
+            f_output(&output);
+
+            output
+        };
 
         self.prepare(1, false);
 
@@ -2220,18 +2294,6 @@ where
             self.recorder.set_loop_times(steps_loop, inputs_count - 1);
         }
 
-        let mut consume_output = |mut output: LayerType| -> LayerType
-        {
-            (0..output.shape().batch_size).for_each(|batch_index|
-            {
-                Softmaxer::softmax_temperature(output.as_mut().batch_slice_mut(batch_index), temperature)
-            });
-
-            f_output(output.as_ref().average_tensor());
-
-            output
-        };
-
         {
             let first_output_value = self.outputs.first_output_value;
 
@@ -2248,13 +2310,13 @@ where
                     output_value
                 });
 
-                consume_output(output);
+                f_output(output);
 
                 input.next().expect("must be called the same amount of times as there are inputs")
             });
         }
 
-        consume_output(self.recorder.get_tensor_blocking(output_value));
+        f_output(self.recorder.get_tensor_blocking(output_value));
     }
 
     fn dropout_mask_setter<R: DropoutRoll>(

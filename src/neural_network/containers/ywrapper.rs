@@ -293,9 +293,7 @@ impl YWrapper
 
     pub fn highest_index(&self) -> usize
     {
-        debug_assert_eq!(self.shape.batch_size, 1);
-
-        Softmaxer::highest_index(self.iter())
+        self.as_ref().highest_index()
     }
 }
 
@@ -382,6 +380,13 @@ impl<'a> YWrapperRef<'a>
     pub fn max_value(&self) -> f32
     {
         self.values.iter().copied().max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal)).unwrap_or(0.0)
+    }
+
+    pub fn highest_index(&self) -> usize
+    {
+        debug_assert_eq!(self.shape.batch_size, 1);
+
+        Softmaxer::highest_index(self.values.iter())
     }
 
     pub fn tr_gemm(&self, other: YWrapperRef) -> YWrapper
