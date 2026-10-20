@@ -20,7 +20,10 @@ for (var o = 0u; o < one_hot_count; o++)
 
     if one_hot_index == 4294967295
     {
-        output[workgroup_id.x] = 0.0;
+        if o == 0
+        {
+            output[workgroup_id.x] = map_output(workgroup_id.x, 0.0);
+        }
     } else
     {
         output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row + one_hot_index * column_stride]);

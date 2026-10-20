@@ -909,6 +909,36 @@ impl<'a> YWrapperMut<'a>
         }
     }
 
+    pub fn outer_product_one_hot_into(mut self, lhs: YVectorWrapperRef, rhs: &OneHotLayer)
+    {
+        debug_assert_eq!(self.shape.rows, lhs.rows);
+        debug_assert_eq!(self.shape.columns, rhs.layer_size);
+
+        debug_assert_eq!(self.shape.batch_size, lhs.batch_size);
+        debug_assert_eq!(self.shape.batch_size, rhs.batch_size);
+
+        let rows = self.shape.rows;
+
+        self.values.fill(0.0);
+
+        for batch_index in 0..self.shape.batch_size
+        {
+            let output = self.batch_slice_mut(batch_index);
+            let lhs = lhs.batch_slice_ref(batch_index);
+
+            let count = rhs.count;
+            let start = batch_index * count;
+
+            rhs.positions[start..(start + count)].iter().filter(|x| **x != u32::MAX).for_each(|column|
+            {
+                (0..rows).for_each(|row|
+                {
+                    output.values[(*column as usize) * rows + row] = lhs.values[row];
+                })
+            });
+        }
+    }
+
     pub fn softmax_cross_entropy_into(self, mut values: YWrapperMut, targets: &OneHotLayer)
     {
         debug_assert_eq!(self.shape.rows, 1);

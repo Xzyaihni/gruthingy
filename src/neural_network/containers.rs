@@ -2484,6 +2484,20 @@ impl OperationsRecorder
         output
     }
 
+    pub fn outer_product_one_hot(&mut self, a: DiffTensorPtr, b: OneHotIndex) -> DiffTensorPtr
+    {
+        let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
+        let b_rows = self.get_one_hot_data(b).layer_size;
+
+        debug_assert_eq!(a_columns, 1);
+
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_rows, batch_size: a_batch_size});
+
+        self.add_recording_operation(Op::OuterProductOneHot{lhs: a, rhs: b, output});
+
+        output
+    }
+
     fn gradient_batch_size_of(&self, x: &DiffTensorPtr) -> Option<usize>
     {
         x.as_gradient().map(|gradient| self.tensor_shape(gradient).batch_size)
@@ -4759,6 +4773,10 @@ impl OperationsRecorder
                 Op::OuterProduct{lhs, rhs, output} =>
                 {
                     GradientOp::OuterProduct{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                },
+                Op::OuterProductOneHot{lhs, rhs, output} =>
+                {
+                    GradientOp::OuterProductOneHot{lhs: lhs.as_value(), rhs: *rhs, output: output.as_value()}
                 },
                 Op::SetOtherSelector(index) =>
                 {
@@ -8242,6 +8260,7 @@ impl OperationsRecorder
                 }
             },
             Op::OuterProduct{..} => unimplemented!(),
+            Op::OuterProductOneHot{..} => unimplemented!(),
             Op::SetOtherSelector(index) =>
             {
                 let gradient_index = self.phi_other_selectors_recording[index.0].gradient_index.expect("must be initialized");
@@ -9475,6 +9494,7 @@ pub enum Op
     MatmulOneHotv{lhs: DiffTensorPtr, rhs: OneHotIndex, output: DiffTensorPtr},
     MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr},
     OuterProduct{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
+    OuterProductOneHot{lhs: DiffTensorPtr, rhs: OneHotIndex, output: DiffTensorPtr},
     SetOtherSelector(PhiOtherSelectorRecordingIndex),
     GetOtherSelectorValue{index: PhiOtherSelectorRecordingIndex, output: DiffScalar},
     GetOtherSelectorTensor{index: PhiOtherSelectorRecordingIndex, output: DiffTensorPtr},
@@ -9512,6 +9532,7 @@ impl Op
             Self::MatmulOneHotv{output, ..} => f(output.into()),
             Self::MatmulOneHotvAdd{output, ..} => f(output.into()),
             Self::OuterProduct{output, ..} => f(output.into()),
+            Self::OuterProductOneHot{output, ..} => f(output.into()),
             Self::GetOtherSelectorValue{output, ..} => f(output.into()),
             Self::GetOtherSelectorTensor{output, ..} => f(output.into()),
             Self::SetOtherSelector(_) => (),
@@ -9548,6 +9569,7 @@ impl Op
             Self::MatmulOneHotv{lhs, ..} => f(lhs.into()),
             Self::MatmulOneHotvAdd{lhs, added, ..} => { f(lhs.into()); f(added.into()) },
             Self::OuterProduct{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
+            Self::OuterProductOneHot{lhs, ..} => f(lhs.into()),
             Self::GetOtherSelectorValue{..}
             | Self::GetOtherSelectorTensor{..}
             | Self::SetOtherSelector(_) => (),
@@ -11305,7 +11327,13 @@ mod tests
         (fastrand::f32() - 0.5) * 10.0
     }
 
-    fn compare_outputs(cpu_output: LayerType, gpu_output: LayerType, description: &str, i: usize)
+    fn compare_outputs(
+        cpu_output: LayerType,
+        gpu_output: LayerType,
+        description: &str,
+        i: usize,
+        on_unequal: impl FnOnce()
+    )
     {
         let mut difference = (0.0, 0.0);
         let is_equal = cpu_output.iter().zip(gpu_output.iter()).all(|(a, b)|
@@ -11323,6 +11351,7 @@ mod tests
 
         if !is_equal
         {
+            on_unequal();
             panic!("different:\n{difference:?}\n{cpu_output:?}\ndoes not equal\n{gpu_output:?}");
         }
     }
@@ -11346,7 +11375,7 @@ mod tests
             let gpu_output = run_single_operation([value], |recorder, [value]| recorder.sum_tensor(value));
 
             let description = format!("rows: {rows}, batch_size: {batch_size}");
-            compare_outputs(cpu_output, gpu_output, &description, i);
+            compare_outputs(cpu_output, gpu_output, &description, i, || {});
         }
     }
 
@@ -11369,7 +11398,7 @@ mod tests
             let gpu_output = run_single_operation([value], |recorder, [value]| recorder.max_tensor(value));
 
             let description = format!("rows: {rows}, batch_size: {batch_size}");
-            compare_outputs(cpu_output, gpu_output, &description, i);
+            compare_outputs(cpu_output, gpu_output, &description, i, || {});
         }
     }
 
@@ -11395,7 +11424,57 @@ mod tests
             let gpu_output = run_single_operation([a, b], |recorder, [a, b]| recorder.matmulv(a, b));
 
             let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
-            compare_outputs(cpu_output, gpu_output, &description, i);
+            compare_outputs(cpu_output, gpu_output, &description, i, || {});
+        }
+    }
+
+    #[test]
+    fn matmul_onehotv_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let columns = fastrand::usize(1..i);
+            let batch_size = fastrand::usize(1..i);
+
+            let a_shape = TensorShape{rows, columns, batch_size};
+            let output_shape = TensorShape{rows, columns: 1, batch_size};
+
+            let a = LayerType::new_with_full(a_shape, big_random_value);
+
+            let count = fastrand::usize(1..3);
+
+            let b_positions = iter::repeat_with(||
+            {
+                vec![if fastrand::bool() { u32::MAX as usize } else { fastrand::usize(0..columns) }].into_boxed_slice()
+            }).take(batch_size).collect();
+
+            let b = OneHotLayer::new(
+                b_positions,
+                count,
+                columns,
+                batch_size
+            );
+
+            let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
+            cpu_output
+                .as_mut()
+                .as_vector_mut()
+                .matmul_onehotv_add_into(a.as_ref(), &b, LayerType::repeat_full(output_shape, 0.0).as_ref().as_vector_ref());
+
+            let gpu_output = run_single_operation([a], |recorder, [a]|
+            {
+                let b_index = recorder.new_one_hot(count, columns, batch_size);
+                recorder.set_one_hot_data(b_index, b.clone());
+
+                recorder.matmul_onehotv(a, b_index)
+            });
+
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            compare_outputs(cpu_output, gpu_output, &description, i, ||
+            {
+                eprintln!("b: {b:?}");
+            });
         }
     }
 
@@ -11423,7 +11502,56 @@ mod tests
             let gpu_output = run_single_operation([a, b], |recorder, [a, b]| recorder.outer_product(a, b));
 
             let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
-            compare_outputs(cpu_output, gpu_output, &description, i);
+            compare_outputs(cpu_output, gpu_output, &description, i, || {});
+        }
+    }
+
+    #[test]
+    fn outer_product_onehot_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let columns = fastrand::usize(1..i);
+
+            let max_batches = ((65535 / (rows * columns)) as usize).min(i);
+            let batch_size = if max_batches == 1 { 1 } else { fastrand::usize(1..max_batches) };
+
+            let a_shape = TensorShape{rows, columns: 1, batch_size};
+            let output_shape = TensorShape{rows, columns, batch_size};
+
+            let a = LayerType::new_with_full(a_shape, big_random_value);
+
+            let count = fastrand::usize(1..3);
+
+            let b_positions = iter::repeat_with(||
+            {
+                vec![if fastrand::bool() { u32::MAX as usize } else { fastrand::usize(0..columns) }].into_boxed_slice()
+            }).take(batch_size).collect();
+
+            let b = OneHotLayer::new(
+                b_positions,
+                count,
+                columns,
+                batch_size
+            );
+
+            let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
+            cpu_output.as_mut().outer_product_one_hot_into(a.as_ref().as_vector_ref(), &b);
+
+            let gpu_output = run_single_operation([a], |recorder, [a]|
+            {
+                let b_index = recorder.new_one_hot(count, columns, batch_size);
+                recorder.set_one_hot_data(b_index, b.clone());
+
+                recorder.outer_product_one_hot(a, b_index)
+            });
+
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            compare_outputs(cpu_output, gpu_output, &description, i, ||
+            {
+                eprintln!("b: {b:?}");
+            });
         }
     }
 
@@ -11483,8 +11611,8 @@ mod tests
             let gpu_softmaxed = recorder.get_tensor_blocking(gpu_softmaxed);
             let gpu_entropies = recorder.get_tensor_blocking(gpu_entropies);
 
-            compare_outputs(cpu_softmaxed, gpu_softmaxed, &format!("softmaxed, rows: {rows}, batch_size: {batch_size}"), i);
-            compare_outputs(cpu_entropies, gpu_entropies, &format!("entropies, rows: {rows}, batch_size: {batch_size}"), i);
+            compare_outputs(cpu_softmaxed, gpu_softmaxed, &format!("softmaxed, rows: {rows}, batch_size: {batch_size}"), i, || {});
+            compare_outputs(cpu_entropies, gpu_entropies, &format!("entropies, rows: {rows}, batch_size: {batch_size}"), i, || {});
         }
     }
 }
