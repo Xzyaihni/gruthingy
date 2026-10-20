@@ -1,5 +1,5 @@
 @group(0) @binding(0)
-var<storage, read_write> lhs: array<f32>;
+var<storage, read> lhs: array<f32>;
 
 @group(0) @binding(1)
 var<storage, read> rhs: array<f32>;
@@ -8,6 +8,8 @@ var<storage, read> rhs: array<f32>;
 var<storage, read_write> output: array<f32>;
 
 const WORKGROUP_SIZE = 64;
+
+var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
 
 #include "div_ceil.wgsl"
 

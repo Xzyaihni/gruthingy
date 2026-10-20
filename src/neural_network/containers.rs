@@ -1418,7 +1418,6 @@ struct KernelLayouts
     r0_w2_i0: KernelLayout,
     r1_w1_i0: KernelLayout,
     r1_w1_i1: KernelLayout,
-    r1_w2_i0: KernelLayout,
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
     r2_w2_i0: KernelLayout
@@ -1454,6 +1453,7 @@ impl RawArrayMemory
             panic!("adapter doesnt support compute shaders");
         }
 
+        #[allow(unused_mut)]
         let mut required_features = wgpu::Features::IMMEDIATES;
 
         #[cfg(feature="timedebug")]
@@ -1554,20 +1554,6 @@ impl RawArrayMemory
                 from_bind_group_layout(bind_group_layout, name, 1)
             };
 
-            let r1_w2_i0 = {
-                let name = "r1_w2_i0";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        output_layout_entry(0),
-                        input_layout_entry(1),
-                        output_layout_entry(2)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, name, 0)
-            };
-
             let r2_w1_i0 = {
                 let name = "r2_w1_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1615,7 +1601,6 @@ impl RawArrayMemory
                 r0_w2_i0,
                 r1_w1_i0,
                 r1_w1_i1,
-                r1_w2_i0,
                 r2_w1_i0,
                 r2_w1_i1,
                 r2_w2_i0
@@ -1644,12 +1629,12 @@ impl RawArrayMemory
                 OpKernel::SigmoidDiff => ("kernels/sigmoid_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r1_w2_i0),
-                OpKernel::MatmulvAdd => ("kernels/matmulv_add.wgsl", &kernel_layouts.r1_w2_i0),
+                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvAdd => ("kernels/matmulv_add.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MatmulOneHotv => ("kernels/matmul_onehotv.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulOneHotvAdd => ("kernels/matmul_onehotv_add.wgsl", &kernel_layouts.r2_w1_i1),
-                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r1_w2_i0),
-                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r1_w2_i0),
+                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
@@ -4382,7 +4367,7 @@ impl OperationsRecorder
                         *lhs
                     );
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w2_i0, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
                         create_bind_group_entry(0, scratch_buffer),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
@@ -4432,7 +4417,7 @@ impl OperationsRecorder
                         *lhs
                     );
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w2_i0, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
                         create_bind_group_entry(0, scratch_buffer),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)

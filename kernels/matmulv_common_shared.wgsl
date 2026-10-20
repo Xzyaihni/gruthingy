@@ -15,43 +15,30 @@ let batch_index = workgroup_id.x / lhs_rows;
 
 let batch_start = batch_index * lhs_single_length;
 
+let inside_spans = div_ceil(lhs_columns, WORKGROUP_SIZE);
+for (var span_id = 0u; span_id < inside_spans; span_id++)
 {
-    let inside_spans = div_ceil(lhs_columns, WORKGROUP_SIZE);
-    for (var span_id = 0u; span_id < inside_spans; span_id++)
-    {
-        let column = span_id * WORKGROUP_SIZE + local_invocation_index;
+    let spanned_column = span_id * WORKGROUP_SIZE + local_invocation_index;
 
-        if column < lhs_columns
+    if spanned_column < lhs_columns
+    {
+        let lhs_offset = batch_start + row * row_stride;
+        let rhs_offset = batch_index * lhs_columns;
+
+        workgroup_chunk[local_invocation_index] = lhs[lhs_offset + spanned_column * column_stride] * rhs[rhs_offset + spanned_column];
+    }
+
+    workgroupBarrier();
+
+    for (var stride = (u32(WORKGROUP_SIZE) >> 1); stride > 0; stride >>= 1)
+    {
+        if local_invocation_index < stride
         {
-            lhs[batch_start + row * row_stride + column * column_stride] *= rhs[batch_index * lhs_columns + column];
+            workgroup_chunk[local_invocation_index] += workgroup_chunk[local_invocation_index + stride];
         }
 
-        storageBarrier();
+        workgroupBarrier();
     }
-}
 
-for (var half_stride = 1u; half_stride < lhs_columns; half_stride *= 2)
-{
-    let stride = half_stride * 2;
-
-    let strided_workgroup = WORKGROUP_SIZE * stride;
-
-    let inside_spans = div_ceil(lhs_columns, strided_workgroup);
-    for (var span_id = 0u; span_id < inside_spans; span_id++)
-    {
-        let column = span_id * strided_workgroup + stride * local_invocation_index;
-
-        if (column + half_stride) < lhs_columns
-        {
-            let start = batch_start + row * row_stride + column * column_stride;
-            lhs[start] += lhs[start + half_stride * column_stride];
-        }
-
-        storageBarrier();
-    }
-}
-
-if local_invocation_index == 0
-{
-    output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row * row_stride]);
+    output[workgroup_id.x] = map_output(workgroup_id.x, workgroup_chunk[0]);
 }
