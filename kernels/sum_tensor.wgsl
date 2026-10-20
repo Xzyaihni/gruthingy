@@ -1,10 +1,13 @@
 @group(0) @binding(0)
-var<storage, read_write> sum_values: array<f32>;
+var<storage, read> sum_values: array<f32>;
 
 @group(0) @binding(1)
 var<storage, read_write> dst: array<f32>;
 
 const WORKGROUP_SIZE = 64;
+
+var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
+var<private> total: f32;
 
 #include "div_ceil.wgsl"
 
@@ -22,27 +25,39 @@ fn run(
 
     let batch_start = batch_index * src_single_length;
 
-    for (var half_stride = 1u; half_stride < src_single_length; half_stride *= 2)
+    let inside_spans = div_ceil(src_single_length, WORKGROUP_SIZE);
+    for (var span_id = 0u; span_id < inside_spans; span_id++)
     {
-        let stride = half_stride * 2;
+        let spanned_column = span_id * WORKGROUP_SIZE + local_invocation_index;
 
-        let strided_workgroup = WORKGROUP_SIZE * stride;
-
-        let inside_spans = div_ceil(src_single_length, strided_workgroup);
-
-        for (var span_id = 0u; span_id < inside_spans; span_id++)
+        if spanned_column < src_single_length
         {
-            let i = span_id * strided_workgroup + stride * local_invocation_index;
+            workgroup_chunk[local_invocation_index] = sum_values[batch_start + spanned_column];
+        } else
+        {
+            workgroup_chunk[local_invocation_index] = 0.0;
+        }
 
-            if (i + half_stride) < src_single_length
+        workgroupBarrier();
+
+        for (var stride = (u32(WORKGROUP_SIZE) >> 1); stride > 0; stride >>= 1)
+        {
+            if local_invocation_index < stride
             {
-                let start = batch_start + i;
-                sum_values[start] += sum_values[start + half_stride];
+                workgroup_chunk[local_invocation_index] += workgroup_chunk[local_invocation_index + stride];
             }
 
-            storageBarrier();
+            workgroupBarrier();
+        }
+
+        if local_invocation_index == 0
+        {
+            total += workgroup_chunk[0];
         }
     }
 
-    dst[batch_index] = sum_values[batch_index * src_single_length];
+    if local_invocation_index == 0
+    {
+        dst[workgroup_id.x] = total;
+    }
 }

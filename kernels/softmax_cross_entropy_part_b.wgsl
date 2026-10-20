@@ -28,7 +28,8 @@ fn run(
 
     #include "softmax_common_b.wgsl"
 
-    let entropy = log(sum_values[batch_index]) - z[batch_index];
-
-    entropies[batch_index] = entropy;
+    if local_invocation_index == 0
+    {
+        entropies[batch_index] = log(sum_values[batch_index]) - z[batch_index];
+    }
 }

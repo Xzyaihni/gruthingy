@@ -1415,7 +1415,6 @@ struct KernelLayout
 
 struct KernelLayouts
 {
-    r0_w2_i0: KernelLayout,
     r1_w1_i0: KernelLayout,
     r1_w1_i1: KernelLayout,
     r2_w1_i0: KernelLayout,
@@ -1518,19 +1517,6 @@ impl RawArrayMemory
                 }
             };
 
-            let r0_w2_i0 = {
-                let name = "r0_w2_i0";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        output_layout_entry(0),
-                        output_layout_entry(1)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, name, 0)
-            };
-
             let r1_w1_i0 = {
                 let name = "r1_w1_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1601,7 +1587,6 @@ impl RawArrayMemory
             };
 
             KernelLayouts{
-                r0_w2_i0,
                 r1_w1_i0,
                 r1_w1_i1,
                 r2_w1_i0,
@@ -1621,7 +1606,7 @@ impl RawArrayMemory
                 OpKernel::MulComponentwise => ("kernels/mul_componentwise.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MulComponentwiseAdd => ("kernels/mul_componentwise_add.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.r1_w1_i1),
-                OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.r0_w2_i0),
+                OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1_i0),
@@ -1642,7 +1627,7 @@ impl RawArrayMemory
                 OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHotAdd => ("kernels/outer_product_one_hot_add.wgsl", &kernel_layouts.r2_w1_i1),
-                OpKernel::MaxTensor => ("kernels/max_tensor.wgsl", &kernel_layouts.r0_w2_i0),
+                OpKernel::MaxTensor => ("kernels/max_tensor.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SoftmaxPartA => ("kernels/softmax_part_a.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SoftmaxPartB => ("kernels/softmax_part_b.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SoftmaxCrossEntropyPartA => ("kernels/softmax_cross_entropy_part_a.wgsl", &kernel_layouts.r2_w2_i0),
@@ -2479,6 +2464,23 @@ impl OperationsRecorder
         output
     }
 
+    pub fn outer_product(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
+    {
+        let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
+        let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
+
+        debug_assert_eq!(a_columns, 1);
+        debug_assert_eq!(b_columns, 1);
+
+        debug_assert_eq!(a_batch_size, b_batch_size);
+
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_rows, batch_size: a_batch_size});
+
+        self.add_recording_operation(Op::OuterProduct{lhs: a, rhs: b, output});
+
+        output
+    }
+
     fn gradient_batch_size_of(&self, x: &DiffTensorPtr) -> Option<usize>
     {
         x.as_gradient().map(|gradient| self.tensor_shape(gradient).batch_size)
@@ -2491,6 +2493,17 @@ impl OperationsRecorder
         let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
 
         self.add_recording_operation(Op::SumTensor{value: a, output});
+
+        output
+    }
+
+    pub fn max_tensor(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
+    {
+        let batch_size = self.tensor_shape(a.as_value()).batch_size;
+
+        let output = self.new_tensor_op(TensorShape{rows: 1, columns: 1, batch_size});
+
+        self.add_recording_operation(Op::MaxTensor{value: a, output});
 
         output
     }
@@ -3838,20 +3851,30 @@ impl OperationsRecorder
                     debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
                     debug_assert!(output.shape.is_batched_scalar());
 
-                    let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        *value
-                    );
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r0_w2_i0, &[
-                        create_bind_group_entry(0, scratch_buffer),
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
                     ], "SumTensor", 0);
 
                     do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SumTensor, i, 0);
+
+                    exact_workgroup(&mut compute_pass, value.shape.batch_size);
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::MaxTensor{value, output} =>
+                {
+                    debug_calculate_values!(MaxTensor, (value),());
+
+                    debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
+                    debug_assert!(output.shape.is_batched_scalar());
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *value),
+                        bind_group_entry(1, *output)
+                    ], "MaxTensor", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MaxTensor, i, 0);
 
                     exact_workgroup(&mut compute_pass, value.shape.batch_size);
 
@@ -3903,7 +3926,7 @@ impl OperationsRecorder
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r0_w2_i0, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
                         create_bind_group_entry(0, scratch_buffer),
                         bind_group_entry(1, *output)
                     ], "DotSum", 1);
@@ -4085,24 +4108,18 @@ impl OperationsRecorder
 
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
 
-                    let max_scratch_buffer = scratch_buffers_iter(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i][..1],
-                        [*values]
-                    ).next().unwrap();
+                    try_end_compute_pass(&mut compute_pass);
 
                     let max_buffer = {
-                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][1];
+                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][0];
 
                         &self.raw_array_memory.scratch_buffers[index.0]
                     };
 
                     copy_tensor(wgpu_info!(), &self.memory, *values, *softmaxed_output);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r0_w2_i0, &[
-                        create_bind_group_entry(0, max_scratch_buffer),
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *values),
                         create_bind_group_entry(1, max_buffer)
                     ], "SoftmaxMax", 0);
 
@@ -4119,19 +4136,9 @@ impl OperationsRecorder
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
-                    try_end_compute_pass(&mut compute_pass);
-
-                    let sum_scratch_buffer = {
-                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][2];
-
-                        &self.raw_array_memory.scratch_buffers[index.0]
-                    };
-
-                    copy_equal_buffers(&mut encoder, get_buffer(&self.memory, *softmaxed_output), sum_scratch_buffer);
-
                     let sum_buffer = max_buffer;
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r0_w2_i0, &[
-                        create_bind_group_entry(0, sum_scratch_buffer),
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *softmaxed_output),
                         create_bind_group_entry(1, sum_buffer)
                     ], "SoftmaxSum", 2);
 
@@ -4176,13 +4183,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(targets.shape.rows, 1);
 
-                    let max_scratch_buffer = scratch_buffers_iter(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i][..1],
-                        [*values]
-                    ).next().unwrap();
+                    try_end_compute_pass(&mut compute_pass);
 
                     let softmaxed_output_buffer = match this_op
                     {
@@ -4192,7 +4193,7 @@ impl OperationsRecorder
                         },
                         GradientOp::SoftmaxCrossEntropyNoSoftmaxed{..} =>
                         {
-                            let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][3];
+                            let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][2];
 
                             &self.raw_array_memory.scratch_buffers[index.0]
                         },
@@ -4203,14 +4204,14 @@ impl OperationsRecorder
 
                     let (max_buffer, z_buffer) = {
                         let indices = &self.raw_array_memory.scratch_buffers_locations[i];
-                        let index_max: ScratchBufferIndex = indices[1];
-                        let index_z: ScratchBufferIndex = indices[2];
+                        let index_max: ScratchBufferIndex = indices[0];
+                        let index_z: ScratchBufferIndex = indices[1];
 
                         (&self.raw_array_memory.scratch_buffers[index_max.0], &self.raw_array_memory.scratch_buffers[index_z.0])
                     };
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r0_w2_i0, &[
-                        create_bind_group_entry(0, max_scratch_buffer),
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *values),
                         create_bind_group_entry(1, max_buffer)
                     ], "SoftmaxCrossEntropyMax", 0);
 
@@ -4229,26 +4230,9 @@ impl OperationsRecorder
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
-                    try_end_compute_pass(&mut compute_pass);
-
-                    let sum_scratch_buffer = {
-                        let index = match this_op
-                        {
-                            GradientOp::SoftmaxCrossEntropy{..} => 3,
-                            GradientOp::SoftmaxCrossEntropyNoSoftmaxed{..} => 4,
-                            _ => unreachable!()
-                        };
-
-                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][index];
-
-                        &self.raw_array_memory.scratch_buffers[index.0]
-                    };
-
-                    copy_equal_buffers(&mut encoder, softmaxed_output_buffer, sum_scratch_buffer);
-
                     let sum_buffer = max_buffer;
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r0_w2_i0, &[
-                        create_bind_group_entry(0, sum_scratch_buffer),
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        create_bind_group_entry(0, softmaxed_output_buffer),
                         create_bind_group_entry(1, sum_buffer)
                     ], "SoftmaxCrossEntropySum", 2);
 
@@ -4362,16 +4346,8 @@ impl OperationsRecorder
                     debug_assert_eq!(rhs.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
-                    let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        *lhs
-                    );
-
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
-                        create_bind_group_entry(0, scratch_buffer),
+                        bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
                     ], "Matmulv", 0);
@@ -4412,16 +4388,8 @@ impl OperationsRecorder
                     debug_assert_eq!(rhs.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
-                    let scratch_buffer = copy_scratch_buffer(
-                        wgpu_info!(),
-                        &self.memory.tensors_raw_data,
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations[i],
-                        *lhs
-                    );
-
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
-                        create_bind_group_entry(0, scratch_buffer),
+                        bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
                     ], "MatmulvTransposed", 0);
@@ -4736,6 +4704,10 @@ impl OperationsRecorder
                 {
                     GradientOp::SumTensor{value: value.as_value(), output: output.as_value()}
                 },
+                Op::MaxTensor{value, output} =>
+                {
+                    GradientOp::MaxTensor{value: value.as_value(), output: output.as_value()}
+                },
                 Op::Dot{lhs, rhs, output} =>
                 {
                     GradientOp::Dot{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
@@ -4780,6 +4752,10 @@ impl OperationsRecorder
                 Op::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
                     GradientOp::MatmulOneHotvAdd{lhs: lhs.as_value(), rhs: *rhs, added: added.as_value(), output: output.as_value()}
+                },
+                Op::OuterProduct{lhs, rhs, output} =>
+                {
+                    GradientOp::OuterProduct{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
                 },
                 Op::SetOtherSelector(index) =>
                 {
@@ -6058,7 +6034,8 @@ impl OperationsRecorder
                 GradientOp::MulScalar{lhs, rhs: _, output} => t_storage!(lhs, output),
                 GradientOp::MulComponentwise{lhs, rhs, output}
                 | GradientOp::MulComponentwiseAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
-                GradientOp::SumTensor{value, output} => { t_storage!(output); t_src!(value) },
+                GradientOp::SumTensor{value, output} => t_storage!(value, output),
+                GradientOp::MaxTensor{value, output} => t_storage!(value, output),
                 GradientOp::SumBatch{value, output} => t_storage!(value, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
@@ -6072,26 +6049,26 @@ impl OperationsRecorder
                 GradientOp::Dot{lhs, rhs, output} => t_storage!(lhs, rhs, output),
                 GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
-                    t_src!(values, softmaxed_output); t_dst!(softmaxed_output); t_storage!(softmaxed_output, output); o_storage!(targets)
+                    t_src!(values); t_dst!(softmaxed_output); t_storage!(values, softmaxed_output, output); o_storage!(targets)
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
                 {
-                    t_src!(values); t_storage!(output); o_storage!(targets)
+                    t_src!(values); t_storage!(values, output); o_storage!(targets)
                 },
                 GradientOp::Softmax{values, softmaxed_output} =>
                 {
-                    t_src!(values, softmaxed_output); t_dst!(softmaxed_output); t_storage!(softmaxed_output)
+                    t_src!(values); t_dst!(softmaxed_output); t_storage!(values, softmaxed_output)
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
                     t_src!(softmaxed_values); t_dst!(output); t_storage!(softmaxed_values, gradient, output); o_storage!(targets)
                 },
                 GradientOp::Matmulv{lhs, rhs, output}
-                | GradientOp::MatmulvAdd{lhs, rhs, added: _, output} => { t_src!(lhs); t_storage!(rhs, output) },
+                | GradientOp::MatmulvAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::MatmulOneHotv{lhs, rhs, output}
                 | GradientOp::MatmulOneHotvAdd{lhs, rhs, added: _, output} => { t_storage!(lhs, output); o_storage!(rhs) },
                 GradientOp::MatmulvTransposed{lhs, rhs, output}
-                | GradientOp::MatmulvTransposedAdd{lhs, rhs, added: _, output} => { t_src!(lhs); t_storage!(rhs, output) },
+                | GradientOp::MatmulvTransposedAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::OuterProduct{lhs, rhs, output}
                 | GradientOp::OuterProductAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::OuterProductOneHot{lhs, rhs, output}
@@ -6336,30 +6313,25 @@ impl OperationsRecorder
 
             if let Some(sizes) = match gradient_op
             {
-                GradientOp::SumTensor{value, ..}
-                | GradientOp::Dot{lhs: value, ..}
-                | GradientOp::Matmulv{lhs: value, ..}
-                | GradientOp::MatmulvAdd{lhs: value, ..}
-                | GradientOp::MatmulvTransposed{lhs: value, ..}
-                | GradientOp::MatmulvTransposedAdd{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
+                GradientOp::Dot{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
                 GradientOp::Softmax{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
 
-                    Some(vec![shape.size().into(), shape.batch_size.into(), shape.size().into()])
+                    Some(vec![shape.batch_size.into()])
                 },
                 GradientOp::SoftmaxCrossEntropy{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
 
-                    Some(vec![shape.size().into(), shape.batch_size.into(), shape.batch_size.into(), shape.size().into()])
+                    Some(vec![shape.batch_size.into(), shape.batch_size.into()])
                 },
                 GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
 
                     let softmaxed_values = ScratchInfo{is_copy_src: true, size: shape.size()};
-                    Some(vec![shape.size().into(), shape.batch_size.into(), shape.batch_size.into(), softmaxed_values, shape.size().into()])
+                    Some(vec![shape.batch_size.into(), shape.batch_size.into(), softmaxed_values])
                 },
                 _ => None
             }
@@ -8117,6 +8089,7 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::Fill{value: gradient, output: value_gradient});
                 }
             },
+            Op::MaxTensor{..} => unimplemented!(),
             Op::Dot{lhs, rhs, output} =>
             {
                 let gradient = gradient_or_return!(output);
@@ -8265,6 +8238,7 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: added_gradient});
                 }
             },
+            Op::OuterProduct{..} => unimplemented!(),
             Op::SetOtherSelector(index) =>
             {
                 let gradient_index = self.phi_other_selectors_recording[index.0].gradient_index.expect("must be initialized");
@@ -8982,6 +8956,7 @@ pub enum GradientOp<T, V, J, O, S>
     MulComponentwise{lhs: T, rhs: T, output: T},
     MulComponentwiseAdd{lhs: T, rhs: T, added: T, output: T},
     SumTensor{value: T, output: T},
+    MaxTensor{value: T, output: T},
     SumBatch{value: T, output: T},
     Fill{value: T, output: T},
     BatchReplicate{value: T, output: T},
@@ -9085,6 +9060,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
                 GradientOp::MulComponentwiseAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
             Self::SumTensor{value, output} => GradientOp::SumTensor{value: tf(value), output: tf(output)},
+            Self::MaxTensor{value, output} => GradientOp::MaxTensor{value: tf(value), output: tf(output)},
             Self::SumBatch{value, output} => GradientOp::SumBatch{value: tf(value), output: tf(output)},
             Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
             Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
@@ -9282,6 +9258,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(&mut state, output), lhs, rhs},
             Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(&mut state, output), lhs, rhs},
             Self::SumTensor{output, value} => Self::SumTensor{output: tf(&mut state, output), value},
+            Self::MaxTensor{output, value} => Self::MaxTensor{output: tf(&mut state, output), value},
             Self::SumBatch{output, value} => Self::SumBatch{output: tf(&mut state, output), value},
             Self::Dot{output, lhs, rhs} => Self::Dot{output: tf(&mut state, output), lhs, rhs},
             Self::SoftmaxCrossEntropy{softmaxed_output, output, targets, values} =>
@@ -9360,6 +9337,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
                 Self::MulComponentwiseAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::SumTensor{value, output} => Self::SumTensor{value: tf(&mut state, value), output},
+            Self::MaxTensor{value, output} => Self::MaxTensor{value: tf(&mut state, value), output},
             Self::SumBatch{value, output} => Self::SumBatch{value: tf(&mut state, value), output},
             Self::Pow{lhs, power, output} => Self::Pow{lhs: tf(&mut state, lhs), power, output},
             Self::LeakyRelu{value, output} => Self::LeakyRelu{value: tf(&mut state, value), output},
@@ -9482,6 +9460,7 @@ pub enum Op
     MulScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     MulComponentwise{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     SumTensor{value: DiffTensorPtr, output: DiffTensorPtr},
+    MaxTensor{value: DiffTensorPtr, output: DiffTensorPtr},
     Pow{lhs: DiffTensorPtr, power: i32, output: DiffTensorPtr},
     LeakyRelu{value: DiffTensorPtr, output: DiffTensorPtr},
     Sigmoid{value: DiffTensorPtr, output: DiffTensorPtr},
@@ -9492,6 +9471,7 @@ pub enum Op
     MatmulvAdd{lhs: DiffTensorPtr, rhs: DiffTensorPtr, added: DiffTensorPtr, output: DiffTensorPtr},
     MatmulOneHotv{lhs: DiffTensorPtr, rhs: OneHotIndex, output: DiffTensorPtr},
     MatmulOneHotvAdd{lhs: DiffTensorPtr, rhs: OneHotIndex, added: DiffTensorPtr, output: DiffTensorPtr},
+    OuterProduct{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     SetOtherSelector(PhiOtherSelectorRecordingIndex),
     GetOtherSelectorValue{index: PhiOtherSelectorRecordingIndex, output: DiffScalar},
     GetOtherSelectorTensor{index: PhiOtherSelectorRecordingIndex, output: DiffTensorPtr},
@@ -9517,6 +9497,7 @@ impl Op
             Self::MulScalars{output, ..} => f(output.into()),
             Self::MulComponentwise{output, ..} => f(output.into()),
             Self::SumTensor{output, ..} => f(output.into()),
+            Self::MaxTensor{output, ..} => f(output.into()),
             Self::Pow{output, ..} => f(output.into()),
             Self::LeakyRelu{output, ..} => f(output.into()),
             Self::Sigmoid{output, ..} => f(output.into()),
@@ -9527,6 +9508,7 @@ impl Op
             Self::MatmulvAdd{output, ..} => f(output.into()),
             Self::MatmulOneHotv{output, ..} => f(output.into()),
             Self::MatmulOneHotvAdd{output, ..} => f(output.into()),
+            Self::OuterProduct{output, ..} => f(output.into()),
             Self::GetOtherSelectorValue{output, ..} => f(output.into()),
             Self::GetOtherSelectorTensor{output, ..} => f(output.into()),
             Self::SetOtherSelector(_) => (),
@@ -9551,6 +9533,7 @@ impl Op
             Self::MulScalars{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::MulComponentwise{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::SumTensor{value, ..} => { f(value.into()) },
+            Self::MaxTensor{value, ..} => { f(value.into()) },
             Self::Pow{lhs, ..} => { f(lhs.into()) },
             Self::LeakyRelu{value, ..} => { f(value.into()) },
             Self::Sigmoid{value, ..} => { f(value.into()) },
@@ -9561,6 +9544,7 @@ impl Op
             Self::MatmulvAdd{lhs, rhs, added, ..} => { f(lhs.into()); f(rhs.into()); f(added.into()) },
             Self::MatmulOneHotv{lhs, ..} => f(lhs.into()),
             Self::MatmulOneHotvAdd{lhs, added, ..} => { f(lhs.into()); f(added.into()) },
+            Self::OuterProduct{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::GetOtherSelectorValue{..}
             | Self::GetOtherSelectorTensor{..}
             | Self::SetOtherSelector(_) => (),
@@ -11282,21 +11266,21 @@ mod tests
         })
     }
 
-    fn run_single_operation(
-        a: LayerType,
-        b: LayerType,
-        f: impl FnOnce(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
+    fn run_single_operation<const N: usize>(
+        values: [LayerType; N],
+        f: impl FnOnce(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     ) -> LayerType
     {
         let mut recorder = OperationsRecorder::new();
 
-        let a = recorder.set_new_tensor(a);
-        let b = recorder.set_new_tensor(b);
+        let values = values.map(|x| recorder.set_new_tensor(x));
 
-        recorder.allow_discard(a.as_value());
-        recorder.allow_discard(b.as_value());
+        values.iter().for_each(|x|
+        {
+            recorder.allow_discard(x.as_value());
+        });
 
-        let output = f(&mut recorder, a, b);
+        let output = f(&mut recorder, values);
         let output_value = output.as_value();
 
         recorder.store_tensor_as_output(output_value);
@@ -11318,6 +11302,74 @@ mod tests
         (fastrand::f32() - 0.5) * 10.0
     }
 
+    fn compare_outputs(cpu_output: LayerType, gpu_output: LayerType, description: &str, i: usize)
+    {
+        let mut difference = (0.0, 0.0);
+        let is_equal = cpu_output.iter().zip(gpu_output.iter()).all(|(a, b)|
+        {
+            let is_equal = if (*a - *b).abs() < (0.000001 * i as f32) { true } else { close_enough(*a, *b, 0.001) };
+
+            if !is_equal { difference = (*a, *b) }
+
+            is_equal
+        });
+
+        let status = if is_equal { "correct" } else { "wrong" };
+
+        eprintln!("{description} = {status}");
+
+        if !is_equal
+        {
+            panic!("different:\n{difference:?}\n{cpu_output:?}\ndoes not equal\n{gpu_output:?}");
+        }
+    }
+
+    #[test]
+    fn sum_tensor_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let batch_size = fastrand::usize(1..i);
+
+            let value_shape = TensorShape{rows, columns: 1, batch_size};
+            let output_shape = TensorShape{rows: 1, columns: 1, batch_size};
+
+            let value = LayerType::new_with_full(value_shape, big_random_value);
+
+            let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
+            cpu_output.as_mut().sum_tensor_into(value.as_ref());
+
+            let gpu_output = run_single_operation([value], |recorder, [value]| recorder.sum_tensor(value));
+
+            let description = format!("rows: {rows}, batch_size: {batch_size}");
+            compare_outputs(cpu_output, gpu_output, &description, i);
+        }
+    }
+
+    #[test]
+    fn max_tensor_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let batch_size = fastrand::usize(1..i);
+
+            let value_shape = TensorShape{rows, columns: 1, batch_size};
+            let output_shape = TensorShape{rows: 1, columns: 1, batch_size};
+
+            let value = LayerType::new_with_full(value_shape, big_random_value);
+
+            let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
+            cpu_output.as_mut().max_tensor_into(value.as_ref());
+
+            let gpu_output = run_single_operation([value], |recorder, [value]| recorder.max_tensor(value));
+
+            let description = format!("rows: {rows}, batch_size: {batch_size}");
+            compare_outputs(cpu_output, gpu_output, &description, i);
+        }
+    }
+
     #[test]
     fn matmulv_equivalent()
     {
@@ -11337,26 +11389,99 @@ mod tests
             let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
             cpu_output.as_mut().as_vector_mut().matmulv_into(a.as_ref(), b.as_ref().as_vector_ref());
 
-            let gpu_output = run_single_operation(a, b, |recorder, a, b| recorder.matmulv(a, b));
+            let gpu_output = run_single_operation([a, b], |recorder, [a, b]| recorder.matmulv(a, b));
 
-            let mut difference = (0.0, 0.0);
-            let is_equal = cpu_output.iter().zip(gpu_output.iter()).all(|(a, b)|
-            {
-                let is_equal = if (*a - *b).abs() < (0.000001 * i as f32) { true } else { close_enough(*a, *b, 0.001) };
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            compare_outputs(cpu_output, gpu_output, &description, i);
+        }
+    }
 
-                if !is_equal { difference = (*a, *b) }
+    #[test]
+    fn outer_product_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let columns = fastrand::usize(1..i);
 
-                is_equal
-            });
+            let max_batches = ((65535 / (rows * columns)) as usize).min(i);
+            let batch_size = if max_batches == 1 { 1 } else { fastrand::usize(1..max_batches) };
 
-            let status = if is_equal { "correct" } else { "wrong" };
+            let a_shape = TensorShape{rows, columns: 1, batch_size};
+            let b_shape = TensorShape{rows: columns, columns: 1, batch_size};
+            let output_shape = TensorShape{rows, columns, batch_size};
 
-            eprintln!("rows: {rows}, columns: {columns}, batch_size: {batch_size} = {status}");
+            let a = LayerType::new_with_full(a_shape, big_random_value);
+            let b = LayerType::new_with_full(b_shape, big_random_value);
 
-            if !is_equal
-            {
-                panic!("different:\n{difference:?}\n{cpu_output:?}\ndoes not equal\n{gpu_output:?}");
-            }
+            let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
+            cpu_output.as_mut().outer_product_into(a.as_ref().as_vector_ref(), b.as_ref().as_vector_ref());
+
+            let gpu_output = run_single_operation([a, b], |recorder, [a, b]| recorder.outer_product(a, b));
+
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            compare_outputs(cpu_output, gpu_output, &description, i);
+        }
+    }
+
+    #[test]
+    fn softmax_cross_entropy_equivalent()
+    {
+        for i in 2..255
+        {
+            let rows = fastrand::usize(1..i);
+            let batch_size = fastrand::usize(1..i);
+
+            let values_shape = TensorShape{rows, columns: 1, batch_size};
+            let entropies_shape = TensorShape{rows: 1, columns: 1, batch_size};
+
+            let targets = OneHotLayer::new(
+                iter::repeat_with(|| vec![fastrand::usize(0..rows)].into_boxed_slice()).take(batch_size).collect(),
+                1,
+                rows,
+                batch_size
+            );
+
+            let softmaxed = LayerType::new_with_full(values_shape, big_random_value);
+            let entropies = LayerType::new_with_full(entropies_shape, big_random_value);
+
+            let mut cpu_softmaxed = softmaxed.clone();
+            let mut cpu_entropies = entropies.clone();
+
+            cpu_entropies.as_mut().softmax_cross_entropy_into(cpu_softmaxed.as_mut(), &targets);
+
+            let mut recorder = OperationsRecorder::new();
+
+            let softmaxed_x = recorder.set_new_tensor(softmaxed);
+
+            recorder.allow_discard(softmaxed_x.as_value());
+
+            let targets_index = recorder.new_one_hot(1, rows, batch_size);
+            recorder.set_one_hot_data(targets_index, targets.clone());
+
+            let (gpu_softmaxed_diff, gpu_entropies_diff) = recorder.softmax_cross_entropy(softmaxed_x, targets_index);
+
+            let gpu_softmaxed = gpu_softmaxed_diff.as_value();
+            let gpu_entropies = gpu_entropies_diff.as_value();
+
+            recorder.store_tensor_as_output(gpu_softmaxed);
+            recorder.store_tensor_as_output(gpu_entropies);
+
+            recorder.finish();
+            recorder.no_gradient();
+
+            recorder.resolve_memory(false);
+
+            let gpu_softmaxed = recorder.resolve_tensor_ptr(gpu_softmaxed);
+            let gpu_entropies = recorder.resolve_tensor_ptr(gpu_entropies);
+
+            recorder.calculate();
+
+            let gpu_softmaxed = recorder.get_tensor_blocking(gpu_softmaxed);
+            let gpu_entropies = recorder.get_tensor_blocking(gpu_entropies);
+
+            compare_outputs(cpu_softmaxed, gpu_softmaxed, &format!("softmaxed, rows: {rows}, batch_size: {batch_size}"), i);
+            compare_outputs(cpu_entropies, gpu_entropies, &format!("entropies, rows: {rows}, batch_size: {batch_size}"), i);
         }
     }
 }

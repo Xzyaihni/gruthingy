@@ -1,6 +1,7 @@
 use std::{
     f32,
     iter,
+    num::FpCategory,
     cmp::Ordering
 };
 
@@ -637,6 +638,22 @@ impl<'a> YWrapperMut<'a>
         }
     }
 
+    pub fn max_tensor_into(self, value: YWrapperRef)
+    {
+        debug_assert!(self.shape.is_batched_scalar());
+
+        debug_assert_eq!(self.shape.batch_size, value.shape.batch_size);
+
+        for batch_index in 0..self.shape.batch_size
+        {
+            self.values[batch_index] = value.batch_slice_ref(batch_index).values
+                .iter()
+                .copied()
+                .max_by(|a, b| a.partial_cmp(&b).unwrap())
+                .unwrap_or(0.0);
+        }
+    }
+
     pub fn fill_into(self, value: YWrapperRef)
     {
         debug_assert!(value.shape.is_batched_scalar());
@@ -884,6 +901,46 @@ impl<'a> YWrapperMut<'a>
         for batch_index in 0..self.shape.batch_size
         {
             inner_single_batch(&mut self.batch_slice_mut(batch_index), lhs.batch_slice_ref(batch_index), rhs.batch_slice_ref(batch_index));
+        }
+    }
+
+    pub fn softmax_cross_entropy_into(self, mut values: YWrapperMut, targets: &OneHotLayer)
+    {
+        debug_assert_eq!(self.shape.rows, 1);
+        debug_assert_eq!(self.shape.columns, 1);
+
+        debug_assert_eq!(values.shape.rows, targets.layer_size);
+        debug_assert_eq!(values.shape.columns, 1);
+
+        debug_assert_eq!(self.shape.batch_size, values.shape.batch_size);
+        debug_assert_eq!(values.shape.batch_size, targets.batch_size);
+
+        debug_assert_eq!(targets.count, 1);
+
+        for batch_index in 0..self.shape.batch_size
+        {
+            let position = targets.positions[batch_index];
+
+            let mut values = values.batch_slice_mut(batch_index);
+
+            let biggest_value = values.as_ref().max_value();
+
+            values.sub_scalar_inplace(biggest_value);
+
+            let z: f32 = values.values[position as usize];
+
+            values.apply(|x| x.exp());
+
+            let s = values.as_ref().sum();
+
+            debug_assert!(s.classify() != FpCategory::Zero);
+            debug_assert!(s.classify() != FpCategory::Infinite);
+
+            let entropy = -(z - s.ln());
+
+            values.mul_scalar_inplace(s.recip());
+
+            self.values[batch_index] = entropy;
         }
     }
 

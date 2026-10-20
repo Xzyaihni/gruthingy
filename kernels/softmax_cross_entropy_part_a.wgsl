@@ -28,7 +28,10 @@ fn run(
 
     let biggest_value = max_values[batch_index];
 
-    z[batch_index] = softmaxed_values[batch_start + targets[batch_index]] - biggest_value;
+    if local_invocation_index == 0
+    {
+        z[batch_index] = softmaxed_values[batch_start + targets[batch_index]] - biggest_value;
+    }
 
     storageBarrier();
 
