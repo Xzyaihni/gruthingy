@@ -31,17 +31,20 @@ use crate::{
         DiffInputType,
         OwnedInputType,
         LayerType,
-        LayerTypeRef,
         NetworkUnit,
         NewableLayer,
         GenericUnit,
         Optimizer,
         OptimizerUnit,
+        OptimizerInfo,
         UnitFactory,
         USE_EMBEDDING_LAYER,
         network_unit::EmbeddingsableOwned
     }
 };
+
+#[allow(unused_imports)]
+use crate::neural_network::LayerTypeRef;
 
 #[allow(unused_imports)]
 use super::close_enough;
@@ -274,6 +277,7 @@ pub struct WeightsSize<T>
 
 impl<T> WeightsSize<T>
 {
+    #[allow(dead_code)]
     fn map<F, U>(self, f: F) -> WeightsSize<U>
     where
         F: FnOnce(T) -> U
@@ -298,6 +302,7 @@ pub struct WeightsNamed<T>
 
 impl<T> WeightsNamed<T>
 {
+    #[allow(dead_code)]
     fn map<F, U>(self, f: F) -> WeightsNamed<U>
     where
         F: FnOnce(T) -> U
@@ -912,21 +917,6 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
     }
 }
 
-impl<N: UnitFactory> WeightsFullContainer<N, LayerType>
-{
-    pub fn average_batch(mut self, batch_size: usize) -> Self
-    where
-        for<'a> &'a mut N::Unit<LayerType>: IntoIterator<Item=&'a mut LayerType>
-    {
-        self.iter_mut().for_each(|gradient|
-        {
-            gradient.mul_scalar_inplace((batch_size as f32).recip());
-        });
-
-        self
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct WeightInfoGeneric<D, I>
 {
@@ -938,6 +928,15 @@ pub struct WeightInfoGeneric<D, I>
 
 pub type WeightInfoPtr = WeightInfoGeneric<DiffTensorPtr, TensorPtr>;
 
+#[cfg(not(test))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeightInfo
+{
+    pub weight: ShapedTensorIndex,
+    pub dropout: Option<ShapedTensorIndex>
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeightInfo
 {
@@ -976,6 +975,7 @@ where
     }
 }
 
+#[cfg(not(test))]
 impl<N: UnitFactory, O> SaveNetwork<N, O>
 where
     O: Clone,
@@ -990,7 +990,7 @@ where
         {
             w.map_ref(|weight_info|
             {
-                x.recorder.get_tensor_blocking(weight_info.weight.as_value())
+                x.recorder.get_tensor_blocking(weight_info.weight)
             })
         } else
         {
@@ -1445,7 +1445,13 @@ where
         }
     }
 
-    pub fn prepare(&mut self, one_hot_count: usize, store_gradient: bool)
+    pub fn prepare<ThisOptimizer: Optimizer>(
+        &mut self,
+        optimizer: ThisOptimizer,
+        gradient_clip: Option<f32>,
+        one_hot_count: usize,
+        store_gradient: bool
+    )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
@@ -1463,12 +1469,24 @@ where
 
             if store_gradient
             {
-                self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
+                let optimizer_info = if cfg!(test)
                 {
-                    self.recorder.store_tensor_as_output(weight.weight_original.as_gradient().unwrap());
-                });
+                    self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
+                    {
+                        self.recorder.store_tensor_as_output(weight.weight_original.as_gradient().unwrap());
+                    });
 
-                self.recorder.gradient(self.outputs.loss_ptr.expect("must be initialized").into());
+                    None
+                } else
+                {
+                    Some(OptimizerInfo{
+                        weights: self.weights_ptr.as_ref().unwrap().iter().map(|x| x.weight_original).collect(),
+                        gradient_clip,
+                        optimizer
+                    })
+                };
+
+                self.recorder.gradient_with(self.outputs.loss_ptr.expect("must be initialized").into(), optimizer_info);
             } else
             {
                 self.recorder.store_tensor_as_output(self.outputs.first_output_value_ptr.unwrap());
@@ -1503,7 +1521,7 @@ where
 
             let mut store_tensor = |weight: &WeightInfoGeneric<DiffTensorPtr, TensorPtr>|
             {
-                self.recorder.store_tensor_as_output(weight.weight_original.as_value());
+                self.recorder.store_tensor_until_end(weight.weight_original.as_value());
             };
 
             store_tensor(&weights_ptr.output);
@@ -1536,9 +1554,22 @@ where
         {
             if !store_gradient { weight_info.weight_original.clear_gradient(); }
 
-            WeightInfo{
-                weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
-                dropout: weight_info.dropout.map(|x| self.recorder.resolve_tensor_ptr(x))
+            let dropout = weight_info.dropout.map(|x| self.recorder.resolve_tensor_ptr(x));
+
+            #[cfg(not(test))]
+            {
+                WeightInfo{
+                    weight: self.recorder.resolve_tensor_ptr(weight_info.weight_original.as_value()),
+                    dropout
+                }
+            }
+
+            #[cfg(test)]
+            {
+                WeightInfo{
+                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
+                    dropout
+                }
             }
         });
 
@@ -1815,40 +1846,7 @@ where
             })
     }
 
-    pub fn apply_gradients<OP>(
-        &mut self,
-        gradients: WeightsFullContainer<N, LayerType>,
-        optimizer: &mut OP,
-        gradient_clip: Option<f32>
-    )
-    where
-        OP: Optimizer<WeightParam=O>,
-        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
-        for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
-        for<'b> &'b mut N::Unit<O>: IntoIterator<Item=&'b mut O>
-    {
-        gradients.into_iter()
-            .zip(self.weights.as_mut().unwrap().iter_mut().zip(self.optimizer_info.as_mut().unwrap().iter_mut()))
-            .for_each(|(mut gradient, (network_weights, optimizer_info))|
-            {
-                if let Some(gradient_clip) = gradient_clip
-                {
-                    gradient.cap_magnitude_inplace(gradient_clip);
-                }
-
-                let change = optimizer.gradient_to_change(optimizer_info, gradient);
-
-                let weight_value = network_weights.weight.as_value();
-
-                let mut new_weight = self.recorder.get_tensor_blocking(weight_value);
-                new_weight.as_mut().sub_inplace(LayerTypeRef::from(&change));
-
-                self.recorder.set_tensor(weight_value, new_weight.as_ref());
-            });
-
-        optimizer.advance_time();
-    }
-
+    #[cfg(test)]
     pub fn gradients<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>, R: DropoutRoll>(
         &mut self,
         mut rng: R,
@@ -1901,7 +1899,30 @@ where
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.end_capture();
 
-        (total_loss, gradients)
+        return (total_loss, gradients);
+    }
+
+    pub fn gradient_step_once<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>, R: DropoutRoll>(
+        &mut self,
+        mut rng: R,
+        input: I
+    ) -> f32
+    where
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
+        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
+        for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
+    {
+        #[cfg(feature = "renderdocapi")]
+        crate::RENDERDOC_API.begin_capture();
+
+        self.feedforward_setup_dropout(&mut rng);
+
+        let total_loss = self.feedforward_with(OperationsRecorder::calculate, input);
+
+        #[cfg(feature = "renderdocapi")]
+        crate::RENDERDOC_API.end_capture();
+
+        total_loss
     }
 
     fn feedforward_with(
@@ -1959,6 +1980,7 @@ where
         self.recorder.get_tensor_blocking(self.outputs.loss.as_value()).as_ref().average()
     }
 
+    #[cfg(not(test))]
     pub fn weights_info<'b, 'c>(
         &'b self
     ) -> Vec<WeightsNamed<LayerType>>
@@ -2012,18 +2034,19 @@ where
                     }
                 }]
             }).into_iter().flatten())
-            .map(|x| x.map(|x| self.recorder.get_tensor_blocking(x.weight.as_value())))
+            .map(|x| x.map(|x| self.recorder.get_tensor_blocking(x.weight)))
             .collect::<Vec<_>>()
     }
 
     #[allow(dead_code)]
+    #[cfg(not(test))]
     pub fn parameters_amount(&self) -> u128
     where
         for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>
     {
         self.weights.as_ref().unwrap().iter().map(|weight_info|
         {
-            weight_info.weight.as_value().shape().single_size() as u128
+            weight_info.weight.shape().single_size() as u128
         }).sum()
     }
 
@@ -2202,7 +2225,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.prepare(one_hot_count, false);
+        self.prepare((), None, one_hot_count, false);
 
         self.feedforward_setup_dropout(&mut fastrand::Rng::new());
 
@@ -2267,7 +2290,7 @@ where
             output
         };
 
-        self.prepare(1, false);
+        self.prepare((), None, 1, false);
 
         self.feedforward_setup_dropout(&mut fastrand::Rng::new());
 
@@ -2354,6 +2377,7 @@ where
     }
 }
 
+#[cfg(not(test))]
 impl<O> Network<EmbeddingsUnitFactory, O>
 where
     EmbeddingsUnitFactory: UnitFactory,
@@ -2634,7 +2658,7 @@ mod tests
         let mut with_steps: NetworkType = Network::new(SIZES, INPUT_DROPOUT_PROBABILITY, DROPOUT_PROBABILITY, network_config);
         with_steps.set_train_mode();
 
-        with_steps.prepare(1, true);
+        with_steps.prepare((), None, 1, true);
 
         let with_steps_gradient = with_steps.gradients(fastrand::Rng::with_seed(SEED), input_outputs.clone());
 

@@ -30,10 +30,6 @@ use crate::{
     }
 };
 
-use optimizers::*;
-
-pub use optimizers::{NewableLayer, DecayFunction, Optimizer};
-
 pub use network_unit::{
     DebugUnitInfo,
     NetworkStateSelectable,
@@ -78,11 +74,15 @@ pub use containers::{
     DiffInputType,
     OwnedInputType,
     OneHotLayer,
-    Softmaxer
+    Softmaxer,
+    optimizers::{NewableLayer, Optimizer, OptimizerInfo}
 };
 
 #[allow(unused_imports)]
-pub use containers::close_enough;
+pub use containers::{
+    close_enough,
+    optimizers::{Sgd}
+};
 
 #[allow(unused_imports)]
 pub use network::{WeightInfo, WeightInfoPtr, WeightsSize};
@@ -98,7 +98,6 @@ use star::Star;
 
 pub use embedding_unit::EmbeddingUnit;
 
-mod optimizers;
 mod network_unit;
 mod gru;
 mod lstm;
@@ -976,6 +975,7 @@ pub struct NeuralNetwork<NetworkType, O, D>
 
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
+#[cfg(not(test))]
 impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, D>
 where
     O: Optimizer,
@@ -1088,13 +1088,14 @@ where
     {
         let network = Network::new(sizes, input_dropout_probability, dropout_probability, config);
 
-        let optimizer = O::new();
+        let optimizer = O::default();
 
         let extra_info = ExtraInfo::default();
 
         Self{dictionary, network, optimizer, gradient_clip, extra_info, sizes}
     }
 
+    #[cfg(not(test))]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()>
     where
         O: Serialize,
@@ -1300,12 +1301,12 @@ where
     {
         self.network.set_train_mode();
 
-        self.network.prepare(EmbeddingType::one_hot_count(), true);
-
         if let Some(learning_rate) = info.learning_rate
         {
             self.optimizer.set_learning_rate(learning_rate);
         }
+
+        self.network.prepare(self.optimizer.clone(), self.gradient_clip, EmbeddingType::one_hot_count(), true);
 
         let average_inputs_per_batch = info.batch_size * info.steps_num.mid();
 
@@ -1319,7 +1320,10 @@ where
         if display_header
         {
             println!("input vector size: {}", self.dictionary.words_amount());
+
+            #[cfg(not(test))]
             println!("parameters amount: {}", self.network.parameters_amount());
+
             println!("batch size: {}", info.batch_size);
 
             println!("using {} inputs", EmbeddingType::name());
@@ -1360,7 +1364,7 @@ where
                 );
 
                 let rng = fastrand::Rng::new();
-                let (loss, gradients_batch): (f32, _) = self.network.gradients(rng, values.iter());
+                let loss = self.network.gradient_step_once(rng, values.iter());
 
                 let batch_loss = loss as f64 / steps_num as f64;
 
@@ -1370,9 +1374,6 @@ where
 
                     Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
                 }
-
-                let gradients = gradients_batch.average_batch(info.batch_size);
-                self.network.apply_gradients(gradients, &mut self.optimizer, self.gradient_clip);
             }
         }
     }
@@ -1615,7 +1616,7 @@ mod tests
 
         network_single.network.set_train_mode();
 
-        network_single.network.prepare(ThisEmbeddings::one_hot_count(), true);
+        network_single.network.prepare((), None, ThisEmbeddings::one_hot_count(), true);
 
         fastrand::seed(111);
 
@@ -1749,7 +1750,7 @@ mod tests
 
         network_batched.network.set_train_mode();
 
-        network_batched.network.prepare(ThisEmbeddings::one_hot_count(), true);
+        network_batched.network.prepare((), None, ThisEmbeddings::one_hot_count(), true);
 
         let batched_rng = PrecomputedRng{
             index: 0,
@@ -1766,14 +1767,14 @@ mod tests
             inputs_per_batch
         );
 
-        let batched_gradients = batched_gradients_batch.average_batch(batch_size);
+        let batched_gradients = batched_gradients_batch.iter().map(|x| x.mul_scalar((batch_size as f32).recip()));
 
         eprintln!("calculated batched_gradients");
 
         // eprintln!("single_added_gradients: {single_added_gradients:?}");
         // eprintln!("batched_gradients: {batched_gradients:?}");
 
-        single_added_gradients.iter().zip(batched_gradients.iter()).for_each(|(single_added_gradient, batched_gradient)|
+        single_added_gradients.iter().zip(batched_gradients).for_each(|(single_added_gradient, batched_gradient)|
         {
             let all_equal = single_added_gradient.iter().zip(batched_gradient.iter()).all(|(single, batched)|
             {

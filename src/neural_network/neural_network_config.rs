@@ -1,10 +1,10 @@
+const uncomment_me: () = ();
 #[allow(unused_imports)]
 use super::{
-    DecayFunction,
     Sgd,
-    Adam,
-    AdamX,
-    PowerSign,
+    //Adam,
+    //AdamX,
+    //PowerSign,
     OneHotEmbeddings,
     BagOfWordsEmbeddings,
     Gru,
@@ -20,9 +20,6 @@ use super::{
     MixedFormat
 };
 
-
-// options: Power, Division
-pub const DECAY_FUNCTION: DecayFunction = DecayFunction::Power;
 
 // options: OneHotEmbeddings, BagOfWordsEmbeddings
 pub type NEmbeddings = OneHotEmbeddings;
@@ -42,7 +39,8 @@ pub const USE_EMBEDDING_LAYER: bool = true;
 pub const LOWERCASE_ONLY: bool = true;
 
 // options: Sgd, Adam, AdamX, PowerSign
-pub type NOptimizer = AdamX;
+pub type NOptimizer = Sgd;
+const put_me_to_adamx: () = ();
 
 // options: PostcardFormat, JsonFormat, MixedFormat<Save, Load>
 pub type SaveFormat = PostcardFormat;

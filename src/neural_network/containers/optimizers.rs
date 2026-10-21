@@ -1,8 +1,10 @@
 use serde::{Serialize, Deserialize};
 
 use super::{
-    LayerType,
-    DECAY_FUNCTION
+    DECAY_FUNCTION,
+    TensorPtr,
+    DiffTensorPtr,
+    OperationsRecorder
 };
 
 
@@ -35,7 +37,53 @@ impl NewableLayer for ()
     fn new(_previous_size: usize, _this_size: usize) -> Self {}
 }
 
-#[allow(dead_code)]
+pub struct OptimizerInfo<O>
+{
+    pub weights: Vec<DiffTensorPtr>,
+    pub gradient_clip: Option<f32>,
+    pub optimizer: O
+}
+
+impl<O: Optimizer> OptimizerInfo<O>
+{
+    pub fn add_operations(&self, recorder: &mut OperationsRecorder)
+    {
+        let batch_size = self.weights.first().map(|x| recorder.tensor_shape(x.as_value()).batch_size).unwrap_or(1);
+
+        let batch_size_recip = recorder.set_new_value((batch_size as f32).recip()).as_value();
+
+        self.weights.iter().for_each(|weight|
+        {
+            let gradient = weight.as_gradient().expect("all weights must have a gradient");
+            let weight = weight.as_value();
+
+            debug_assert_eq!(recorder.tensor_shape(weight).batch_size, batch_size);
+
+            let average_gradient = recorder.mul_scalar_no_diff(gradient, batch_size_recip);
+            recorder.name_tensor(average_gradient, "average_gradient");
+
+            let clipped_gradient = self.gradient_clip.map(|gradient_clip|
+            {
+                let gradient_clip = recorder.set_new_value(gradient_clip).as_value();
+
+                recorder.cap_magnitude(average_gradient, gradient_clip)
+            }).unwrap_or(average_gradient);
+
+            recorder.name_tensor(clipped_gradient, "clipped_gradient");
+
+            let new_weight = self.optimizer.clone().add_operations(recorder, clipped_gradient);
+            recorder.name_tensor(new_weight, "new_weight_override");
+
+            recorder.store_tensor_until_end(new_weight);
+            recorder.memory.allow_after_coalesce_use(new_weight);
+
+            recorder.force_same_memory(new_weight, weight);
+        });
+    }
+}
+
+const uncomment_me_2: () = ();
+/*#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdamGradientInfo
 {
@@ -89,21 +137,14 @@ impl NewableLayer for PowerSignGradientInfo
             m: LayerType::new(this_size, previous_size)
         }
     }
-}
+}*/
 
-pub trait Optimizer: Clone
+pub trait Optimizer: Default + Clone
 {
     type WeightParam;
 
-    fn new() -> Self;
+    fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr;
 
-    fn gradient_to_change(
-        &self,
-        gradient_info: &mut Self::WeightParam,
-        gradient: LayerType
-    ) -> LayerType;
-
-    fn advance_time(&mut self);
     fn set_learning_rate(&mut self, learning_rate: f32);
 }
 
@@ -111,18 +152,7 @@ impl Optimizer for ()
 {
     type WeightParam = ();
 
-    fn new() -> Self {}
-
-    fn gradient_to_change(
-        &self,
-        _gradient_info: &mut Self::WeightParam,
-        _gradient: LayerType
-    ) -> LayerType
-    {
-        unreachable!()
-    }
-
-    fn advance_time(&mut self)
+    fn add_operations(self, _recorder: &mut OperationsRecorder, _gradient: TensorPtr) -> TensorPtr
     {
         unreachable!()
     }
@@ -137,35 +167,34 @@ impl Optimizer for ()
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sgd
 {
-    learning_rate: f32
+    pub learning_rate: f32
+}
+
+impl Default for Sgd
+{
+    fn default() -> Self
+    {
+        Self{learning_rate: 0.001}
+    }
 }
 
 impl Optimizer for Sgd
 {
     type WeightParam = ();
 
-    fn new() -> Self
+    fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
     {
-        Self{learning_rate: 0.001}
+        recorder.sgd_optimizer(gradient, self)
     }
 
-    fn gradient_to_change(
-        &self,
-        _gradient_info: &mut Self::WeightParam,
-        gradient: LayerType
-    ) -> LayerType
-    {
-        gradient.mul_scalar(self.learning_rate)
-    }
-
-    fn advance_time(&mut self) {}
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
     }
 }
 
-#[allow(dead_code)]
+const uncomment_me: () = ();
+/*#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSign
 {
@@ -433,4 +462,4 @@ mod tests
             ];
         }
     }
-}
+}*/

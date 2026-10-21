@@ -4,6 +4,7 @@
 #![allow(clippy::len_without_is_empty)]
 #![allow(clippy::match_like_matches_macro)]
 
+#[allow(unused_imports)]
 use std::{
     env,
     iter,
@@ -18,6 +19,7 @@ use std::{
     ops::{Index, IndexMut}
 };
 
+#[allow(unused_imports)]
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 #[allow(unused_imports)]
@@ -55,8 +57,13 @@ use neural_network::{
     LayerSizes
 };
 
-use config::{Config, ProgramMode};
+#[allow(unused_imports)]
+use config::Config;
 
+#[allow(unused_imports)]
+use config::ProgramMode;
+
+#[allow(unused_imports)]
 use word_vectorizer::{
     bpe_from_bytes,
     CharsAdapter,
@@ -91,6 +98,7 @@ where
     process::exit(1)
 }
 
+#[allow(dead_code)]
 struct SizesInfo
 {
     pub hidden: usize,
@@ -106,6 +114,7 @@ impl From<&Config> for SizesInfo
     }
 }
 
+#[allow(dead_code)]
 struct NUnitFactory;
 
 impl UnitFactory for NUnitFactory
@@ -113,6 +122,7 @@ impl UnitFactory for NUnitFactory
     type Unit<T> = NUnit<T>;
 }
 
+#[cfg(not(test))]
 fn load_network(
     config: &Config,
     sizes: Option<SizesInfo>,
@@ -122,6 +132,7 @@ fn load_network(
     load_network_with(config.network_path.as_ref(), Some(config), sizes, true, auto_create)
 }
 
+#[cfg(not(test))]
 pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
@@ -149,6 +160,7 @@ where
     load_network_with(path, config, sizes, false, auto_create)
 }
 
+#[cfg(not(test))]
 fn load_network_with<N, O, D>(
     path: &Path,
     config: Option<&Config>,
@@ -255,6 +267,7 @@ where
     }
 }
 
+#[cfg(not(test))]
 fn train_until_best(config: Config)
 {
     let mut test_config = config.clone();
@@ -373,6 +386,7 @@ fn train_until_best(config: Config)
     }
 }
 
+#[cfg(not(test))]
 fn test_loss(config: Config)
 {
     let text_file = config.get_input_file();
@@ -382,6 +396,7 @@ fn test_loss(config: Config)
     network.test_loss(text_file, config.inputs_in_flight, config.calculate_accuracy);
 }
 
+#[cfg(not(test))]
 fn train(config: Config)
 {
     let mut network = load_network(&config, None, true);
@@ -409,6 +424,7 @@ fn train(config: Config)
     }
 }
 
+#[cfg(not(test))]
 fn run(config: Config)
 {
     let mut network = load_network(&config, None, false);
@@ -545,6 +561,7 @@ impl IndexMut<(usize, usize)> for PPMImage
     }
 }
 
+#[cfg(not(test))]
 fn weight_color(value: f32) -> Color
 {
     let negative_color = Color{r: 255, g: 0, b: 0};
@@ -559,6 +576,7 @@ fn weight_color(value: f32) -> Color
     )
 }
 
+#[cfg(not(test))]
 fn weights_image(config: Config)
 {
     let network = load_network(&config, None, false);
@@ -620,6 +638,7 @@ fn weights_image(config: Config)
     }
 }
 
+#[cfg(not(test))]
 fn create_word_dictionary(config: Config)
 {
     let text_file = BufReader::new(File::open(config.get_input()).unwrap());
@@ -656,6 +675,7 @@ fn create_word_dictionary(config: Config)
     eprintln!("created word dictionary at {}", config.dictionary_path.display());
 }
 
+#[allow(dead_code)]
 fn create_bpe(config: &Config)
 {
     let mut text_file_reader = BufReader::new(File::open(config.get_input()).unwrap());
@@ -703,6 +723,7 @@ impl UnitFactory for EmbeddingsUnitFactory
     type Unit<T> = EmbeddingUnit<T>;
 }
 
+#[cfg(not(test))]
 fn try_save_network<N, O, D>(
     network: &NeuralNetwork<Network<N, O::WeightParam>, O, D>,
     path: &PathBuf
@@ -732,6 +753,7 @@ where
     }
 }
 
+#[cfg(not(test))]
 fn train_embeddings(mut config: Config)
 {
     let mut network = load_embeddings::<NOptimizer>(
@@ -781,6 +803,7 @@ fn train_embeddings(mut config: Config)
     }
 }
 
+#[cfg(not(test))]
 fn closest_embeddings(config: Config)
 {
     let mut network: NeuralNetwork<SaveNetwork<_, ()>, (), _> = {
@@ -843,6 +866,7 @@ fn closest_embeddings(config: Config)
     }
 }
 
+#[cfg(not(test))]
 fn accuracy_data(config: Config)
 {
     if config.correct_guesses && config.top_guesses
@@ -904,6 +928,7 @@ fn accuracy_data(config: Config)
     }
 }
 
+#[cfg(not(test))]
 fn main()
 {
     #[cfg(debug_assertions)]

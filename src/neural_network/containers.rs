@@ -21,12 +21,17 @@ use serde::{Serialize, Deserialize};
 
 use ywrapper::*;
 use rawarray::*;
+use optimizers::{OptimizerInfo, Optimizer, Sgd};
 
 mod shader_preprocessor;
 
 mod ywrapper;
 mod rawarray;
+pub mod optimizers;
 
+
+// options: Power, Division
+pub const DECAY_FUNCTION: optimizers::DecayFunction = optimizers::DecayFunction::Power;
 
 pub type LayerType = YWrapper;
 pub type LayerTypeRef<'a> = YWrapperRef<'a>;
@@ -897,6 +902,8 @@ pub struct OperationsRecorderMemory
     variable_names: VariableNames,
     store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     input_raw_check: Vec<DiffValue>,
+    forced_same_memory: HashMap<TensorPtr, TensorPtr>,
+    allow_after_coalesce_use: Vec<TensorPtr>,
     #[cfg(debug_assertions)]
     set_tensor_memory: RefCell<SetTensorMemoryChecks>,
     #[cfg(debug_assertions)]
@@ -927,7 +934,9 @@ impl Debug for OperationsRecorderMemory
             .field("one_hot_buffers", &self.one_hot_buffers)
             .field("phi_other_selectors_values", &self.phi_other_selectors_values)
             .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
-            .field("input_raw_check", &self.input_raw_check.iter().map(ForceNoPretty).collect::<Vec<_>>());
+            .field("input_raw_check", &self.input_raw_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            .field("forced_same_memory", &self.forced_same_memory.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            .field("allow_after_coalesce_use", &self.allow_after_coalesce_use.iter().map(ForceNoPretty).collect::<Vec<_>>());
 
         #[cfg(debug_assertions)]
         {
@@ -991,6 +1000,8 @@ impl OperationsRecorderMemory
             variable_names: VariableNames::new(),
             store_tensors_check: Vec::new(),
             input_raw_check: Vec::new(),
+            forced_same_memory: HashMap::new(),
+            allow_after_coalesce_use: Vec::new(),
             #[cfg(debug_assertions)]
             set_tensor_memory: RefCell::new(SetTensorMemoryChecks::new()),
             #[cfg(debug_assertions)]
@@ -1121,6 +1132,25 @@ impl OperationsRecorderMemory
     fn resolve_shaped_tensor_index(&self, index: ShapedTensorIndex) -> TensorRawDataPointer
     {
         self.tensors[index.index.0].with_shape(index.shape)
+    }
+
+    fn allow_after_coalesce_use(&mut self, value: TensorPtr)
+    {
+        self.allow_after_coalesce_use.push(value);
+    }
+
+    fn force_same_memory(&mut self, before: TensorPtr, after: TensorPtr)
+    {
+        self.forced_same_memory.insert(before, after);
+    }
+
+    fn collapse_forced_same_memory_chains(&mut self)
+    {
+        while let Some((key, value)) = self.forced_same_memory.iter().find(|(_, x)| self.forced_same_memory.contains_key(&x))
+            .map(|(a, b)| (*a, *b))
+        {
+            *self.forced_same_memory.get_mut(&key).unwrap() = self.forced_same_memory[&value];
+        }
     }
 
     fn get_tensor_blocking_unchecked(
@@ -1635,7 +1665,8 @@ impl RawArrayMemory
                 OpKernel::SoftmaxPartB => ("kernels/softmax_part_b.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SoftmaxCrossEntropyPartA => ("kernels/softmax_cross_entropy_part_a.wgsl", &kernel_layouts.r2_w2_i0),
                 OpKernel::SoftmaxCrossEntropyPartB => ("kernels/softmax_cross_entropy_part_b.wgsl", &kernel_layouts.r2_w2_i0),
-                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0)
+                OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.r1_w1_i1)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -2394,6 +2425,39 @@ impl OperationsRecorder
         output
     }
 
+    pub fn mul_scalar_no_diff(&mut self, a: TensorPtr, b: ValueIndex) -> TensorPtr
+    {
+        let shape = self.tensor_shape(a);
+
+        let output = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::MulScalar{lhs: a, rhs: b, output});
+
+        output
+    }
+
+    pub fn cap_magnitude(&mut self, value: TensorPtr, magnitude: ValueIndex) -> TensorPtr
+    {
+        let shape = self.tensor_shape(value);
+
+        let output = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::CapMagnitude{value, magnitude, output});
+
+        output
+    }
+
+    pub fn sgd_optimizer(&mut self, gradient: TensorPtr, sgd: Sgd) -> TensorPtr
+    {
+        let shape = self.tensor_shape(gradient);
+
+        let output = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::OptimizerSgd{gradient, sgd, output});
+
+        output
+    }
+
     pub fn mul_componentwise(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_pair_tensor_op!(self, a, b, MulComponentwise)
@@ -3073,7 +3137,7 @@ impl OperationsRecorder
                     }
 
                     {
-                        debug_calculate_common!(true, ($($t_name,)*),($($v_name,)*));
+                        debug_calculate_common!(cfg!(feature="dumpmemory"), ($($t_name,)*),($($v_name,)*));
                     }
 
                     #[cfg(debug_assertions)]
@@ -3991,6 +4055,33 @@ impl OperationsRecorder
                     single_workgroup(&mut compute_pass, output.size());
 
                     debug_calculate_values_result!((output),());
+                },
+                GradientOp::CapMagnitude{value, magnitude, output} =>
+                {
+                    debug_calculate_values!(CapMagnitude, (value),(magnitude));
+
+                    todo!();
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::OptimizerSgd{gradient, sgd, output} =>
+                {
+                    debug_calculate_values!(OptimizerSgd, (gradient),());
+
+                    debug_assert_eq!(gradient.shape, output.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i1, &[
+                        bind_group_entry(0, *gradient),
+                        bind_group_entry(1, *output)
+                    ], "OptimizerSgd", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Sgd, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &sgd.learning_rate.to_ne_bytes());
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((),());
                 },
                 GradientOp::Pow{lhs, power, output} =>
                 {
@@ -5314,6 +5405,11 @@ impl OperationsRecorder
         }
     }
 
+    fn force_same_memory(&mut self, before: TensorPtr, after: TensorPtr)
+    {
+        self.memory.force_same_memory(before, after)
+    }
+
     fn copy_reuse_conflicts(&mut self)
     {
         let mut i = 0;
@@ -5356,18 +5452,28 @@ impl OperationsRecorder
                     match self.gradient_operations[i]
                     {
                         $(
-                            GradientOp::$name{added, ..} =>
+                            GradientOp::$name{added, output, ..} =>
                             {
-                                if let Some(new_added) = copy_if_src_reused(self, added)
+                                let replace_added = if let Some(new_added) = copy_if_src_reused(self, added)
                                 {
-                                    let GradientOp::$name{added, ..} = &mut self.gradient_operations[i + 1] else {
+                                    let GradientOp::$name{added, ..} = &mut self.gradient_operations[i + 1] else
+                                    {
                                         unreachable!()
                                     };
 
                                     *added = new_added;
 
                                     i += 1;
-                                }
+
+                                    new_added
+                                } else
+                                {
+                                    added
+                                };
+
+                                self.memory.forced_same_memory.insert(replace_added, output);
+
+                                self.memory.collapse_forced_same_memory_chains();
                             },
                         )+
                         _ => ()
@@ -6058,6 +6164,8 @@ impl OperationsRecorder
                 GradientOp::SumTensor{value, output} => t_storage!(value, output),
                 GradientOp::MaxTensor{value, output} => t_storage!(value, output),
                 GradientOp::SumBatch{value, output} => t_storage!(value, output),
+                GradientOp::CapMagnitude{value, magnitude: _, output} => t_storage!(value, output),
+                GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
                 GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
@@ -6591,10 +6699,8 @@ impl OperationsRecorder
                 arg: TensorPtr,
                 output: TensorPtr,
                 i: usize
-            ) -> TensorPtr
+            )
             {
-                let combined_output = output;
-
                 {
                     let arg_range = &this.memory.tensor_live_ranges[arg.0];
                     let arg_start = arg_range.start;
@@ -6603,17 +6709,20 @@ impl OperationsRecorder
 
                     if arg_start == Some(-1)
                     {
-                        input_remaps.push((arg, combined_output));
+                        input_remaps.push((arg, output));
                     }
 
-                    debug_assert_eq!(
-                        arg_range.end,
-                        Some(i as i32),
-                        "{} is used after its coalescing, reuse copying is broken",
-                        this.memory.format_variable(arg)
-                    );
+                    if !this.memory.allow_after_coalesce_use.contains(&arg)
+                    {
+                        debug_assert_eq!(
+                            arg_range.end,
+                            Some(i as i32),
+                            "{} is used after its coalescing, reuse copying is broken",
+                            this.memory.format_variable(arg)
+                        );
+                    }
 
-                    let combined_start = &mut this.memory.tensor_live_ranges[combined_output.0].start;
+                    let combined_start = &mut this.memory.tensor_live_ranges[output.0].start;
 
                     *combined_start = if let Some(x) = *combined_start
                     {
@@ -6625,37 +6734,29 @@ impl OperationsRecorder
                 }
 
                 this.swap_assignment(i, arg.into(), output.into());
-
-                combined_output
             }
 
-            let mut combine_arg_output_tensors = |this, arg, output| combine_arg_output_tensors_inner(this, input_remaps, arg, output, i);
-
-            macro_rules! combine_added_output
+            if self.gradient_operations[i].is_any_arg_or_output(|x|
             {
-                ($($name:ident),+) =>
+                if let DiffValue::Tensor(x) = x { self.memory.forced_same_memory.contains_key(&x) } else { false }
+            })
+            {
+                let old_arg = self.gradient_operations[i].clone();
+
+                self.gradient_operations[i] = old_arg.map_args_and_outputs(|x|
                 {
-                    match self.gradient_operations[i]
+                    if let DiffValue::Tensor(x) = x
                     {
-                        $(
-                            GradientOp::$name{lhs, rhs, added, output} =>
-                            {
-                                let combined_output_add = combine_arg_output_tensors(self, added, output);
+                        if let Some(other) = self.memory.forced_same_memory.get(&x).copied()
+                        {
+                            combine_arg_output_tensors_inner(self, input_remaps, x, other, i);
 
-                                self.gradient_operations[i] = GradientOp::$name{lhs, rhs, added: combined_output_add, output: combined_output_add};
-                            },
-                        )+
-                        _ => ()
+                            return DiffValue::Tensor(other);
+                        }
                     }
-                }
-            }
 
-            combine_added_output!{
-                MatmulvAdd,
-                MatmulOneHotvAdd,
-                MatmulvTransposedAdd,
-                OuterProductAdd,
-                OuterProductOneHotAdd
+                    x
+                });
             }
 
             match self.gradient_operations[i]
@@ -7013,11 +7114,7 @@ impl OperationsRecorder
 
         self.calculate_kept_inside();
 
-        self.remove_unused_pushes();
-
-        self.copy_coalesce();
-
-        self.copy_reuse_conflicts();
+        self.optimize_operations();
 
         self.recording_operations = Vec::new();
 
@@ -7360,6 +7457,15 @@ impl OperationsRecorder
 
     pub fn gradient(&mut self, respect: DiffWrapper)
     {
+        self.gradient_with::<()>(respect, None);
+    }
+
+    pub fn gradient_with<O: Optimizer>(
+        &mut self,
+        respect: DiffWrapper,
+        optimizer: Option<OptimizerInfo<O>>
+    )
+    {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
         self.set_ones(respect);
@@ -7393,15 +7499,25 @@ impl OperationsRecorder
 
         self.combine_zero_outs();
 
+        if let Some(optimizer) = optimizer
+        {
+            optimizer.add_operations(self);
+        }
+
+        self.optimize_operations();
+
+        self.recording_operations = Vec::new();
+
+        self.state = RecorderState::AwaitingResolve;
+    }
+
+    fn optimize_operations(&mut self)
+    {
         self.remove_unused_pushes();
 
         self.copy_coalesce();
 
         self.copy_reuse_conflicts();
-
-        self.recording_operations = Vec::new();
-
-        self.state = RecorderState::AwaitingResolve;
     }
 
     fn calculate_gradient(
@@ -8982,6 +9098,8 @@ pub enum GradientOp<T, V, J, O, S>
     SumBatch{value: T, output: T},
     Fill{value: T, output: T},
     BatchReplicate{value: T, output: T},
+    CapMagnitude{value: T, magnitude: V, output: T},
+    OptimizerSgd{gradient: T, sgd: Sgd, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -9086,6 +9204,8 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::SumBatch{value, output} => GradientOp::SumBatch{value: tf(value), output: tf(output)},
             Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
             Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
+            Self::CapMagnitude{value, magnitude, output} => GradientOp::CapMagnitude{value: tf(value), magnitude: vf(magnitude), output: tf(output)},
+            Self::OptimizerSgd{gradient, sgd, output} => GradientOp::OptimizerSgd{gradient: tf(gradient), sgd, output: tf(output)},
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
             Self::LeakyReluDiff{value, gradient, output} => GradientOp::LeakyReluDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
@@ -9179,6 +9299,11 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
         })
     }
 
+    fn map_args_and_outputs(self, mut f: impl FnMut(DiffValue) -> DiffValue) -> Self
+    {
+        self.map_args(&mut f).map_outputs(f)
+    }
+
     fn is_any_arg(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
     where
         J: Clone,
@@ -9187,6 +9312,25 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
         let mut is_any = false;
 
         self.for_args(|x| if f(x) { is_any = true; });
+
+        is_any
+    }
+
+    fn is_any_arg_or_output(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
+    where
+        J: Clone,
+        S: Clone
+    {
+        let mut is_any = false;
+
+        self.for_args(|x| if f(x) { is_any = true; });
+
+        if is_any
+        {
+            return true;
+        }
+
+        self.for_outputs(|x| if f(x) { is_any = true; });
 
         is_any
     }
@@ -9255,6 +9399,8 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulComponentwiseAdd{output, lhs, rhs, added} => Self::MulComponentwiseAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::Fill{output, value} => Self::Fill{output: tf(&mut state, output), value},
             Self::BatchReplicate{output, value} => Self::BatchReplicate{output: tf(&mut state, output), value},
+            Self::CapMagnitude{value, magnitude, output} => Self::CapMagnitude{output: tf(&mut state, output), value, magnitude},
+            Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{output: tf(&mut state, output), gradient, sgd},
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(&mut state, output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(&mut state, output), value},
             Self::SigmoidDiff{output, gradient, value} => Self::SigmoidDiff{output: tf(&mut state, output), gradient, value},
@@ -9421,6 +9567,11 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::Fill{value, output} => Self::Fill{value: tf(&mut state, value), output},
             Self::BatchReplicate{value, output} => Self::BatchReplicate{value: tf(&mut state, value), output},
+            Self::CapMagnitude{value, magnitude, output} =>
+            {
+                Self::CapMagnitude{value: tf(&mut state, value), magnitude: vf(&mut state, magnitude), output}
+            },
+            Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{gradient: tf(&mut state, gradient), sgd, output},
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets: of(&mut state, targets), output}
