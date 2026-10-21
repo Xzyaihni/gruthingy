@@ -4,7 +4,7 @@ var<storage, read> sum_values: array<f32>;
 @group(0) @binding(1)
 var<storage, read_write> dst: array<f32>;
 
-const WORKGROUP_SIZE = 64;
+#include "default_workgroup_size.wgsl"
 
 var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
 var<private> total: f32;

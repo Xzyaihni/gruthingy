@@ -1,0 +1,1 @@
+const WORKGROUP_SIZE = 64;

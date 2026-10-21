@@ -4,7 +4,7 @@ var<storage, read> sum_values: array<f32>;
 @group(0) @binding(1)
 var<storage, read_write> softmaxed_values: array<f32>;
 
-const WORKGROUP_SIZE = 64;
+#include "default_workgroup_size.wgsl"
 
 #include "div_ceil.wgsl"
 

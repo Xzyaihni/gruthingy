@@ -7,7 +7,7 @@ var<storage, read> targets: array<u32>;
 @group(0) @binding(2)
 var<storage, read_write> output: array<f32>;
 
-const WORKGROUP_SIZE = 64;
+#include "default_workgroup_size.wgsl"
 
 #include "div_ceil.wgsl"
 

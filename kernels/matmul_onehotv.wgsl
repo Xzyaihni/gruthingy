@@ -9,7 +9,7 @@ var<storage, read_write> output: array<f32>;
 
 var<immediate> one_hot_count: u32;
 
-const WORKGROUP_SIZE = 64;
+#include "default_workgroup_size.wgsl"
 
 #include "div_ceil.wgsl"
 

@@ -9,7 +9,9 @@ var<storage, read_write> output: array<f32>;
 
 var<immediate> one_hot_count: u32;
 
-@compute @workgroup_size(64)
+#include "default_workgroup_size.wgsl"
+
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
 {
     let index = global_id.x;
