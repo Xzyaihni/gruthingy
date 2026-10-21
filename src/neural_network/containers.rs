@@ -10266,7 +10266,8 @@ mod tests
     #[test]
     fn matrix_multiplication_easy()
     {
-        check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
+        let a_columns = LAYER_PREV + 1;
+        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
 
@@ -10282,7 +10283,8 @@ mod tests
     #[test]
     fn matrix_multiplication_more()
     {
-        check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
+        let a_columns = LAYER_PREV + 1;
+        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
 
@@ -10305,7 +10307,8 @@ mod tests
     #[test]
     fn matrix_multiplication_lots()
     {
-        check_tensor_with_dims((4, 2), (1, 4), |recorder, a, b|
+        let a_columns = LAYER_PREV + 1;
+        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
             let s = recorder.sum_tensor(b);
 
@@ -10338,7 +10341,7 @@ mod tests
     #[test]
     fn matrix_multiplication_one_hot()
     {
-        let a_columns = 4;
+        let a_columns = LAYER_PREV + 1;
         let targets = create_targets_with_size(a_columns);
         check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
