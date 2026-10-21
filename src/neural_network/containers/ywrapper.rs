@@ -284,13 +284,6 @@ impl YWrapper
         self.values.iter()
     }
 
-    pub fn pick_weighed(&self) -> usize
-    {
-        debug_assert_eq!(self.shape.batch_size, 1);
-
-        Softmaxer::pick_weighed_inner(self.iter())
-    }
-
     pub fn highest_index(&self) -> usize
     {
         self.as_ref().highest_index()
@@ -387,6 +380,47 @@ impl<'a> YWrapperRef<'a>
         debug_assert_eq!(self.shape.batch_size, 1);
 
         Softmaxer::highest_index(self.values.iter())
+    }
+
+    pub fn batch_highest_index(&self) -> (usize, u32)
+    {
+        if self.shape.batch_size == 1
+        {
+            return (self.highest_index(), 1);
+        }
+
+        let mut predict_times = vec![0_u32; self.shape.single_size()];
+        (0..self.shape.batch_size).for_each(|batch_index|
+        {
+            let this_highest = self.batch_slice_ref(batch_index).highest_index();
+            predict_times[this_highest] += 1;
+        });
+
+        predict_times.into_iter().enumerate().max_by_key(|(_index, times)| *times).unwrap()
+    }
+
+    pub fn pick_weighed(&self) -> usize
+    {
+        debug_assert_eq!(self.shape.batch_size, 1);
+
+        Softmaxer::pick_weighed_inner(self.values.iter())
+    }
+
+    pub fn batch_pick_weighed(&self) -> (usize, u32)
+    {
+        if self.shape.batch_size == 1
+        {
+            return (self.pick_weighed(), 1);
+        }
+
+        let mut predict_times = vec![0_u32; self.shape.single_size()];
+        (0..self.shape.batch_size).for_each(|batch_index|
+        {
+            let this_pick = self.batch_slice_ref(batch_index).pick_weighed();
+            predict_times[this_pick] += 1;
+        });
+
+        predict_times.into_iter().enumerate().max_by_key(|(_index, times)| *times).unwrap()
     }
 
     pub fn tr_gemm(&self, other: YWrapperRef) -> YWrapper

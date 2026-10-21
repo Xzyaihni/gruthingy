@@ -719,7 +719,7 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         {
             if current_input >= (input_amount - 1)
             {
-                let word = output.pick_weighed();
+                let (word, _times) = output.as_ref().batch_pick_weighed();
                 let word = VectorWord::from_raw(word);
 
                 let layer = self.dictionary.words_to_layer([word]);

@@ -2035,13 +2035,13 @@ where
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        F: Fn(&LayerType, usize, usize) -> T
+        F: Fn(LayerType, usize, usize) -> T
     {
         debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
 
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted, target)|
+        self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted_batch, target)|
         {
             assert_eq!(target.batch_size, 1);
 
@@ -2053,9 +2053,9 @@ where
 
             let target_index = target_index as usize;
 
-            let highest_index = predicted.highest_index();
+            let (highest_index, _highest_times) = predicted_batch.as_ref().batch_highest_index();
 
-            (highest_index, f(&predicted, highest_index, target_index))
+            (highest_index, f(predicted_batch.as_ref().average_tensor(), highest_index, target_index))
         })
     }
 
@@ -2094,11 +2094,7 @@ where
 
         let (input, output): (Vec<_>, Vec<_>) = input.unzip();
 
-        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
-
-        self.predict_temperature_inner(1.0, input.into_iter(), |output| outputs.push(output.clone()));
-
-        outputs.into_iter().zip(output).map(move |(predicted_batch, target)|
+        self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted_batch, target)|
         {
             assert_eq!(target.batch_size, 1);
             assert_eq!(target.positions.len(), 1);
@@ -2243,7 +2239,7 @@ where
     {
         self.predict_temperature_inner(temperature, input, |output: &LayerType|
         {
-            f_output(output.as_ref().average_tensor());
+            f_output(output.clone());
         })
     }
 

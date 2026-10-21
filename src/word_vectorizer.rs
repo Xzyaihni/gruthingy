@@ -202,7 +202,7 @@ pub trait NetworkDictionary: Debug
 
     fn layer_to_word(&self, layer: LayerType) -> VectorWord
     {
-        let index = layer.pick_weighed();
+        let (index, _) = layer.as_ref().batch_pick_weighed();
 
         VectorWord::new(index)
     }
