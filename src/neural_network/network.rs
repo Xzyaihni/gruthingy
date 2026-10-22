@@ -1435,12 +1435,48 @@ where
         }
     }
 
-    pub fn prepare<ThisOptimizer: Optimizer>(
+    pub fn prepare_with_gradient<ThisOptimizer>(
         &mut self,
         optimizer: ThisOptimizer,
         gradient_clip: Option<f32>,
-        one_hot_count: usize,
-        store_gradient: bool
+        one_hot_count: usize
+    )
+    where
+        O: Clone,
+        ThisOptimizer: Optimizer<WeightParam<OptimizerInfoPtr>=O>,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    {
+        if !self.recorder.is_ready()
+        {
+            self.record_feedforward(one_hot_count);
+
+            self.prepare_setup_shared();
+
+            if cfg!(test)
+            {
+                self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
+                {
+                    self.recorder.store_tensor_as_output(weight.weight_original.as_gradient().unwrap());
+                });
+            }
+
+            let optimizer_info = Some(OptimizerInfo{
+                weights: self.weights_ptr.as_ref().unwrap().iter().map(|x| x.weight_original).collect(),
+                params: self.optimizer_info.as_ref().unwrap().iter().cloned().collect(),
+                gradient_clip,
+                optimizer
+            });
+
+            self.recorder.gradient_with(self.outputs.loss_ptr.expect("must be initialized").into(), optimizer_info);
+
+            self.prepare_shared(true);
+        }
+    }
+
+    pub fn prepare_no_gradient(
+        &mut self,
+        one_hot_count: usize
     )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
@@ -1452,57 +1488,23 @@ where
 
             self.prepare_setup_shared();
 
-            self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
-            {
-                self.recorder.store_tensor_as_output(weight.weight_original.as_value());
-            });
+            self.recorder.store_tensor_as_output(self.outputs.first_output_value_ptr.unwrap());
+            self.recorder.store_tensor_as_output(self.outputs.output_ptr.unwrap().as_value());
 
-            if store_gradient
-            {
-                let optimizer_info = if cfg!(test)
-                {
-                    self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
-                    {
-                        self.recorder.store_tensor_as_output(weight.weight_original.as_gradient().unwrap());
-                    });
+            self.recorder.no_gradient();
 
-                    None
-                } else
-                {
-                    Some(OptimizerInfo{
-                        weights: self.weights_ptr.as_ref().unwrap().iter().map(|x| x.weight_original).collect(),
-                        gradient_clip,
-                        optimizer
-                    })
-                };
+            self.prepare_shared(false);
 
-                self.recorder.gradient_with(self.outputs.loss_ptr.expect("must be initialized").into(), optimizer_info);
-            } else
-            {
-                self.recorder.store_tensor_as_output(self.outputs.first_output_value_ptr.unwrap());
-                self.recorder.store_tensor_as_output(self.outputs.output_ptr.unwrap().as_value());
+            let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
+            self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
 
-                self.recorder.no_gradient();
-            }
-
-            self.prepare_shared(store_gradient);
-
-            if let Some(loss_ptr) = self.outputs.loss_ptr
-            {
-                self.outputs.loss = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(loss_ptr.as_value()));
-            }
-
-            if !store_gradient
-            {
-                let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
-                self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
-
-                self.outputs.first_output_value = self.recorder.resolve_tensor_ptr(self.outputs.first_output_value_ptr.unwrap());
-            }
+            self.outputs.first_output_value = self.recorder.resolve_tensor_ptr(self.outputs.first_output_value_ptr.unwrap());
         }
     }
 
     fn prepare_setup_shared(&mut self)
+    where
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.recorder.finish();
 
@@ -1522,6 +1524,11 @@ where
         {
             self.recorder.store_tensor_as_output(self.outputs.loss_ptr.expect("must be initialized").as_value());
         }
+
+        self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
+        {
+            self.recorder.store_tensor_as_output(weight.weight_original.as_value());
+        });
     }
 
     fn prepare_shared(&mut self, store_gradient: bool)
@@ -1564,6 +1571,11 @@ where
         });
 
         self.weights = Some(weights);
+
+        if let Some(loss_ptr) = self.outputs.loss_ptr
+        {
+            self.outputs.loss = self.recorder.resolve_diff_tensor_ptr(DiffTensorPtr::no_gradient(loss_ptr.as_value()));
+        }
     }
 
     fn record_feedforward(&mut self, one_hot_count: usize)
@@ -2215,7 +2227,7 @@ where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.prepare((), None, one_hot_count, false);
+        self.prepare_no_gradient(one_hot_count);
 
         self.feedforward_setup_dropout(&mut fastrand::Rng::new());
 
@@ -2280,7 +2292,7 @@ where
             output
         };
 
-        self.prepare((), None, 1, false);
+        self.prepare_no_gradient(1);
 
         self.feedforward_setup_dropout(&mut fastrand::Rng::new());
 
@@ -2649,7 +2661,7 @@ mod tests
         let mut with_steps: NetworkType = Network::new(SIZES, INPUT_DROPOUT_PROBABILITY, DROPOUT_PROBABILITY, network_config);
         with_steps.set_train_mode();
 
-        with_steps.prepare((), None, 1, true);
+        with_steps.prepare_with_gradient((), None, 1);
 
         let with_steps_gradient = with_steps.gradients(fastrand::Rng::with_seed(SEED), input_outputs.clone());
 

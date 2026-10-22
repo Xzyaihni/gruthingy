@@ -1270,10 +1270,11 @@ where
         &mut self,
         info: TrainingInfo,
         reader: R
-    )
+    ) -> Option<f64>
     where
         EmbeddingType: EmbeddingsTypeable,
         R: Read,
+        O::WeightParam<OptimizerInfoPtr>: Clone,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
@@ -1290,7 +1291,7 @@ where
             self.optimizer.set_learning_rate(learning_rate);
         }
 
-        self.network.prepare(self.optimizer.clone(), self.gradient_clip, EmbeddingType::one_hot_count(), true);
+        self.network.prepare_with_gradient(self.optimizer.clone(), self.gradient_clip, EmbeddingType::one_hot_count());
 
         let average_inputs_per_batch = info.batch_size * info.steps_num.mid();
 
@@ -1317,6 +1318,7 @@ where
             println!("iterations per epoch: ~{iterations_per_epoch}");
         }
 
+        let mut last_loss = None;
         for input_index in 0..info.iterations
         {
             self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
@@ -1351,6 +1353,7 @@ where
                 let loss = self.network.gradient_step_once(rng, values.iter());
 
                 let batch_loss = loss as f64 / steps_num as f64;
+                last_loss = Some(batch_loss);
 
                 if display_inner
                 {
@@ -1360,6 +1363,8 @@ where
                 }
             }
         }
+
+        last_loss
     }
 
     pub fn predict_into<R>(
@@ -1451,7 +1456,7 @@ where
 #[cfg(test)]
 mod tests
 {
-    use std::iter;
+    use std::{iter, io::Cursor};
 
     use super::*;
 
@@ -1600,7 +1605,7 @@ mod tests
 
         network_single.network.set_train_mode();
 
-        network_single.network.prepare((), None, ThisEmbeddings::one_hot_count(), true);
+        network_single.network.prepare_with_gradient((), None, ThisEmbeddings::one_hot_count());
 
         fastrand::seed(111);
 
@@ -1734,7 +1739,7 @@ mod tests
 
         network_batched.network.set_train_mode();
 
-        network_batched.network.prepare((), None, ThisEmbeddings::one_hot_count(), true);
+        network_batched.network.prepare_with_gradient((), None, ThisEmbeddings::one_hot_count());
 
         let batched_rng = PrecomputedRng{
             index: 0,
@@ -1771,5 +1776,107 @@ mod tests
 
             assert!(all_equal, "single: {single_added_gradient:?}\nnot equal to\nbatched: {batched_gradient:?}");
         });
+    }
+
+    #[test]
+    fn simple_data_overfit_char()
+    {
+        simple_data_overfit_with(CharDictionary::new(InputData::String("abcdefg".to_owned())));
+    }
+
+    #[test]
+    fn simple_data_overfit_bpe_single()
+    {
+        let dictionary = crate::bpe_from_bytes(
+            crate::BpeLimit::Static(0),
+            0.5,
+            true,
+            b"12345".iter().copied() // numbers so that the input letters are always bytes
+        );
+
+        simple_data_overfit_with(dictionary);
+    }
+
+    #[test]
+    fn simple_data_overfit_bpe_pairs()
+    {
+        let dictionary = crate::bpe_from_bytes(
+            crate::BpeLimit::Static(2),
+            0.0,
+            true,
+            b"ab12ef34ab32ab5ef1abef".iter().copied()
+        );
+
+        simple_data_overfit_with(dictionary);
+    }
+
+    fn simple_data_overfit_with<D: NetworkDictionary>(dictionary: D)
+    where
+        for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
+        for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    {
+        let batch_size = 2;
+
+        let is_input_one_hot = ThisDictionary::is_input_one_hot();
+
+        let input_size = dictionary.input_amount();
+        let output_size = dictionary.words_amount();
+
+        let inputs: String = {
+            let mut input_index = 0_u8;
+
+            iter::repeat_with(||
+            {
+                input_index = (input_index + 1) % ("abcdefg".len() as u8 - 1);
+
+                char::from(b'a' + input_index)
+            }).take(1000).collect()
+        };
+
+        let layers = 1;
+        let hidden = 8;
+
+        let layer_sizes = LayerSizes{
+            hidden,
+            layers,
+            initial_input: input_size,
+            input: input_size,
+            output: output_size,
+            final_output: output_size,
+            batch_size
+        };
+
+        let input_dropout_probability = 0.0;
+        let dropout_probability = 0.0;
+        let gradient_clip = None;
+
+        type OptimizerType = Sgd;
+        type NetworkType = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
+
+        let mut network: NeuralNetwork<NetworkType, OptimizerType, _> = NeuralNetwork::new(
+            dictionary,
+            layer_sizes,
+            NetworkConfigInfo{
+                is_input_one_hot,
+                is_multistep: true,
+                print_optional_info: true
+            },
+            input_dropout_probability,
+            dropout_probability,
+            gradient_clip
+        );
+
+        let info = TrainingInfo{
+            batch_size,
+            calculate_accuracy: false,
+            iterations: 10000,
+            learning_rate: Some(0.01),
+            less_info: false,
+            steps_num: StepsNum::Steps(3)
+        };
+
+        let last_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
+
+        assert!(last_loss < 0.001, "{last_loss} must be close to 0");
     }
 }

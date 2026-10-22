@@ -1,7 +1,6 @@
 use serde::{Serialize, Deserialize};
 
 use super::{
-    DECAY_FUNCTION,
     TensorPtr,
     DiffTensorPtr,
     ShapedTensorIndex,
@@ -10,28 +9,21 @@ use super::{
 };
 
 
+#[derive(Debug, Clone)]
 pub enum OptimizerInfoPtr
 {
     Ptr(TensorPtr),
     Index(ShapedTensorIndex)
 }
 
-#[allow(dead_code)]
-pub enum DecayFunction
+fn force_ptr(x: &OptimizerInfoPtr) -> TensorPtr
 {
-    Power,
-    Division
-}
-
-impl DecayFunction
-{
-    fn decay(&self, value: f32, t: i32) -> f32
+    if let OptimizerInfoPtr::Ptr(x) = x
     {
-        match self
-        {
-            DecayFunction::Power => value.powi(t),
-            DecayFunction::Division => value / t as f32
-        }
+        *x
+    } else
+    {
+        panic!("info must be a ptr")
     }
 }
 
@@ -53,14 +45,15 @@ impl NewableLayer for ()
     fn new_values<F: FnMut(LayerType) -> OptimizerInfoPtr>(_previous: usize, _current: usize, _f: F) -> Self {}
 }
 
-pub struct OptimizerInfo<O>
+pub struct OptimizerInfo<O, P>
 {
     pub weights: Vec<DiffTensorPtr>,
+    pub params: Vec<P>,
     pub gradient_clip: Option<f32>,
     pub optimizer: O
 }
 
-impl<O: Optimizer> OptimizerInfo<O>
+impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
 {
     pub fn add_operations(&self, recorder: &mut OperationsRecorder)
     {
@@ -68,7 +61,7 @@ impl<O: Optimizer> OptimizerInfo<O>
 
         let batch_size_recip = recorder.set_new_value((batch_size as f32).recip()).as_value();
 
-        self.weights.iter().for_each(|weight|
+        self.weights.iter().zip(self.params.iter()).for_each(|(weight, param)|
         {
             let gradient = weight.as_gradient().expect("all weights must have a gradient");
             let weight = weight.as_value();
@@ -87,7 +80,7 @@ impl<O: Optimizer> OptimizerInfo<O>
 
             recorder.name_tensor(clipped_gradient, "clipped_gradient");
 
-            let new_weight = self.optimizer.clone().add_operations(recorder, clipped_gradient);
+            let new_weight = self.optimizer.clone().add_operations(recorder, param, clipped_gradient);
             recorder.name_tensor(new_weight, "new_weight_override");
 
             recorder.store_tensor_until_end(new_weight);
@@ -104,7 +97,7 @@ pub trait Optimizer: Default + Clone
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, f: F) -> Self::WeightParam<U>;
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr;
+    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr;
 
     fn set_learning_rate(&mut self, learning_rate: f32);
 }
@@ -115,7 +108,7 @@ impl Optimizer for ()
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> { unreachable!() }
 
-    fn add_operations(self, _recorder: &mut OperationsRecorder, _gradient: TensorPtr) -> TensorPtr
+    fn add_operations(self, _recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, _gradient: TensorPtr) -> TensorPtr
     {
         unreachable!()
     }
@@ -147,7 +140,7 @@ impl Optimizer for Sgd
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> {}
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
+    fn add_operations(self, recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
         recorder.sgd_optimizer(gradient, self)
     }
@@ -162,7 +155,7 @@ impl Optimizer for Sgd
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSignGradientInfo<T>
 {
-    m: T
+    pub m: T
 }
 
 impl NewableLayer for PowerSignGradientInfo<OptimizerInfoPtr>
@@ -205,19 +198,9 @@ impl Optimizer for PowerSign
         }
     }
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
+    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
-        todo!()
-        /*let t = 1; let increase_me = ();
-
-        gradient_info.m = gradient_info.m.mul_scalar(self.b1).add(gradient.mul_scalar(1.0 - self.b1).as_ref());
-
-        let decay = DECAY_FUNCTION.decay(self.learning_rate, self.t);
-
-        let mut this = gradient.signum().mul_componentwise(gradient_info.m.signum().as_ref()).mul_scalar(decay);
-        this.as_mut().exp_inplace();
-
-        this.mul_componentwise(gradient.as_ref())*/
+        recorder.powersign_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)

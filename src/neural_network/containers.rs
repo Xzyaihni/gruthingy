@@ -21,7 +21,14 @@ use serde::{Serialize, Deserialize};
 
 use ywrapper::*;
 use rawarray::*;
-use optimizers::{OptimizerInfo, Optimizer, Sgd};
+use optimizers::{
+    OptimizerInfo,
+    OptimizerInfoPtr,
+    Optimizer,
+    Sgd,
+    PowerSignGradientInfo,
+    PowerSign
+};
 
 mod shader_preprocessor;
 
@@ -29,9 +36,6 @@ mod ywrapper;
 mod rawarray;
 pub mod optimizers;
 
-
-// options: Power, Division
-pub const DECAY_FUNCTION: optimizers::DecayFunction = optimizers::DecayFunction::Power;
 
 pub type LayerType = YWrapper;
 pub type LayerTypeRef<'a> = YWrapperRef<'a>;
@@ -1457,6 +1461,7 @@ struct KernelLayouts
     r1_w1_i1: KernelLayout,
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
+    r2_w1_i2: KernelLayout,
     r2_w2_i0: KernelLayout
 }
 
@@ -1497,7 +1502,7 @@ impl WgpuInitInfo
             label: None,
             required_features,
             required_limits: wgpu::Limits{
-                max_immediate_size: 4,
+                max_immediate_size: 8,
                 ..wgpu::Limits::downlevel_defaults()
             },
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -1600,6 +1605,20 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 1)
             };
 
+            let r2_w1_i2 = {
+                let name = "r2_w1_i2";
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some(name),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, name, 2)
+            };
+
             let r2_w2_i0 = {
                 let name = "r2_w2_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1620,6 +1639,7 @@ impl WgpuInitInfo
                 r1_w1_i1,
                 r2_w1_i0,
                 r2_w1_i1,
+                r2_w1_i2,
                 r2_w2_i0
             }
         };
@@ -1662,7 +1682,8 @@ impl WgpuInitInfo
                 OpKernel::SoftmaxCrossEntropyPartA => ("kernels/softmax_cross_entropy_part_a.wgsl", &kernel_layouts.r2_w2_i0),
                 OpKernel::SoftmaxCrossEntropyPartB => ("kernels/softmax_cross_entropy_part_b.wgsl", &kernel_layouts.r2_w2_i0),
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.r1_w1_i1)
+                OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.r1_w1_i1),
+                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.r2_w1_i2)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -2483,6 +2504,22 @@ impl OperationsRecorder
         let output = self.memory.new_tensor_index(shape.into());
 
         self.gradient_operations.push(GradientOp::OptimizerSgd{gradient, sgd, output});
+
+        output
+    }
+
+    pub fn powersign_optimizer(
+        &mut self,
+        gradient: TensorPtr,
+        powersign: PowerSign,
+        info: PowerSignGradientInfo<TensorPtr>
+    ) -> TensorPtr
+    {
+        let shape = self.tensor_shape(gradient);
+
+        let output = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::OptimizerPowerSign{gradient, powersign, m: info.m, output});
 
         output
     }
@@ -4107,6 +4144,28 @@ impl OperationsRecorder
                     do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Sgd, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &sgd.learning_rate.to_ne_bytes());
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((),());
+                },
+                GradientOp::OptimizerPowerSign{gradient, powersign, m, output} =>
+                {
+                    debug_calculate_values!(OptimizerPowerSign, (gradient, m),());
+
+                    debug_assert_eq!(gradient.shape, output.shape);
+                    debug_assert_eq!(m.shape, output.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i2, &[
+                        bind_group_entry(0, *gradient),
+                        bind_group_entry(1, *m),
+                        bind_group_entry(2, *output)
+                    ], "OptimizerPowerSign", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::PowerSign, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &powersign.b1.to_ne_bytes());
+                    compute_pass.as_mut().unwrap().set_immediates(1, &powersign.learning_rate.to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -6195,6 +6254,7 @@ impl OperationsRecorder
                 GradientOp::SumBatch{value, output} => t_storage!(value, output),
                 GradientOp::CapMagnitude{value, magnitude: _, output} => t_storage!(value, output),
                 GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
+                GradientOp::OptimizerPowerSign{gradient, powersign: _, m, output} => t_storage!(gradient, m, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
                 GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
@@ -7492,7 +7552,7 @@ impl OperationsRecorder
     pub fn gradient_with<O: Optimizer>(
         &mut self,
         respect: DiffWrapper,
-        optimizer: Option<OptimizerInfo<O>>
+        optimizer: Option<OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>>
     )
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
@@ -9129,6 +9189,7 @@ pub enum GradientOp<T, V, J, O, S>
     BatchReplicate{value: T, output: T},
     CapMagnitude{value: T, magnitude: V, output: T},
     OptimizerSgd{gradient: T, sgd: Sgd, output: T},
+    OptimizerPowerSign{gradient: T, powersign: PowerSign, m: T, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -9235,6 +9296,10 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
             Self::CapMagnitude{value, magnitude, output} => GradientOp::CapMagnitude{value: tf(value), magnitude: vf(magnitude), output: tf(output)},
             Self::OptimizerSgd{gradient, sgd, output} => GradientOp::OptimizerSgd{gradient: tf(gradient), sgd, output: tf(output)},
+            Self::OptimizerPowerSign{gradient, powersign, m, output} =>
+            {
+                GradientOp::OptimizerPowerSign{gradient: tf(gradient), powersign, m: tf(m), output: tf(output)}
+            },
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
             Self::LeakyReluDiff{value, gradient, output} => GradientOp::LeakyReluDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
@@ -9430,6 +9495,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::BatchReplicate{output, value} => Self::BatchReplicate{output: tf(&mut state, output), value},
             Self::CapMagnitude{value, magnitude, output} => Self::CapMagnitude{output: tf(&mut state, output), value, magnitude},
             Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{output: tf(&mut state, output), gradient, sgd},
+            Self::OptimizerPowerSign{gradient, powersign, m, output} =>
+            {
+                Self::OptimizerPowerSign{output: tf(&mut state, output), gradient, powersign, m}
+            },
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(&mut state, output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(&mut state, output), value},
             Self::SigmoidDiff{output, gradient, value} => Self::SigmoidDiff{output: tf(&mut state, output), gradient, value},
@@ -9601,6 +9670,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
                 Self::CapMagnitude{value: tf(&mut state, value), magnitude: vf(&mut state, magnitude), output}
             },
             Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{gradient: tf(&mut state, gradient), sgd, output},
+            Self::OptimizerPowerSign{gradient, powersign, m, output} =>
+            {
+                Self::OptimizerPowerSign{gradient: tf(&mut state, gradient), powersign, m: tf(&mut state, m), output}
+            },
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
                 Self::SoftmaxCrossEntropyNoSoftmaxed{values: tf(&mut state, values), targets: of(&mut state, targets), output}
