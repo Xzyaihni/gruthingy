@@ -1779,9 +1779,15 @@ mod tests
     }
 
     #[test]
-    fn simple_data_overfit_char()
+    fn simple_data_overfit_char_sgd()
     {
-        simple_data_overfit_with(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000);
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_powersign()
+    {
+        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000);
     }
 
     #[test]
@@ -1794,7 +1800,7 @@ mod tests
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with(dictionary, 4500);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 4500);
     }
 
     #[test]
@@ -1807,11 +1813,13 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with(dictionary, 3000);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 3000);
     }
 
-    fn simple_data_overfit_with<D: NetworkDictionary>(dictionary: D, iterations: usize)
+    fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(dictionary: D, iterations: usize)
     where
+        OptimizerType::WeightParam<OptimizerInfoPtr>: NewableLayer,
+        OptimizerType::WeightParam<OptimizerInfoPtr>: Clone,
         for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
         for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
@@ -1850,10 +1858,9 @@ mod tests
         let dropout_probability = 0.0;
         let gradient_clip = None;
 
-        type OptimizerType = Sgd;
-        type NetworkType = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
+        type NetworkType<OptimizerType> = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
 
-        let mut network: NeuralNetwork<NetworkType, OptimizerType, _> = NeuralNetwork::new(
+        let mut network: NeuralNetwork<NetworkType<OptimizerType>, OptimizerType, _> = NeuralNetwork::new(
             dictionary,
             layer_sizes,
             NetworkConfigInfo{

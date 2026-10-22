@@ -27,7 +27,9 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
         return;
     }
 
-    m[index] = info.b1 * m[index] + (1.0 - info.b1) * gradient[index];
+    let new_m = info.b1 * m[index] + (1.0 - info.b1) * gradient[index];
 
-    weights[index] -= gradient[index] * pow(info.learning_rate, sign(m[index]) * sign(gradient[index]));
+    weights[index] -= gradient[index] * exp(sign(new_m) * sign(gradient[index])) * info.learning_rate;
+
+    m[index] = new_m;
 }
