@@ -57,6 +57,11 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
 {
     pub fn add_operations(&self, recorder: &mut OperationsRecorder)
     {
+        if O::is_none_optimizer()
+        {
+            return;
+        }
+
         let batch_size = self.weights.first().map(|x| recorder.tensor_shape(x.as_value()).batch_size).unwrap_or(1);
 
         let batch_size_recip = recorder.set_new_value((batch_size as f32).recip()).as_value();
@@ -86,6 +91,11 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
             recorder.store_tensor_until_end(new_weight);
             recorder.memory.allow_after_coalesce_use(new_weight);
 
+            O::map_data_ref(param, |x|
+            {
+                recorder.store_tensor_until_end(force_ptr(x));
+            });
+
             recorder.force_same_memory(new_weight, weight);
         });
     }
@@ -94,6 +104,8 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
 pub trait Optimizer: Default + Clone
 {
     type WeightParam<T>;
+
+    fn is_none_optimizer() -> bool { false }
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, f: F) -> Self::WeightParam<U>;
 
@@ -105,6 +117,8 @@ pub trait Optimizer: Default + Clone
 impl Optimizer for ()
 {
     type WeightParam<T> = ();
+
+    fn is_none_optimizer() -> bool { true }
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> { unreachable!() }
 

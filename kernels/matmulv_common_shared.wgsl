@@ -15,6 +15,8 @@ let batch_index = workgroup_id.x / lhs_rows;
 
 let batch_start = batch_index * lhs_single_length;
 
+var total = 0.0;
+
 let inside_spans = div_ceil(lhs_columns, WORKGROUP_SIZE);
 for (var span_id = 0u; span_id < inside_spans; span_id++)
 {

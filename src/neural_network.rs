@@ -1781,7 +1781,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char()
     {
-        simple_data_overfit_with(CharDictionary::new(InputData::String("abcdefg".to_owned())));
+        simple_data_overfit_with(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000);
     }
 
     #[test]
@@ -1794,7 +1794,7 @@ mod tests
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with(dictionary);
+        simple_data_overfit_with(dictionary, 4500);
     }
 
     #[test]
@@ -1807,10 +1807,10 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with(dictionary);
+        simple_data_overfit_with(dictionary, 3000);
     }
 
-    fn simple_data_overfit_with<D: NetworkDictionary>(dictionary: D)
+    fn simple_data_overfit_with<D: NetworkDictionary>(dictionary: D, iterations: usize)
     where
         for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
         for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
@@ -1869,7 +1869,7 @@ mod tests
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,
-            iterations: 10000,
+            iterations,
             learning_rate: Some(0.01),
             less_info: false,
             steps_num: StepsNum::Steps(3)

@@ -10,7 +10,6 @@ var<storage, read_write> output: array<f32>;
 #include "default_workgroup_size.wgsl"
 
 var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
-var<private> total: f32;
 
 #include "div_ceil.wgsl"
 

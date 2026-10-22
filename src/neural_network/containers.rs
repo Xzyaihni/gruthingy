@@ -1459,9 +1459,9 @@ struct KernelLayouts
 {
     r1_w1_i0: KernelLayout,
     r1_w1_i1: KernelLayout,
+    r1_w2_i2: KernelLayout,
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
-    r2_w1_i2: KernelLayout,
     r2_w2_i0: KernelLayout
 }
 
@@ -1577,6 +1577,20 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 1)
             };
 
+            let r1_w2_i2 = {
+                let name = "r1_w2_i2";
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some(name),
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1),
+                        output_layout_entry(2)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, name, 2)
+            };
+
             let r2_w1_i0 = {
                 let name = "r2_w1_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1605,20 +1619,6 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 1)
             };
 
-            let r2_w1_i2 = {
-                let name = "r2_w1_i2";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        input_layout_entry(1),
-                        output_layout_entry(2)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, name, 2)
-            };
-
             let r2_w2_i0 = {
                 let name = "r2_w2_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1637,9 +1637,9 @@ impl WgpuInitInfo
             KernelLayouts{
                 r1_w1_i0,
                 r1_w1_i1,
+                r1_w2_i2,
                 r2_w1_i0,
                 r2_w1_i1,
-                r2_w1_i2,
                 r2_w2_i0
             }
         };
@@ -1683,7 +1683,7 @@ impl WgpuInitInfo
                 OpKernel::SoftmaxCrossEntropyPartB => ("kernels/softmax_cross_entropy_part_b.wgsl", &kernel_layouts.r2_w2_i0),
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.r1_w1_i1),
-                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.r2_w1_i2)
+                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.r1_w2_i2)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -4156,7 +4156,7 @@ impl OperationsRecorder
                     debug_assert_eq!(gradient.shape, output.shape);
                     debug_assert_eq!(m.shape, output.shape);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i2, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w2_i2, &[
                         bind_group_entry(0, *gradient),
                         bind_group_entry(1, *m),
                         bind_group_entry(2, *output)
@@ -4165,7 +4165,7 @@ impl OperationsRecorder
                     do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::PowerSign, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &powersign.b1.to_ne_bytes());
-                    compute_pass.as_mut().unwrap().set_immediates(1, &powersign.learning_rate.to_ne_bytes());
+                    compute_pass.as_mut().unwrap().set_immediates(FLOAT_BYTES as u32, &powersign.learning_rate.to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, output.size());
 

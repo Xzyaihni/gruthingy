@@ -7,7 +7,6 @@ var<storage, read_write> dst: array<f32>;
 #include "default_workgroup_size.wgsl"
 
 var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
-var<private> total: f32;
 
 #include "div_ceil.wgsl"
 
@@ -22,6 +21,8 @@ fn run(
 
     let batch_index = workgroup_id.x;
     let batch_start = batch_index * values_length;
+
+    var total = 0.0;
 
     let inside_spans = div_ceil(values_length, WORKGROUP_SIZE);
     for (var span_id = 0u; span_id < inside_spans; span_id++)
