@@ -4,7 +4,7 @@ use super::{
     Sgd,
     //Adam,
     //AdamX,
-    //PowerSign,
+    PowerSign,
     OneHotEmbeddings,
     BagOfWordsEmbeddings,
     Gru,
@@ -39,7 +39,7 @@ pub const USE_EMBEDDING_LAYER: bool = true;
 pub const LOWERCASE_ONLY: bool = true;
 
 // options: Sgd, Adam, AdamX, PowerSign
-pub type NOptimizer = Sgd;
+pub type NOptimizer = PowerSign;
 const put_me_to_adamx: () = ();
 
 // options: PostcardFormat, JsonFormat, MixedFormat<Save, Load>

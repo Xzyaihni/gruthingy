@@ -4,6 +4,7 @@ use super::{
     DECAY_FUNCTION,
     TensorPtr,
     DiffTensorPtr,
+    LayerType,
     OperationsRecorder
 };
 
@@ -82,66 +83,9 @@ impl<O: Optimizer> OptimizerInfo<O>
     }
 }
 
-const uncomment_me_2: () = ();
-/*#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdamGradientInfo
-{
-    m: LayerType,
-    v: LayerType
-}
-
-impl NewableLayer for AdamGradientInfo
-{
-    fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        Self{
-            m: LayerType::new(this_size, previous_size),
-            v: LayerType::new(this_size, previous_size)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdamXGradientInfo
-{
-    m: LayerType,
-    v: LayerType,
-    v_hat: Option<LayerType>
-}
-
-impl NewableLayer for AdamXGradientInfo
-{
-    fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        Self{
-            m: LayerType::new(this_size, previous_size),
-            v: LayerType::new(this_size, previous_size),
-            v_hat: None
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PowerSignGradientInfo
-{
-    m: LayerType
-}
-
-impl NewableLayer for PowerSignGradientInfo
-{
-    fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        Self{
-            m: LayerType::new(this_size, previous_size)
-        }
-    }
-}*/
-
 pub trait Optimizer: Default + Clone
 {
-    type WeightParam;
+    type WeightParam<T>;
 
     fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr;
 
@@ -150,7 +94,7 @@ pub trait Optimizer: Default + Clone
 
 impl Optimizer for ()
 {
-    type WeightParam = ();
+    type WeightParam<T> = ();
 
     fn add_operations(self, _recorder: &mut OperationsRecorder, _gradient: TensorPtr) -> TensorPtr
     {
@@ -180,7 +124,7 @@ impl Default for Sgd
 
 impl Optimizer for Sgd
 {
-    type WeightParam = ();
+    type WeightParam<T> = ();
 
     fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
     {
@@ -193,35 +137,51 @@ impl Optimizer for Sgd
     }
 }
 
-const uncomment_me: () = ();
-/*#[allow(dead_code)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PowerSignGradientInfo<T>
+{
+    m: T
+}
+
+impl NewableLayer for PowerSignGradientInfo<LayerType>
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self{
+            m: LayerType::new(this_size, previous_size)
+        }
+    }
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSign
 {
     pub b1: f32,
-    pub learning_rate: f32,
-    pub t: i32
+    pub learning_rate: f32
+}
+
+impl Default for PowerSign
+{
+    fn default() -> Self
+    {
+        Self{
+            b1: 0.9,
+            learning_rate: 0.1
+        }
+    }
 }
 
 impl Optimizer for PowerSign
 {
-    type WeightParam = PowerSignGradientInfo;
+    type WeightParam<T> = PowerSignGradientInfo<T>;
 
-    fn new() -> Self
+    fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
     {
-        Self{
-            b1: 0.9,
-            learning_rate: 0.1,
-            t: 1
-        }
-    }
+        todo!()
+        /*let t = 1; let increase_me = ();
 
-    fn gradient_to_change(
-        &self,
-        gradient_info: &mut Self::WeightParam,
-        gradient: LayerType
-    ) -> LayerType
-    {
         gradient_info.m = gradient_info.m.mul_scalar(self.b1).add(gradient.mul_scalar(1.0 - self.b1).as_ref());
 
         let decay = DECAY_FUNCTION.decay(self.learning_rate, self.t);
@@ -229,17 +189,33 @@ impl Optimizer for PowerSign
         let mut this = gradient.signum().mul_componentwise(gradient_info.m.signum().as_ref()).mul_scalar(decay);
         this.as_mut().exp_inplace();
 
-        this.mul_componentwise(gradient.as_ref())
-    }
-
-    fn advance_time(&mut self)
-    {
-        self.t += 1;
+        this.mul_componentwise(gradient.as_ref())*/
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
+    }
+}
+
+const uncomment_me: () = ();
+/*#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdamXGradientInfo
+{
+    m: LayerType,
+    v: LayerType,
+    v_hat: Option<LayerType>
+}
+
+impl NewableLayer for AdamXGradientInfo
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self{
+            m: LayerType::new(this_size, previous_size),
+            v: LayerType::new(this_size, previous_size),
+            v_hat: None
+        }
     }
 }
 
@@ -310,6 +286,25 @@ impl Optimizer for AdamX
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.a = learning_rate;
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdamGradientInfo
+{
+    m: LayerType,
+    v: LayerType
+}
+
+impl NewableLayer for AdamGradientInfo
+{
+    fn new(previous_size: usize, this_size: usize) -> Self
+    {
+        Self{
+            m: LayerType::new(this_size, previous_size),
+            v: LayerType::new(this_size, previous_size)
+        }
     }
 }
 
