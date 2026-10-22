@@ -14,6 +14,7 @@ use neural_network::{
     NDictionary,
     UnitFactory,
     EmbeddingUnit,
+    OptimizerInfoPtr,
     Optimizer,
     NewableLayer,
     Network
@@ -55,9 +56,6 @@ pub fn load_embeddings<O>(
     _config: Option<&mut Config>,
     _auto_create: bool
 ) -> NeuralNetwork<EmbeddingsUnitFactory, O, WordDictionary>
-where
-    O: Optimizer,
-    for<'a> O::WeightParam: Clone + NewableLayer + Serialize + Deserialize<'a>
 {
     unreachable!()
 }
@@ -81,7 +79,7 @@ pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature:
         print_optional_info: false
     };
 
-    type NeuralNetworkType = NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam>, NOptimizer, NDictionary>;
+    type NeuralNetworkType = NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, NDictionary>;
 
     let mut network: NeuralNetworkType = NeuralNetwork::load(network_config, 1, path).unwrap_or_else(|err|
     {

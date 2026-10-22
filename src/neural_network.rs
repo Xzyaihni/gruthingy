@@ -75,7 +75,7 @@ pub use containers::{
     OwnedInputType,
     OneHotLayer,
     Softmaxer,
-    optimizers::{NewableLayer, Optimizer, OptimizerInfo}
+    optimizers::{NewableLayer, Optimizer, OptimizerInfo, OptimizerInfoPtr}
 };
 
 #[allow(unused_imports)]
@@ -692,7 +692,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     )
     where
         N: UnitFactory,
-        N::Unit<O>: OptimizerUnit<O>,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -739,7 +738,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     pub fn predict_bytes<N, O>(self, network: &mut Network<N, O>) -> Box<[u8]>
     where
         N: UnitFactory,
-        N::Unit<O>: OptimizerUnit<O>,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -840,7 +838,7 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
 {
     fn from_guesses(
-        network: &mut Network<N, O::WeightParam<ShapedTensorIndex>>,
+        network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
         input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>;
 }
@@ -849,7 +847,6 @@ impl<N, O> FromGuesses<N, O> for bool
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<O::WeightParam<ShapedTensorIndex>>: OptimizerUnit<O::WeightParam<ShapedTensorIndex>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -862,7 +859,7 @@ where
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     fn from_guesses(
-        network: &mut Network<N, O::WeightParam<ShapedTensorIndex>>,
+        network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
         input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>
     {
@@ -874,7 +871,6 @@ impl<N, O> FromGuesses<N, O> for u32
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<O::WeightParam<ShapedTensorIndex>>: OptimizerUnit<O::WeightParam<ShapedTensorIndex>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -887,7 +883,7 @@ where
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     fn from_guesses(
-        network: &mut Network<N, O::WeightParam<ShapedTensorIndex>>,
+        network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
         input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>
     {
@@ -899,7 +895,6 @@ impl<N, O> FromGuesses<N, O> for AccuracyCertaintyInfo
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<O::WeightParam<ShapedTensorIndex>>: OptimizerUnit<O::WeightParam<ShapedTensorIndex>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -912,7 +907,7 @@ where
     for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
 {
     fn from_guesses(
-        network: &mut Network<N, O::WeightParam<ShapedTensorIndex>>,
+        network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
         input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> impl Iterator<Item=(usize, Self)>
     {
@@ -976,19 +971,16 @@ pub struct NeuralNetwork<NetworkType, O, D>
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
 #[cfg(not(test))]
-impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam<ShapedTensorIndex>>, O, D>
+impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam<OptimizerInfoPtr>>, O, D>
 where
     O: Optimizer,
-    D: Clone,
-    O::WeightParam<ShapedTensorIndex>: Clone
+    D: Clone
 {
     pub fn without_optimizer(&self) -> NeuralNetwork<SaveNetwork<EmbeddingsUnitFactory, ()>, (), D>
-    where
-        EN<()>: OptimizerUnit<()>,
     {
         NeuralNetwork{
             dictionary: self.dictionary.clone(),
-            network: self.network.without_optimizer(),
+            network: self.network.without_optimizer::<O>(),
             optimizer: (),
             gradient_clip: self.gradient_clip.clone(),
             extra_info: self.extra_info.clone(),
@@ -1027,7 +1019,6 @@ where
         for<'de> O: Deserialize<'de>,
         for<'de> D: Deserialize<'de>,
         for<'de> O::WeightParam<LayerType>: Deserialize<'de>,
-        for<'de> N::Unit<O::WeightParam<LayerType>>: Deserialize<'de>,
         for<'de> N::Unit<SaveWeightType>: Deserialize<'de>
     {
         let reader = File::open(path)?;
@@ -1042,8 +1033,7 @@ where
         O::WeightParam<LayerType>: Serialize,
         N::Unit<SaveWeightType>: Serialize,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<O::WeightParam<LayerType>>: Serialize
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
     {
         eprintln!("saved network at {}", path.display());
 
@@ -1058,11 +1048,10 @@ where
     }
 }
 
-impl<N, O, D> NeuralNetwork<Network<N, O::WeightParam<ShapedTensorIndex>>, O, D>
+impl<N, O, D> NeuralNetwork<Network<N, O::WeightParam<OptimizerInfoPtr>>, O, D>
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<O::WeightParam<ShapedTensorIndex>>: OptimizerUnit<O::WeightParam<ShapedTensorIndex>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -1082,7 +1071,7 @@ where
         gradient_clip: Option<f32>
     ) -> Self
     where
-        O::WeightParam<ShapedTensorIndex>: NewableLayer,
+        O::WeightParam<OptimizerInfoPtr>: NewableLayer,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
@@ -1103,14 +1092,13 @@ where
         O::WeightParam<LayerType>: Serialize + Clone,
         N::Unit<SaveWeightType>: Serialize,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<O::WeightParam<LayerType>>: Serialize + Clone
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
     {
         let path = path.as_ref();
 
         let save_network: NeuralNetwork<SaveNetwork<N, O::WeightParam<LayerType>>, O, D> = NeuralNetwork{
             dictionary: self.dictionary.clone(),
-            network: SaveNetwork::from_network(&self.network),
+            network: SaveNetwork::from_network::<O, O::WeightParam<OptimizerInfoPtr>>(&self.network),
             optimizer: self.optimizer.clone(),
             gradient_clip: self.gradient_clip.clone(),
             extra_info: self.extra_info.clone(),
@@ -1129,7 +1117,6 @@ where
         for<'de> O: Deserialize<'de>,
         for<'de> D: Deserialize<'de>,
         for<'de> O::WeightParam<LayerType>: Deserialize<'de>,
-        for<'de> N::Unit<O::WeightParam<LayerType>>: Deserialize<'de>,
         for<'de> N::Unit<SaveWeightType>: Deserialize<'de>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
@@ -1143,7 +1130,7 @@ where
 
         Ok(Self{
             dictionary: this.dictionary,
-            network: Network::load(this.network, config, batch_size),
+            network: Network::load::<O, O::WeightParam<LayerType>>(this.network, config, batch_size),
             optimizer: this.optimizer,
             gradient_clip: this.gradient_clip,
             extra_info: this.extra_info,
@@ -1288,9 +1275,6 @@ where
         EmbeddingType: EmbeddingsTypeable,
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        for<'b> &'b mut N::Unit<O::WeightParam<ShapedTensorIndex>>: IntoIterator<Item=&'b mut O::WeightParam<ShapedTensorIndex>>,
-        N::Unit<O::WeightParam<ShapedTensorIndex>>: OptimizerUnit<O::WeightParam<ShapedTensorIndex>, Unit<DiffTensor>=N::Unit<DiffTensor>>,
-        N::Unit<O::WeightParam<ShapedTensorIndex>>: OptimizerUnit<O::WeightParam<ShapedTensorIndex>, Unit<LayerType>=N::Unit<LayerType>>,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
@@ -1446,7 +1430,7 @@ where
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        F: FnOnce(Predictor<D>, &mut Network<N, O::WeightParam<ShapedTensorIndex>>) -> T
+        F: FnOnce(Predictor<D>, &mut Network<N, O::WeightParam<OptimizerInfoPtr>>) -> T
     {
         let predictor = {
             // could do this without a collect but wheres the fun in that

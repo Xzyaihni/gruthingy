@@ -38,6 +38,7 @@ use crate::{
         OptimizerUnit,
         OptimizerInfo,
         UnitFactory,
+        OptimizerInfoPtr,
         USE_EMBEDDING_LAYER,
         network_unit::EmbeddingsableOwned
     }
@@ -360,7 +361,6 @@ macro_rules! create_weights_container
             LayerType,
             NewableLayer,
             GenericUnit,
-            OptimizerUnit,
             network::{WeightsNamed, WeightsSize}
         };
 
@@ -479,8 +479,6 @@ macro_rules! create_weights_container
                             }
                         };
 
-                        recorder.host_settable(weights.as_value());
-
                         recorder.name_diff_tensor(weights, stringify!($name));
 
                         let is_bias = matches!($previous_size, LayerSize::One);
@@ -498,24 +496,6 @@ macro_rules! create_weights_container
                         weights
                     },
                 )+}
-            }
-        }
-
-        impl<T> OptimizerUnit<T> for WeightsContainer<T>
-        where
-            T: Clone + NewableLayer + Serialize + serde::de::DeserializeOwned
-        {
-            fn new_zeroed(sizes: $crate::neural_network::LayerSizes) -> Self
-            {
-                Self{
-                    sizes,
-                    $(
-                        $name: T::new(
-                            $previous_size.into_number(sizes),
-                            $this_size.into_number(sizes)
-                        ),
-                    )+
-                }
             }
         }
 
@@ -947,20 +927,19 @@ pub struct WeightInfo
 pub type SaveWeightType = LayerType;
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "O: Serialize, N::Unit<O>: Serialize, N::Unit<SaveWeightType>: Serialize", deserialize = "O: Deserialize<'de>, N::Unit<O>: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de>"))]
+#[serde(bound(serialize = "O: Serialize, N::Unit<SaveWeightType>: Serialize", deserialize = "O: Deserialize<'de>, N::Unit<SaveWeightType>: Deserialize<'de>"))]
 pub struct SaveNetwork<N: UnitFactory, O>
 {
     sizes: LayerSizes,
     input_dropout_probability: f32,
     dropout_probability: f32,
-    optimizer_info: Option<WeightsFullContainer<N, O>>,
+    optimizer_info: Option<Vec<O>>,
     weights: WeightsFullContainer<N, SaveWeightType>
 }
 
 impl<N: UnitFactory, O> Clone for SaveNetwork<N, O>
 where
     O: Clone,
-    N::Unit<O>: Clone,
     N::Unit<SaveWeightType>: Clone
 {
     fn clone(&self) -> Self
@@ -976,15 +955,15 @@ where
 }
 
 #[cfg(not(test))]
-impl<N: UnitFactory, O> SaveNetwork<N, O>
+impl<N: UnitFactory, SaveO> SaveNetwork<N, SaveO>
 where
-    O: Clone,
-    N::Unit<O>: Clone,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
 {
-    pub fn from_network(x: &Network<N, O>) -> Self
+    pub fn from_network<O, StoreO>(x: &Network<N, StoreO>) -> Self
+    where
+        O: Optimizer<WeightParam<LayerType>=SaveO> + Optimizer<WeightParam<OptimizerInfoPtr>=StoreO>
     {
         let weights = if let Some(w) = x.weights.as_ref()
         {
@@ -1000,11 +979,21 @@ where
             })
         };
 
+        let optimizer_info = x.optimizer_info.as_ref().map(|infos|
+        {
+            infos.iter().map(|info| O::map_data_ref(info, |value|
+            {
+                let OptimizerInfoPtr::Index(value) = *value else { panic!("must be resolved") };
+
+                x.recorder.get_tensor_blocking(value)
+            })).collect()
+        });
+
         Self{
             sizes: x.sizes,
             input_dropout_probability: x.dropouts.input_dropout_probability,
             dropout_probability: x.dropouts.dropout_probability,
-            optimizer_info: x.optimizer_info.clone(),
+            optimizer_info,
             weights
         }
     }
@@ -1113,14 +1102,13 @@ where
     dropouts: NetworkDropoutData,
     inputs: NetworkInputsData,
     outputs: NetworkOutputsData,
-    optimizer_info: Option<WeightsFullContainer<N, O>>,
+    optimizer_info: Option<Vec<O>>,
     weights_ptr: Option<WeightsFullContainer<N, WeightInfoPtr>>,
     weights: Option<WeightsFullContainer<N, WeightInfo>>
 }
 
-impl<N: UnitFactory, O> Network<N, O>
+impl<N: UnitFactory, StoreO> Network<N, StoreO>
 where
-    N::Unit<O>: OptimizerUnit<O>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
@@ -1133,11 +1121,13 @@ where
     N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
 {
-    pub fn load(
-        mut x: SaveNetwork<N, O>,
+    pub fn load<O, SaveO>(
+        mut x: SaveNetwork<N, SaveO>,
         config: NetworkConfigInfo,
         batch_size: usize
     ) -> Self
+    where
+        O: Optimizer<WeightParam<LayerType>=SaveO> + Optimizer<WeightParam<OptimizerInfoPtr>=StoreO>
     {
         if !USE_EMBEDDING_LAYER
         {
@@ -1164,8 +1154,6 @@ where
                 recorder.set_new_tensor_gradientable(value)
             };
 
-            recorder.host_settable(weights.as_value());
-
             maybe_dropout_weights(recorder, is_skip, weights, TensorShape{
                 batch_size,
                 ..shape
@@ -1187,11 +1175,19 @@ where
             })).collect()
         };
 
+        let optimizer_info = x.optimizer_info.map(|infos|
+        {
+            infos.into_iter().map(|info| O::map_data_ref(&info, |value: &LayerType|
+            {
+                OptimizerInfoPtr::Ptr(recorder.set_new_tensor(value.clone()).as_value())
+            })).collect()
+        });
+
         let mut this = Self{
             sizes: x.sizes,
             network_mode: None,
             config: None,
-            optimizer_info: x.optimizer_info,
+            optimizer_info,
             weights_ptr: Some(weights_ptr),
             weights: None,
             dropouts: NetworkDropoutData::new(x.input_dropout_probability, x.dropout_probability),
@@ -1235,7 +1231,6 @@ where
 
 impl<N: UnitFactory, O> Network<N, O>
 where
-    N::Unit<O>: OptimizerUnit<O>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -1252,9 +1247,9 @@ where
         config: NetworkConfigInfo
     ) -> Self
     where
+        O: NewableLayer,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        O: NewableLayer
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut this = Self::new_no_init(sizes, input_dropout_probability, dropout_probability, config);
 
@@ -1263,8 +1258,9 @@ where
         this
     }
 
-    pub fn initialize_with_sizes(&mut self, sizes: LayerSizes)
+    fn initialize_with_sizes(&mut self, sizes: LayerSizes)
     where
+        O: NewableLayer,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
@@ -1272,7 +1268,6 @@ where
         {
             let weights = self.recorder.set_new_tensor_gradientable(initialize_orthogonal(current, previous));
 
-            self.recorder.host_settable(weights.as_value());
             self.recorder.name_diff_tensor(weights, name);
 
             maybe_dropout_weights(&mut self.recorder, is_skip, weights, TensorShape{
@@ -1296,12 +1291,19 @@ where
             N::Unit::new(&mut self.recorder, size)
         }, embeddings_weights_ptr, output_weights_ptr);
 
+        self.optimizer_info = Some(weights_ptr.iter().map(|x|
+        {
+            let shape = self.recorder.tensor_shape(x.weight_original.as_value());
+
+            O::new(&mut self.recorder, shape.columns, shape.rows)
+        }).collect());
+
         self.weights_ptr = Some(weights_ptr);
 
         self.initialize();
     }
 
-    pub fn new_no_init(
+    fn new_no_init(
         sizes: LayerSizes,
         input_dropout_probability: f32,
         dropout_probability: f32,
@@ -1309,21 +1311,9 @@ where
     ) -> Self
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        O: NewableLayer
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let recorder = OperationsRecorder::new();
-
-        let optimizer_info: Option<_> = Some({
-            let embeddings = USE_EMBEDDING_LAYER.then(|| EmbeddingsLayers{
-                input: O::new(sizes.initial_input, sizes.input),
-                output: O::new(sizes.hidden, sizes.output)
-            });
-
-            let output = O::new(sizes.output, sizes.final_output);
-
-            WeightsFullContainer::new(sizes, N::Unit::new_zeroed, embeddings, output)
-        });
 
         Self{
             recorder,
@@ -1332,7 +1322,7 @@ where
             dropouts: NetworkDropoutData::new(input_dropout_probability, dropout_probability),
             inputs: NetworkInputsData::default(),
             outputs: NetworkOutputsData::default(),
-            optimizer_info,
+            optimizer_info: None,
             weights_ptr: None,
             weights: None,
             config: Some(config)
@@ -2378,14 +2368,15 @@ where
 }
 
 #[cfg(not(test))]
-impl<O> Network<EmbeddingsUnitFactory, O>
+impl<StoreO> Network<EmbeddingsUnitFactory, StoreO>
 where
-    EmbeddingsUnitFactory: UnitFactory,
-    O: Clone
+    EmbeddingsUnitFactory: UnitFactory
 {
-    pub fn without_optimizer(&self) -> SaveNetwork<EmbeddingsUnitFactory, ()>
+    pub fn without_optimizer<O: Optimizer>(&self) -> SaveNetwork<EmbeddingsUnitFactory, ()>
+    where
+        O: Optimizer<WeightParam<OptimizerInfoPtr>=StoreO>
     {
-        let save_network = SaveNetwork::from_network(self);
+        let save_network = SaveNetwork::from_network::<O, StoreO>(self);
 
         SaveNetwork{
             dropout_probability: save_network.dropout_probability,

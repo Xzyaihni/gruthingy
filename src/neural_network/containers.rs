@@ -1123,10 +1123,14 @@ impl OperationsRecorderMemory
 
     fn resolve_tensor_ptr(&self, index_ptr: TensorPtr) -> TensorIndex
     {
-        self.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
+        let index = self.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
         {
             panic!("{} must be resolved", self.format_variable(index_ptr))
-        })
+        });
+
+        debug_assert_ne!(index, TensorIndex::undefined());
+
+        index
     }
 
     fn resolve_shaped_tensor_index(&self, index: ShapedTensorIndex) -> TensorRawDataPointer
@@ -1446,6 +1450,7 @@ struct KernelLayout
     pipeline_layout: wgpu::PipelineLayout
 }
 
+#[derive(Clone)]
 struct KernelLayouts
 {
     r1_w1_i0: KernelLayout,
@@ -1455,33 +1460,24 @@ struct KernelLayouts
     r2_w2_i0: KernelLayout
 }
 
-struct RawArrayMemory
+#[derive(Clone)]
+pub struct WgpuInitInfo
 {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    tensor_usages: Vec<wgpu::BufferUsages>,
-    one_hot_usages: Vec<wgpu::BufferUsages>,
-    input_buffers: Vec<wgpu::Buffer>,
-    stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
-    scratch_buffers: Vec<wgpu::Buffer>,
-    scratch_buffers_locations: Vec<Vec<ScratchBufferIndex>>,
-    bind_groups: Vec<Vec<wgpu::BindGroup>>,
     kernel_layouts: KernelLayouts,
     kernels: [wgpu::ComputePipeline; KERNELS_COUNT]
 }
 
-impl RawArrayMemory
+impl WgpuInitInfo
 {
-    fn new() -> Self
+    pub fn new() -> Self
     {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap_or_else(|err| panic!("no compatible adapter found: {err}"));
 
-        if !cfg!(test)
-        {
-            eprintln!("using adapter: {}", adapter.get_info().name);
-        }
+        eprintln!("using adapter: {}", adapter.get_info().name);
 
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
         {
@@ -1697,6 +1693,36 @@ impl RawArrayMemory
         Self{
             device,
             queue,
+            kernel_layouts,
+            kernels
+        }
+    }
+}
+
+struct RawArrayMemory
+{
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    kernel_layouts: KernelLayouts,
+    kernels: [wgpu::ComputePipeline; KERNELS_COUNT],
+    tensor_usages: Vec<wgpu::BufferUsages>,
+    one_hot_usages: Vec<wgpu::BufferUsages>,
+    input_buffers: Vec<wgpu::Buffer>,
+    stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
+    scratch_buffers: Vec<wgpu::Buffer>,
+    scratch_buffers_locations: Vec<Vec<ScratchBufferIndex>>,
+    bind_groups: Vec<Vec<wgpu::BindGroup>>
+}
+
+impl RawArrayMemory
+{
+    fn from_init_info(init_info: WgpuInitInfo) -> Self
+    {
+        Self{
+            device: init_info.device,
+            queue: init_info.queue,
+            kernel_layouts: init_info.kernel_layouts,
+            kernels: init_info.kernels,
             tensor_usages: Vec::new(),
             one_hot_usages: Vec::new(),
             input_buffers: Vec::new(),
@@ -1704,8 +1730,6 @@ impl RawArrayMemory
             scratch_buffers: Vec::new(),
             scratch_buffers_locations: Vec::new(),
             bind_groups: Vec::new(),
-            kernel_layouts,
-            kernels
         }
     }
 }
@@ -1824,8 +1848,13 @@ impl OperationsRecorder
 {
     pub fn new() -> Self
     {
+        Self::from_init_info(WgpuInitInfo::new())
+    }
+
+    pub fn from_init_info(init_info: WgpuInitInfo) -> Self
+    {
         Self{
-            raw_array_memory: RawArrayMemory::new(),
+            raw_array_memory: RawArrayMemory::from_init_info(init_info),
             memory: OperationsRecorderMemory::new(),
             state: RecorderState::Recording,
             operations_target: OperationsTarget::Normal,
@@ -11446,11 +11475,12 @@ mod tests
     }
 
     fn run_single_operation<const N: usize>(
+        init_info: WgpuInitInfo,
         values: [LayerType; N],
         f: impl FnOnce(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     ) -> LayerType
     {
-        let mut recorder = OperationsRecorder::new();
+        let mut recorder = OperationsRecorder::from_init_info(init_info);
 
         let values = values.map(|x| recorder.set_new_tensor(x));
 
@@ -11513,6 +11543,8 @@ mod tests
     #[test]
     fn sum_tensor_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11526,7 +11558,7 @@ mod tests
             let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
             cpu_output.as_mut().sum_tensor_into(value.as_ref());
 
-            let gpu_output = run_single_operation([value], |recorder, [value]| recorder.sum_tensor(value));
+            let gpu_output = run_single_operation(init_info.clone(), [value], |recorder, [value]| recorder.sum_tensor(value));
 
             let description = format!("rows: {rows}, batch_size: {batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, || {});
@@ -11536,6 +11568,8 @@ mod tests
     #[test]
     fn max_tensor_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11549,7 +11583,7 @@ mod tests
             let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
             cpu_output.as_mut().max_tensor_into(value.as_ref());
 
-            let gpu_output = run_single_operation([value], |recorder, [value]| recorder.max_tensor(value));
+            let gpu_output = run_single_operation(init_info.clone(), [value], |recorder, [value]| recorder.max_tensor(value));
 
             let description = format!("rows: {rows}, batch_size: {batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, || {});
@@ -11559,6 +11593,8 @@ mod tests
     #[test]
     fn matmulv_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11575,7 +11611,7 @@ mod tests
             let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
             cpu_output.as_mut().as_vector_mut().matmulv_into(a.as_ref(), b.as_ref().as_vector_ref());
 
-            let gpu_output = run_single_operation([a, b], |recorder, [a, b]| recorder.matmulv(a, b));
+            let gpu_output = run_single_operation(init_info.clone(), [a, b], |recorder, [a, b]| recorder.matmulv(a, b));
 
             let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, || {});
@@ -11585,6 +11621,8 @@ mod tests
     #[test]
     fn matmul_onehotv_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11616,7 +11654,7 @@ mod tests
                 .as_vector_mut()
                 .matmul_onehotv_add_into(a.as_ref(), &b, LayerType::repeat_full(output_shape, 0.0).as_ref().as_vector_ref());
 
-            let gpu_output = run_single_operation([a], |recorder, [a]|
+            let gpu_output = run_single_operation(init_info.clone(), [a], |recorder, [a]|
             {
                 let b_index = recorder.new_one_hot(count, columns, batch_size);
                 recorder.set_one_hot_data(b_index, b.clone());
@@ -11635,6 +11673,8 @@ mod tests
     #[test]
     fn outer_product_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11653,7 +11693,7 @@ mod tests
             let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
             cpu_output.as_mut().outer_product_into(a.as_ref().as_vector_ref(), b.as_ref().as_vector_ref());
 
-            let gpu_output = run_single_operation([a, b], |recorder, [a, b]| recorder.outer_product(a, b));
+            let gpu_output = run_single_operation(init_info.clone(), [a, b], |recorder, [a, b]| recorder.outer_product(a, b));
 
             let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, || {});
@@ -11663,6 +11703,8 @@ mod tests
     #[test]
     fn outer_product_onehot_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11693,7 +11735,7 @@ mod tests
             let mut cpu_output = LayerType::repeat_full(output_shape, 0.0);
             cpu_output.as_mut().outer_product_one_hot_into(a.as_ref().as_vector_ref(), &b);
 
-            let gpu_output = run_single_operation([a], |recorder, [a]|
+            let gpu_output = run_single_operation(init_info.clone(), [a], |recorder, [a]|
             {
                 let b_index = recorder.new_one_hot(count, columns, batch_size);
                 recorder.set_one_hot_data(b_index, b.clone());
@@ -11712,6 +11754,8 @@ mod tests
     #[test]
     fn softmax_cross_entropy_equivalent()
     {
+        let init_info = WgpuInitInfo::new();
+
         for i in 2..255
         {
             let rows = fastrand::usize(1..i);
@@ -11735,7 +11779,7 @@ mod tests
 
             cpu_entropies.as_mut().softmax_cross_entropy_into(cpu_softmaxed.as_mut(), &targets);
 
-            let mut recorder = OperationsRecorder::new();
+            let mut recorder = OperationsRecorder::from_init_info(init_info.clone());
 
             let softmaxed_x = recorder.set_new_tensor(softmaxed);
 

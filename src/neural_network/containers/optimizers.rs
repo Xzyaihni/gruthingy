@@ -4,10 +4,17 @@ use super::{
     DECAY_FUNCTION,
     TensorPtr,
     DiffTensorPtr,
+    ShapedTensorIndex,
     LayerType,
     OperationsRecorder
 };
 
+
+pub enum OptimizerInfoPtr
+{
+    Ptr(TensorPtr),
+    Index(ShapedTensorIndex)
+}
 
 #[allow(dead_code)]
 pub enum DecayFunction
@@ -28,14 +35,22 @@ impl DecayFunction
     }
 }
 
-pub trait NewableLayer
+pub trait NewableLayer: Sized
 {
-    fn new(previous: usize, current: usize) -> Self;
+    fn new_values<F: FnMut(LayerType) -> OptimizerInfoPtr>(previous: usize, current: usize, f: F) -> Self;
+
+    fn new(recorder: &mut OperationsRecorder, previous: usize, current: usize) -> Self
+    {
+        Self::new_values(previous, current, |x|
+        {
+            OptimizerInfoPtr::Ptr(recorder.set_new_tensor(x).as_value())
+        })
+    }
 }
 
 impl NewableLayer for ()
 {
-    fn new(_previous_size: usize, _this_size: usize) -> Self {}
+    fn new_values<F: FnMut(LayerType) -> OptimizerInfoPtr>(_previous: usize, _current: usize, _f: F) -> Self {}
 }
 
 pub struct OptimizerInfo<O>
@@ -87,6 +102,8 @@ pub trait Optimizer: Default + Clone
 {
     type WeightParam<T>;
 
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, f: F) -> Self::WeightParam<U>;
+
     fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr;
 
     fn set_learning_rate(&mut self, learning_rate: f32);
@@ -95,6 +112,8 @@ pub trait Optimizer: Default + Clone
 impl Optimizer for ()
 {
     type WeightParam<T> = ();
+
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> { unreachable!() }
 
     fn add_operations(self, _recorder: &mut OperationsRecorder, _gradient: TensorPtr) -> TensorPtr
     {
@@ -126,6 +145,8 @@ impl Optimizer for Sgd
 {
     type WeightParam<T> = ();
 
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> {}
+
     fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
     {
         recorder.sgd_optimizer(gradient, self)
@@ -144,12 +165,12 @@ pub struct PowerSignGradientInfo<T>
     m: T
 }
 
-impl NewableLayer for PowerSignGradientInfo<LayerType>
+impl NewableLayer for PowerSignGradientInfo<OptimizerInfoPtr>
 {
-    fn new(previous_size: usize, this_size: usize) -> Self
+    fn new_values<F: FnMut(LayerType) -> OptimizerInfoPtr>(previous: usize, current: usize, mut f: F) -> Self
     {
         Self{
-            m: LayerType::new(this_size, previous_size)
+            m: f(LayerType::new(current, previous))
         }
     }
 }
@@ -176,6 +197,13 @@ impl Default for PowerSign
 impl Optimizer for PowerSign
 {
     type WeightParam<T> = PowerSignGradientInfo<T>;
+
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, mut f: F) -> Self::WeightParam<U>
+    {
+        PowerSignGradientInfo{
+            m: f(&x.m)
+        }
+    }
 
     fn add_operations(self, recorder: &mut OperationsRecorder, gradient: TensorPtr) -> TensorPtr
     {

@@ -38,6 +38,7 @@ use neural_network::{
     SaveWeightType,
     NetworkUnit,
     NetworkUnitNewable,
+    OptimizerInfoPtr,
     OptimizerUnit,
     GenericUnit,
     Optimizer,
@@ -127,7 +128,7 @@ fn load_network(
     config: &Config,
     sizes: Option<SizesInfo>,
     auto_create: bool
-) -> NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam>, NOptimizer, NDictionary>
+) -> NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, NDictionary>
 {
     load_network_with(config.network_path.as_ref(), Some(config), sizes, true, auto_create)
 }
@@ -137,11 +138,11 @@ pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
     auto_create: bool
-) -> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam>, O, WordDictionary>
+) -> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam<OptimizerInfoPtr>>, O, WordDictionary>
 where
     O: Optimizer + DeserializeOwned,
-    <EmbeddingsUnitFactory as UnitFactory>::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
-    for<'a> O::WeightParam: NewableLayer + Serialize + Deserialize<'a>
+    for<'a> O::WeightParam<LayerType>: Serialize + Deserialize<'a>,
+    O::WeightParam<OptimizerInfoPtr>: NewableLayer
 {
     let sizes = config.as_mut().map(|config|
     {
@@ -167,18 +168,17 @@ fn load_network_with<N, O, D>(
     sizes: Option<SizesInfo>,
     is_multistep: bool,
     auto_create: bool
-) -> NeuralNetwork<Network<N, O::WeightParam>, O, D>
+) -> NeuralNetwork<Network<N, O::WeightParam<OptimizerInfoPtr>>, O, D>
 where
     for<'de> O: Optimizer + Deserialize<'de>,
     for<'de> N: UnitFactory,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    N::Unit<<NOptimizer as Optimizer>::WeightParam>: OptimizerUnit<<NOptimizer as Optimizer>::WeightParam>,
     UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
-    for<'de> N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam> + Deserialize<'de>,
-    for<'de> O::WeightParam: NewableLayer + Serialize + Deserialize<'de>,
+    for<'de> O::WeightParam<LayerType>: Serialize + Deserialize<'de>,
+    O::WeightParam<OptimizerInfoPtr>: NewableLayer,
     for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + Deserialize<'de>,
     for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
@@ -725,14 +725,13 @@ impl UnitFactory for EmbeddingsUnitFactory
 
 #[cfg(not(test))]
 fn try_save_network<N, O, D>(
-    network: &NeuralNetwork<Network<N, O::WeightParam>, O, D>,
+    network: &NeuralNetwork<Network<N, O::WeightParam<OptimizerInfoPtr>>, O, D>,
     path: &PathBuf
 )
 where
     N: UnitFactory,
     O: Optimizer + Serialize,
     D: NetworkDictionary + Serialize + Clone,
-    N::Unit<O::WeightParam>: OptimizerUnit<O::WeightParam>,
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
@@ -741,11 +740,10 @@ where
     for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
-    O::WeightParam: Serialize + Clone,
+    O::WeightParam<LayerType>: Serialize + Clone,
     N::Unit<SaveWeightType>: Serialize,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-    N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-    N::Unit<O::WeightParam>: Serialize + Clone
+    N::Unit<WeightInfo>: Clone + GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
 {
     if let Err(err) = network.save(path)
     {
@@ -763,7 +761,7 @@ fn train_embeddings(mut config: Config)
     );
 
     let run_this = |
-        network: &mut NeuralNetwork<Network<EmbeddingsUnitFactory, <NOptimizer as Optimizer>::WeightParam>, NOptimizer, WordDictionary>,
+        network: &mut NeuralNetwork<Network<EmbeddingsUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, WordDictionary>,
         training_info
     |
     {
