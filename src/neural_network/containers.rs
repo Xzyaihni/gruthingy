@@ -2179,9 +2179,9 @@ impl OperationsRecorder
                 #[cfg(debug_assertions)]
                 {
                     self.memory.set_tensors_check.push(gradient_ptr.into());
-
-                    self.store_tensor_until_end(gradient_ptr);
                 }
+
+                self.store_tensor_until_end(gradient_ptr);
 
                 self.memory.tensor_live_ranges[gradient_ptr.0].start = Some(-1);
                 self.memory.tensors_memory[gradient_ptr.0].value = new_value;
