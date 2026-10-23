@@ -74,34 +74,41 @@ fn get_raw_array(data: &[RawArray], raw_data_pointer: TensorRawDataPointer) -> &
     &data[raw_data_pointer.raw_index.0]
 }
 
-fn get_buffer_blocking<T: bytemuck::Pod + Send>(device: &wgpu::Device, output_buffer: &wgpu::Buffer) -> Box<[T]>
+fn map_callback_getter<T: bytemuck::Pod + Send>(
+    output_buffer: wgpu::Buffer,
+    f: impl FnOnce(Box<[T]>) + Send + 'static
+) -> impl FnOnce(Result<(), wgpu::BufferAsyncError>) + Send + 'static
+{
+    move |result|
+    {
+        if let Err(err) = result
+        {
+            panic!("error mapping tensor: {err}");
+        }
+
+        let output = {
+            let view: wgpu::BufferView = output_buffer.get_mapped_range(..).unwrap();
+
+            let data: &[u8] = &view;
+            let data: &[T] = bytemuck::cast_slice(data);
+
+            data.into()
+        };
+
+        output_buffer.unmap();
+
+        f(output);
+    }
+}
+
+fn get_buffer_blocking<T: bytemuck::Pod + Send>(
+    device: &wgpu::Device,
+    output_buffer: &wgpu::Buffer
+) -> Box<[T]>
 {
     let (sender, receiver) = mpsc::channel();
 
-    output_buffer.map_async(wgpu::MapMode::Read, .., {
-        let output_buffer: wgpu::Buffer = output_buffer.clone();
-
-        move |result|
-        {
-            if let Err(err) = result
-            {
-                panic!("error mapping tensor: {err}");
-            }
-
-            let output = {
-                let view: wgpu::BufferView = output_buffer.get_mapped_range(..).unwrap();
-
-                let data: &[u8] = &view;
-                let data: &[T] = bytemuck::cast_slice(data);
-
-                data.into()
-            };
-
-            output_buffer.unmap();
-
-            sender.send(output).unwrap();
-        }
-    });
+    output_buffer.map_async(wgpu::MapMode::Read, .., map_callback_getter(output_buffer.clone(), move |x| sender.send(x).unwrap()));
 
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
@@ -1134,6 +1141,21 @@ impl OperationsRecorderMemory
         self.get_tensor_blocking_unchecked(raw_array_memory, index)
     }
 
+    fn get_tensor_async(
+        &self,
+        raw_array_memory: &mut RawArrayMemory,
+        index: ShapedTensorIndex,
+        f: impl FnOnce(LayerType) + Send + 'static
+    )
+    {
+        #[cfg(debug_assertions)]
+        {
+            verify_store_check(&self.store_tensors_check, index.index, "tensor");
+        }
+
+        self.get_tensor_async_unchecked(raw_array_memory, index, f)
+    }
+
     fn resolve_tensor_ptr(&self, index_ptr: TensorPtr) -> TensorIndex
     {
         let index = self.tensors_memory[index_ptr.0].memory.unwrap_or_else(||
@@ -1186,6 +1208,27 @@ impl OperationsRecorderMemory
         {
             panic!("tried to get non output tensor: {}", self.format_tensor_index(index.index));
         })
+    }
+
+    fn get_tensor_async_unchecked(
+        &self,
+        raw_array_memory: &mut RawArrayMemory,
+        index: ShapedTensorIndex,
+        f: impl FnOnce(LayerType) + Send + 'static
+    )
+    {
+        let info = self.resolve_shaped_tensor_index(index);
+        debug_assert_ne!(info, TensorRawDataPointer::undefined(), "{index:?} location is undefined");
+
+        let Some(output_buffer) = self.tensors_raw_data[info.raw_index.0].output_buffer.as_ref() else {
+            panic!("tried to get non output tensor: {}", self.format_tensor_index(index.index));
+        };
+
+        raw_array_memory.map_on_submit_buffers.push(AsyncBufferReader{
+            buffer: output_buffer.clone(),
+            index: index.index,
+            callback: Some(Box::new(move |data| f(LayerType::from_raw(data, info.shape))))
+        });
     }
 
     fn get_tensor_blocking_ptr<T: bytemuck::Pod + Send>(
@@ -1755,6 +1798,13 @@ impl WgpuInitInfo
     }
 }
 
+struct AsyncBufferReader
+{
+    buffer: wgpu::Buffer,
+    index: TensorIndex,
+    callback: Option<Box<dyn FnOnce(Box<[f32]>) + Send + 'static>>
+}
+
 struct RawArrayMemory
 {
     device: wgpu::Device,
@@ -1765,6 +1815,8 @@ struct RawArrayMemory
     one_hot_usages: Vec<wgpu::BufferUsages>,
     input_buffers: Vec<wgpu::Buffer>,
     stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
+    map_on_submit_buffers: Vec<AsyncBufferReader>,
+    current_in_flight_queue: Option<wgpu::SubmissionIndex>,
     scratch_buffers: Vec<wgpu::Buffer>,
     scratch_buffers_locations: Vec<Vec<ScratchBufferIndex>>,
     bind_groups: Vec<Vec<wgpu::BindGroup>>
@@ -1783,6 +1835,8 @@ impl RawArrayMemory
             one_hot_usages: Vec::new(),
             input_buffers: Vec::new(),
             stack_buffers: HashMap::new(),
+            map_on_submit_buffers: Vec::new(),
+            current_in_flight_queue: None,
             scratch_buffers: Vec::new(),
             scratch_buffers_locations: Vec::new(),
             bind_groups: Vec::new(),
@@ -2226,6 +2280,15 @@ impl OperationsRecorder
     pub fn is_undefined_location(&self, index: impl Into<TensorIndex>) -> bool
     {
         self.memory.tensors[index.into().0] == LinearRawDataPointer::undefined()
+    }
+
+    pub fn get_tensor_async(&mut self, index: ShapedTensorIndex, f: impl FnOnce(LayerType) + Send + 'static)
+    {
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        debug_assert_ne!(index, ShapedTensorIndex::undefined());
+
+        self.memory.get_tensor_async(&mut self.raw_array_memory, index, f)
     }
 
     pub fn get_tensor_blocking(&self, index: ShapedTensorIndex) -> LayerType
@@ -2918,7 +2981,7 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(|_| { unimplemented!() }, count, 0, inputs_in_flight);
+        self.calculate_steps(|_| { unimplemented!() }, count, 0, true, inputs_in_flight);
     }
 
     pub fn calculate_feedforward_with_dependent(
@@ -2928,14 +2991,14 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(dependent_inputs, count, 0, None);
+        self.calculate_steps(dependent_inputs, count, 0, true, None);
     }
 
-    pub fn calculate(&mut self, t: u64)
+    pub fn calculate(&mut self, t: u64, is_last_step: bool)
     {
         let total = self.raw_operations.len();
 
-        self.calculate_steps(|_| { unimplemented!() }, total, t, None);
+        self.calculate_steps(|_| { unimplemented!() }, total, t, is_last_step, None);
     }
 
     fn calculate_steps<DependentInputs>(
@@ -2943,6 +3006,7 @@ impl OperationsRecorder
         mut dependent_inputs: DependentInputs,
         end: usize,
         t: u64,
+        is_last_step: bool,
         inputs_in_flight: Option<usize>
     )
     where
@@ -4999,7 +5063,32 @@ impl OperationsRecorder
             });
         }
 
-        self.raw_array_memory.queue.submit([encoder.take().unwrap().finish()]);
+        self.raw_array_memory.map_on_submit_buffers.retain_mut(|AsyncBufferReader{buffer, index, callback}|
+        {
+            if let Some(callback) = callback.take()
+            {
+                #[cfg(debug_assertions)]
+                {
+                    self.memory.verify_raw_ptr_use_index(*index);
+                }
+
+                let callback = map_callback_getter(buffer.clone(), callback);
+
+                encoder.as_mut().unwrap().map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., callback);
+
+                true
+            } else
+            {
+                self.raw_array_memory.device.poll(wgpu::PollType::Wait{
+                    submission_index: Some(self.raw_array_memory.current_in_flight_queue.clone().unwrap()),
+                    timeout: None
+                }).unwrap();
+
+                false
+            }
+        });
+
+        self.raw_array_memory.current_in_flight_queue = Some(self.raw_array_memory.queue.submit([encoder.take().unwrap().finish()]));
 
         if cfg!(feature="dumpmemory")
         {
@@ -5015,7 +5104,7 @@ impl OperationsRecorder
                     TensorShape{rows: tensor_raw_ptr.size, columns: 1, batch_size: 1}
                 };
 
-                let tensor = self.memory.get_tensor_blocking_unchecked(&self.raw_array_memory, ShapedTensorIndex{index: tensor_index, shape});
+                let tensor = self.memory.get_tensor_blocking(&self.raw_array_memory, ShapedTensorIndex{index: tensor_index, shape});
 
                 eprintln!("{}: {tensor:?}", self.memory.format_tensor_index(tensor_index));
             });
@@ -5032,6 +5121,11 @@ impl OperationsRecorder
 
                 eprintln!("{}: {values:?}", self.memory.format_variable(one_hot_index));
             });
+        }
+
+        if is_last_step
+        {
+            self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         }
     }
 
@@ -10457,7 +10551,7 @@ mod tests
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
         let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
 
-        recorder.calculate(0);
+        recorder.calculate(0, true);
 
         let a_g = recorder.get_tensor_blocking(a_gradient);
         let b_g = recorder.get_tensor_blocking(b_gradient);
@@ -10495,7 +10589,7 @@ mod tests
             new_recorder.set_tensor(new_a, a);
             new_recorder.set_tensor(new_b, b);
 
-            new_recorder.calculate(0);
+            new_recorder.calculate(0, true);
 
             new_recorder.get_tensor_blocking(output_value)
         };
@@ -11845,7 +11939,7 @@ mod tests
 
         let output_value = recorder.resolve_tensor_ptr(output_value);
 
-        recorder.calculate(0);
+        recorder.calculate(0, true);
 
         recorder.get_tensor_blocking(output_value)
     }
@@ -12148,7 +12242,7 @@ mod tests
             let gpu_softmaxed = recorder.resolve_tensor_ptr(gpu_softmaxed);
             let gpu_entropies = recorder.resolve_tensor_ptr(gpu_entropies);
 
-            recorder.calculate(0);
+            recorder.calculate(0, true);
 
             let gpu_softmaxed = recorder.get_tensor_blocking(gpu_softmaxed);
             let gpu_entropies = recorder.get_tensor_blocking(gpu_entropies);

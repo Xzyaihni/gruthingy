@@ -2,6 +2,7 @@ use std::{
     f32,
     fmt,
     iter,
+    sync::mpsc,
     borrow::Cow,
     cell::RefCell,
     marker::PhantomData,
@@ -1317,7 +1318,12 @@ where
             println!("iterations per epoch: ~{iterations_per_epoch}");
         }
 
-        let mut last_loss = None;
+        if info.iterations == 0
+        {
+            return None;
+        }
+
+        let (last_loss_tx, last_loss_rx) = mpsc::channel();
         for input_index in 0..info.iterations
         {
             self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
@@ -1348,22 +1354,30 @@ where
                     steps_num
                 );
 
+                let total_iterations = self.extra_info.iterations;
+                let last_loss_tx = last_loss_tx.clone();
+
+                let is_last_step = (input_index + 1) == info.iterations;
+
                 let rng = fastrand::Rng::new();
-                let loss = self.network.gradient_step_once(rng, self.extra_info.iterations, values.iter());
-
-                let batch_loss = loss as f64 / steps_num as f64;
-                last_loss = Some(batch_loss);
-
-                if display_inner
+                self.network.gradient_step_once(rng, total_iterations, is_last_step, values.iter(), move |loss|
                 {
-                    let total_iterations = self.extra_info.iterations;
+                    let batch_loss = loss as f64 / steps_num as f64;
 
-                    Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
-                }
+                    if display_inner
+                    {
+                        Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
+                    }
+
+                    if is_last_step
+                    {
+                        last_loss_tx.send(batch_loss).unwrap();
+                    }
+                });
             }
         }
 
-        last_loss
+        Some(last_loss_rx.recv().unwrap())
     }
 
     pub fn predict_into<R>(
@@ -1461,8 +1475,6 @@ mod tests
 
     use crate::word_vectorizer::{bpe_from_bytes, InputData, BpeLimit};
 
-    use network::WeightsFullContainer;
-
 
     #[test]
     fn softmax()
@@ -1517,25 +1529,6 @@ mod tests
     type Unit = StarUnitFactory;
 
     type ThisDictionary = CharDictionary;
-
-    fn gradient_with_batch_size<ThisEmbeddings: EmbeddingsTypeable>(
-        network: &mut NeuralNetwork<Network<Unit, ()>, (), ThisDictionary>,
-        inputs: &Vec<VectorWord>,
-        batch_starts: &Vec<usize>,
-        inputs_per_batch: usize
-    ) -> WeightsFullContainer<Unit, LayerType>
-    where
-        for<'b> InputOutputEmbeddingsIter<'b, ThisEmbeddings, ThisDictionary>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
-    {
-        let values = InputOutput::new(
-            &network.dictionary,
-            inputs,
-            batch_starts,
-            inputs_per_batch
-        );
-
-        network.network.gradients(fastrand::Rng::with_seed(1), values.iter::<ThisEmbeddings>()).1
-    }
 
     #[test]
     fn simple_data_overfit_char_sgd()

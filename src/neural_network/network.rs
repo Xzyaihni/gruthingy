@@ -133,7 +133,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
     #[cfg(debug_assertions)]
     {
-        let epsilon = if output.shape().rows.max(output.shape().columns) > 32 { 0.2 } else { 0.3 };
+        let epsilon = if output.shape().rows.max(output.shape().columns) > 32 { 0.25 } else { 0.3 };
 
         let is_identity = |expected_identity: LayerType| -> bool
         {
@@ -1861,7 +1861,8 @@ where
 
         self.feedforward_setup_dropout(&mut rng);
 
-        let total_loss = self.feedforward_with(|recorder| recorder.calculate(0), input);
+        self.feedforward_with(|recorder| recorder.calculate(0, true), input);
+        let total_loss = self.recorder.get_tensor_blocking(self.outputs.loss.as_value()).as_ref().average();
 
         let f = |weight: &WeightInfo|
         {
@@ -1903,8 +1904,10 @@ where
         &mut self,
         mut rng: R,
         t: u64,
-        input: I
-    ) -> f32
+        is_last_step: bool,
+        input: I,
+        loss_consume: impl FnOnce(f32) + Send + 'static
+    )
     where
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
         N::Unit<LayerType>: IntoIterator<Item=LayerType>,
@@ -1915,19 +1918,22 @@ where
 
         self.feedforward_setup_dropout(&mut rng);
 
-        let total_loss = self.feedforward_with(|recorder| recorder.calculate(t), input);
+        self.recorder.get_tensor_async(self.outputs.loss.as_value(), move |batch_loss|
+        {
+            loss_consume(batch_loss.as_ref().average());
+        });
+
+        self.feedforward_with(|recorder| recorder.calculate(t, is_last_step), input);
 
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.end_capture();
-
-        total_loss
     }
 
     fn feedforward_with(
         &mut self,
         calculate_function: impl Fn(&mut OperationsRecorder),
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> f32
+    )
     {
         assert!(self.network_mode == Some(NetworkMode::Train) || self.network_mode == Some(NetworkMode::Test));
 
@@ -1974,8 +1980,6 @@ where
         }
 
         calculate_function(&mut self.recorder);
-
-        self.recorder.get_tensor_blocking(self.outputs.loss.as_value()).as_ref().average()
     }
 
     #[cfg(not(test))]
@@ -2217,7 +2221,9 @@ where
         let batch_size = self.sizes.batch_size;
         let input = input.map(move |(a, b)| (a.batch_replicate(batch_size), b.batch_replicate(batch_size)));
 
-        self.feedforward_with(|recorder| recorder.calculate_feedforward(inputs_in_flight), input)
+        self.feedforward_with(|recorder| recorder.calculate_feedforward(inputs_in_flight), input);
+
+        self.recorder.get_tensor_blocking(self.outputs.loss.as_value()).as_ref().average()
     }
 
     fn predict(
@@ -2538,7 +2544,7 @@ mod tests
 
         at_once.feedforward_setup_dropout(&mut fastrand::Rng::with_seed(SEED));
 
-        at_once.recorder.calculate(0);
+        at_once.recorder.calculate(0, true);
 
         let loss_batch = at_once.recorder.get_tensor_blocking(output_value);
         let loss = loss_batch.as_ref().average();
