@@ -2,6 +2,7 @@ use std::{
     fs,
     f32,
     mem,
+    env,
     path::Path,
     num::NonZero,
     sync::mpsc,
@@ -1501,12 +1502,15 @@ impl WgpuInitInfo
             required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         }
 
+        let default_limits = wgpu::Limits::downlevel_defaults();
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor{
             label: None,
             required_features,
             required_limits: wgpu::Limits{
                 max_immediate_size: 5 * 4,
-                ..wgpu::Limits::downlevel_defaults()
+                max_buffer_size: env::var("WGPU_MAX_BUFFER_SIZE").map(|x| x.parse().unwrap()).unwrap_or(default_limits.max_buffer_size),
+                ..default_limits
             },
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
