@@ -1463,27 +1463,25 @@ impl LoopsMemory
 
 pub struct InputsSpecifier<'a, 'b>
 {
-    raw_array_memory: &'a RawArrayMemory,
-    memory: &'a OperationsRecorderMemory,
-    encoder: &'b mut Option<wgpu::CommandEncoder>
+    raw_array_memory: &'b mut RawArrayMemory,
+    memory: &'a OperationsRecorderMemory
 }
 
 impl<'a, 'b> InputsSpecifier<'a, 'b>
 {
     fn new(
-        raw_array_memory: &'a RawArrayMemory,
-        memory: &'a OperationsRecorderMemory,
-        encoder: &'b mut Option<wgpu::CommandEncoder>
+        raw_array_memory: &'b mut RawArrayMemory,
+        memory: &'a OperationsRecorderMemory
     ) -> Self
     {
-        Self{raw_array_memory, memory, encoder}
+        Self{raw_array_memory, memory}
     }
 
     pub fn specify_get_input(self, tensor_index: ShapedTensorIndex) -> LayerType
     {
         let raw_array = get_raw_array(&self.memory.tensors_raw_data, self.memory.resolve_shaped_tensor_index(tensor_index));
 
-        self.encoder.as_mut().unwrap().copy_buffer_to_buffer(
+        self.raw_array_memory.encoder.as_mut().unwrap().copy_buffer_to_buffer(
             &raw_array.buffer,
             0,
             raw_array.output_buffer.as_ref().expect("must exist"),
@@ -1491,7 +1489,7 @@ impl<'a, 'b> InputsSpecifier<'a, 'b>
             raw_array.buffer.size()
         );
 
-        self.raw_array_memory.queue.submit([self.encoder.take().unwrap().finish()]);
+        self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
         self.memory.get_tensor_blocking(self.raw_array_memory, tensor_index)
     }
@@ -1813,6 +1811,7 @@ struct RawArrayMemory
     kernels: [wgpu::ComputePipeline; KERNELS_COUNT],
     tensor_usages: Vec<wgpu::BufferUsages>,
     one_hot_usages: Vec<wgpu::BufferUsages>,
+    encoder: Option<wgpu::CommandEncoder>,
     input_buffers: Vec<wgpu::Buffer>,
     stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
     map_on_submit_buffers: Vec<AsyncBufferReader>,
@@ -1826,6 +1825,8 @@ impl RawArrayMemory
 {
     fn from_init_info(init_info: WgpuInitInfo) -> Self
     {
+        let encoder = init_info.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+
         Self{
             device: init_info.device,
             queue: init_info.queue,
@@ -1833,6 +1834,7 @@ impl RawArrayMemory
             kernels: init_info.kernels,
             tensor_usages: Vec::new(),
             one_hot_usages: Vec::new(),
+            encoder: Some(encoder),
             input_buffers: Vec::new(),
             stack_buffers: HashMap::new(),
             map_on_submit_buffers: Vec::new(),
@@ -3179,8 +3181,6 @@ impl OperationsRecorder
 
         let mut stack_buffer_indices: HashMap<u64, usize> = HashMap::new();
 
-        let mut encoder = Some(self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("main_encoder")}));
-
         let mut compute_pass: Option<wgpu::ComputePass> = None;
 
         let mut input_buffer_index = 0;
@@ -3241,14 +3241,14 @@ impl OperationsRecorder
                         this_operation_name = stringify!($name);
 
                         try_end_compute_pass(&mut compute_pass);
-                        record_timestamp(&self.raw_array_memory.device, &mut encoder, this_operation_name);
+                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name);
                     }
 
                     #[cfg(debug_assertions)]
                     {
                         if cfg!(feature="printcalculations") && cfg!(feature="dumpmemory")
                         {
-                            encoder.as_mut().unwrap().push_debug_group(stringify!($name));
+                            self.raw_array_memory.encoder.as_mut().unwrap().push_debug_group(stringify!($name));
                         }
 
                         $(
@@ -3292,7 +3292,7 @@ impl OperationsRecorder
                     #[cfg(feature="timedebug")]
                     {
                         try_end_compute_pass(&mut compute_pass);
-                        record_timestamp(&self.raw_array_memory.device, &mut encoder, this_operation_name);
+                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name);
                     }
 
                     #[cfg(debug_assertions)]
@@ -3311,7 +3311,7 @@ impl OperationsRecorder
                                 $(
                                 {
                                     let raw_array = get_raw_array(&self.memory.tensors_raw_data, *$t_name);
-                                    encoder.as_mut().unwrap().copy_buffer_to_buffer(
+                                    self.raw_array_memory.encoder.as_mut().unwrap().copy_buffer_to_buffer(
                                         &raw_array.buffer,
                                         0,
                                         raw_array.output_buffer.as_ref().expect("must exist"),
@@ -3321,13 +3321,15 @@ impl OperationsRecorder
                                 }
                                 )*
 
-                                encoder.as_mut().unwrap().pop_debug_group();
+                                self.raw_array_memory.encoder.as_mut().unwrap().pop_debug_group();
 
-                                self.raw_array_memory.queue.submit([encoder.take().unwrap().finish()]);
+                                self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
-                                encoder = Some(self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
+                                let new_encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
                                     label: Some(&(stringify!($name).to_owned() + "_dump_encoder"))
-                                }));
+                                });
+
+                                self.raw_array_memory.encoder = Some(new_encoder);
                             }
                         }
                     }
@@ -3403,9 +3405,10 @@ impl OperationsRecorder
             }
 
             fn do_kernel_operation(
-                encoder: &mut Option<wgpu::CommandEncoder>,
                 compute_pass: &mut Option<wgpu::ComputePass>,
-                raw_array_memory: &RawArrayMemory,
+                encoder: &mut Option<wgpu::CommandEncoder>,
+                kernels: &[wgpu::ComputePipeline],
+                bind_groups: &[Vec<wgpu::BindGroup>],
                 kernel: OpKernel,
                 operation_index: usize,
                 group_index: usize
@@ -3421,11 +3424,27 @@ impl OperationsRecorder
 
                 let compute_pass = compute_pass.as_mut().expect("must be inside a compute pass");
 
-                compute_pass.set_pipeline(&raw_array_memory.kernels[kernel as usize]);
+                compute_pass.set_pipeline(&kernels[kernel as usize]);
 
-                let bind_group = &raw_array_memory.bind_groups[operation_index][group_index];
+                let bind_group = &bind_groups[operation_index][group_index];
 
                 compute_pass.set_bind_group(0, bind_group, &[]);
+            }
+
+            macro_rules! do_kernel_operation
+            {
+                ($kernel:ident, $operation_index:expr, $group_index:literal) =>
+                {
+                    do_kernel_operation(
+                        &mut compute_pass,
+                        &mut self.raw_array_memory.encoder,
+                        &self.raw_array_memory.kernels,
+                        &self.raw_array_memory.bind_groups,
+                        OpKernel::$kernel,
+                        $operation_index,
+                        $group_index
+                    );
+                }
             }
 
             const WORK_GROUP_SIZE: usize = 64;
@@ -3534,7 +3553,7 @@ impl OperationsRecorder
                 () =>
                 {
                     WgpuInfo{
-                        encoder: &mut encoder,
+                        encoder: &mut self.raw_array_memory.encoder,
                         compute_pass: &mut compute_pass,
                         device: &self.raw_array_memory.device
                     }
@@ -3576,7 +3595,7 @@ impl OperationsRecorder
                     try_end_compute_pass(&mut compute_pass);
 
                     let dst_buffer = get_buffer(&self.memory, *dst);
-                    encoder.as_mut().unwrap().clear_buffer(dst_buffer, 0, None);
+                    self.raw_array_memory.encoder.as_mut().unwrap().clear_buffer(dst_buffer, 0, None);
 
                     debug_calculate_values_result!((dst),());
                 },
@@ -3625,7 +3644,7 @@ impl OperationsRecorder
 
                     try_end_compute_pass(&mut compute_pass);
 
-                    copy_equal_buffers(&mut encoder, get_buffer(&self.memory, *tensor), stack_tensor_buffer);
+                    copy_equal_buffers(&mut self.raw_array_memory.encoder, get_buffer(&self.memory, *tensor), stack_tensor_buffer);
 
                     #[allow(unused_mut)]
                     let mut stack_value: LoopStackValue<_, _> = this_stack_buffer_index.into();
@@ -3665,7 +3684,7 @@ impl OperationsRecorder
 
                     try_end_compute_pass(&mut compute_pass);
 
-                    copy_equal_buffers(&mut encoder, &tensor, get_buffer(&self.memory, *output));
+                    copy_equal_buffers(&mut self.raw_array_memory.encoder, &tensor, get_buffer(&self.memory, *output));
 
                     debug_calculate_values_result!((output),());
                 },
@@ -3699,7 +3718,7 @@ impl OperationsRecorder
                                 {
                                     compute_pass = None;
 
-                                    let specifier = InputsSpecifier::new(&self.raw_array_memory, &self.memory, &mut encoder);
+                                    let specifier = InputsSpecifier::new(&mut self.raw_array_memory, &self.memory);
 
                                     &(dependent_inputs)(specifier)
                                 }
@@ -3734,7 +3753,7 @@ impl OperationsRecorder
 
                             if is_in_flight_limit
                             {
-                                self.raw_array_memory.queue.submit([encoder.take().unwrap().finish()]);
+                                self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
                                 self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                             }
@@ -3755,9 +3774,11 @@ impl OperationsRecorder
 
                             if is_dependent || is_in_flight_limit
                             {
-                                encoder = Some(self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
-                                    label: Some("dependent_inputs_encoder")
-                                }));
+                                let new_encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
+                                    label: None
+                                });
+
+                                self.raw_array_memory.encoder = Some(new_encoder);
                             }
 
                             #[cfg(debug_assertions)]
@@ -3779,7 +3800,7 @@ impl OperationsRecorder
 
                             debug_assert_eq!(src_buffer.size(), dst_buffer.size());
 
-                            copy_equal_buffers(&mut encoder, src_buffer, dst_buffer);
+                            copy_equal_buffers(&mut self.raw_array_memory.encoder, src_buffer, dst_buffer);
                         }
                     });
                 },
@@ -3929,7 +3950,7 @@ impl OperationsRecorder
                             bind_group_entry(2, *other)
                         ], "GradientSelectAddTensor", 0);
 
-                        do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Add, i, 0);
+                        do_kernel_operation!(Add, i, 0);
 
                         single_workgroup(&mut compute_pass, src.size());
                     } else
@@ -4024,7 +4045,7 @@ impl OperationsRecorder
                                 bind_group_entry(2, *output)
                             ], "MulComponentwise", 0);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MulComponentwise, i, 0);
+                            do_kernel_operation!(MulComponentwise, i, 0);
                         },
                         GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} =>
                         {
@@ -4038,7 +4059,7 @@ impl OperationsRecorder
                                 bind_group_entry(2, *output)
                             ], "MulComponentwiseAdd", 0);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MulComponentwiseAdd, i, 0);
+                            do_kernel_operation!(MulComponentwiseAdd, i, 0);
                         },
                         _ => ()
                     }
@@ -4058,7 +4079,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "MulScalar", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MulScalar, i, 0);
+                    do_kernel_operation!(MulScalar, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
 
@@ -4087,7 +4108,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "Add", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Add, i, 0);
+                    do_kernel_operation!(Add, i, 0);
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -4104,7 +4125,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "AddScalar", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::AddScalar, i, 0);
+                    do_kernel_operation!(AddScalar, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
 
@@ -4133,7 +4154,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "Sub", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Sub, i, 0);
+                    do_kernel_operation!(Sub, i, 0);
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -4150,7 +4171,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "SubFromScalar", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SubFromScalar, i, 0);
+                    do_kernel_operation!(SubFromScalar, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[lhs.0].to_ne_bytes());
 
@@ -4170,7 +4191,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "SumTensor", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SumTensor, i, 0);
+                    do_kernel_operation!(SumTensor, i, 0);
 
                     exact_workgroup(&mut compute_pass, value.shape.batch_size);
 
@@ -4188,7 +4209,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "MaxTensor", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MaxTensor, i, 0);
+                    do_kernel_operation!(MaxTensor, i, 0);
 
                     exact_workgroup(&mut compute_pass, value.shape.batch_size);
 
@@ -4208,7 +4229,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "SumBatch", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SumBatch, i, 0);
+                    do_kernel_operation!(SumBatch, i, 0);
 
                     single_workgroup(&mut compute_pass, value.shape.single_size());
 
@@ -4236,7 +4257,7 @@ impl OperationsRecorder
                         create_bind_group_entry(2, scratch_buffer)
                     ], "DotMul", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MulComponentwise, i, 0);
+                    do_kernel_operation!(MulComponentwise, i, 0);
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -4245,7 +4266,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "DotSum", 1);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SumTensor, i, 1);
+                    do_kernel_operation!(SumTensor, i, 1);
 
                     exact_workgroup(&mut compute_pass, output.shape.batch_size);
 
@@ -4263,7 +4284,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "Fill", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Fill, i, 0);
+                    do_kernel_operation!(Fill, i, 0);
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4283,7 +4304,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "BatchReplicate", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::BatchReplicate, i, 0);
+                    do_kernel_operation!(BatchReplicate, i, 0);
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4303,7 +4324,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "Dropout", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Dropout, i, 0);
+                    do_kernel_operation!(Dropout, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
 
@@ -4325,7 +4346,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "DropoutDiff", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Dropout, i, 0);
+                    do_kernel_operation!(Dropout, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
 
@@ -4352,7 +4373,7 @@ impl OperationsRecorder
                         create_bind_group_entry(1, magnitude_buffer)
                     ], "Magnitude", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Magnitude, i, 0);
+                    do_kernel_operation!(Magnitude, i, 0);
 
                     exact_workgroup(&mut compute_pass, value.shape.batch_size);
 
@@ -4361,7 +4382,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "CapMagnitude", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::CapMagnitude, i, 0);
+                    do_kernel_operation!(CapMagnitude, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[magnitude.0].to_ne_bytes());
 
@@ -4380,7 +4401,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "OptimizerSgd", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Sgd, i, 0);
+                    do_kernel_operation!(Sgd, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &sgd.learning_rate.to_ne_bytes());
 
@@ -4401,7 +4422,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "OptimizerPowerSign", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::PowerSign, i, 0);
+                    do_kernel_operation!(PowerSign, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &powersign.b1.to_ne_bytes());
                     compute_pass.as_mut().unwrap().set_immediates(FLOAT_BYTES as u32, &powersign.learning_rate.to_ne_bytes());
@@ -4427,7 +4448,7 @@ impl OperationsRecorder
                         bind_group_entry(3, *output)
                     ], "OptimizerAdam", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Adam, i, 0);
+                    do_kernel_operation!(Adam, i, 0);
 
                     [adam.a, adam.b1, adam.b2, adam.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
                     {
@@ -4449,7 +4470,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "Pow", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Pow, i, 0);
+                    do_kernel_operation!(Pow, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(*power as u32).to_ne_bytes());
 
@@ -4468,7 +4489,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "Tanh", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Tanh, i, 0);
+                    do_kernel_operation!(Tanh, i, 0);
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -4487,7 +4508,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "TanhDiff", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::TanhDiff, i, 0);
+                    do_kernel_operation!(TanhDiff, i, 0);
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -4504,7 +4525,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "Sigmoid", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Sigmoid, i, 0);
+                    do_kernel_operation!(Sigmoid, i, 0);
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -4523,7 +4544,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "SigmoidDiff", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SigmoidDiff, i, 0);
+                    do_kernel_operation!(SigmoidDiff, i, 0);
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -4540,7 +4561,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *output)
                     ], "LeakyRelu", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::LeakyRelu, i, 0);
+                    do_kernel_operation!(LeakyRelu, i, 0);
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -4559,7 +4580,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "LeakyReluDiff", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::LeakyReluDiff, i, 0);
+                    do_kernel_operation!(LeakyReluDiff, i, 0);
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -4586,7 +4607,7 @@ impl OperationsRecorder
                         create_bind_group_entry(1, max_buffer)
                     ], "SoftmaxMax", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MaxTensor, i, 0);
+                    do_kernel_operation!(MaxTensor, i, 0);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4595,7 +4616,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *softmaxed_output)
                     ], "SoftmaxPartA", 1);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SoftmaxPartA, i, 1);
+                    do_kernel_operation!(SoftmaxPartA, i, 1);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4605,7 +4626,7 @@ impl OperationsRecorder
                         create_bind_group_entry(1, sum_buffer)
                     ], "SoftmaxSum", 2);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SumTensor, i, 2);
+                    do_kernel_operation!(SumTensor, i, 2);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4614,7 +4635,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *softmaxed_output)
                     ], "SoftmaxPartB", 3);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SoftmaxPartB, i, 3);
+                    do_kernel_operation!(SoftmaxPartB, i, 3);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4663,7 +4684,7 @@ impl OperationsRecorder
                         _ => unreachable!()
                     };
 
-                    copy_equal_buffers(&mut encoder, get_buffer(&self.memory, *values), softmaxed_output_buffer);
+                    copy_equal_buffers(&mut self.raw_array_memory.encoder, get_buffer(&self.memory, *values), softmaxed_output_buffer);
 
                     let (max_buffer, z_buffer) = {
                         let indices = &self.raw_array_memory.scratch_buffers_locations[i];
@@ -4678,7 +4699,7 @@ impl OperationsRecorder
                         create_bind_group_entry(1, max_buffer)
                     ], "SoftmaxCrossEntropyMax", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MaxTensor, i, 0);
+                    do_kernel_operation!(MaxTensor, i, 0);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4689,7 +4710,7 @@ impl OperationsRecorder
                         create_bind_group_entry(3, z_buffer)
                     ], "SoftmaxCrossEntropyPartA", 1);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SoftmaxCrossEntropyPartA, i, 1);
+                    do_kernel_operation!(SoftmaxCrossEntropyPartA, i, 1);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4699,7 +4720,7 @@ impl OperationsRecorder
                         create_bind_group_entry(1, sum_buffer)
                     ], "SoftmaxCrossEntropySum", 2);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SumTensor, i, 2);
+                    do_kernel_operation!(SumTensor, i, 2);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4710,7 +4731,7 @@ impl OperationsRecorder
                         bind_group_entry(3, *output)
                     ], "SoftmaxCrossEntropyPartB", 3);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SoftmaxCrossEntropyPartB, i, 3);
+                    do_kernel_operation!(SoftmaxCrossEntropyPartB, i, 3);
 
                     exact_workgroup(&mut compute_pass, values.shape.batch_size);
 
@@ -4749,7 +4770,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *output)
                     ], "SoftmaxCrossEntropyDiff", 0);
 
-                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::SoftmaxCrossEntropyDiff, i, 0);
+                    do_kernel_operation!(SoftmaxCrossEntropyDiff, i, 0);
 
                     exact_workgroup(&mut compute_pass, targets.shape.batch_size);
 
@@ -4778,7 +4799,7 @@ impl OperationsRecorder
                         {
                             debug_calculate_values!(MatmulOneHotv, (lhs, rhs),());
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MatmulOneHotv, i, 0);
+                            do_kernel_operation!(MatmulOneHotv, i, 0);
                         },
                         GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                         {
@@ -4786,7 +4807,7 @@ impl OperationsRecorder
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MatmulOneHotvAdd, i, 0);
+                            do_kernel_operation!(MatmulOneHotvAdd, i, 0);
                         },
                         _ => ()
                     }
@@ -4822,7 +4843,7 @@ impl OperationsRecorder
                         {
                             debug_calculate_values!(Matmulv, (lhs, rhs),());
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Matmulv, i, 0);
+                            do_kernel_operation!(Matmulv, i, 0);
                         },
                         GradientOp::MatmulvAdd{lhs: _, rhs, added, output} =>
                         {
@@ -4830,7 +4851,7 @@ impl OperationsRecorder
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MatmulvAdd, i, 0);
+                            do_kernel_operation!(MatmulvAdd, i, 0);
                         },
                         _ => unreachable!()
                     }
@@ -4864,7 +4885,7 @@ impl OperationsRecorder
                         {
                             debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MatmulvTransposed, i, 0);
+                            do_kernel_operation!(MatmulvTransposed, i, 0);
                         },
                         GradientOp::MatmulvTransposedAdd{lhs: _, rhs, added, output} =>
                         {
@@ -4872,7 +4893,7 @@ impl OperationsRecorder
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MatmulvTransposedAdd, i, 0);
+                            do_kernel_operation!(MatmulvTransposedAdd, i, 0);
                         },
                         _ => unreachable!()
                     }
@@ -4893,7 +4914,7 @@ impl OperationsRecorder
 
                     try_end_compute_pass(&mut compute_pass);
 
-                    encoder.as_mut().unwrap().clear_buffer(get_buffer(&self.memory, *output), 0, None);
+                    self.raw_array_memory.encoder.as_mut().unwrap().clear_buffer(get_buffer(&self.memory, *output), 0, None);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                         bind_group_entry(0, *lhs),
@@ -4908,7 +4929,7 @@ impl OperationsRecorder
                         {
                             debug_calculate_values!(OuterProductOneHot, (lhs, rhs),());
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::OuterProductOneHot, i, 0);
+                            do_kernel_operation!(OuterProductOneHot, i, 0);
                         },
                         GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
                         {
@@ -4916,7 +4937,7 @@ impl OperationsRecorder
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::OuterProductOneHotAdd, i, 0);
+                            do_kernel_operation!(OuterProductOneHotAdd, i, 0);
                         },
                         _ => ()
                     }
@@ -4952,7 +4973,7 @@ impl OperationsRecorder
                         {
                             debug_calculate_values!(OuterProduct, (lhs, rhs),());
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::OuterProduct, i, 0);
+                            do_kernel_operation!(OuterProduct, i, 0);
                         },
                         GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
                         {
@@ -4960,7 +4981,7 @@ impl OperationsRecorder
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::OuterProductAdd, i, 0);
+                            do_kernel_operation!(OuterProductAdd, i, 0);
                         },
                         _ => unreachable!()
                     }
@@ -4980,7 +5001,7 @@ impl OperationsRecorder
 
         self.memory.tensors_raw_data.iter().filter(|x| x.output_buffer.is_some()).for_each(|raw_array|
         {
-            copy_equal_buffers(&mut encoder, &raw_array.buffer, raw_array.output_buffer.as_ref().expect("must exist"));
+            copy_equal_buffers(&mut self.raw_array_memory.encoder, &raw_array.buffer, raw_array.output_buffer.as_ref().expect("must exist"));
         });
 
         #[cfg(feature="timedebug")]
@@ -5001,16 +5022,16 @@ impl OperationsRecorder
 
             let timings: Vec<Box<[u64]>> = query_sets.into_iter().map(|query_set|
             {
-                encoder.as_mut().unwrap().resolve_query_set(&query_set, 0..max_queries, &query_buffer, 0);
-                copy_equal_buffers(&mut encoder, &query_buffer, &query_buffer_output);
+                self.raw_array_memory.encoder.as_mut().unwrap().resolve_query_set(&query_set, 0..max_queries, &query_buffer, 0);
+                copy_equal_buffers(&mut self.raw_array_memory.encoder, &query_buffer, &query_buffer_output);
 
-                self.raw_array_memory.queue.submit([encoder.take().unwrap().finish()]);
+                self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
                 let device = &self.raw_array_memory.device;
 
                 let buffer = get_buffer_blocking(device, &query_buffer_output);
 
-                encoder = Some(device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
+                self.raw_array_memory.encoder = Some(device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
 
                 buffer
             }).collect();
@@ -5074,7 +5095,7 @@ impl OperationsRecorder
 
                 let callback = map_callback_getter(buffer.clone(), callback);
 
-                encoder.as_mut().unwrap().map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., callback);
+                self.raw_array_memory.encoder.as_mut().unwrap().map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., callback);
 
                 true
             } else
@@ -5088,7 +5109,11 @@ impl OperationsRecorder
             }
         });
 
-        self.raw_array_memory.current_in_flight_queue = Some(self.raw_array_memory.queue.submit([encoder.take().unwrap().finish()]));
+        self.raw_array_memory.current_in_flight_queue = Some(self.raw_array_memory.queue.submit(
+            [self.raw_array_memory.encoder.take().unwrap().finish()]
+        ));
+
+        self.raw_array_memory.encoder = Some(self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
 
         if cfg!(feature="dumpmemory")
         {
