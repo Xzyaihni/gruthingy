@@ -120,7 +120,7 @@ impl Optimizer for ()
 
     fn is_none_optimizer() -> bool { true }
 
-    fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> { unreachable!() }
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> {}
 
     fn add_operations(self, _recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, _gradient: TensorPtr) -> TensorPtr
     {

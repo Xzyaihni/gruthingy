@@ -1467,9 +1467,32 @@ where
                 optimizer
             });
 
+            self.optimizer_info.as_ref().map(|infos|
+            {
+                infos.iter().for_each(|info|
+                {
+                    ThisOptimizer::map_data_ref(info, |value|
+                    {
+                        let OptimizerInfoPtr::Ptr(value) = *value else { panic!("must not be resolved") };
+
+                        self.recorder.store_tensor_as_output(value);
+                    });
+                });
+            });
+
             self.recorder.gradient_with(self.outputs.loss_ptr.expect("must be initialized").into(), optimizer_info);
 
             self.prepare_shared(true);
+
+            self.optimizer_info.as_mut().map(|infos|
+            {
+                infos.iter_mut().for_each(|info| *info = ThisOptimizer::map_data_ref(&*info, |value|
+                {
+                    let OptimizerInfoPtr::Ptr(value) = *value else { panic!("must not be resolved") };
+
+                    OptimizerInfoPtr::Index(self.recorder.resolve_tensor_ptr(value))
+                }));
+            });
         }
     }
 
