@@ -1503,13 +1503,15 @@ impl WgpuInitInfo
         }
 
         let default_limits = wgpu::Limits::downlevel_defaults();
+        let maybe_max_buffer = env::var("WGPU_MAX_BUFFER_SIZE").map(|x| x.parse().unwrap()).ok();
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor{
             label: None,
             required_features,
             required_limits: wgpu::Limits{
                 max_immediate_size: 5 * 4,
-                max_buffer_size: env::var("WGPU_MAX_BUFFER_SIZE").map(|x| x.parse().unwrap()).unwrap_or(default_limits.max_buffer_size),
+                max_buffer_size: maybe_max_buffer.unwrap_or(default_limits.max_buffer_size),
+                max_storage_buffer_binding_size: maybe_max_buffer.unwrap_or(default_limits.max_storage_buffer_binding_size),
                 ..default_limits
             },
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
