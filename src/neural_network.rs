@@ -1824,7 +1824,7 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 3000, None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 4000, None);
     }
 
     fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(dictionary: D, iterations: usize, gradient_clip: Option<f32>)
