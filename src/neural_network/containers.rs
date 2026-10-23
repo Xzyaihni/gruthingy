@@ -678,6 +678,9 @@ pub struct LoopIndex(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScratchBufferIndex(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedIndex(usize);
+
 #[derive(Debug, Clone)]
 enum OperationsTarget
 {
@@ -906,6 +909,7 @@ pub struct OperationsRecorderMemory
     one_hot_layers: Vec<OneHotLayer>,
     one_hot_buffers: Vec<Option<TensorRawDataPointer>>,
     phi_other_selectors_values: Vec<PhiOtherSelectorValue>,
+    seeds: Vec<u64>,
     variable_names: VariableNames,
     store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     input_raw_check: Vec<DiffValue>,
@@ -940,6 +944,7 @@ impl Debug for OperationsRecorderMemory
             .field("one_hot_layers", &self.one_hot_layers)
             .field("one_hot_buffers", &self.one_hot_buffers)
             .field("phi_other_selectors_values", &self.phi_other_selectors_values)
+            .field("seeds", &self.seeds)
             .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("input_raw_check", &self.input_raw_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("forced_same_memory", &self.forced_same_memory.iter().map(ForceNoPretty).collect::<Vec<_>>())
@@ -1004,6 +1009,7 @@ impl OperationsRecorderMemory
             one_hot_layers: Vec::new(),
             one_hot_buffers: Vec::new(),
             phi_other_selectors_values: Vec::new(),
+            seeds: Vec::new(),
             variable_names: VariableNames::new(),
             store_tensors_check: Vec::new(),
             input_raw_check: Vec::new(),
@@ -1684,6 +1690,7 @@ impl WgpuInitInfo
                 OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::Dropout => ("kernels/dropout.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::Magnitude => ("kernels/magnitude.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::CapMagnitude => ("kernels/cap_magnitude.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.r1_w1_i1),
@@ -2568,6 +2575,20 @@ impl OperationsRecorder
         output
     }
 
+    pub fn dropout(&mut self, value: DiffTensorPtr, probability: f32) -> DiffTensorPtr
+    {
+        let shape = self.tensor_shape(value.as_value());
+
+        let output = self.new_tensor_op(shape.into());
+
+        let seed_index = SeedIndex(self.memory.seeds.len());
+        self.memory.seeds.push(0);
+
+        self.add_recording_operation(Op::Dropout{value, probability, seed_index, output});
+
+        output
+    }
+
     pub fn mul_componentwise(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_pair_tensor_op!(self, a, b, MulComponentwise)
@@ -3407,6 +3428,43 @@ impl OperationsRecorder
                     .unwrap()
             }
 
+            let dropout_states = |seeds: &mut [u64], probability: f32, seed_index: SeedIndex|
+            {
+                let seed = fastrand::u64(..);
+
+                seeds[seed_index.0] = seed;
+
+                let scratch_buffer = {
+                    let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][0];
+
+                    &self.raw_array_memory.scratch_buffers[index.0]
+                };
+
+                let mut generator = fastrand::Rng::with_seed(seed);
+                let generate_packed_bools = move || -> u8
+                {
+                    let mut output: u8 = 0;
+
+                    for i in 0..8
+                    {
+                        let bit = if generator.f32() < probability { 0 } else { 1 };
+
+                        output |= bit << i;
+                    }
+
+                    output
+                };
+
+                let size = scratch_buffer.size();
+                self.raw_array_memory.queue
+                    .write_buffer_with(scratch_buffer, 0, NonZero::new(size).unwrap())
+                    .expect("must exist")
+                    .slice(..)
+                    .write_iter(iter::repeat_with(generate_packed_bools).take(size as usize));
+
+                scratch_buffer
+            };
+
             macro_rules! wgpu_info
             {
                 () =>
@@ -4111,7 +4169,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
-                        create_bind_group_entry(2, scratch_buffer),
+                        create_bind_group_entry(2, scratch_buffer)
                     ], "DotMul", 0);
 
                     do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::MulComponentwise, i, 0);
@@ -4162,6 +4220,50 @@ impl OperationsRecorder
                     ], "BatchReplicate", 0);
 
                     do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::BatchReplicate, i, 0);
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::Dropout{value, probability, seed_index, output} =>
+                {
+                    debug_calculate_values!(Dropout, (value),());
+
+                    debug_assert_eq!(value.shape, output.shape);
+
+                    let states = dropout_states(&mut self.memory.seeds, *probability, *seed_index);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                        bind_group_entry(0, *value),
+                        create_bind_group_entry(1, states),
+                        bind_group_entry(2, *output)
+                    ], "Dropout", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Dropout, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::DropoutDiff{value, probability, seed_index, output} =>
+                {
+                    debug_calculate_values!(DropoutDiff, (value),());
+
+                    debug_assert_eq!(value.shape, output.shape);
+
+                    let states = dropout_states(&mut self.memory.seeds, *probability, *seed_index);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                        bind_group_entry(0, *value),
+                        create_bind_group_entry(1, states),
+                        bind_group_entry(2, *output)
+                    ], "DropoutDiff", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Dropout, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4964,6 +5066,10 @@ impl OperationsRecorder
                 Op::BatchReplicate{src, dst} =>
                 {
                     GradientOp::BatchReplicate{value: src.as_value(), output: dst.as_value()}
+                },
+                Op::Dropout{value, probability, seed_index, output} =>
+                {
+                    GradientOp::Dropout{value: value.as_value(), probability: *probability, seed_index: *seed_index, output: output.as_value()}
                 },
                 Op::AddScalar{lhs, rhs, output} =>
                 {
@@ -6359,6 +6465,8 @@ impl OperationsRecorder
                 GradientOp::OptimizerAdam{gradient, adam: _, m, v, output} => t_storage!(gradient, m, v, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
+                GradientOp::Dropout{value, probability: _, seed_index: _, output} => t_storage!(value, output),
+                GradientOp::DropoutDiff{value, probability: _, seed_index: _, output} => t_storage!(value, output),
                 GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
                 GradientOp::LeakyRelu{value, output} => t_storage!(value, output),
                 GradientOp::LeakyReluDiff{value, gradient, output} => t_storage!(value, gradient, output),
@@ -6634,6 +6742,15 @@ impl OperationsRecorder
             if let Some(sizes) = match gradient_op
             {
                 GradientOp::Dot{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
+                GradientOp::Dropout{value, ..}
+                | GradientOp::DropoutDiff{value, ..} =>
+                {
+                    let shape = self.memory.tensor_shape(value);
+                    let states = shape.columns * shape.batch_size;
+
+                    // u32 stores 32 packed bools
+                    Some(vec![(states.div_ceil(32)).into()])
+                },
                 GradientOp::CapMagnitude{value, ..} => Some(vec![self.memory.tensor_shape(value).batch_size.into()]),
                 GradientOp::Softmax{values: value, ..} =>
                 {
@@ -8250,6 +8367,15 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::SumBatch{value: gradient, output: src_gradient});
                 }
             },
+            Op::Dropout{value, probability, seed_index, output} =>
+            {
+                let gradient = gradient_or_return!(output);
+
+                if let Some(value_gradient) = value.as_gradient()
+                {
+                    add_gradient_operation(self, selectors, GradientOp::DropoutDiff{value: gradient, probability, seed_index, output: value_gradient});
+                }
+            },
             Op::Add{lhs, output, ..}
             | Op::AddScalar{lhs, output, ..} =>
             {
@@ -9290,6 +9416,8 @@ pub enum GradientOp<T, V, J, O, S>
     SumBatch{value: T, output: T},
     Fill{value: T, output: T},
     BatchReplicate{value: T, output: T},
+    Dropout{value: T, probability: f32, seed_index: SeedIndex, output: T},
+    DropoutDiff{value: T, probability: f32, seed_index: SeedIndex, output: T},
     CapMagnitude{value: T, magnitude: V, output: T},
     OptimizerSgd{gradient: T, sgd: Sgd, output: T},
     OptimizerPowerSign{gradient: T, powersign: PowerSign, m: T, output: T},
@@ -9398,6 +9526,14 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::SumBatch{value, output} => GradientOp::SumBatch{value: tf(value), output: tf(output)},
             Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
             Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
+            Self::Dropout{value, probability, seed_index, output} =>
+            {
+                GradientOp::Dropout{value: tf(value), probability, seed_index, output: tf(output)}
+            },
+            Self::DropoutDiff{value, probability, seed_index, output} =>
+            {
+                GradientOp::DropoutDiff{value: tf(value), probability, seed_index, output: tf(output)}
+            },
             Self::CapMagnitude{value, magnitude, output} => GradientOp::CapMagnitude{value: tf(value), magnitude: vf(magnitude), output: tf(output)},
             Self::OptimizerSgd{gradient, sgd, output} => GradientOp::OptimizerSgd{gradient: tf(gradient), sgd, output: tf(output)},
             Self::OptimizerPowerSign{gradient, powersign, m, output} =>
@@ -9601,6 +9737,14 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulComponentwiseAdd{output, lhs, rhs, added} => Self::MulComponentwiseAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::Fill{output, value} => Self::Fill{output: tf(&mut state, output), value},
             Self::BatchReplicate{output, value} => Self::BatchReplicate{output: tf(&mut state, output), value},
+            Self::Dropout{value, probability, seed_index, output} =>
+            {
+                Self::Dropout{value, probability, seed_index, output: tf(&mut state, output)}
+            },
+            Self::DropoutDiff{value, probability, seed_index, output} =>
+            {
+                Self::DropoutDiff{value, probability, seed_index, output: tf(&mut state, output)}
+            },
             Self::CapMagnitude{value, magnitude, output} => Self::CapMagnitude{output: tf(&mut state, output), value, magnitude},
             Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{output: tf(&mut state, output), gradient, sgd},
             Self::OptimizerPowerSign{gradient, powersign, m, output} =>
@@ -9777,6 +9921,14 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::Fill{value, output} => Self::Fill{value: tf(&mut state, value), output},
             Self::BatchReplicate{value, output} => Self::BatchReplicate{value: tf(&mut state, value), output},
+            Self::Dropout{value, probability, seed_index, output} =>
+            {
+                Self::Dropout{value: tf(&mut state, value), probability, seed_index, output}
+            },
+            Self::DropoutDiff{value, probability, seed_index, output} =>
+            {
+                Self::DropoutDiff{value: tf(&mut state, value), probability, seed_index, output}
+            },
             Self::CapMagnitude{value, magnitude, output} =>
             {
                 Self::CapMagnitude{value: tf(&mut state, value), magnitude: vf(&mut state, magnitude), output}
@@ -9842,6 +9994,7 @@ pub enum Op
     Copy{src: DiffTensorPtr, dst: DiffTensorPtr},
     Fill{src: DiffTensorPtr, dst: DiffTensorPtr},
     BatchReplicate{src: DiffTensorPtr, dst: DiffTensorPtr},
+    Dropout{value: DiffTensorPtr, probability: f32, seed_index: SeedIndex, output: DiffTensorPtr},
     AddScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
     AddScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     Add{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
@@ -9880,6 +10033,7 @@ impl Op
             Self::Copy{dst, ..} => f(dst.into()),
             Self::Fill{dst, ..} => f(dst.into()),
             Self::BatchReplicate{dst, ..} => f(dst.into()),
+            Self::Dropout{output, ..} => f(output.into()),
             Self::AddScalar{output, ..} => f(output.into()),
             Self::AddScalars{output, ..} => f(output.into()),
             Self::Add{output, ..} => f(output.into()),
@@ -9917,6 +10071,7 @@ impl Op
             Self::Copy{src, ..} => f(src.into()),
             Self::Fill{src, ..} => f(src.into()),
             Self::BatchReplicate{src, ..} => f(src.into()),
+            Self::Dropout{value, ..} => f(value.into()),
             Self::AddScalar{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::AddScalars{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::Add{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },

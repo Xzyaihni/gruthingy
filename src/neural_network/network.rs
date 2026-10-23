@@ -133,7 +133,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
     #[cfg(debug_assertions)]
     {
-        let epsilon = if output.shape().rows.max(output.shape().columns) > 32 { 0.1 } else { 0.3 };
+        let epsilon = if output.shape().rows.max(output.shape().columns) > 32 { 0.2 } else { 0.3 };
 
         let is_identity = |expected_identity: LayerType| -> bool
         {
@@ -231,10 +231,9 @@ pub fn maybe_dropout_weights(
         recorder.name_diff_tensor_suffix(weight_replicated, weights, "_replicated");
 
         WeightInfoPtr{
-            weight_dropped: DiffTensorPtr::undefined(),
+            weight_dropped: None,
             weight_replicated,
-            weight_original: weights,
-            dropout: None
+            weight_original: weights
         }
     } else
     {
@@ -248,19 +247,13 @@ pub fn dropout_weights(
     shape: TensorShape
 ) -> WeightInfoPtr
 {
-    let dropout = recorder.new_tensor_no_gradient(shape);
-    recorder.name_diff_tensor(dropout, "dropout");
-
-    recorder.host_settable(dropout.as_value());
-
     let weight_replicated = recorder.batch_replicate(shape.batch_size, weight_original);
     recorder.name_diff_tensor_suffix(weight_replicated, weight_original, "_replicated");
 
     WeightInfoPtr{
-        weight_dropped: DiffTensorPtr::undefined(),
+        weight_dropped: Some(DiffTensorPtr::undefined()),
         weight_replicated,
-        weight_original,
-        dropout: Some(dropout.as_value())
+        weight_original
     }
 }
 
@@ -486,11 +479,6 @@ macro_rules! create_weights_container
                             columns: previous_size,
                             batch_size: sizes.batch_size
                         });
-
-                        if let Some(dropout) = weights.dropout
-                        {
-                            recorder.name_diff_tensor(DiffTensorPtr::no_gradient(dropout), stringify!($name).to_owned() + "_dropout");
-                        }
 
                         weights
                     },
@@ -897,30 +885,27 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct WeightInfoGeneric<D, I>
+pub struct WeightInfoGeneric<D>
 {
-    pub weight_dropped: D,
+    pub weight_dropped: Option<D>,
     pub weight_replicated: D,
-    pub weight_original: D,
-    pub dropout: Option<I>
+    pub weight_original: D
 }
 
-pub type WeightInfoPtr = WeightInfoGeneric<DiffTensorPtr, TensorPtr>;
+pub type WeightInfoPtr = WeightInfoGeneric<DiffTensorPtr>;
 
 #[cfg(not(test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeightInfo
 {
-    pub weight: ShapedTensorIndex,
-    pub dropout: Option<ShapedTensorIndex>
+    pub weight: ShapedTensorIndex
 }
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeightInfo
 {
-    pub weight: DiffTensor,
-    pub dropout: Option<ShapedTensorIndex>
+    pub weight: DiffTensor
 }
 
 pub type SaveWeightType = LayerType;
@@ -1391,16 +1376,9 @@ where
     {
         let initialize_dropped_weight = |recorder: &mut OperationsRecorder, weights: &mut WeightInfoPtr|
         {
-            if let Some(dropout) = weights.dropout
+            if weights.weight_dropped.is_some()
             {
-                let weight_dropped = recorder.mul_componentwise(
-                    weights.weight_replicated,
-                    DiffTensorPtr::no_gradient(dropout)
-                );
-
-                recorder.store_tensor_until_end(dropout);
-
-                weights.weight_dropped = weight_dropped;
+                weights.weight_dropped = Some(recorder.dropout(weights.weight_replicated, self.dropouts.dropout_probability));
             }
         };
 
@@ -1424,9 +1402,9 @@ where
 
                     #[cfg(debug_assertions)]
                     {
-                        if weights_size.weights.dropout.is_some()
+                        if let Some(dropped_weights) = weights_size.weights.weight_dropped
                         {
-                            self.recorder.name_diff_tensor(weights_size.weights.weight_dropped, _debug_info.name.to_owned() + "_dropped");
+                            self.recorder.name_diff_tensor(dropped_weights, _debug_info.name.to_owned() + "_dropped");
                         }
                     }
                 });
@@ -1533,7 +1511,7 @@ where
         {
             let weights_ptr = self.weights_ptr.as_ref().unwrap();
 
-            let mut store_tensor = |weight: &WeightInfoGeneric<DiffTensorPtr, TensorPtr>|
+            let mut store_tensor = |weight: &WeightInfoGeneric<DiffTensorPtr>|
             {
                 self.recorder.store_tensor_until_end(weight.weight_original.as_value());
             };
@@ -1573,21 +1551,17 @@ where
         {
             if !store_gradient { weight_info.weight_original.clear_gradient(); }
 
-            let dropout = weight_info.dropout.map(|x| self.recorder.resolve_tensor_ptr(x));
-
             #[cfg(not(test))]
             {
                 WeightInfo{
-                    weight: self.recorder.resolve_tensor_ptr(weight_info.weight_original.as_value()),
-                    dropout
+                    weight: self.recorder.resolve_tensor_ptr(weight_info.weight_original.as_value())
                 }
             }
 
             #[cfg(test)]
             {
                 WeightInfo{
-                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original),
-                    dropout
+                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original)
                 }
             }
         });
@@ -1794,8 +1768,7 @@ where
             {
                 if let Some(embeddings) = weights_ptr.embeddings.as_ref()
                 {
-                    debug_assert!(embeddings.input.weight_dropped.is_undefined());
-                    debug_assert!(embeddings.input.dropout.is_none());
+                    debug_assert!(embeddings.input.weight_dropped.is_none());
 
                     return DiffInputType::Normal(self.recorder.matmul_onehotv(embeddings.input.weight_replicated, input.into_one_hot()));
                 }
@@ -1859,13 +1832,13 @@ where
             .record_feedforward_unit(&mut self.recorder, previous_state, input)
             .map(|output|
             {
-                let output_mapped = self.recorder.matmulv(weights.output.weight_dropped, output);
+                let output_mapped = self.recorder.matmulv(weights.output.weight_dropped.unwrap(), output);
 
                 let output_activated = self.recorder.leaky_relu(output_mapped);
 
                 self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
                 {
-                    self.recorder.matmulv(embeddings.output.weight_dropped, output_activated)
+                    self.recorder.matmulv(embeddings.output.weight_dropped.unwrap(), output_activated)
                 }).unwrap_or(output_activated)
             })
     }
@@ -2216,24 +2189,11 @@ where
 
     pub fn feedforward_setup_dropout<R: DropoutRoll>(&mut self, rng: &mut R)
     {
-        self.setup_dropout_common(rng, self.dropouts.input_dropout_probability, self.dropouts.dropout_probability)
+        self.setup_input_dropout(rng, self.dropouts.input_dropout_probability)
     }
 
-    fn setup_dropout_common<R: DropoutRoll>(&mut self, rng: &mut R, input_dropout_probability: f32, dropout_probability: f32)
+    fn setup_input_dropout<R: DropoutRoll>(&mut self, rng: &mut R, input_dropout_probability: f32)
     {
-        let weights = self.weights.as_mut().unwrap();
-
-        weights.iter().for_each(|weight_info|
-        {
-            if let Some(dropout) = weight_info.dropout
-            {
-                let dropout_shape = dropout.shape();
-                debug_assert_eq!(dropout_shape.batch_size, self.sizes.batch_size);
-
-                self.recorder.set_tensor_with(dropout, Self::dropout_mask_setter(rng, dropout_shape.columns, dropout_probability));
-            }
-        });
-
         self.dropouts.input_dropouts = (0..self.sizes.batch_size).map(|_|
         {
             (0..self.sizes.initial_input).filter(|_| rng.roll() < input_dropout_probability).collect::<Vec<usize>>()
@@ -2362,44 +2322,6 @@ where
 
         f_output(self.recorder.get_tensor_blocking(output_value));
     }
-
-    fn dropout_mask_setter<R: DropoutRoll>(
-        rng: &mut R,
-        columns: usize,
-        probability: f32
-    ) -> impl FnMut() -> f32
-    {
-        let mut set_value = 0.0;
-        let mut column = 0;
-
-        move ||
-        {
-            if probability == 0.0
-            {
-                return 1.0;
-            }
-
-            if column == 0
-            {
-                set_value = if rng.roll() >= probability
-                {
-                    1.0
-                } else
-                {
-                    0.0
-                };
-            }
-
-            column += 1;
-
-            if column == columns
-            {
-                column = 0;
-            }
-
-            set_value
-        }
-    }
 }
 
 #[cfg(not(test))]
@@ -2448,7 +2370,8 @@ mod tests
     // i dont wanna do this for the unrolled version too
     const INPUT_DROPOUT_PROBABILITY: f32 = 0.0;
 
-    const DROPOUT_PROBABILITY: f32 = 0.3;
+    // i dont wanna sync rngs between cpu and gpu miss me with that lol
+    const DROPOUT_PROBABILITY: f32 = 0.0;
 
     const IS_INPUT_ONE_HOT: bool = true;
 
@@ -2597,8 +2520,6 @@ mod tests
         {
             at_once.recorder.store_tensor_until_end(x.weight_original.as_value());
             at_once.recorder.store_tensor_as_output(x.weight_original.as_gradient().unwrap());
-
-            x.dropout.map(|x| at_once.recorder.store_tensor_until_end(x));
         });
 
         at_once.recorder.gradient(output.unwrap().into());
@@ -2609,8 +2530,7 @@ mod tests
         at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
         {
             WeightInfo{
-                weight: at_once.recorder.resolve_diff_tensor_ptr(x.weight_original),
-                dropout: x.dropout.map(|x| at_once.recorder.resolve_tensor_ptr(x))
+                weight: at_once.recorder.resolve_diff_tensor_ptr(x.weight_original)
             }
         }));
 

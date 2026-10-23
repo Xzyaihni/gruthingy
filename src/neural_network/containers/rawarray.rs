@@ -68,6 +68,7 @@ define_op_kernels!{
     SumBatch,
     Fill,
     BatchReplicate,
+    Dropout,
     Magnitude,
     CapMagnitude,
     Pow,

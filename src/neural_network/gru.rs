@@ -79,10 +79,9 @@ impl NetworkUnit for Gru<WeightInfoPtr>
     {
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped;
+            let weights = weights.weight_dropped.unwrap();
 
-            debug_assert!(bias.weight_dropped.is_undefined());
-            debug_assert!(bias.dropout.is_none());
+            debug_assert!(bias.weight_dropped.is_none());
 
             let bias = bias.weight_replicated;
 
@@ -108,7 +107,7 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
             {
-                *gate = recorder.matmulv_add(hidden.weight_dropped, *previous_state, *gate);
+                *gate = recorder.matmulv_add(hidden.weight_dropped.unwrap(), *previous_state, *gate);
             };
 
             do_gate(&mut update_gate, self.hidden_update);
@@ -127,7 +126,7 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         if let Some(previous_state) = previous_state
         {
             let activation_v = recorder.mul_componentwise(reset_gate.unwrap(), *previous_state);
-            let mm = recorder.matmulv(self.hidden_activation.weight_dropped, activation_v);
+            let mm = recorder.matmulv(self.hidden_activation.weight_dropped.unwrap(), activation_v);
 
             activation_gate = recorder.add(activation_gate, mm);
         }

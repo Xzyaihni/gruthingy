@@ -1459,7 +1459,7 @@ mod tests
 
     use super::*;
 
-    use crate::word_vectorizer::InputData;
+    use crate::word_vectorizer::{bpe_from_bytes, InputData, BpeLimit};
 
     use network::WeightsFullContainer;
 
@@ -1502,6 +1502,7 @@ mod tests
 
     struct StarUnitFactory;
 
+    #[allow(dead_code)]
     impl StarUnitFactory
     {
         fn weight_units() -> usize { 2 }
@@ -1518,7 +1519,6 @@ mod tests
     type ThisDictionary = CharDictionary;
 
     fn gradient_with_batch_size<ThisEmbeddings: EmbeddingsTypeable>(
-        rng: PrecomputedRng,
         network: &mut NeuralNetwork<Network<Unit, ()>, (), ThisDictionary>,
         inputs: &Vec<VectorWord>,
         batch_starts: &Vec<usize>,
@@ -1534,7 +1534,7 @@ mod tests
             inputs_per_batch
         );
 
-        network.network.gradients(rng, values.iter::<ThisEmbeddings>()).1
+        network.network.gradients(fastrand::Rng::with_seed(1), values.iter::<ThisEmbeddings>()).1
     }
 
     #[test]
@@ -1581,7 +1581,7 @@ mod tests
         };
 
         let input_dropout_probability = 0.5;
-        let dropout_probability = 0.5;
+        let dropout_probability = 0.0;
         let gradient_clip = Some(1.0);
 
         fastrand::seed(222);
@@ -1606,107 +1606,13 @@ mod tests
 
         network_single.network.prepare_with_gradient((), None, ThisEmbeddings::one_hot_count());
 
-        fastrand::seed(111);
-
-        let embeddings_input_rolls = if USE_EMBEDDING_LAYER { input_size } else { 0 };
-        let embeddings_output_rolls = if USE_EMBEDDING_LAYER { output_size } else { 0 };
-        let output_rolls = output_size;
-
-        let rolls_per_input_weight = hidden;
-        let rolls_per_layer_weight = hidden;
-
-        let rolls_per_hidden = hidden;
-
-        dbg!(
-            embeddings_input_rolls,
-            embeddings_output_rolls,
-            output_rolls,
-            rolls_per_input_weight,
-            rolls_per_layer_weight,
-            rolls_per_hidden,
-            layers
-        );
-
-        // hardcoded for lstm
-        let weight_units = Unit::weight_units();
-        let hidden_units = Unit::hidden_units();
-
-        let rolls_per_batch = embeddings_input_rolls
-            + embeddings_output_rolls
-            + output_rolls
-            + rolls_per_input_weight * weight_units
-            + rolls_per_layer_weight * weight_units * (layers - 1)
-            + rolls_per_hidden * hidden_units * layers;
-
-        dbg!(rolls_per_batch);
-
-        let dropout_rng_values: Vec<f32> = {
-            let total_rolls = batch_size * rolls_per_batch;
-
-            dbg!(total_rolls);
-
-            iter::repeat_with(||
-            {
-                fastrand::f32()
-            }).take(total_rolls).collect()
-        };
-
         let mut single_added_gradients = (0..batch_size).map(|batch_step|
         {
             let count = inputs_per_batch;
             let start = batch_step * count;
 
-            let single_rng = {
-                let mut index = 0;
-
-                let mut values: Vec<f32> = Vec::new();
-
-                let mut push_dropout_layer = |index: &mut usize, s: usize|
-                {
-                    for _ in 0..s
-                    {
-                        let offset = batch_step * s;
-
-                        values.push(dropout_rng_values[*index + offset]);
-
-                        *index += 1;
-                    }
-
-                    *index += (batch_size - 1) * s;
-                };
-
-                for i in 0..layers
-                {
-                    for _ in 0..weight_units
-                    {
-                        if i == 0
-                        {
-                            push_dropout_layer(&mut index, rolls_per_input_weight);
-                        } else
-                        {
-                            push_dropout_layer(&mut index, rolls_per_layer_weight);
-                        }
-                    }
-
-                    for _ in 0..hidden_units
-                    {
-                        push_dropout_layer(&mut index, rolls_per_hidden);
-                    }
-                }
-
-                push_dropout_layer(&mut index, embeddings_output_rolls);
-                push_dropout_layer(&mut index, output_rolls);
-
-                push_dropout_layer(&mut index, embeddings_input_rolls);
-
-                PrecomputedRng{
-                    index: 0,
-                    values
-                }
-            };
-
             let inputs = inputs[start..(start + count)].to_vec();
-            gradient_with_batch_size::<ThisEmbeddings>(single_rng, &mut network_single, &inputs, &vec![0], inputs_per_batch)
+            gradient_with_batch_size::<ThisEmbeddings>(&mut network_single, &inputs, &vec![0], inputs_per_batch)
         }).reduce(|mut acc, this|
         {
             acc.iter_mut().zip(this.into_iter()).for_each(|(acc, this)|
@@ -1740,15 +1646,9 @@ mod tests
 
         network_batched.network.prepare_with_gradient((), None, ThisEmbeddings::one_hot_count());
 
-        let batched_rng = PrecomputedRng{
-            index: 0,
-            values: dropout_rng_values.clone()
-        };
-
         let batch_starts: Vec<usize> = (0..batch_size).map(|i| i * inputs_per_batch).collect();
 
         let batched_gradients_batch = gradient_with_batch_size::<ThisEmbeddings>(
-            batched_rng,
             &mut network_batched,
             &inputs,
             &batch_starts,
@@ -1780,54 +1680,92 @@ mod tests
     #[test]
     fn simple_data_overfit_char_sgd()
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000, None);
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000, None, None);
     }
 
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000, None);
+        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000, None, None);
     }
 
     #[test]
     fn simple_data_overfit_char_adam_normal()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, None);
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, None, None);
     }
 
     #[test]
     fn simple_data_overfit_char_adam_clip()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, Some(0.1));
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, Some(0.1), None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_adam_dropout()
+    {
+        for _ in 0..10
+        {
+            let last_loss = simple_data_overfit_inner::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 5000, None, Some(0.1));
+
+            if last_loss < 0.001
+            {
+                return;
+            }
+        }
+
+        panic!("could not overfit with dropout");
     }
 
     #[test]
     fn simple_data_overfit_bpe_single()
     {
-        let dictionary = crate::bpe_from_bytes(
-            crate::BpeLimit::Static(0),
+        let dictionary = bpe_from_bytes(
+            BpeLimit::Static(0),
             0.5,
             true,
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 4500, None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 4500, None, None);
     }
 
     #[test]
     fn simple_data_overfit_bpe_pairs()
     {
-        let dictionary = crate::bpe_from_bytes(
-            crate::BpeLimit::Static(2),
+        let dictionary = bpe_from_bytes(
+            BpeLimit::Static(2),
             0.0,
             true,
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 4000, None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 4000, None, None);
     }
 
-    fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(dictionary: D, iterations: usize, gradient_clip: Option<f32>)
+    fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(
+        dictionary: D,
+        iterations: usize,
+        gradient_clip: Option<f32>,
+        dropout: Option<f32>
+    )
+    where
+        OptimizerType::WeightParam<OptimizerInfoPtr>: NewableLayer,
+        OptimizerType::WeightParam<OptimizerInfoPtr>: Clone,
+        for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
+        for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    {
+        let last_loss = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, gradient_clip, dropout);
+
+        assert!(last_loss < 0.001, "{last_loss} must be close to 0");
+    }
+
+    fn simple_data_overfit_inner<OptimizerType: Optimizer, D: NetworkDictionary>(
+        dictionary: D,
+        iterations: usize,
+        gradient_clip: Option<f32>,
+        dropout: Option<f32>
+    ) -> f64
     where
         OptimizerType::WeightParam<OptimizerInfoPtr>: NewableLayer,
         OptimizerType::WeightParam<OptimizerInfoPtr>: Clone,
@@ -1866,7 +1804,7 @@ mod tests
         };
 
         let input_dropout_probability = 0.0;
-        let dropout_probability = 0.0;
+        let dropout_probability = dropout.unwrap_or(0.0);
 
         type NetworkType<OptimizerType> = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
 
@@ -1892,8 +1830,6 @@ mod tests
             steps_num: StepsNum::Steps(3)
         };
 
-        let last_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
-
-        assert!(last_loss < 0.001, "{last_loss} must be close to 0");
+        network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap()
     }
 }

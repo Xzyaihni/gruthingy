@@ -48,10 +48,9 @@ impl NetworkUnit for Star<WeightInfoPtr>
     {
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped;
+            let weights = weights.weight_dropped.unwrap();
 
-            debug_assert!(bias.weight_dropped.is_undefined());
-            debug_assert!(bias.dropout.is_none());
+            debug_assert!(bias.weight_dropped.is_none());
 
             let bias = bias.weight_replicated;
 
@@ -73,7 +72,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
-            k = recorder.matmulv_add(self.hidden.weight_dropped, *previous_state, k);
+            k = recorder.matmulv_add(self.hidden.weight_dropped.unwrap(), *previous_state, k);
             recorder.name_diff_tensor(k, "k_inner");
         }
 

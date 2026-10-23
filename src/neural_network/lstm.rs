@@ -99,10 +99,9 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
     {
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped;
+            let weights = weights.weight_dropped.unwrap();
 
-            debug_assert!(bias.weight_dropped.is_undefined());
-            debug_assert!(bias.dropout.is_none());
+            debug_assert!(bias.weight_dropped.is_none());
 
             let bias = bias.weight_replicated;
 
@@ -131,7 +130,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
-                *gate = recorder.matmulv_add(hidden.weight_dropped, previous_hidden, *gate);
+                *gate = recorder.matmulv_add(hidden.weight_dropped.unwrap(), previous_hidden, *gate);
             };
 
             do_gate(&mut forget_gate_inner, self.hidden_forget, previous_state.hidden);
@@ -226,10 +225,9 @@ mod tests
             let weight = one_weight(&mut recorder, value);
 
             let weight_info = WeightInfoPtr{
-                weight_dropped: if is_bias { DiffTensorPtr::undefined() } else { weight.clone() },
+                weight_dropped: (!is_bias).then(|| weight.clone()),
                 weight_replicated: weight,
-                weight_original: weight,
-                dropout: None
+                weight_original: weight
             };
 
             recorder.name_diff_tensor(weight_info.weight_original, name);
