@@ -308,7 +308,7 @@ mod tests
         let memory = recorder.resolve_tensor_ptr(memory);
         let hidden = recorder.resolve_tensor_ptr(hidden);
 
-        recorder.calculate();
+        recorder.calculate(0);
 
         let single_value = |l: ShapedTensorIndex|
         {

@@ -37,8 +37,7 @@ pub use network_unit::{
     NetworkUnitNewable,
     NetworkUnit,
     GenericUnit,
-    UnitFactory,
-    OptimizerUnit
+    UnitFactory
 };
 
 pub use network::{
@@ -81,7 +80,7 @@ pub use containers::{
 #[allow(unused_imports)]
 pub use containers::{
     close_enough,
-    optimizers::{Sgd, PowerSign}
+    optimizers::{Sgd, PowerSign, Adam}
 };
 
 #[allow(unused_imports)]
@@ -1350,7 +1349,7 @@ where
                 );
 
                 let rng = fastrand::Rng::new();
-                let loss = self.network.gradient_step_once(rng, values.iter());
+                let loss = self.network.gradient_step_once(rng, self.extra_info.iterations, values.iter());
 
                 let batch_loss = loss as f64 / steps_num as f64;
                 last_loss = Some(batch_loss);
@@ -1781,13 +1780,25 @@ mod tests
     #[test]
     fn simple_data_overfit_char_sgd()
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000);
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000, None);
     }
 
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000);
+        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000, None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_adam_normal()
+    {
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_adam_clip()
+    {
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, Some(0.1));
     }
 
     #[test]
@@ -1800,7 +1811,7 @@ mod tests
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 4500);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 4500, None);
     }
 
     #[test]
@@ -1813,10 +1824,10 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 3000);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 3000, None);
     }
 
-    fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(dictionary: D, iterations: usize)
+    fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(dictionary: D, iterations: usize, gradient_clip: Option<f32>)
     where
         OptimizerType::WeightParam<OptimizerInfoPtr>: NewableLayer,
         OptimizerType::WeightParam<OptimizerInfoPtr>: Clone,
@@ -1856,7 +1867,6 @@ mod tests
 
         let input_dropout_probability = 0.0;
         let dropout_probability = 0.0;
-        let gradient_clip = None;
 
         type NetworkType<OptimizerType> = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
 

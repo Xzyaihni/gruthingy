@@ -39,7 +39,6 @@ use neural_network::{
     NetworkUnit,
     NetworkUnitNewable,
     OptimizerInfoPtr,
-    OptimizerUnit,
     GenericUnit,
     Optimizer,
     DiffTensor,

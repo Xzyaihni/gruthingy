@@ -71,11 +71,6 @@ pub trait GenericUnit<T>
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
-pub trait OptimizerUnit<T>: GenericUnit<T> + Clone
-{
-    fn new_zeroed(sizes: LayerSizes) -> Self;
-}
-
 pub trait NetworkStateSelectable<T>
 {
     fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> T;

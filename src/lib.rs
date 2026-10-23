@@ -16,7 +16,6 @@ use neural_network::{
     EmbeddingUnit,
     OptimizerInfoPtr,
     Optimizer,
-    NewableLayer,
     Network
 };
 

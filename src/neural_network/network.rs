@@ -35,7 +35,6 @@ use crate::{
         NewableLayer,
         GenericUnit,
         Optimizer,
-        OptimizerUnit,
         OptimizerInfo,
         UnitFactory,
         OptimizerInfoPtr,
@@ -1866,7 +1865,7 @@ where
 
         self.feedforward_setup_dropout(&mut rng);
 
-        let total_loss = self.feedforward_with(OperationsRecorder::calculate, input);
+        let total_loss = self.feedforward_with(|recorder| recorder.calculate(0), input);
 
         let f = |weight: &WeightInfo|
         {
@@ -1907,6 +1906,7 @@ where
     pub fn gradient_step_once<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>, R: DropoutRoll>(
         &mut self,
         mut rng: R,
+        t: u64,
         input: I
     ) -> f32
     where
@@ -1919,7 +1919,7 @@ where
 
         self.feedforward_setup_dropout(&mut rng);
 
-        let total_loss = self.feedforward_with(OperationsRecorder::calculate, input);
+        let total_loss = self.feedforward_with(|recorder| recorder.calculate(t), input);
 
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.end_capture();
@@ -2595,7 +2595,7 @@ mod tests
 
         at_once.feedforward_setup_dropout(&mut fastrand::Rng::with_seed(SEED));
 
-        at_once.recorder.calculate();
+        at_once.recorder.calculate(0);
 
         let loss_batch = at_once.recorder.get_tensor_blocking(output_value);
         let loss = loss_batch.as_ref().average();

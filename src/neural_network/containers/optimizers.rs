@@ -223,112 +223,21 @@ impl Optimizer for PowerSign
     }
 }
 
-const uncomment_me: () = ();
-/*#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdamXGradientInfo
-{
-    m: LayerType,
-    v: LayerType,
-    v_hat: Option<LayerType>
-}
-
-impl NewableLayer for AdamXGradientInfo
-{
-    fn new(previous_size: usize, this_size: usize) -> Self
-    {
-        Self{
-            m: LayerType::new(this_size, previous_size),
-            v: LayerType::new(this_size, previous_size),
-            v_hat: None
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdamX
-{
-    pub a: f32,
-    pub b1: f32,
-    pub b2: f32,
-    pub epsilon: f32,
-    pub t: i32
-}
-
-impl Optimizer for AdamX
-{
-    type WeightParam = AdamXGradientInfo;
-
-    fn new() -> Self
-    {
-        Self{
-            a: 0.001,
-            b1: 0.9,
-            b2: 0.999,
-            epsilon: 1e-8,
-            t: 1
-        }
-    }
-
-    fn gradient_to_change(
-        &self,
-        gradient_info: &mut Self::WeightParam,
-        gradient: LayerType
-    ) -> LayerType
-    {
-        let b1_t = DECAY_FUNCTION.decay(self.b1, self.t);
-        let one_minus_b1_t = 1.0 - b1_t;
-
-        gradient_info.m = gradient_info.m.mul_scalar(b1_t).add(gradient.mul_scalar(one_minus_b1_t).as_ref());
-        gradient_info.v = gradient_info.v.mul_scalar(self.b2).add(gradient.mul_componentwise(gradient.as_ref()).mul_scalar(1.0 - self.b2).as_ref());
-
-        if let Some(v_hat) = gradient_info.v_hat.as_mut()
-        {
-            let one_minus_b1_tlast: f32 = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t - 1);
-
-            let lhs = (one_minus_b1_t).powi(2) / (one_minus_b1_tlast).powi(2);
-
-            let new_v_hat = v_hat.mul_scalar(lhs);
-
-            *v_hat = new_v_hat.max(gradient_info.v.as_ref());
-        } else
-        {
-            gradient_info.v_hat = Some(gradient_info.v.clone());
-        }
-
-        // it can be a / t.sqrt() but this is fine
-        let a_t = self.a;
-
-        let rhs = gradient_info.v_hat.as_ref().unwrap().sqrt_plus(self.epsilon);
-
-        gradient_info.m.mul_scalar(a_t).div_componentwise(rhs.as_ref())
-    }
-
-    fn advance_time(&mut self)
-    {
-        self.t += 1;
-    }
-
-    fn set_learning_rate(&mut self, learning_rate: f32)
-    {
-        self.a = learning_rate;
-    }
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdamGradientInfo
+pub struct AdamGradientInfo<T>
 {
-    m: LayerType,
-    v: LayerType
+    pub m: T,
+    pub v: T
 }
 
-impl NewableLayer for AdamGradientInfo
+impl NewableLayer for AdamGradientInfo<OptimizerInfoPtr>
 {
-    fn new(previous_size: usize, this_size: usize) -> Self
+    fn new_values<F: FnMut(LayerType) -> OptimizerInfoPtr>(previous: usize, current: usize, mut f: F) -> Self
     {
         Self{
-            m: LayerType::new(this_size, previous_size),
-            v: LayerType::new(this_size, previous_size)
+            m: f(LayerType::new(current, previous)),
+            v: f(LayerType::new(current, previous))
         }
     }
 }
@@ -340,45 +249,37 @@ pub struct Adam
     pub a: f32,
     pub b1: f32,
     pub b2: f32,
-    pub epsilon: f32,
-    pub t: i32
+    pub epsilon: f32
 }
 
-impl Optimizer for Adam
+impl Default for Adam
 {
-    type WeightParam = AdamGradientInfo;
-
-    fn new() -> Self
+    fn default() -> Self
     {
         Self{
             a: 0.001,
             b1: 0.9,
             b2: 0.999,
-            epsilon: 1e-8,
-            t: 1
+            epsilon: 1e-8
+        }
+    }
+}
+
+impl Optimizer for Adam
+{
+    type WeightParam<T> = AdamGradientInfo<T>;
+
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, mut f: F) -> Self::WeightParam<U>
+    {
+        AdamGradientInfo{
+            m: f(&x.m),
+            v: f(&x.v)
         }
     }
 
-    fn gradient_to_change(
-        &self,
-        gradient_info: &mut Self::WeightParam,
-        gradient: LayerType
-    ) -> LayerType
+    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
-        let one_minus_b1_t = 1.0 - DECAY_FUNCTION.decay(self.b1, self.t);
-        let one_minus_b2_t: f32 = 1.0 - DECAY_FUNCTION.decay(self.b2, self.t);
-
-        gradient_info.m = gradient_info.m.mul_scalar(self.b1).add(gradient.mul_scalar(1.0 - self.b1).as_ref());
-        gradient_info.v = gradient_info.v.mul_scalar(self.b2).add(gradient.mul_componentwise(gradient.as_ref()).mul_scalar(1.0 - self.b2).as_ref());
-
-        let a_t = self.a * one_minus_b2_t.sqrt() / one_minus_b1_t;
-
-        (&gradient_info.m.mul_scalar(a_t)).div_componentwise(gradient_info.v.sqrt_plus(self.epsilon).as_ref())
-    }
-
-    fn advance_time(&mut self)
-    {
-        self.t += 1;
+        recorder.adam_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
@@ -386,100 +287,3 @@ impl Optimizer for Adam
         self.a = learning_rate;
     }
 }
-
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    #[test]
-    fn adam_correct()
-    {
-        let mut old_weight = vec![3.21, 7.65];
-
-        let mut m = vec![0.0, 0.0];
-        let mut v = vec![0.0, 0.0];
-
-        let mut g = vec![3.1_f32, -0.8_f32];
-
-        let mut t = 1;
-
-        for _ in 0..2
-        {
-            let a = 0.001;
-            let b1 = 0.9;
-            let b2 = 0.999;
-
-            let epsilon = 10e-8;
-
-            let adam_g = {
-                let mut gradient_info = AdamGradientInfo{
-                    m: LayerType::from_boxed(m.clone().into_boxed_slice(), 2, 1),
-                    v: LayerType::from_boxed(v.clone().into_boxed_slice(), 2, 1)
-                };
-
-                let gradient = LayerType::from_boxed(g.clone().into_boxed_slice(), 2, 1);
-
-                let adam = Adam{
-                    a,
-                    b1,
-                    b2,
-                    epsilon,
-                    t
-                };
-
-                let change = adam.gradient_to_change(
-                    &mut gradient_info,
-                    gradient.clone()
-                );
-
-                LayerType::from_boxed(old_weight.clone().into_boxed_slice(), 2, 1).add(change.as_ref())
-            };
-
-            m = vec![
-                b1 * m[0] + (1.0 - b1) * g[0],
-                b1 * m[1] + (1.0 - b1) * g[1]
-            ];
-
-            v = vec![
-                b2 * v[0] + (1.0 - b2) * g[0].powi(2),
-                b2 * v[1] + (1.0 - b2) * g[1].powi(2)
-            ];
-
-            let m_hat = vec![
-                m[0] / (1.0 - b1.powi(t)),
-                m[1] / (1.0 - b1.powi(t))
-            ];
-
-            let v_hat = vec![
-                v[0] / (1.0 - b2.powi(t)),
-                v[1] / (1.0 - b2.powi(t))
-            ];
-
-            let new_weight = vec![
-                old_weight[0] + a * m_hat[0] / (v_hat[0].sqrt() + epsilon),
-                old_weight[1] + a * m_hat[1] / (v_hat[1].sqrt() + epsilon)
-            ];
-
-            if t == 1
-            {
-                let mut adam_g = adam_g.as_vec().into_iter();
-                assert_eq!(new_weight[0], adam_g.next().unwrap());
-                assert_eq!(new_weight[1], adam_g.next().unwrap());
-            } else
-            {
-                let mut adam_g = adam_g.as_vec().into_iter();
-                assert_eq!(new_weight[0], adam_g.next().unwrap());
-                assert_eq!(new_weight[1], adam_g.next().unwrap());
-            }
-
-            t += 1;
-
-            old_weight = new_weight;
-            g = vec![
-                g[0] - 1.1,
-                g[1] - 2.34
-            ];
-        }
-    }
-}*/

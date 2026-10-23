@@ -27,7 +27,9 @@ use optimizers::{
     Optimizer,
     Sgd,
     PowerSignGradientInfo,
-    PowerSign
+    PowerSign,
+    AdamGradientInfo,
+    Adam
 };
 
 mod shader_preprocessor;
@@ -1460,6 +1462,7 @@ struct KernelLayouts
     r1_w1_i0: KernelLayout,
     r1_w1_i1: KernelLayout,
     r1_w2_i2: KernelLayout,
+    r1_w3_i5: KernelLayout,
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
     r2_w2_i0: KernelLayout
@@ -1502,7 +1505,7 @@ impl WgpuInitInfo
             label: None,
             required_features,
             required_limits: wgpu::Limits{
-                max_immediate_size: 8,
+                max_immediate_size: 5 * 4,
                 ..wgpu::Limits::downlevel_defaults()
             },
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -1591,6 +1594,21 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 2)
             };
 
+            let r1_w3_i5 = {
+                let name = "r1_w3_i5";
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some(name),
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1),
+                        output_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, name, 5)
+            };
+
             let r2_w1_i0 = {
                 let name = "r2_w1_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1638,6 +1656,7 @@ impl WgpuInitInfo
                 r1_w1_i0,
                 r1_w1_i1,
                 r1_w2_i2,
+                r1_w3_i5,
                 r2_w1_i0,
                 r2_w1_i1,
                 r2_w2_i0
@@ -1683,7 +1702,8 @@ impl WgpuInitInfo
                 OpKernel::SoftmaxCrossEntropyPartB => ("kernels/softmax_cross_entropy_part_b.wgsl", &kernel_layouts.r2_w2_i0),
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.r1_w1_i1),
-                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.r1_w2_i2)
+                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.r1_w2_i2),
+                OpKernel::Adam => ("kernels/adam.wgsl", &kernel_layouts.r1_w3_i5)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -2524,6 +2544,22 @@ impl OperationsRecorder
         output
     }
 
+    pub fn adam_optimizer(
+        &mut self,
+        gradient: TensorPtr,
+        adam: Adam,
+        info: AdamGradientInfo<TensorPtr>
+    ) -> TensorPtr
+    {
+        let shape = self.tensor_shape(gradient);
+
+        let output = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::OptimizerAdam{gradient, adam, m: info.m, v: info.v, output});
+
+        output
+    }
+
     pub fn mul_componentwise(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_pair_tensor_op!(self, a, b, MulComponentwise)
@@ -2853,7 +2889,7 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(|_| { unimplemented!() }, count, inputs_in_flight);
+        self.calculate_steps(|_| { unimplemented!() }, count, 0, inputs_in_flight);
     }
 
     pub fn calculate_feedforward_with_dependent(
@@ -2863,20 +2899,21 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(dependent_inputs, count, None);
+        self.calculate_steps(dependent_inputs, count, 0, None);
     }
 
-    pub fn calculate(&mut self)
+    pub fn calculate(&mut self, t: u64)
     {
         let total = self.raw_operations.len();
 
-        self.calculate_steps(|_| { unimplemented!() }, total, None);
+        self.calculate_steps(|_| { unimplemented!() }, total, t, None);
     }
 
     fn calculate_steps<DependentInputs>(
         &mut self,
         mut dependent_inputs: DependentInputs,
         end: usize,
+        t: u64,
         inputs_in_flight: Option<usize>
     )
     where
@@ -4166,6 +4203,34 @@ impl OperationsRecorder
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &powersign.b1.to_ne_bytes());
                     compute_pass.as_mut().unwrap().set_immediates(FLOAT_BYTES as u32, &powersign.learning_rate.to_ne_bytes());
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((),());
+                },
+                GradientOp::OptimizerAdam{gradient, adam, m, v, output} =>
+                {
+                    debug_calculate_values!(OptimizerAdam, (gradient, m, v),());
+
+                    debug_assert!(t > 0);
+
+                    debug_assert_eq!(gradient.shape, output.shape);
+                    debug_assert_eq!(m.shape, output.shape);
+                    debug_assert_eq!(v.shape, output.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w3_i5, &[
+                        bind_group_entry(0, *gradient),
+                        bind_group_entry(1, *m),
+                        bind_group_entry(2, *v),
+                        bind_group_entry(3, *output)
+                    ], "OptimizerAdam", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Adam, i, 0);
+
+                    [adam.a, adam.b1, adam.b2, adam.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
+                    {
+                        compute_pass.as_mut().unwrap().set_immediates(index as u32 * FLOAT_BYTES as u32, &value.to_ne_bytes());
+                    });
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -6255,6 +6320,7 @@ impl OperationsRecorder
                 GradientOp::CapMagnitude{value, magnitude: _, output} => t_storage!(value, output),
                 GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
                 GradientOp::OptimizerPowerSign{gradient, powersign: _, m, output} => t_storage!(gradient, m, output),
+                GradientOp::OptimizerAdam{gradient, adam: _, m, v, output} => t_storage!(gradient, m, v, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
                 GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
@@ -9190,6 +9256,7 @@ pub enum GradientOp<T, V, J, O, S>
     CapMagnitude{value: T, magnitude: V, output: T},
     OptimizerSgd{gradient: T, sgd: Sgd, output: T},
     OptimizerPowerSign{gradient: T, powersign: PowerSign, m: T, output: T},
+    OptimizerAdam{gradient: T, adam: Adam, m: T, v: T, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -9299,6 +9366,10 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::OptimizerPowerSign{gradient, powersign, m, output} =>
             {
                 GradientOp::OptimizerPowerSign{gradient: tf(gradient), powersign, m: tf(m), output: tf(output)}
+            },
+            Self::OptimizerAdam{gradient, adam, m, v, output} =>
+            {
+                GradientOp::OptimizerAdam{gradient: tf(gradient), adam, m: tf(m), v: tf(v), output: tf(output)}
             },
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
@@ -9499,6 +9570,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::OptimizerPowerSign{output: tf(&mut state, output), gradient, powersign, m}
             },
+            Self::OptimizerAdam{gradient, adam, m, v, output} =>
+            {
+                Self::OptimizerAdam{output: tf(&mut state, output), gradient, adam, m, v}
+            },
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(&mut state, output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(&mut state, output), value},
             Self::SigmoidDiff{output, gradient, value} => Self::SigmoidDiff{output: tf(&mut state, output), gradient, value},
@@ -9673,6 +9748,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::OptimizerPowerSign{gradient, powersign, m, output} =>
             {
                 Self::OptimizerPowerSign{gradient: tf(&mut state, gradient), powersign, m: tf(&mut state, m), output}
+            },
+            Self::OptimizerAdam{gradient, adam, m, v, output} =>
+            {
+                Self::OptimizerAdam{gradient: tf(&mut state, gradient), adam, m: tf(&mut state, m), v: tf(&mut state, v), output}
             },
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
@@ -10186,7 +10265,7 @@ mod tests
         let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
         let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
 
-        recorder.calculate();
+        recorder.calculate(0);
 
         let a_g = recorder.get_tensor_blocking(a_gradient);
         let b_g = recorder.get_tensor_blocking(b_gradient);
@@ -10224,7 +10303,7 @@ mod tests
             new_recorder.set_tensor(new_a, a);
             new_recorder.set_tensor(new_b, b);
 
-            new_recorder.calculate();
+            new_recorder.calculate(0);
 
             new_recorder.get_tensor_blocking(output_value)
         };
@@ -11574,7 +11653,7 @@ mod tests
 
         let output_value = recorder.resolve_tensor_ptr(output_value);
 
-        recorder.calculate();
+        recorder.calculate(0);
 
         recorder.get_tensor_blocking(output_value)
     }
@@ -11877,7 +11956,7 @@ mod tests
             let gpu_softmaxed = recorder.resolve_tensor_ptr(gpu_softmaxed);
             let gpu_entropies = recorder.resolve_tensor_ptr(gpu_entropies);
 
-            recorder.calculate();
+            recorder.calculate(0);
 
             let gpu_softmaxed = recorder.get_tensor_blocking(gpu_softmaxed);
             let gpu_entropies = recorder.get_tensor_blocking(gpu_entropies);

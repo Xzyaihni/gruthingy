@@ -1,9 +1,7 @@
-const uncomment_me: () = ();
 #[allow(unused_imports)]
 use super::{
     Sgd,
-    //Adam,
-    //AdamX,
+    Adam,
     PowerSign,
     OneHotEmbeddings,
     BagOfWordsEmbeddings,
@@ -38,9 +36,8 @@ pub const USE_EMBEDDING_LAYER: bool = true;
 // only applies to EmbeddingsDictionary and WordDictionary
 pub const LOWERCASE_ONLY: bool = true;
 
-// options: Sgd, Adam, AdamX, PowerSign
-pub type NOptimizer = PowerSign;
-const put_me_to_adamx: () = ();
+// options: Sgd, Adam, PowerSign
+pub type NOptimizer = Adam;
 
 // options: PostcardFormat, JsonFormat, MixedFormat<Save, Load>
 pub type SaveFormat = PostcardFormat;
