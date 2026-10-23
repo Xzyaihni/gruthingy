@@ -1276,12 +1276,12 @@ where
             })
         };
 
-        let output_weights_ptr = create_weights("output_weights", false, sizes.output, sizes.final_output);
+        let output_weights_ptr = create_weights("output_weights", false, sizes.hidden, sizes.output);
         let embeddings_weights_ptr = USE_EMBEDDING_LAYER.then(||
         {
             EmbeddingsLayers{
                 input: create_weights("embeddings_input", true, sizes.initial_input, sizes.input),
-                output: create_weights("embeddings_output", false, sizes.hidden, sizes.output)
+                output: create_weights("embeddings_output", false, sizes.output, sizes.final_output)
             }
         });
 
@@ -1859,14 +1859,14 @@ where
             .record_feedforward_unit(&mut self.recorder, previous_state, input)
             .map(|output|
             {
-                let output = self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
-                {
-                    self.recorder.matmulv(embeddings.output.weight_dropped, output)
-                }).unwrap_or(output);
-
                 let output_activated = self.recorder.leaky_relu(output);
 
-                self.recorder.matmulv(weights.output.weight_dropped, output_activated)
+                let output_mapped = self.recorder.matmulv(weights.output.weight_dropped, output_activated);
+
+                self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
+                {
+                    self.recorder.matmulv(embeddings.output.weight_dropped, output_mapped)
+                }).unwrap_or(output_mapped)
             })
     }
 
