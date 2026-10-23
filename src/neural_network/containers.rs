@@ -5063,13 +5063,13 @@ impl OperationsRecorder
             });
         }
 
-        self.raw_array_memory.map_on_submit_buffers.retain_mut(|AsyncBufferReader{buffer, index, callback}|
+        self.raw_array_memory.map_on_submit_buffers.retain_mut(|AsyncBufferReader{buffer, index: _index, callback}|
         {
             if let Some(callback) = callback.take()
             {
                 #[cfg(debug_assertions)]
                 {
-                    self.memory.verify_raw_ptr_use_index(*index);
+                    self.memory.verify_raw_ptr_use_index(*_index);
                 }
 
                 let callback = map_callback_getter(buffer.clone(), callback);
