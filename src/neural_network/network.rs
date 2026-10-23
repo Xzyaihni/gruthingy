@@ -2010,10 +2010,10 @@ where
         &'b self
     ) -> Vec<WeightsNamed<LayerType>>
     where
-        for<'a> N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<WeightsNamed<&'a WeightInfo>>=N::Unit<WeightsNamed<&'a WeightInfo>>>,
-        N::Unit<WeightsNamed<&'b WeightInfo>>: IntoIterator<Item=WeightsNamed<&'b WeightInfo>>
+        for<'a> N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightsNamed<&'a WeightInfoPtr>>=N::Unit<WeightsNamed<&'a WeightInfoPtr>>>,
+        N::Unit<WeightsNamed<&'b WeightInfoPtr>>: IntoIterator<Item=WeightsNamed<&'b WeightInfoPtr>>
     {
-        let weights = self.weights.as_ref().unwrap();
+        let weights = self.weights_ptr.as_ref().unwrap();
 
         weights.layers.iter().enumerate()
             .flat_map(|(layer_index, layer)|
@@ -2059,7 +2059,7 @@ where
                     }
                 }]
             }).into_iter().flatten())
-            .map(|x| x.map(|x| self.recorder.get_tensor_blocking(x.weight)))
+            .map(|x| x.map(|x| self.recorder.get_tensor_memory_value(x.weight_original.as_value()).clone_owned()))
             .collect::<Vec<_>>()
     }
 
