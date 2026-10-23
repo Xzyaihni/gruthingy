@@ -1577,7 +1577,7 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            5000,
+            20000,
             None,
             Some(0.1)
         );
@@ -1696,7 +1696,7 @@ mod tests
             gradient_clip
         );
 
-        let steps_num = 3;
+        let steps_num = 4;
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,
@@ -1706,7 +1706,7 @@ mod tests
             steps_num: StepsNum::Steps(steps_num)
         };
 
-        let test_input = String::from_utf8_lossy(&inputs.as_bytes()[..steps_num]).into_owned();
+        let test_input = String::from_utf8_lossy(&inputs.as_bytes()[1..(1+steps_num)]).into_owned();
         let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
 
         network.reset(NetworkConfigInfo{

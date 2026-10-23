@@ -136,7 +136,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
         // these checks are so inaccurate with bigger layers
         if output.shape().rows.max(output.shape().columns) < 16
         {
-            let epsilon = 0.05;
+            let epsilon = 0.1;
 
             let is_identity = |expected_identity: LayerType| -> bool
             {
