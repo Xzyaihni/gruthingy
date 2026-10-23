@@ -68,6 +68,8 @@ define_op_kernels!{
     SumBatch,
     Fill,
     BatchReplicate,
+    Magnitude,
+    CapMagnitude,
     Pow,
     Tanh,
     TanhDiff,

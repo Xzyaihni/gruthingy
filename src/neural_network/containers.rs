@@ -1678,6 +1678,8 @@ impl WgpuInitInfo
                 OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::Magnitude => ("kernels/magnitude.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::CapMagnitude => ("kernels/cap_magnitude.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::Tanh => ("kernels/tanh.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::TanhDiff => ("kernels/tanh_diff.wgsl", &kernel_layouts.r2_w1_i0),
@@ -4163,7 +4165,35 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(CapMagnitude, (value),(magnitude));
 
-                    todo!();
+                    debug_assert_eq!(value.shape, output.shape);
+
+                    copy_tensor(wgpu_info!(), &self.memory, *value, *output);
+
+                    let magnitude_buffer = {
+                        let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][0];
+
+                        &self.raw_array_memory.scratch_buffers[index.0]
+                    };
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *value),
+                        create_bind_group_entry(1, magnitude_buffer)
+                    ], "Magnitude", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::Magnitude, i, 0);
+
+                    exact_workgroup(&mut compute_pass, value.shape.batch_size);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i1, &[
+                        create_bind_group_entry(0, magnitude_buffer),
+                        bind_group_entry(1, *output)
+                    ], "CapMagnitude", 0);
+
+                    do_kernel_operation(&mut encoder, &mut compute_pass, &self.raw_array_memory, OpKernel::CapMagnitude, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[magnitude.0].to_ne_bytes());
+
+                    single_workgroup(&mut compute_pass, output.size());
 
                     debug_calculate_values_result!((output),());
                 },
@@ -6317,7 +6347,7 @@ impl OperationsRecorder
                 GradientOp::SumTensor{value, output} => t_storage!(value, output),
                 GradientOp::MaxTensor{value, output} => t_storage!(value, output),
                 GradientOp::SumBatch{value, output} => t_storage!(value, output),
-                GradientOp::CapMagnitude{value, magnitude: _, output} => t_storage!(value, output),
+                GradientOp::CapMagnitude{value, magnitude: _, output} => { t_src!(value); t_dst!(output); t_storage!(value, output) },
                 GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
                 GradientOp::OptimizerPowerSign{gradient, powersign: _, m, output} => t_storage!(gradient, m, output),
                 GradientOp::OptimizerAdam{gradient, adam: _, m, v, output} => t_storage!(gradient, m, v, output),
@@ -6598,6 +6628,7 @@ impl OperationsRecorder
             if let Some(sizes) = match gradient_op
             {
                 GradientOp::Dot{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
+                GradientOp::CapMagnitude{value, ..} => Some(vec![self.memory.tensor_shape(value).batch_size.into()]),
                 GradientOp::Softmax{values: value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
