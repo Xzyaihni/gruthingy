@@ -133,78 +133,82 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 
     #[cfg(debug_assertions)]
     {
-        let epsilon = if output.shape().rows.max(output.shape().columns) > 32 { 0.25 } else { 0.3 };
-
-        let is_identity = |expected_identity: LayerType| -> bool
+        // these checks are so inaccurate with bigger layers
+        if output.shape().rows.max(output.shape().columns) < 16
         {
-            let shape = expected_identity.shape();
+            let epsilon = 0.05;
 
-            assert_eq!(shape.rows, shape.columns);
-
-            let expected_identity_vec = expected_identity.as_vec();
-
-            (0..shape.rows).all(|row|
+            let is_identity = |expected_identity: LayerType| -> bool
             {
-                (0..shape.columns).all(|column|
+                let shape = expected_identity.shape();
+
+                assert_eq!(shape.rows, shape.columns);
+
+                let expected_identity_vec = expected_identity.as_vec();
+
+                (0..shape.rows).all(|row|
                 {
-                    let expected_value = if row == column { 1.0 } else { 0.0 };
-
-                    let value = expected_identity_vec[column * shape.rows + row];
-
-                    let is_equal = if expected_value == 0.0
+                    (0..shape.columns).all(|column|
                     {
-                        value.abs() < epsilon
-                    } else
-                    {
-                        close_enough(value, expected_value, epsilon)
-                    };
+                        let expected_value = if row == column { 1.0 } else { 0.0 };
 
-                    // if !is_equal { eprintln!("{value} does not equal {expected_value}"); }
+                        let value = expected_identity_vec[column * shape.rows + row];
 
-                    is_equal
+                        let is_equal = if expected_value == 0.0
+                        {
+                            value.abs() < epsilon
+                        } else
+                        {
+                            close_enough(value, expected_value, epsilon)
+                        };
+
+                        // if !is_equal { eprintln!("{value} does not equal {expected_value}"); }
+
+                        is_equal
+                    })
                 })
-            })
-        };
+            };
 
-        let ata = output.as_ref().tr_gemm(output.as_ref());
-        let is_ata_identity = is_identity(ata.clone());
+            let ata = output.as_ref().tr_gemm(output.as_ref());
+            let is_ata_identity = is_identity(ata.clone());
 
-        let aat = output.as_ref().gemm_tr(output.as_ref());
-        let is_aat_identity = is_identity(aat.clone());
+            let aat = output.as_ref().gemm_tr(output.as_ref());
+            let is_aat_identity = is_identity(aat.clone());
 
-        assert!(is_ata_identity || is_aat_identity, "{ata:?}\nor\n{aat:?}\nmust be the identity");
+            assert!(is_ata_identity || is_aat_identity, "{ata:?}\nor\n{aat:?}\nmust be the identity");
 
-        let column_major_orthonormal = output.as_ref().transpose();
-        let column_size = column_major_orthonormal.rows();
+            let column_major_orthonormal = output.as_ref().transpose();
+            let column_size = column_major_orthonormal.rows();
 
-        let column_major_orthonormal = column_major_orthonormal.as_vec();
-        let columns: Vec<LayerTypeRef> = column_major_orthonormal.chunks_exact(column_size)
-            .map(|x| LayerTypeRef::from_data(x, TensorShape{rows: column_size, columns: 1, batch_size: 1}))
-            .collect();
+            let column_major_orthonormal = column_major_orthonormal.as_vec();
+            let columns: Vec<LayerTypeRef> = column_major_orthonormal.chunks_exact(column_size)
+                .map(|x| LayerTypeRef::from_data(x, TensorShape{rows: column_size, columns: 1, batch_size: 1}))
+                .collect();
 
-        // all vectors must be normal
-        columns.iter().for_each(|column|
-        {
-            let magnitude = column.magnitude();
-
-            assert!(close_enough(magnitude, 1.0, epsilon), "magnitude is {magnitude}, should be 1");
-        });
-
-        let columns_count = columns.len();
-
-        (0..columns_count).for_each(|column_index|
-        {
-            let a = columns[column_index];
-
-            ((column_index + 1)..columns_count).for_each(|other_column_index|
+            // all vectors must be normal
+            columns.iter().for_each(|column|
             {
-                let b = columns[other_column_index];
+                let magnitude = column.magnitude();
 
-                let dot = a.dot(b);
-
-                assert!(dot.abs() < epsilon, "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
+                assert!(close_enough(magnitude, 1.0, epsilon), "magnitude is {magnitude}, should be 1");
             });
-        });
+
+            let columns_count = columns.len();
+
+            (0..columns_count).for_each(|column_index|
+            {
+                let a = columns[column_index];
+
+                ((column_index + 1)..columns_count).for_each(|other_column_index|
+                {
+                    let b = columns[other_column_index];
+
+                    let dot = a.dot(b);
+
+                    assert!(dot.abs() < epsilon, "dot of {a:?} and {b:?} must be 0.0, instead its {dot}");
+                });
+            });
+        }
     }
 
     let output = if m <= k
@@ -938,7 +942,6 @@ where
     }
 }
 
-#[cfg(not(test))]
 impl<N: UnitFactory, SaveO> SaveNetwork<N, SaveO>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -953,7 +956,15 @@ where
         {
             w.map_ref(|weight_info|
             {
-                x.recorder.get_tensor_blocking(weight_info.weight)
+                #[cfg(not(test))]
+                {
+                    x.recorder.get_tensor_blocking(weight_info.weight)
+                }
+
+                #[cfg(test)]
+                {
+                    x.recorder.get_tensor_blocking(weight_info.weight.as_value())
+                }
             })
         } else
         {

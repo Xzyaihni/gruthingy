@@ -1084,7 +1084,25 @@ where
         Self{dictionary, network, optimizer, gradient_clip, extra_info, sizes}
     }
 
-    #[cfg(not(test))]
+    pub fn reset(&mut self, config: NetworkConfigInfo, batch_size: usize)
+    where
+        for<'de> O: Serialize + Deserialize<'de>,
+        for<'de> D: Serialize + Clone + Deserialize<'de>,
+        for<'de> O::WeightParam<LayerType>: Serialize + Clone + Deserialize<'de>,
+        for<'de> N::Unit<SaveWeightType>: Serialize + Deserialize<'de>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
+    {
+        let save_network: SaveNetwork<N, O::WeightParam<LayerType>> = SaveNetwork::from_network::<O, O::WeightParam<OptimizerInfoPtr>>(
+            &self.network
+        );
+
+        self.network = Network::load::<O, O::WeightParam<LayerType>>(save_network, config, batch_size);
+    }
+
     pub fn save<P: AsRef<Path>>(&self, path: P) -> io::Result<()>
     where
         O: Serialize,
@@ -1557,17 +1575,14 @@ mod tests
     #[test]
     fn simple_data_overfit_char_adam_dropout()
     {
-        for _ in 0..10
-        {
-            let last_loss = simple_data_overfit_inner::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 5000, None, Some(0.1));
+        let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
+            CharDictionary::new(InputData::String("abcdefg".to_owned())),
+            5000,
+            None,
+            Some(0.1)
+        );
 
-            if last_loss < 0.001
-            {
-                return;
-            }
-        }
-
-        panic!("could not overfit with dropout");
+        debug_assert!(test_loss < 0.001, "{test_loss} must be close to 0");
     }
 
     #[test]
@@ -1603,14 +1618,18 @@ mod tests
         dropout: Option<f32>
     )
     where
+        for<'de> OptimizerType: Serialize + Deserialize<'de>,
+        for<'de> D: Serialize + Clone + Deserialize<'de>,
+        for<'de> OptimizerType::WeightParam<LayerType>: Serialize + Clone + Deserialize<'de>,
         OptimizerType::WeightParam<OptimizerInfoPtr>: NewableLayer,
         OptimizerType::WeightParam<OptimizerInfoPtr>: Clone,
         for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
         for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
-        let last_loss = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, gradient_clip, dropout);
+        let (last_loss, test_loss) = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, gradient_clip, dropout);
 
-        assert!(last_loss < 0.001, "{last_loss} must be close to 0");
+        assert!(last_loss < 0.001, "train loss {last_loss} must be close to 0");
+        assert!(test_loss < 0.001, "test loss {test_loss} must be close to 0");
     }
 
     fn simple_data_overfit_inner<OptimizerType: Optimizer, D: NetworkDictionary>(
@@ -1618,8 +1637,11 @@ mod tests
         iterations: usize,
         gradient_clip: Option<f32>,
         dropout: Option<f32>
-    ) -> f64
+    ) -> (f64, f64)
     where
+        for<'de> OptimizerType: Serialize + Deserialize<'de>,
+        for<'de> D: Serialize + Clone + Deserialize<'de>,
+        for<'de> OptimizerType::WeightParam<LayerType>: Serialize + Clone + Deserialize<'de>,
         OptimizerType::WeightParam<OptimizerInfoPtr>: NewableLayer,
         OptimizerType::WeightParam<OptimizerInfoPtr>: Clone,
         for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
@@ -1674,15 +1696,27 @@ mod tests
             gradient_clip
         );
 
+        let steps_num = 3;
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,
             iterations,
             learning_rate: Some(0.01),
             less_info: false,
-            steps_num: StepsNum::Steps(3)
+            steps_num: StepsNum::Steps(steps_num)
         };
 
-        network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap()
+        let test_input = String::from_utf8_lossy(&inputs.as_bytes()[..steps_num]).into_owned();
+        let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
+
+        network.reset(NetworkConfigInfo{
+            print_optional_info: false,
+            is_multistep: true,
+            is_input_one_hot
+        }, 10);
+
+        let test_loss = network.test_loss(Cursor::new(test_input), None, false);
+
+        (last_train_loss, test_loss as f64)
     }
 }
