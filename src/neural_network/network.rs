@@ -1859,14 +1859,14 @@ where
             .record_feedforward_unit(&mut self.recorder, previous_state, input)
             .map(|output|
             {
-                let output_activated = self.recorder.leaky_relu(output);
+                let output_mapped = self.recorder.matmulv(weights.output.weight_dropped, output);
 
-                let output_mapped = self.recorder.matmulv(weights.output.weight_dropped, output_activated);
+                let output_activated = self.recorder.leaky_relu(output_mapped);
 
                 self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
                 {
-                    self.recorder.matmulv(embeddings.output.weight_dropped, output_mapped)
-                }).unwrap_or(output_mapped)
+                    self.recorder.matmulv(embeddings.output.weight_dropped, output_activated)
+                }).unwrap_or(output_activated)
             })
     }
 
