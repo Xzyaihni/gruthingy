@@ -1496,6 +1496,8 @@ impl<'a, 'b> InputsSpecifier<'a, 'b>
             raw_array.buffer.size()
         );
 
+        self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
+
         self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
         self.memory.get_tensor_blocking(self.raw_array_memory, tensor_index)
@@ -3304,7 +3306,7 @@ impl OperationsRecorder
 
                                 self.raw_array_memory.encoder.as_mut().unwrap().pop_debug_group();
 
-                                self.raw_array_memory.staging_belt.finish();
+                                self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
 
                                 self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
