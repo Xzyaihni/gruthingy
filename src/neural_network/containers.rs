@@ -1118,11 +1118,18 @@ impl OperationsRecorderMemory
         scalar
     }
 
-    fn set_tensor_inner(&self, raw_array_memory: &RawArrayMemory, index: LinearRawDataPointer, bytes: &[u8])
+    fn set_tensor_inner(&self, raw_array_memory: &mut RawArrayMemory, index: LinearRawDataPointer, bytes: &[u8])
     {
         let input_buffer = &self.tensors_raw_data[index.raw_index.0].buffer;
 
-        raw_array_memory.queue.write_buffer(input_buffer, 0, bytes);
+        let mut view = raw_array_memory.staging_belt.write_buffer(
+            raw_array_memory.encoder.as_mut().unwrap(),
+            input_buffer,
+            0,
+            NonZero::new(bytes.len() as u64).unwrap()
+        );
+
+        view.copy_from_slice(bytes);
     }
 
     fn get_tensor_blocking(
@@ -1242,7 +1249,7 @@ impl OperationsRecorderMemory
         Some((get_buffer_blocking::<T>(&raw_array_memory.device, output_buffer), info.shape))
     }
 
-    fn set_one_hot(&mut self, raw_array_memory: &RawArrayMemory, index: OneHotIndex, value: OneHotLayer)
+    fn set_one_hot(&mut self, raw_array_memory: &mut RawArrayMemory, index: OneHotIndex, value: OneHotLayer)
     {
         #[cfg(debug_assertions)]
         {
@@ -1812,6 +1819,7 @@ struct RawArrayMemory
     tensor_usages: Vec<wgpu::BufferUsages>,
     one_hot_usages: Vec<wgpu::BufferUsages>,
     encoder: Option<wgpu::CommandEncoder>,
+    staging_belt: wgpu::util::StagingBelt,
     input_buffers: Vec<wgpu::Buffer>,
     stack_buffers: HashMap<u64, Vec<wgpu::Buffer>>,
     map_on_submit_buffers: Vec<AsyncBufferReader>,
@@ -1826,6 +1834,7 @@ impl RawArrayMemory
     fn from_init_info(init_info: WgpuInitInfo) -> Self
     {
         let encoder = init_info.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None});
+        let staging_belt = wgpu::util::StagingBelt::new(init_info.device.clone(), 512 * FLOAT_BYTES as wgpu::BufferAddress);
 
         Self{
             device: init_info.device,
@@ -1835,6 +1844,7 @@ impl RawArrayMemory
             tensor_usages: Vec::new(),
             one_hot_usages: Vec::new(),
             encoder: Some(encoder),
+            staging_belt,
             input_buffers: Vec::new(),
             stack_buffers: HashMap::new(),
             map_on_submit_buffers: Vec::new(),
@@ -2042,7 +2052,7 @@ impl OperationsRecorder
         let info = self.memory.tensors[index.0];
         debug_assert_ne!(info, LinearRawDataPointer::undefined(), "{index:?} location is undefined");
 
-        self.memory.set_tensor_inner(&self.raw_array_memory, info, value.bytes_slice());
+        self.memory.set_tensor_inner(&mut self.raw_array_memory, info, value.bytes_slice());
     }
 
     pub fn set_tensor_ptr_zeroed(&mut self, _index: TensorPtr)
@@ -2108,7 +2118,7 @@ impl OperationsRecorder
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
-        self.memory.set_one_hot(&self.raw_array_memory, index, value)
+        self.memory.set_one_hot(&mut self.raw_array_memory, index, value)
     }
 
     pub fn set_input(&mut self, input: InputType, value: OwnedInputType)
@@ -2307,35 +2317,6 @@ impl OperationsRecorder
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingResolve));
 
         self.memory.input_raw_check.push(value.into());
-    }
-
-    pub fn set_tensor_with(&mut self, index: ShapedTensorIndex, f: impl FnMut() -> f32)
-    {
-        debug_assert_eq!(self.state, RecorderState::Ready);
-        debug_assert_ne!(index, ShapedTensorIndex::undefined());
-
-        #[cfg(debug_assertions)]
-        {
-            let index: TensorIndex = index.into();
-
-            self.memory.set_tensors_check.push(index.into());
-
-            self.memory.verify_raw_ptr_assign_index(index);
-        }
-
-        let info = self.memory.tensors[index.index.0];
-        debug_assert_ne!(info, LinearRawDataPointer::undefined(), "{index:?} location is undefined");
-
-        let info = info.with_shape(index.shape);
-
-        let input_buffer = &self.memory.tensors_raw_data[info.raw_index.0].buffer;
-
-        let size = info.shape.size();
-        self.raw_array_memory.queue
-            .write_buffer_with(input_buffer, 0, NonZero::new((size * FLOAT_BYTES) as u64).unwrap())
-            .expect("must exist")
-            .slice(..)
-            .write_iter(iter::repeat_with(f).take(size).flat_map(f32::to_ne_bytes));
     }
 
     pub fn get_value(&self, index: ValueIndex) -> f32
@@ -3323,10 +3304,12 @@ impl OperationsRecorder
 
                                 self.raw_array_memory.encoder.as_mut().unwrap().pop_debug_group();
 
+                                self.raw_array_memory.staging_belt.finish();
+
                                 self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
                                 let new_encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
-                                    label: Some(&(stringify!($name).to_owned() + "_dump_encoder"))
+                                    label: None
                                 });
 
                                 self.raw_array_memory.encoder = Some(new_encoder);
@@ -3511,16 +3494,25 @@ impl OperationsRecorder
                     .unwrap()
             }
 
-            let dropout_states = |seeds: &mut [u64], probability: f32, seed_index: SeedIndex|
+            fn dropout_states<'a>(
+                scratch_buffers: &'a [wgpu::Buffer],
+                scratch_buffers_locations: &[Vec<ScratchBufferIndex>],
+                staging_belt: &mut wgpu::util::StagingBelt,
+                encoder: &mut Option<wgpu::CommandEncoder>,
+                seeds: &mut [u64],
+                probability: f32,
+                seed_index: SeedIndex,
+                i: usize
+            ) -> &'a wgpu::Buffer
             {
                 let seed = fastrand::u64(..);
 
                 seeds[seed_index.0] = seed;
 
                 let scratch_buffer = {
-                    let index: ScratchBufferIndex = self.raw_array_memory.scratch_buffers_locations[i][0];
+                    let index: ScratchBufferIndex = scratch_buffers_locations[i][0];
 
-                    &self.raw_array_memory.scratch_buffers[index.0]
+                    &scratch_buffers[index.0]
                 };
 
                 let mut generator = fastrand::Rng::with_seed(seed);
@@ -3539,14 +3531,17 @@ impl OperationsRecorder
                 };
 
                 let size = scratch_buffer.size();
-                self.raw_array_memory.queue
-                    .write_buffer_with(scratch_buffer, 0, NonZero::new(size).unwrap())
-                    .expect("must exist")
-                    .slice(..)
-                    .write_iter(iter::repeat_with(generate_packed_bools).take(size as usize));
+                let mut view = staging_belt.write_buffer(
+                    encoder.as_mut().unwrap(),
+                    scratch_buffer,
+                    0,
+                    NonZero::new(size).unwrap()
+                );
+
+                view.slice(..).write_iter(iter::repeat_with(generate_packed_bools).take(size as usize));
 
                 scratch_buffer
-            };
+            }
 
             macro_rules! wgpu_info
             {
@@ -3753,23 +3748,39 @@ impl OperationsRecorder
 
                             if is_in_flight_limit
                             {
+                                self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
+
                                 self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
                                 self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                             }
 
-                            match value
                             {
-                                OwnedInputType::Normal(tensor) =>
-                                {
-                                    self.raw_array_memory.queue.write_buffer(src_buffer, 0, tensor.as_ref().bytes_slice())
-                                },
-                                OwnedInputType::OneHot(one_hot) =>
-                                {
-                                    let bytes: &[u8] = bytemuck::cast_slice(&one_hot.positions);
+                                let tensor_ref;
+                                let bytes: &[u8];
 
-                                    self.raw_array_memory.queue.write_buffer(src_buffer, 0, bytes);
+                                match value
+                                {
+                                    OwnedInputType::Normal(tensor) =>
+                                    {
+                                        tensor_ref = tensor.as_ref();
+
+                                        bytes = tensor_ref.bytes_slice();
+                                    },
+                                    OwnedInputType::OneHot(one_hot) =>
+                                    {
+                                        bytes = bytemuck::cast_slice(&one_hot.positions);
+                                    }
                                 }
+
+                                let mut view = self.raw_array_memory.staging_belt.write_buffer(
+                                    self.raw_array_memory.encoder.as_mut().unwrap(),
+                                    src_buffer,
+                                    0,
+                                    NonZero::new(bytes.len() as u64).unwrap()
+                                );
+
+                                view.copy_from_slice(bytes);
                             }
 
                             if is_dependent || is_in_flight_limit
@@ -4316,7 +4327,18 @@ impl OperationsRecorder
 
                     debug_assert_eq!(value.shape, output.shape);
 
-                    let states = dropout_states(&mut self.memory.seeds, *probability, *seed_index);
+                    try_end_compute_pass(&mut compute_pass);
+
+                    let states = dropout_states(
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations,
+                        &mut self.raw_array_memory.staging_belt,
+                        &mut self.raw_array_memory.encoder,
+                        &mut self.memory.seeds,
+                        *probability,
+                        *seed_index,
+                        i
+                    );
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                         bind_group_entry(0, *value),
@@ -4338,7 +4360,18 @@ impl OperationsRecorder
 
                     debug_assert_eq!(value.shape, output.shape);
 
-                    let states = dropout_states(&mut self.memory.seeds, *probability, *seed_index);
+                    try_end_compute_pass(&mut compute_pass);
+
+                    let states = dropout_states(
+                        &self.raw_array_memory.scratch_buffers,
+                        &self.raw_array_memory.scratch_buffers_locations,
+                        &mut self.raw_array_memory.staging_belt,
+                        &mut self.raw_array_memory.encoder,
+                        &mut self.memory.seeds,
+                        *probability,
+                        *seed_index,
+                        i
+                    );
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                         bind_group_entry(0, *value),
@@ -4999,6 +5032,8 @@ impl OperationsRecorder
 
         drop(compute_pass);
 
+        self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
+
         self.memory.tensors_raw_data.iter().filter(|x| x.output_buffer.is_some()).for_each(|raw_array|
         {
             copy_equal_buffers(&mut self.raw_array_memory.encoder, &raw_array.buffer, raw_array.output_buffer.as_ref().expect("must exist"));
@@ -5129,7 +5164,7 @@ impl OperationsRecorder
                     TensorShape{rows: tensor_raw_ptr.size, columns: 1, batch_size: 1}
                 };
 
-                let tensor = self.memory.get_tensor_blocking(&self.raw_array_memory, ShapedTensorIndex{index: tensor_index, shape});
+                let tensor = self.memory.get_tensor_blocking_unchecked(&self.raw_array_memory, ShapedTensorIndex{index: tensor_index, shape});
 
                 eprintln!("{}: {tensor:?}", self.memory.format_tensor_index(tensor_index));
             });
@@ -6517,6 +6552,19 @@ impl OperationsRecorder
         {
             add_usage(tensor_usages, store_tensor.0, wgpu::BufferUsages::COPY_SRC);
         });
+
+        if cfg!(feature="dumpmemory")
+        {
+            tensor_usages.iter_mut().for_each(|usages|
+            {
+                *usages |= wgpu::BufferUsages::COPY_SRC;
+            });
+
+            one_hot_usages.iter_mut().for_each(|usages|
+            {
+                *usages |= wgpu::BufferUsages::COPY_SRC;
+            });
+        }
 
         self.gradient_operations.iter().for_each(|op|
         {
