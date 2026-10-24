@@ -3755,6 +3755,15 @@ impl OperationsRecorder
                                 self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                             }
 
+                            if is_dependent || is_in_flight_limit
+                            {
+                                let new_encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
+                                    label: None
+                                });
+
+                                self.raw_array_memory.encoder = Some(new_encoder);
+                            }
+
                             {
                                 let tensor_ref;
                                 let bytes: &[u8];
@@ -3781,15 +3790,6 @@ impl OperationsRecorder
                                 );
 
                                 view.copy_from_slice(bytes);
-                            }
-
-                            if is_dependent || is_in_flight_limit
-                            {
-                                let new_encoder = self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
-                                    label: None
-                                });
-
-                                self.raw_array_memory.encoder = Some(new_encoder);
                             }
 
                             #[cfg(debug_assertions)]
