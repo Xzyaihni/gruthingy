@@ -2141,20 +2141,23 @@ where
 
             let target_index = target_index as usize;
 
+            let (highest_index, wrong_times) = predicted_batch.as_ref().batch_highest_index();
             let predicted = predicted_batch.as_ref().average_tensor();
-            let highest_index = predicted.highest_index();
 
             let batch_size = predicted_batch.shape().batch_size;
 
-            let mut predict_times = vec![0; predicted.shape().size()];
+            let mut correct_times = 0;
             (0..batch_size).for_each(|batch_index|
             {
                 let this_highest = predicted_batch.as_ref().batch_slice_ref(batch_index).highest_index();
-                predict_times[this_highest] += 1;
+                if this_highest == target_index
+                {
+                    correct_times += 1;
+                }
             });
 
-            let correct_certainty = predict_times[target_index] as f32 / batch_size as f32;
-            let wrong_certainty = predict_times[highest_index] as f32 / batch_size as f32;
+            let correct_certainty = correct_times as f32 / batch_size as f32;
+            let wrong_certainty = wrong_times as f32 / batch_size as f32;
 
             let info = AccuracyCertaintyInfo{
                 correct_probability: *predicted.iter().nth(target_index).unwrap(),
