@@ -1375,6 +1375,25 @@ where
 
                 let is_last_step = (input_index + 1) == info.iterations;
 
+                if cfg!(feature="printinputsoutputs")
+                {
+                    assert_eq!(EmbeddingType::one_hot_count(), 1);
+
+                    values.iter().for_each(|(inputs, outputs)|
+                    {
+                        (0..info.batch_size).for_each(|batch_index|
+                        {
+                            let f = |x: &OneHotLayer|
+                            {
+                                let vector_word = VectorWord::from_raw(x.positions[batch_index] as usize);
+                                String::from_utf8_lossy(&self.dictionary.word_to_bytes(None, vector_word)).into_owned()
+                            };
+
+                            eprintln!("batch #{batch_index}: `{}` expects `{}` next", f(&inputs.clone().into_one_hot()), f(&outputs));
+                        });
+                    });
+                }
+
                 let rng = fastrand::Rng::new();
                 self.network.gradient_step_once(rng, total_iterations, is_last_step, values.iter(), move |loss|
                 {
