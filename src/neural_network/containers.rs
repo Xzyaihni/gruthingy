@@ -12,7 +12,7 @@ use std::{
     fmt::{self, Debug},
     borrow::Borrow,
     collections::HashSet,
-    ops::{Range, RangeInclusive}
+    ops::Range
 };
 
 #[allow(unused_imports)]
@@ -22,6 +22,7 @@ use serde::{Serialize, Deserialize};
 
 use ywrapper::*;
 use rawarray::*;
+use live_ranges::*;
 use optimizers::{
     OptimizerInfo,
     OptimizerInfoPtr,
@@ -37,6 +38,7 @@ mod shader_preprocessor;
 
 mod ywrapper;
 mod rawarray;
+mod live_ranges;
 pub mod optimizers;
 
 
@@ -242,39 +244,6 @@ impl<T: Debug> Debug for ForceNoPretty<T>
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-struct LiveRange
-{
-    start: Option<i32>,
-    end: Option<i32>
-}
-
-impl LiveRange
-{
-    fn valid_range(&self) -> bool
-    {
-        let start = if let Some(x) = self.start { x } else { return false };
-
-        let end = if let Some(x) = self.end { x } else { return false };
-
-        start < end
-    }
-
-    fn overlaps(&self, other: &Self) -> bool
-    {
-        debug_assert!(self.valid_range(), "{self:?} is an invalid range");
-        debug_assert!(other.valid_range(), "{other:?} is an invalid range");
-
-        let this_start = self.start.unwrap();
-        let this_end = self.end.unwrap();
-
-        let other_start = other.start.unwrap();
-        let other_end = other.end.unwrap();
-
-        this_start <= other_end && this_end >= other_start
-    }
-}
-
 struct LayerNoLong<'a>(usize, &'a LayerType);
 
 impl Debug for LayerNoLong<'_>
@@ -434,7 +403,6 @@ struct LoopInfo
     times_total: usize,
     current_index: usize,
     reversed: bool,
-    live_range: LiveRange,
     loops_gradient: Option<LoopIndex>,
     gradient_of_loop: Option<LoopIndex>,
     kept_inside: Vec<DiffValue>,
@@ -478,7 +446,6 @@ impl Debug for LoopInfoDebug<'_>
         struct_info.field("times", &DebugStringRaw(format!("{}/{}", info.times, info.times_total)))
             .field("current_index", &info.current_index)
             .field("reversed", &info.reversed)
-            .field("live_range", &ForceNoPretty(&info.live_range))
             .field("loops_gradient", &ForceNoPretty(&info.loops_gradient))
             .field("gradient_of_loop", &ForceNoPretty(&info.gradient_of_loop))
             .field("kept_inside", &kept_inside)
@@ -909,8 +876,7 @@ pub struct OperationsRecorderMemory
 {
     values: Vec<f32>,
     tensors: Vec<LinearRawDataPointer>,
-    value_live_ranges: Vec<LiveRange>,
-    tensor_live_ranges: Vec<LiveRange>,
+    live_ranges: LiveRanges,
     tensors_memory: Vec<TensorMemorySlot>,
     tensors_raw_data: Vec<RawArray>,
     one_hot_layers: Vec<OneHotLayer>,
@@ -920,7 +886,7 @@ pub struct OperationsRecorderMemory
     variable_names: VariableNames,
     store_tensors_check: Vec<StoreCheckKey<TensorPtr, TensorIndex>>,
     input_raw_check: Vec<DiffValue>,
-    forced_same_memory: HashMap<TensorPtr, TensorPtr>,
+    forced_same_memory: Vec<Vec<TensorPtr>>,
     allow_after_coalesce_use: Vec<TensorPtr>,
     #[cfg(debug_assertions)]
     set_tensor_memory: RefCell<SetTensorMemoryChecks>,
@@ -942,8 +908,12 @@ impl Debug for OperationsRecorderMemory
 
         let mut s = f.debug_struct("OperationsRecorderMemory");
 
-        s.field("value_live_ranges", &self.value_live_ranges.iter().map(ForceNoPretty).collect::<Vec<_>>())
-            .field("tensor_live_ranges", &self.tensor_live_ranges.iter().map(ForceNoPretty).collect::<Vec<_>>())
+        let forced_same_memory = &self.forced_same_memory.iter()
+            .map(|same_memory| same_memory.iter().map(|x| self.format_variable(*x)).map(ForceNoPretty).collect::<Vec<_>>())
+            .map(ForceNoPretty)
+            .collect::<Vec<_>>();
+
+        s.field("live_ranges", &self.live_ranges)
             .field("tensors_memory", &self.tensors_memory.iter().map(|x| ForceNoPretty(SlotNoLong(max_length, x))).collect::<Vec<_>>())
             .field("values", &ForceNoPretty(&self.values))
             .field("tensors", &self.tensors.iter().map(ForceNoPretty).collect::<Vec<_>>())
@@ -954,7 +924,7 @@ impl Debug for OperationsRecorderMemory
             .field("seeds", &self.seeds)
             .field("store_tensors_check", &self.store_tensors_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
             .field("input_raw_check", &self.input_raw_check.iter().map(ForceNoPretty).collect::<Vec<_>>())
-            .field("forced_same_memory", &self.forced_same_memory.iter().map(ForceNoPretty).collect::<Vec<_>>())
+            .field("forced_same_memory", forced_same_memory)
             .field("allow_after_coalesce_use", &self.allow_after_coalesce_use.iter().map(ForceNoPretty).collect::<Vec<_>>());
 
         #[cfg(debug_assertions)]
@@ -1007,8 +977,7 @@ impl OperationsRecorderMemory
     pub fn new() -> Self
     {
         Self{
-            value_live_ranges: Vec::new(),
-            tensor_live_ranges: Vec::new(),
+            live_ranges: LiveRanges::default(),
             tensors_memory: Vec::new(),
             values: Vec::new(),
             tensors: Vec::new(),
@@ -1020,7 +989,7 @@ impl OperationsRecorderMemory
             variable_names: VariableNames::new(),
             store_tensors_check: Vec::new(),
             input_raw_check: Vec::new(),
-            forced_same_memory: HashMap::new(),
+            forced_same_memory: Vec::new(),
             allow_after_coalesce_use: Vec::new(),
             #[cfg(debug_assertions)]
             set_tensor_memory: RefCell::new(SetTensorMemoryChecks::new()),
@@ -1039,7 +1008,7 @@ impl OperationsRecorderMemory
     {
         let id = self.tensors_memory.len();
 
-        self.tensor_live_ranges.push(LiveRange::default());
+        self.live_ranges.tensors.push(LiveRange::default());
         self.tensors_memory.push(TensorMemorySlot{value, memory: None});
 
         TensorPtr(id)
@@ -1049,7 +1018,7 @@ impl OperationsRecorderMemory
     {
         let id = self.values.len();
 
-        self.value_live_ranges.push(LiveRange::default());
+        self.live_ranges.values.push(LiveRange::default());
         self.values.push(0.0);
 
         ValueIndex(id)
@@ -1113,7 +1082,7 @@ impl OperationsRecorderMemory
         let scalar = self.new_value(false);
         self.set_value(scalar.as_value(), value);
 
-        self.value_live_ranges[scalar.as_value().0].start = Some(-1);
+        self.live_ranges.values[scalar.as_value().0].start = Some(-1);
 
         scalar
     }
@@ -1187,15 +1156,18 @@ impl OperationsRecorderMemory
 
     fn force_same_memory(&mut self, before: TensorPtr, after: TensorPtr)
     {
-        self.forced_same_memory.insert(before, after);
-    }
-
-    fn collapse_forced_same_memory_chains(&mut self)
-    {
-        while let Some((key, value)) = self.forced_same_memory.iter().find(|(_, x)| self.forced_same_memory.contains_key(&x))
-            .map(|(a, b)| (*a, *b))
+        if let Some(same_memories) = self.forced_same_memory.iter_mut().find(|x| x.contains(&before) || x.contains(&after))
         {
-            *self.forced_same_memory.get_mut(&key).unwrap() = self.forced_same_memory[&value];
+            if same_memories.contains(&before)
+            {
+                same_memories.push(after);
+            } else
+            {
+                same_memories.push(before);
+            }
+        } else
+        {
+            self.forced_same_memory.push(vec![before, after]);
         }
     }
 
@@ -1287,8 +1259,8 @@ impl OperationsRecorderMemory
     {
         match value
         {
-            DiffValue::Value(value) => Some(&self.value_live_ranges[value.0]),
-            DiffValue::Tensor(tensor) => Some(&self.tensor_live_ranges[tensor.0]),
+            DiffValue::Value(value) => Some(&self.live_ranges.values[value.0]),
+            DiffValue::Tensor(tensor) => Some(&self.live_ranges.tensors[tensor.0]),
             DiffValue::OneHot(_) => None
         }
     }
@@ -1995,7 +1967,7 @@ impl OperationsRecorder
     pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
         let input = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size: 1});
-        self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.tensors[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -2003,7 +1975,7 @@ impl OperationsRecorder
     pub fn new_tensor_no_gradient(&mut self, TensorShape{rows, columns, batch_size}: TensorShape) -> DiffTensorPtr
     {
         let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
-        self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.tensors[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -2011,7 +1983,7 @@ impl OperationsRecorder
     pub fn new_value(&mut self) -> DiffScalar
     {
         let input = self.memory.new_value(true);
-        self.memory.value_live_ranges[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.values[input.as_value().0].start = Some(-1);
 
         input
     }
@@ -2157,7 +2129,7 @@ impl OperationsRecorder
             self.memory.set_tensors_check.push(input.as_value().into());
         }
 
-        self.memory.tensor_live_ranges[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.tensors[input.as_value().0].start = Some(-1);
     }
 
     pub fn set_new_value(&mut self, value: f32) -> DiffScalar
@@ -2264,14 +2236,14 @@ impl OperationsRecorder
 
                 self.store_tensor_until_end(gradient_ptr);
 
-                self.memory.tensor_live_ranges[gradient_ptr.0].start = Some(-1);
+                self.memory.live_ranges.tensors[gradient_ptr.0].start = Some(-1);
                 self.memory.tensors_memory[gradient_ptr.0].value = new_value;
             },
             DiffWrapper::Value(DiffScalar{gradient, ..}) =>
             {
                 let gradient = gradient.expect("gradient must exist");
 
-                self.memory.value_live_ranges[gradient.0].start = Some(-1);
+                self.memory.live_ranges.values[gradient.0].start = Some(-1);
 
                 self.set_value(gradient, 1.0)
             }
@@ -2855,7 +2827,7 @@ impl OperationsRecorder
     {
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
 
-        self.memory.tensor_live_ranges[index_ptr.0].end = Some(i32::MAX);
+        self.memory.live_ranges.tensors[index_ptr.0].end = Some(i32::MAX);
     }
 
     pub fn store_tensor_as_output(&mut self, index_ptr: TensorPtr)
@@ -2884,7 +2856,7 @@ impl OperationsRecorder
             }
         }
 
-        self.memory.value_live_ranges[index.0].end = Some(i32::MAX);
+        self.memory.live_ranges.values[index.0].end = Some(i32::MAX);
     }
 
     pub fn begin_loop(&mut self, inputs: Vec<InputTypePtr>) -> LoopIndex
@@ -2917,7 +2889,6 @@ impl OperationsRecorder
             times_total: 0,
             current_index: 0,
             reversed: false,
-            live_range: LiveRange::default(),
             loops_gradient: None,
             gradient_of_loop: None,
             kept_inside: Vec::new(),
@@ -5431,7 +5402,7 @@ impl OperationsRecorder
 
     fn is_ptr_output(&self, ptr: TensorPtr) -> bool
     {
-        self.memory.tensor_live_ranges[ptr.0].end == Some(i32::MAX)
+        self.memory.live_ranges.tensors[ptr.0].end == Some(i32::MAX)
     }
 
     fn skip_last_selectors(&mut self)
@@ -5841,7 +5812,7 @@ impl OperationsRecorder
                         {
                             if check_index != i
                             {
-                                self.replace_op_args(check_index, dst.into(), src.into())
+                                self.replace_op_args(check_index, dst.into(), src.into());
                             }
                         }
 
@@ -5863,29 +5834,47 @@ impl OperationsRecorder
 
     fn copy_reuse_conflicts(&mut self)
     {
-        let mut i = 0;
-        while i < self.gradient_operations.len()
+        let mut start_live_ranges = self.memory.live_ranges.clone();
+
+        self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
+
+        let mut i = self.gradient_operations.len().saturating_sub(1);
+        loop
         {
-            let copy_if_src_reused = |this: &mut Self, src: TensorPtr| -> Option<TensorPtr>
+            fn copy_if_src_reused(
+                this: &mut OperationsRecorder,
+                start_live_ranges: LiveRanges,
+                src: TensorPtr,
+                dst: TensorPtr,
+                i: usize
+            ) -> Option<TensorPtr>
             {
-                let is_used = this.gradient_operations.iter()
-                    .enumerate()
-                    .filter(|(j, _)| *j != i)
-                    .any(|(_, x)| x.is_any_arg(|x| x == DiffValue::Tensor(src)));
-
-                let is_output = this.memory.tensor_live_ranges[src.0].end == Some(i32::MAX);
-
-                let is_inside_loop = this.gradient_operations[(i + 1)..].iter().find_map(|x|
                 {
-                    match x
-                    {
-                        GradientOp::Jump(JumpInfo::JumpFrom(_)) => Some(true),
-                        GradientOp::Jump(JumpInfo::JumpTo{..}) => Some(false),
-                        _ => None
-                    }
-                }).unwrap_or(false);
+                    let dst_start = this.memory.live_ranges.tensors[dst.0].start.unwrap();
 
-                (is_used || is_output || is_inside_loop).then(||
+                    if dst_start < i as i32
+                    {
+                        this.memory.live_ranges = start_live_ranges;
+
+                        let shape = this.tensor_shape(dst);
+                        let new_output = this.memory.new_tensor(false, shape.into()).as_value();
+
+                        this.gradient_operations.insert(i + 1, GradientOp::Copy{src: dst, dst: new_output});
+
+                        let mut offset = 0;
+                        while !this.replace_op_args(dst_start as usize + offset, dst.into(), new_output.into())
+                        {
+                            offset += 1;
+                        }
+                    } else
+                    {
+                        this.memory.live_ranges = start_live_ranges;
+                    }
+                }
+
+                let needs_copy = true;//this.live_ranges.tensors_non_overlapping();
+
+                needs_copy.then(||
                 {
                     let shape = this.tensor_shape(src);
                     let new_src = this.memory.new_tensor(false, shape.into()).as_value();
@@ -5894,7 +5883,7 @@ impl OperationsRecorder
 
                     new_src
                 })
-            };
+            }
 
             macro_rules! for_added_output
             {
@@ -5905,7 +5894,7 @@ impl OperationsRecorder
                         $(
                             GradientOp::$name{added, output, ..} =>
                             {
-                                let replace_added = if let Some(new_added) = copy_if_src_reused(self, added)
+                                let replace_added = if let Some(new_added) = copy_if_src_reused(self, start_live_ranges, added, output, i)
                                 {
                                     let GradientOp::$name{added, ..} = &mut self.gradient_operations[i + 1] else
                                     {
@@ -5914,17 +5903,16 @@ impl OperationsRecorder
 
                                     *added = new_added;
 
-                                    i += 1;
-
                                     new_added
                                 } else
                                 {
                                     added
                                 };
 
-                                self.memory.forced_same_memory.insert(replace_added, output);
+                                self.memory.force_same_memory(replace_added, output);
 
-                                self.memory.collapse_forced_same_memory_chains();
+                                start_live_ranges = self.memory.live_ranges.clone();
+                                self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
                             },
                         )+
                         _ => ()
@@ -5940,8 +5928,15 @@ impl OperationsRecorder
                 OuterProductOneHotAdd
             }
 
-            i += 1;
+            if i == 0
+            {
+                break;
+            }
+
+            i -= 1;
         }
+
+        self.memory.live_ranges = start_live_ranges;
     }
 
     pub fn is_ready(&self) -> bool
@@ -5949,349 +5944,9 @@ impl OperationsRecorder
         self.state == RecorderState::Ready
     }
 
-    fn calculate_live_ranges_once(&mut self) -> bool
-    {
-        let mut inside_loop_values = Vec::new();
-
-        {
-            let mut inside_loop: Option<LoopIndex> = None;
-
-            self.gradient_operations.iter().for_each(|op|
-            {
-                let memory = &mut self.memory;
-
-                let mut set_loop_lifetime = |inside_loop: Option<LoopIndex>, live_range: &mut LiveRange, value: DiffValue|
-                {
-                    if let Some(loop_index) = inside_loop
-                    {
-                        let loop_range = self.loops[loop_index.0].live_range.clone();
-
-                        let loop_start = loop_range.start.unwrap();
-                        let loop_end = loop_range.end.unwrap();
-
-                        live_range.start = Some(live_range.start.map(|x| x.min(loop_start)).unwrap_or(loop_start));
-                        live_range.end = Some(live_range.end.map(|x| x.max(loop_end)).unwrap_or(loop_end));
-
-                        if !inside_loop_values.contains(&value)
-                        {
-                            inside_loop_values.push(value);
-                        }
-                    }
-                };
-
-
-                set_inside_loop_context(&mut inside_loop, op);
-
-                match op
-                {
-                    GradientOp::GetOtherSelectorValue{..}
-                    | GradientOp::GetOtherSelectorTensor{..} =>
-                    {
-                        let (live_range, value): (_, DiffValue) = match op
-                        {
-                            GradientOp::GetOtherSelectorValue{other, ..} => (&mut memory.value_live_ranges[other.0], (*other).into()),
-                            GradientOp::GetOtherSelectorTensor{other, ..} => (&mut memory.tensor_live_ranges[other.0], (*other).into()),
-                            _ => unreachable!()
-                        };
-
-                        set_loop_lifetime(inside_loop, live_range, value);
-                    },
-                    GradientOp::OtherSelectorValueGradient{..}
-                    | GradientOp::OtherSelectorTensorGradient{..}
-                    | GradientOp::IfNotSetTensor{..} =>
-                    {
-                        let (live_range, value): (_, DiffValue) = match op
-                        {
-                            GradientOp::OtherSelectorValueGradient{other, ..} => (&mut memory.value_live_ranges[other.0], (*other).into()),
-                            GradientOp::OtherSelectorTensorGradient{other, ..}
-                            | GradientOp::IfNotSetTensor{dst: other, ..} => (&mut memory.tensor_live_ranges[other.0], (*other).into()),
-                            _ => unreachable!()
-                        };
-
-                        set_loop_lifetime(inside_loop, live_range, value);
-                    },
-                    _ => ()
-                }
-            });
-        }
-
-        self.gradient_operations.iter().enumerate().for_each(|(op_index, op)|
-        {
-            let handle_output = |live_range: &mut LiveRange, allow_reuse: bool, err_name: String|
-            {
-                let start = &mut live_range.start;
-
-                let new_start = op_index as i32;
-
-                if allow_reuse
-                {
-                    *start = Some(start.map(|start| start.min(new_start)).unwrap_or(new_start));
-                } else
-                {
-                    debug_assert!(start.is_none(), "{err_name} was defined at operation {} and {op_index}", start.unwrap());
-
-                    *start = Some(new_start);
-                }
-            };
-
-            let is_allow_reuse = |value: DiffValue| -> bool
-            {
-                inside_loop_values.contains(&value)
-            };
-
-            let mut handle_output = |output: DiffValue|
-            {
-                let allow_reuse = is_allow_reuse(output);
-                let name = self.memory.format_variable(output);
-
-                match output
-                {
-                    DiffValue::Tensor(tensor_ptr) => handle_output(&mut self.memory.tensor_live_ranges[tensor_ptr.0], allow_reuse, name),
-                    DiffValue::Value(value_index) => handle_output(&mut self.memory.value_live_ranges[value_index.0], allow_reuse, name),
-                    DiffValue::OneHot(_) => unimplemented!()
-                }
-            };
-
-            if let GradientOp::OtherSelectorValueGradient{first,  ..} = op
-            {
-                handle_output((*first).into());
-            } else
-            {
-                op.for_outputs(handle_output);
-            }
-        });
-
-        self.gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
-        {
-            let allow_end_before = op.can_use_future();
-
-            let handle_arg = |live_range: &mut LiveRange, err_name: String|
-            {
-                if let Some(start) = live_range.start
-                {
-                    if !allow_end_before && start >= op_index as i32
-                    {
-                        panic!("{err_name} was defined at {start} after being used at {op_index}");
-                    }
-                }
-
-                let new_end = op_index as i32;
-                live_range.end = Some(live_range.end.map(|previous_end| previous_end.max(new_end)).unwrap_or(new_end));
-            };
-
-            op.for_args(|arg|
-            {
-                let name = self.memory.format_variable(arg);
-
-                let live_range = match arg
-                {
-                    DiffValue::Tensor(tensor_ptr) => &mut self.memory.tensor_live_ranges[tensor_ptr.0],
-                    DiffValue::Value(value_index) => &mut self.memory.value_live_ranges[value_index.0],
-                    DiffValue::OneHot(_) => return
-                };
-
-                handle_arg(live_range, name);
-            });
-        });
-
-        self.gradient_operations.iter().for_each(|op|
-        {
-            match op
-            {
-                GradientOp::Jump(JumpInfo::JumpTo{index, inputs}) =>
-                {
-                    inputs.iter().for_each(|input|
-                    {
-                        if let InputTypePtr::Normal(tensor) = input
-                        {
-                            let live_range = &mut self.memory.tensor_live_ranges[tensor.0];
-
-                            live_range.start = None;
-
-                            if live_range.end.is_some()
-                            {
-                                *live_range = self.loops[index.0].live_range.clone();
-                            }
-                        }
-                    });
-                },
-                _ => ()
-            }
-        });
-
-        self.loops.iter().for_each(|loop_info|
-        {
-            loop_info.kept_inside.iter().for_each(|kept_inside|
-            {
-                let live_range = match kept_inside
-                {
-                    DiffValue::Tensor(tensor) => &mut self.memory.tensor_live_ranges[tensor.0],
-                    DiffValue::Value(value) => &mut self.memory.value_live_ranges[value.0],
-                    DiffValue::OneHot(_) => return
-                };
-
-                let loop_start = loop_info.live_range.start.unwrap();
-                let loop_end = loop_info.live_range.end.unwrap();
-
-                live_range.start = Some(live_range.start.map(|x| x.min(loop_start)).unwrap_or(loop_start));
-                live_range.end = live_range.end.map(|x| x.max(loop_end));
-            });
-        });
-
-        let mut any_unused = false;
-        self.gradient_operations.iter_mut().for_each(|op|
-        {
-            let mut any_unused_single: bool = false;
-            let mut all_unused: Option<bool> = None;
-
-            let mut handle_output = |live_range: &mut LiveRange, err_name: String|
-            {
-                let is_unused = live_range.end.is_none();
-                any_unused_single |= is_unused;
-
-                debug_assert!(live_range.start != Some(-1), "{err_name} is an unused input");
-
-                if let Some(all_unused) = all_unused.as_mut()
-                {
-                    *all_unused &= is_unused;
-                } else
-                {
-                    all_unused = Some(is_unused);
-                }
-            };
-
-            op.for_outputs(|output|
-            {
-                match output
-                {
-                    DiffValue::Tensor(tensor_ptr) => handle_output(&mut self.memory.tensor_live_ranges[tensor_ptr.0], format!("{tensor_ptr:?}")),
-                    DiffValue::Value(value_index) => handle_output(&mut self.memory.value_live_ranges[value_index.0], format!("{value_index:?}")),
-                    DiffValue::OneHot(_) => unimplemented!()
-                }
-            });
-
-            let is_unused = all_unused.unwrap_or(false);
-
-            if is_unused
-            {
-                *op = GradientOp::None;
-                any_unused = true;
-            } else if any_unused_single
-            {
-                let _is_value_unused = |value_index: ValueIndex| -> bool
-                {
-                    self.memory.value_live_ranges[value_index.0].end.is_none()
-                };
-
-                let is_tensor_unused = |tensor_ptr: TensorPtr| -> bool
-                {
-                    self.memory.tensor_live_ranges[tensor_ptr.0].end.is_none()
-                };
-
-                let op_cloned = op.clone();
-
-                *op = match op_cloned
-                {
-                    GradientOp::SoftmaxCrossEntropy{
-                        values,
-                        targets,
-                        softmaxed_output,
-                        output
-                    } if is_tensor_unused(softmaxed_output) =>
-                    {
-                        GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output}
-                    },
-                    GradientOp::SoftmaxCrossEntropy{
-                        values,
-                        softmaxed_output,
-                        output,
-                        ..
-                    } if is_tensor_unused(output) =>
-                    {
-                        GradientOp::Softmax{values, softmaxed_output}
-                    },
-                    GradientOp::SoftmaxCrossEntropy{..} => op_cloned,
-                    GradientOp::OtherSelectorValueGradient{..} => op_cloned,
-                    GradientOp::OtherSelectorTensorGradient{
-                        index,
-                        first,
-                        other,
-                        src
-                    } if is_tensor_unused(other) =>
-                    {
-                        GradientOp::IfSetTensor{index, dst: first, src}
-                    },
-                    GradientOp::OtherSelectorTensorGradient{
-                        index,
-                        first,
-                        other,
-                        src
-                    } if is_tensor_unused(first) =>
-                    {
-                        GradientOp::IfNotSetTensor{index, dst: other, src}
-                    },
-                    x => unimplemented!("{x:?}")
-                };
-            }
-        });
-
-        any_unused
-    }
-
-    fn calculate_loop_live_ranges(&mut self)
-    {
-        self.gradient_operations.iter().enumerate().for_each(|(operation_index, op)|
-        {
-            match op
-            {
-                GradientOp::Jump(JumpInfo::JumpTo{index, ..}) =>
-                {
-                    self.loops[index.0].live_range.start = Some(operation_index as i32);
-                },
-                GradientOp::Jump(JumpInfo::JumpFrom(index)) =>
-                {
-                    self.loops[index.0].live_range.end = Some(operation_index as i32 - 1);
-                },
-                _ => ()
-            }
-        });
-    }
-
-    fn save_live_ranges(&self) -> (Vec<LiveRange>, Vec<LiveRange>)
-    {
-        (self.memory.tensor_live_ranges.clone(), self.memory.value_live_ranges.clone())
-    }
-
-    fn load_live_ranges(&mut self, (tensor_live_ranges, value_live_ranges): (Vec<LiveRange>, Vec<LiveRange>))
-    {
-        self.memory.tensor_live_ranges = tensor_live_ranges;
-        self.memory.value_live_ranges = value_live_ranges;
-    }
-
-    fn calculate_live_ranges(&mut self)
-    {
-        self.calculate_loop_live_ranges();
-
-        let start_live_ranges = self.save_live_ranges();
-
-        loop
-        {
-            let any_unused = self.calculate_live_ranges_once();
-
-            if !any_unused
-            {
-                break;
-            }
-
-            self.remove_unused_pushes();
-
-            self.load_live_ranges(start_live_ranges.clone());
-        }
-    }
-
     fn graph_color(&mut self, memory_assignments: &mut Vec<TensorMemoryValue>, optional_info: bool)
     {
-        let nodes_count = self.memory.tensor_live_ranges.len();
+        let nodes_count = self.memory.live_ranges.tensors.len();
 
         let verify_range = |range: &LiveRange, index: TensorPtr|
         {
@@ -6341,7 +5996,7 @@ impl OperationsRecorder
 
         size_buckets.iter_mut().for_each(|(_shape, bucket)|
         {
-            bucket.sort_by_key(|x| self.memory.tensor_live_ranges[x.0].start);
+            bucket.sort_by_key(|x| self.memory.live_ranges.tensors[x.0].start);
         });
 
         let mut graph_connections: Vec<Vec<TensorPtr>> = iter::repeat_with(Vec::new)
@@ -6353,7 +6008,7 @@ impl OperationsRecorder
             let a = TensorPtr(a_index);
             let a_size = tensor_size(self, a);
 
-            let this_range = &self.memory.tensor_live_ranges[a.0];
+            let this_range = &self.memory.live_ranges.tensors[a.0];
 
             {
                 verify_range(&this_range, a);
@@ -6374,7 +6029,7 @@ impl OperationsRecorder
                     return;
                 }
 
-                let other_range = &self.memory.tensor_live_ranges[b.0];
+                let other_range = &self.memory.live_ranges.tensors[b.0];
 
                 {
                     verify_range(&other_range, b);
@@ -6428,7 +6083,7 @@ impl OperationsRecorder
 
             bucket.into_iter().for_each(|ptr|
             {
-                if self.memory.tensor_live_ranges[ptr.0].end.is_none()
+                if self.memory.live_ranges.tensors[ptr.0].end.is_none()
                 {
                     return;
                 }
@@ -7000,6 +6655,7 @@ impl OperationsRecorder
 
                     None
                 },
+                GradientOp::Copy{src, dst} if access_tensor(src) == access_tensor(dst) => None,
                 GradientOp::PushStackValue{loop_index, value} => Some(map_push_stack(loop_index, value.into(), gradient_op)),
                 GradientOp::PushStackTensor{loop_index, tensor} => Some(map_push_stack(loop_index, tensor.into(), gradient_op)),
                 x =>
@@ -7053,8 +6709,7 @@ impl OperationsRecorder
                             {
                                 match self.gradient_operations[gradient_operation_index + 1]
                                 {
-                                    GradientOp::None
-                                    | GradientOp::FeedforwardEndMarker => None,
+                                    GradientOp::None => None,
                                     _ =>
                                     {
                                         next_must_exist = true;
@@ -7097,20 +6752,25 @@ impl OperationsRecorder
         self.gradient_operations = Vec::new();
     }
 
-    fn replace_op_args(&mut self, i: usize, src: DiffValue, dst: DiffValue)
+    fn replace_op_args(&mut self, i: usize, src: DiffValue, dst: DiffValue) -> bool
     {
         let op = &mut self.gradient_operations[i];
 
+        let mut replaced = false;
         *op = op.clone().map_args(|arg|
         {
             if arg == src
             {
+                replaced = true;
+
                 dst
             } else
             {
                 arg
             }
         });
+
+        if !replaced { return false; }
 
         self.loops.iter_mut().for_each(|loop_info|
         {
@@ -7144,6 +6804,8 @@ impl OperationsRecorder
             update_list(&mut loop_info.used_values);
             update_list(&mut loop_info.defined_values);
         });
+
+        true
     }
 
     fn swap_assignment(&mut self, before: usize, src: DiffValue, dst: DiffValue)
@@ -7171,52 +6833,9 @@ impl OperationsRecorder
     {
         for i in (0..self.gradient_operations.len()).rev()
         {
-            fn combine_arg_output_tensors_inner(
-                this: &mut OperationsRecorder,
-                input_remaps: &mut Vec<(TensorPtr, TensorPtr)>,
-                arg: TensorPtr,
-                output: TensorPtr,
-                i: usize
-            )
-            {
-                {
-                    let arg_range = &this.memory.tensor_live_ranges[arg.0];
-                    let arg_start = arg_range.start;
-
-                    debug_assert!(arg_start.is_some());
-
-                    if arg_start == Some(-1)
-                    {
-                        input_remaps.push((arg, output));
-                    }
-
-                    if !this.memory.allow_after_coalesce_use.contains(&arg)
-                    {
-                        debug_assert_eq!(
-                            arg_range.end,
-                            Some(i as i32),
-                            "{} is used after its coalescing, reuse copying is broken",
-                            this.memory.format_variable(arg)
-                        );
-                    }
-
-                    let combined_start = &mut this.memory.tensor_live_ranges[output.0].start;
-
-                    *combined_start = if let Some(x) = *combined_start
-                    {
-                        Some(arg_start.map(|y| x.min(y)).unwrap_or(x))
-                    } else
-                    {
-                        arg_start
-                    };
-                }
-
-                this.swap_assignment(i, arg.into(), output.into());
-            }
-
             if self.gradient_operations[i].is_any_arg_or_output(|x|
             {
-                if let DiffValue::Tensor(x) = x { self.memory.forced_same_memory.contains_key(&x) } else { false }
+                if let DiffValue::Tensor(x) = x { self.memory.forced_same_memory.iter().any(|xs| xs.contains(&x)) } else { false }
             })
             {
                 let old_arg = self.gradient_operations[i].clone();
@@ -7225,11 +6844,42 @@ impl OperationsRecorder
                 {
                     if let DiffValue::Tensor(x) = x
                     {
-                        if let Some(other) = self.memory.forced_same_memory.get(&x).copied()
+                        if let Some(same_memories) = self.memory.forced_same_memory.iter().find(|xs| xs.contains(&x))
                         {
-                            combine_arg_output_tensors_inner(self, input_remaps, x, other, i);
+                            if !same_memories.iter().all(|x| self.memory.allow_after_coalesce_use.contains(x))
+                            {
+                                debug_assert!(self.memory.live_ranges.tensors_non_overlapping(&same_memories, true));
+                            }
 
-                            return DiffValue::Tensor(other);
+                            let same_memories = same_memories.clone();
+
+                            let output = *same_memories.iter().max_by_key(|v| self.memory.live_ranges.tensors[v.0].end).unwrap();
+
+                            same_memories.into_iter().filter(|arg| *arg == output).for_each(|arg|
+                            {
+                                {
+                                    let arg_start = self.memory.live_ranges.tensors[arg.0].start;
+
+                                    if arg_start == Some(-1)
+                                    {
+                                        input_remaps.push((arg, output));
+                                    }
+
+                                    let combined_start = &mut self.memory.live_ranges.tensors[output.0].start;
+
+                                    *combined_start = if let Some(x) = *combined_start
+                                    {
+                                        Some(arg_start.map(|y| x.min(y)).unwrap_or(x))
+                                    } else
+                                    {
+                                        arg_start
+                                    };
+                                }
+
+                                self.swap_assignment(i, arg.into(), output.into());
+                            });
+
+                            return DiffValue::Tensor(output);
                         }
                     }
 
@@ -7246,60 +6896,6 @@ impl OperationsRecorder
                 _ => ()
             }
         }
-    }
-
-    fn print_live_ranges_info(&self)
-    {
-        #[derive(Serialize)]
-        struct LiveRangeInfos
-        {
-            operations: Vec<String>,
-            variables: Vec<(String, RangeInclusive<i32>)>
-        }
-
-        let mut variables = Vec::new();
-
-        self.memory.tensor_live_ranges.iter().enumerate().map(|(tensor_ptr_index, live_range)|
-        {
-            (self.memory.format_variable(TensorPtr(tensor_ptr_index)), live_range.clone())
-        }).chain(self.memory.value_live_ranges.iter().enumerate().map(|(value_index, live_range)|
-        {
-            (self.memory.format_variable(ValueIndex(value_index)), live_range.clone())
-        })).for_each(|(this_name, live_range)|
-        {
-            if live_range.start.is_none() && live_range.end.is_some()
-            {
-                let f_live = |x: Option<i32>| -> String
-                {
-                    x.map(|x|
-                    {
-                        match x
-                        {
-                            -1 => "start".to_owned(),
-                            i32::MAX => "end".to_owned(),
-                            x => x.to_string()
-                        }
-                    }).unwrap()
-                };
-
-                panic!("{this_name} is malformed, no start but ends at {}", f_live(live_range.end));
-            }
-
-            if !live_range.end.is_none()
-            {
-                let live_range = live_range.start.unwrap()..=live_range.end.unwrap();
-
-                variables.push((this_name, live_range));
-            }
-        });
-
-        eprintln!("{}", serde_json::to_string_pretty(&LiveRangeInfos{
-            operations: self.gradient_operations.iter().map(|op|
-            {
-                format!("{:?}", NotationGradientOp::from_nameable(&self.memory, op.clone()))
-            }).collect(),
-            variables
-        }).unwrap());
     }
 
     fn initialize_output_buffers(&mut self)
@@ -7412,7 +7008,7 @@ impl OperationsRecorder
 
             if self.raw_operations.len() > 0
             {
-                self.memory.tensor_live_ranges.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
+                self.memory.live_ranges.tensors.iter().enumerate().for_each(|(tensor_ptr_index, live_range)|
                 {
                     let tensor_ptr = TensorPtr(tensor_ptr_index);
 
@@ -7439,17 +7035,42 @@ impl OperationsRecorder
         }
     }
 
+    pub fn calculate_live_ranges(&mut self)
+    {
+        let start_live_ranges = self.memory.live_ranges.clone();
+
+        loop
+        {
+            self.memory.live_ranges.calculate(
+                &self.gradient_operations,
+                &self.loops,
+                &self.memory.variable_names
+            );
+
+            let any_unused = self.memory.live_ranges.remove_unused_ops(&mut self.gradient_operations);
+
+            if !any_unused
+            {
+                break;
+            }
+
+            self.remove_unused_pushes();
+
+            self.memory.live_ranges = start_live_ranges.clone();
+        }
+    }
+
     pub fn resolve_memory(&mut self, optional_info: bool)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
         self.state = RecorderState::Ready;
 
-        let start_live_ranges = self.save_live_ranges();
+        let start_live_ranges = self.memory.live_ranges.clone();
         self.calculate_live_ranges();
 
         self.skip_last_selectors();
 
-        self.load_live_ranges(start_live_ranges);
+        self.memory.live_ranges = start_live_ranges;
         self.calculate_live_ranges();
 
         let mut input_remaps = Vec::new();
@@ -7475,7 +7096,7 @@ impl OperationsRecorder
 
         if optional_info
         {
-            self.print_live_ranges_info();
+            self.memory.live_ranges.print_info(self);
 
             (0..self.memory.tensors.len()).for_each(|tensor_index|
             {
@@ -7515,6 +7136,9 @@ impl OperationsRecorder
                 let allow_overlap = matches!(
                     op,
                     GradientOp::GetOtherSelectorValue{..}
+                    | GradientOp::GetOtherSelectorTensor{..}
+                    | GradientOp::GradientSelectAddValue{..}
+                    | GradientOp::GradientSelectAddTensor{..}
                     | GradientOp::MatmulvAdd{..}
                     | GradientOp::MatmulOneHotvAdd{..}
                     | GradientOp::MatmulvTransposedAdd{..}
@@ -7576,14 +7200,13 @@ impl OperationsRecorder
                 });
             });
 
-            self.memory.tensor_inputs = self.memory.tensor_live_ranges.iter().enumerate()
+            self.memory.tensor_inputs = self.memory.live_ranges.tensors.iter().enumerate()
                 .filter(|(_, x)| x.start == Some(-1))
                 .map(|(index, _)| TensorPtr(index))
                 .collect();
         }
 
-        self.memory.value_live_ranges = Vec::new();
-        self.memory.tensor_live_ranges = Vec::new();
+        self.memory.live_ranges = LiveRanges::default();
     }
 
     pub fn no_gradient(&mut self)

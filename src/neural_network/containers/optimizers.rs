@@ -90,6 +90,7 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
 
             recorder.store_tensor_until_end(new_weight);
             recorder.memory.allow_after_coalesce_use(new_weight);
+            recorder.memory.allow_after_coalesce_use(weight);
 
             O::map_data_ref(param, |x|
             {

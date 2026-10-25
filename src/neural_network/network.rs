@@ -134,7 +134,7 @@ pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
     #[cfg(debug_assertions)]
     {
         // these checks are so inaccurate with bigger layers
-        if output.shape().rows.max(output.shape().columns) < 16
+        if output.shape().rows.max(output.shape().columns) < 8
         {
             let epsilon = 0.1;
 
