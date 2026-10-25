@@ -1,6 +1,8 @@
 use std::{
     f32,
+    vec,
     iter,
+    slice,
     num::FpCategory,
     cmp::Ordering
 };
@@ -24,6 +26,39 @@ pub struct YWrapper
 {
     shape: TensorShape,
     values: Box<[f32]>
+}
+
+impl IntoIterator for YWrapper
+{
+    type Item = f32;
+    type IntoIter = vec::IntoIter<f32>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        self.values.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a YWrapper
+{
+    type Item = &'a f32;
+    type IntoIter = slice::Iter<'a, f32>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        self.values.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut YWrapper
+{
+    type Item = &'a mut f32;
+    type IntoIter = slice::IterMut<'a, f32>;
+
+    fn into_iter(self) -> Self::IntoIter
+    {
+        self.values.iter_mut()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

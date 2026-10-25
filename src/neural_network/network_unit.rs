@@ -7,19 +7,9 @@ use crate::neural_network::{
     OneHotLayer,
     OneHotIndex,
     LayerSizes,
-    WeightsNamed,
-    network::{WeightsSize, NetworkOutput}
+    network::{WeightsFullInfo, NetworkOutput}
 };
 
-
-#[cfg(not(debug_assertions))]
-pub struct DebugUnitInfo;
-
-#[cfg(debug_assertions)]
-pub struct DebugUnitInfo
-{
-    pub name: &'static str
-}
 
 pub trait UnitFactory
 {
@@ -40,17 +30,23 @@ pub trait GenericUnit<T>
 {
     type Unit<U>;
 
+    fn sizes(&self) -> &LayerSizes;
+
+    fn iter_with_info<'a>(&'a self) -> impl Iterator<Item=WeightsFullInfo<&'a T>>
+    where
+        T: 'a;
+
     fn map<U, F>(self, f: F) -> Self::Unit<U>
     where
         F: FnMut(T) -> U;
 
     fn map_inplace_with_info<F>(&mut self, f: F)
     where
-        F: FnMut(WeightsSize<&mut T>, DebugUnitInfo);
+        F: FnMut(WeightsFullInfo<&mut T>);
 
     fn map_with_info<U, F>(self, f: F) -> Self::Unit<U>
     where
-        F: FnMut(WeightsSize<T>) -> U;
+        F: FnMut(WeightsFullInfo<T>) -> U;
 
     fn map_ref<U, F>(&self, f: F) -> Self::Unit<U>
     where
@@ -58,13 +54,7 @@ pub trait GenericUnit<T>
 
     fn map_ref_with_info<U, F>(&self, f: F) -> Self::Unit<U>
     where
-        F: FnMut(WeightsSize<&T>) -> U;
-
-    fn clone_weights_with_info<F>(&self, f: F) -> Self
-    where
-        F: FnMut(WeightsSize<&T>) -> T;
-
-    fn weights_named_info(&self, layer: usize) -> Self::Unit<WeightsNamed<&T>>;
+        F: FnMut(WeightsFullInfo<&T>) -> U;
 
     fn for_each_weight<F: FnMut(T)>(self, f: F);
     fn for_each_weight_ref<F: FnMut(&T)>(&self, f: F);

@@ -1492,6 +1492,9 @@ struct KernelLayouts
     r2_w2_i0: KernelLayout
 }
 
+#[cfg(test)]
+static WGPU_INIT_TEST_INFO: std::sync::LazyLock<WgpuInitInfo> = std::sync::LazyLock::new(|| { WgpuInitInfo::init() });
+
 #[derive(Clone)]
 pub struct WgpuInitInfo
 {
@@ -1505,11 +1508,22 @@ impl WgpuInitInfo
 {
     pub fn new() -> Self
     {
+        #[cfg(test)]
+        {
+            return WGPU_INIT_TEST_INFO.clone();
+        }
+
+        #[allow(unreachable_code)]
+        Self::init()
+    }
+
+    fn init() -> Self
+    {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap_or_else(|err| panic!("no compatible adapter found: {err}"));
 
-        eprintln!("using adapter: {}", adapter.get_info().name);
+        if !cfg!(test) { eprintln!("using adapter: {}", adapter.get_info().name); }
 
         if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
         {

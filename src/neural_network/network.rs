@@ -262,52 +262,32 @@ pub fn dropout_weights(
 }
 
 #[derive(Debug, PartialEq)]
-pub struct WeightsSize<T>
+pub struct WeightsFullInfo<T>
 {
     pub weights: T,
     pub previous_size: usize,
     pub this_size: usize,
+    pub name: &'static str,
     pub is_hidden: bool,
     pub is_bias: bool,
     pub is_state_reliant: bool
 }
 
-impl<T> WeightsSize<T>
+impl<T> WeightsFullInfo<T>
 {
     #[allow(dead_code)]
-    fn map<F, U>(self, f: F) -> WeightsSize<U>
+    fn map<F, U>(self, f: F) -> WeightsFullInfo<U>
     where
         F: FnOnce(T) -> U
     {
-        WeightsSize{
+        WeightsFullInfo{
             previous_size: self.previous_size,
             this_size: self.this_size,
+            name: self.name,
             is_hidden: self.is_hidden,
             is_bias: self.is_bias,
             is_state_reliant: self.is_state_reliant,
             weights: f(self.weights)
-        }
-    }
-}
-
-pub struct WeightsNamed<T>
-{
-    pub name: String,
-    pub layer: usize,
-    pub weights_size: WeightsSize<T>
-}
-
-impl<T> WeightsNamed<T>
-{
-    #[allow(dead_code)]
-    fn map<F, U>(self, f: F) -> WeightsNamed<U>
-    where
-        F: FnOnce(T) -> U
-    {
-        WeightsNamed{
-            name: self.name,
-            layer: self.layer,
-            weights_size: self.weights_size.map(f)
         }
     }
 }
@@ -349,15 +329,12 @@ macro_rules! create_weights_container
 {
     ($(($name:ident, $is_hidden:expr, $is_state_reliant:expr, $previous_size:expr, $this_size:expr)),+) =>
     {
-        use std::ops::{SubAssign, AddAssign, DivAssign};
-
         #[allow(unused_imports)]
         use $crate::neural_network::{
-            DebugUnitInfo,
             LayerType,
             NewableLayer,
             GenericUnit,
-            network::{WeightsNamed, WeightsSize}
+            network::WeightsFullInfo
         };
 
 
@@ -370,36 +347,6 @@ macro_rules! create_weights_container
             )+
         }
 
-        impl<T: DivAssign<f32>> DivAssign<f32> for WeightsContainer<T>
-        {
-            fn div_assign(&mut self, rhs: f32)
-            {
-                $(
-                    self.$name /= rhs;
-                )+
-            }
-        }
-
-        impl<T: SubAssign<T>> SubAssign for WeightsContainer<T>
-        {
-            fn sub_assign(&mut self, rhs: Self)
-            {
-                $(
-                    self.$name -= rhs.$name;
-                )+
-            }
-        }
-
-        impl<T: AddAssign<T>> AddAssign for WeightsContainer<T>
-        {
-            fn add_assign(&mut self, rhs: Self)
-            {
-                $(
-                    self.$name += rhs.$name;
-                )+
-            }
-        }
-
         impl<T> WeightsContainer<T>
         {
             pub const fn len() -> usize
@@ -409,14 +356,15 @@ macro_rules! create_weights_container
                 )+].len()
             }
 
-            pub fn iter_mut_with_info(&mut self) -> impl Iterator<Item=WeightsSize<&mut T>>
+            pub fn iter_mut_with_info(&mut self) -> impl Iterator<Item=WeightsFullInfo<&mut T>>
             {
                 [
                     $(
-                        WeightsSize{
+                        WeightsFullInfo{
                             weights: &mut self.$name,
                             this_size: $this_size.into_number(self.sizes),
                             previous_size: $previous_size.into_number(self.sizes),
+                            name: stringify!($name),
                             is_hidden: $is_hidden,
                             is_bias: matches!($previous_size, LayerSize::One),
                             is_state_reliant: $is_state_reliant
@@ -494,6 +442,30 @@ macro_rules! create_weights_container
         {
             type Unit<U> = WeightsContainer<U>;
 
+            fn sizes(&self) -> &LayerSizes
+            {
+                &self.sizes
+            }
+
+            fn iter_with_info<'a>(&'a self) -> impl Iterator<Item=WeightsFullInfo<&'a T>>
+            where
+                T: 'a
+            {
+                [
+                    $(
+                        WeightsFullInfo{
+                            weights: &self.$name,
+                            this_size: $this_size.into_number(self.sizes),
+                            previous_size: $previous_size.into_number(self.sizes),
+                            name: stringify!($name),
+                            is_hidden: $is_hidden,
+                            is_bias: matches!($previous_size, LayerSize::One),
+                            is_state_reliant: $is_state_reliant
+                        },
+                    )+
+                ].into_iter()
+            }
+
             fn map<U, F>(self, mut f: F) -> WeightsContainer<U>
             where
                 F: FnMut(T) -> U
@@ -508,45 +480,33 @@ macro_rules! create_weights_container
 
             fn map_inplace_with_info<F>(&mut self, mut f: F)
             where
-                F: FnMut(WeightsSize<&mut T>, DebugUnitInfo)
+                F: FnMut(WeightsFullInfo<&mut T>)
             {
                 $(
-                    let debug_unit_info;
-
-                    #[cfg(debug_assertions)]
-                    {
-                        debug_unit_info = DebugUnitInfo{
-                            name: stringify!($name)
-                        };
-                    }
-
-                    #[cfg(not(debug_assertions))]
-                    {
-                        debug_unit_info = DebugUnitInfo;
-                    }
-
-                    f(WeightsSize{
+                    f(WeightsFullInfo{
                         weights: &mut self.$name,
                         this_size: $this_size.into_number(self.sizes),
                         previous_size: $previous_size.into_number(self.sizes),
+                        name: stringify!($name),
                         is_hidden: $is_hidden,
                         is_bias: matches!($previous_size, LayerSize::One),
                         is_state_reliant: $is_state_reliant
-                    }, debug_unit_info);
+                    });
                 )+
             }
 
             fn map_with_info<U, F>(self, mut f: F) -> WeightsContainer<U>
             where
-                F: FnMut(WeightsSize<T>) -> U
+                F: FnMut(WeightsFullInfo<T>) -> U
             {
                 WeightsContainer{
                     sizes: self.sizes,
                     $(
-                        $name: f(WeightsSize{
+                        $name: f(WeightsFullInfo{
                             weights: self.$name,
                             this_size: $this_size.into_number(self.sizes),
                             previous_size: $previous_size.into_number(self.sizes),
+                            name: stringify!($name),
                             is_hidden: $is_hidden,
                             is_bias: matches!($previous_size, LayerSize::One),
                             is_state_reliant: $is_state_reliant
@@ -569,61 +529,20 @@ macro_rules! create_weights_container
 
             fn map_ref_with_info<U, F>(&self, mut f: F) -> WeightsContainer<U>
             where
-                F: FnMut(WeightsSize<&T>) -> U
+                F: FnMut(WeightsFullInfo<&T>) -> U
             {
                 WeightsContainer{
                     sizes: self.sizes,
                     $(
-                        $name: f(WeightsSize{
+                        $name: f(WeightsFullInfo{
                             weights: &self.$name,
                             this_size: $this_size.into_number(self.sizes),
                             previous_size: $previous_size.into_number(self.sizes),
+                            name: stringify!($name),
                             is_hidden: $is_hidden,
                             is_bias: matches!($previous_size, LayerSize::One),
                             is_state_reliant: $is_state_reliant
                         }),
-                    )+
-                }
-            }
-
-            fn clone_weights_with_info<F>(&self, mut f: F) -> Self
-            where
-                F: FnMut(WeightsSize<&T>) -> T
-            {
-                Self{
-                    sizes: self.sizes,
-                    $(
-                        $name: f(
-                            WeightsSize{
-                                weights: &self.$name,
-                                this_size: $this_size.into_number(self.sizes),
-                                previous_size: $previous_size.into_number(self.sizes),
-                                is_hidden: $is_hidden,
-                                is_bias: matches!($previous_size, LayerSize::One),
-                                is_state_reliant: $is_state_reliant
-                            }
-                        ),
-                    )+
-                }
-            }
-
-            fn weights_named_info(&self, layer: usize) -> Self::Unit<WeightsNamed<&T>>
-            {
-                WeightsContainer{
-                    sizes: self.sizes,
-                    $(
-                        $name: WeightsNamed{
-                            name: stringify!($name).to_owned(),
-                            layer,
-                            weights_size: WeightsSize{
-                                weights: &self.$name,
-                                this_size: $this_size.into_number(self.sizes),
-                                previous_size: $previous_size.into_number(self.sizes),
-                                is_hidden: $is_hidden,
-                                is_bias: matches!($previous_size, LayerSize::One),
-                                is_state_reliant: $is_state_reliant
-                            }
-                        },
                     )+
                 }
             }
@@ -753,6 +672,27 @@ impl<T> EmbeddingsLayers<T>
         iter::once(&self.input).chain(iter::once(&self.output))
     }
 
+    pub fn iter_with_info(&self, sizes: LayerSizes) -> impl Iterator<Item=WeightsFullInfo<&T>>
+    {
+        iter::once(WeightsFullInfo{
+            weights: &self.input,
+            this_size: sizes.input,
+            previous_size: sizes.initial_input,
+            name: "embeddings_input",
+            is_hidden: false,
+            is_bias: false,
+            is_state_reliant: false
+        }).chain(iter::once(WeightsFullInfo{
+            weights: &self.output,
+            this_size: sizes.final_output,
+            previous_size: sizes.output,
+            name: "embeddings_output",
+            is_hidden: false,
+            is_bias: false,
+            is_state_reliant: false
+        }))
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
     {
         iter::once(&mut self.input).chain(iter::once(&mut self.output))
@@ -871,6 +811,25 @@ impl<N: UnitFactory, T> WeightsFullContainer<N, T>
         for<'a> &'a N::Unit<T>: IntoIterator<Item=&'a T>
     {
         self.layers.iter().flatten().chain(self.embeddings.iter().map(|x| x.iter()).flatten()).chain(iter::once(&self.output))
+    }
+
+    pub fn iter_with_info(&self) -> impl Iterator<Item=WeightsFullInfo<&T>>
+    where
+        N::Unit<T>: GenericUnit<T>
+    {
+        let sizes = self.layers[0].sizes();
+
+        self.layers.iter().flat_map(|x| x.iter_with_info())
+            .chain(self.embeddings.iter().map(|x| x.iter_with_info(sizes.clone())).flatten())
+            .chain(iter::once(WeightsFullInfo{
+                weights: &self.output,
+                this_size: sizes.output,
+                previous_size: sizes.hidden,
+                name: "output",
+                is_hidden: false,
+                is_bias: false,
+                is_state_reliant: false
+            }))
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item=&mut T>
@@ -1164,7 +1123,7 @@ where
                     output: weight_info_from(&mut recorder, false, embeddings.output)
                 }
             }),
-            layers: x.weights.layers.into_iter().map(|x| x.map_with_info(|WeightsSize{weights: value, is_bias, ..}|
+            layers: x.weights.layers.into_iter().map(|x| x.map_with_info(|WeightsFullInfo{weights: value, is_bias, ..}|
             {
                 weight_info_from(&mut recorder, is_bias, value)
             })).collect()
@@ -1407,7 +1366,7 @@ where
 
             weights_ptr.layers.iter_mut().for_each(|layer|
             {
-                layer.map_inplace_with_info(|mut weights_size, _debug_info|
+                layer.map_inplace_with_info(|mut weights_size|
                 {
                     initialize_dropped_weight(&mut self.recorder, &mut weights_size.weights);
 
@@ -1415,7 +1374,7 @@ where
                     {
                         if let Some(dropped_weights) = weights_size.weights.weight_dropped
                         {
-                            self.recorder.name_diff_tensor(dropped_weights, _debug_info.name.to_owned() + "_dropped");
+                            self.recorder.name_diff_tensor(dropped_weights, weights_size.name.to_owned() + "_dropped");
                         }
                     }
                 });
@@ -1888,7 +1847,7 @@ where
                 embeddings: weights.embeddings.as_ref().map(|embeddings| embeddings.map_ref(f)),
                 layers: weights.layers.iter().map(|x|
                 {
-                    x.map_ref_with_info(|WeightsSize{weights: weight, this_size, previous_size, is_state_reliant, ..}|
+                    x.map_ref_with_info(|WeightsFullInfo{weights: weight, this_size, previous_size, is_state_reliant, ..}|
                     {
                         if is_state_reliant
                         {
@@ -1996,57 +1955,13 @@ where
     #[cfg(not(test))]
     pub fn weights_info<'b, 'c>(
         &'b self
-    ) -> Vec<WeightsNamed<LayerType>>
+    ) -> Vec<WeightsFullInfo<LayerType>>
     where
-        for<'a> N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightsNamed<&'a WeightInfoPtr>>=N::Unit<WeightsNamed<&'a WeightInfoPtr>>>,
-        N::Unit<WeightsNamed<&'b WeightInfoPtr>>: IntoIterator<Item=WeightsNamed<&'b WeightInfoPtr>>
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr>
     {
         let weights = self.weights_ptr.as_ref().unwrap();
 
-        weights.layers.iter().enumerate()
-            .flat_map(|(layer_index, layer)|
-            {
-                layer.weights_named_info(layer_index).into_iter()
-            })
-            .chain(iter::once(WeightsNamed{
-                name: "output".to_owned(),
-                layer: self.sizes.layers.saturating_sub(1),
-                weights_size: WeightsSize{
-                    weights: &weights.output,
-                    this_size: self.sizes.output,
-                    previous_size: self.sizes.hidden,
-                    is_hidden: false,
-                    is_bias: false,
-                    is_state_reliant: false
-                }
-            }))
-            .chain(weights.embeddings.as_ref().map(|embeddings|
-            {
-                [WeightsNamed{
-                    name: "embeddings_input".to_owned(),
-                    layer: 0,
-                    weights_size: WeightsSize{
-                        weights: &embeddings.input,
-                        this_size: self.sizes.input,
-                        previous_size: self.sizes.initial_input,
-                        is_hidden: false,
-                        is_bias: false,
-                        is_state_reliant: false
-                    }
-                },
-                WeightsNamed{
-                    name: "embeddings_output".to_owned(),
-                    layer: self.sizes.layers.saturating_sub(1),
-                    weights_size: WeightsSize{
-                        weights: &embeddings.output,
-                        this_size: self.sizes.final_output,
-                        previous_size: self.sizes.output,
-                        is_hidden: false,
-                        is_bias: false,
-                        is_state_reliant: false
-                    }
-                }]
-            }).into_iter().flatten())
+        weights.iter_with_info()
             .map(|x| x.map(|x| self.recorder.get_tensor_memory_value(x.weight_original.as_value()).clone_owned()))
             .collect::<Vec<_>>()
     }
@@ -2579,7 +2494,7 @@ mod tests
                 }
             };
 
-            let g = |x: WeightsSize<_>|
+            let g = |x: WeightsFullInfo<_>|
             {
                 f(x.weights).unwrap_or_else(|| LayerType::new(x.this_size, x.previous_size))
             };
@@ -2633,5 +2548,148 @@ mod tests
         eprintln!("{with_steps_gradient:?}");
 
         assert_eq!(with_steps_gradient, at_once_gradient);
+    }
+
+    #[test]
+    fn every_gradient_is_correct()
+    {
+        let is_input_one_hot = true;
+
+        let input_size = 5;
+        let output_size = input_size;
+
+        let steps_num = 4;
+
+        let inputs_outputs: Vec<_> = {
+            let mut input_index = 0;
+
+            iter::repeat_with(||
+            {
+                let oh = |v| OneHotLayer::new([[v % input_size].into()].into(), 1, input_size, 1);
+
+                let input = OwnedInputType::OneHot(oh(input_index));
+                let output = oh(input_index + 1);
+
+                input_index += 1;
+
+                (input, output)
+            }).take(steps_num).collect()
+        };
+
+        let layers = 3;
+        let hidden = 4;
+
+        let layer_sizes = LayerSizes{
+            hidden,
+            layers,
+            initial_input: input_size,
+            input: input_size,
+            output: output_size,
+            final_output: output_size,
+            batch_size: 1
+        };
+
+        let input_dropout_probability = 0.0;
+        let dropout_probability = 0.0;
+
+        type OptimizerType = ();
+        type NetworkType<OptimizerType> = Network<ThisFactory, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
+
+        let network_config = NetworkConfigInfo{
+            is_input_one_hot,
+            is_multistep: true,
+            print_optional_info: false
+        };
+
+        let mut network: NetworkType<OptimizerType> = Network::new(
+            layer_sizes,
+            input_dropout_probability,
+            dropout_probability,
+            network_config.clone()
+        );
+
+        network.set_train_mode();
+        network.prepare_with_gradient((), None, 1);
+
+        let (loss, gradients) = network.gradients((), inputs_outputs.iter().cloned());
+
+        let starting_loss = loss;
+
+        let sample_network = SaveNetwork::from_network::<(), ()>(&network);
+
+        let load_network = |save_network|
+        {
+            let mut loaded_network = NetworkType::<OptimizerType>::load::<(), ()>(save_network, network_config.clone(), 1);
+
+            loaded_network.set_train_mode();
+            loaded_network.prepare_with_gradient((), None, 1);
+
+            loaded_network
+        };
+
+        // consistency check
+        assert_eq!((loss, gradients.clone()), load_network(sample_network.clone()).gradients((), inputs_outputs.iter().cloned()));
+
+        let gradients_count = gradients.iter().flatten().count();
+
+        eprintln!("starting loss: {starting_loss}");
+        for gradient_index in 0..gradients_count
+        {
+            let mut check_network = sample_network.clone();
+            let mut momentum = 1.0;
+
+            let name: &'static str = gradients.iter_with_info()
+                .flat_map(|x| x.weights.into_iter().zip(iter::repeat(x.name)))
+                .nth(gradient_index)
+                .unwrap()
+                .1;
+
+            eprintln!("{gradient_index}/{gradients_count}: checking {name}..");
+
+            let mut this_gradient = *gradients.iter().flatten().nth(gradient_index).unwrap();
+            eprintln!("starting gradient: {this_gradient}");
+
+            let mut new_loss = starting_loss;
+
+            loop
+            {
+                let mut check_network_temp = check_network.clone();
+                *check_network_temp.weights.iter_mut().flatten().nth(gradient_index).unwrap() -= this_gradient * momentum;
+
+                let (new_loss_tmp, new_gradients) = load_network(check_network_temp.clone()).gradients((), inputs_outputs.iter().cloned());
+
+                let new_gradient = *new_gradients.iter().flatten().nth(gradient_index).unwrap();
+
+                if new_gradient.signum() != this_gradient.signum()
+                {
+                    momentum = momentum * 0.5;
+                } else
+                {
+                    momentum *= 1.5;
+
+                    if new_gradient == this_gradient
+                    {
+                        break;
+                    }
+
+                    this_gradient = new_gradient;
+                    new_loss = new_loss_tmp;
+
+                    check_network = check_network_temp;
+
+                    eprintln!("∇loss {}, new gradient: {this_gradient}, new_loss: {new_loss}, momentum: {momentum}", new_loss - starting_loss);
+                }
+
+                if momentum < 0.00001 || momentum > 100000.0 || new_gradient == 0.0 || new_gradient == -0.0
+                {
+                    break;
+                }
+            }
+
+            assert!(
+                new_loss <= starting_loss,
+                "failed at {gradient_index}, new loss: {new_loss} must be smaller than starting loss: {starting_loss}, name: {name}"
+            );
+        }
     }
 }

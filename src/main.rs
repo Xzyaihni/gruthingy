@@ -32,8 +32,7 @@ use neural_network::{
     TrainingInfo,
     NeuralNetwork,
     UnitState,
-    WeightsNamed,
-    WeightsSize,
+    WeightsFullInfo,
     LayerType,
     SaveWeightType,
     NetworkUnit,
@@ -589,16 +588,7 @@ fn weights_image(config: Config)
         format!("layer{index}")
     };
 
-    for WeightsNamed{
-        name,
-        layer,
-        weights_size: WeightsSize{
-            weights,
-            previous_size,
-            this_size,
-            ..
-        }
-    } in weights.into_iter()
+    for (layer, WeightsFullInfo{weights, previous_size, this_size, name, ..}) in weights.into_iter().enumerate()
     {
         let layer_folder = output_folder.join(layer_name(layer));
         fs::create_dir_all(&layer_folder).unwrap();

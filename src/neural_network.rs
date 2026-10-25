@@ -32,7 +32,6 @@ use crate::{
 };
 
 pub use network_unit::{
-    DebugUnitInfo,
     NetworkStateSelectable,
     NetworkStateGettable,
     NetworkUnitNewable,
@@ -49,7 +48,6 @@ pub use network::{
     UnitState,
     SaveWeightType,
     LayerSizes,
-    WeightsNamed,
     NetworkConfigInfo
 };
 
@@ -85,7 +83,7 @@ pub use containers::{
 };
 
 #[allow(unused_imports)]
-pub use network::{WeightInfo, WeightInfoPtr, WeightsSize};
+pub use network::{WeightInfo, WeightInfoPtr, WeightsFullInfo};
 
 #[allow(unused_imports)]
 use gru::Gru;
@@ -1713,7 +1711,7 @@ mod tests
             print_optional_info: false,
             is_multistep: true,
             is_input_one_hot
-        }, 10);
+        }, 32);
 
         let test_loss = network.test_loss(Cursor::new(test_input), None, false);
 
