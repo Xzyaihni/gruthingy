@@ -1,4 +1,5 @@
 use std::{
+    mem,
     fmt::{self, Debug},
     ops::RangeInclusive
 };
@@ -46,15 +47,20 @@ impl LiveRange
     {
         let start = if let Some(x) = self.start { x } else { return false };
 
-        let end = if let Some(x) = self.end { x } else { return false };
+        let end = if let Some(x) = self.end { x } else { return true };
 
         start < end
     }
 
+    pub fn real_range(&self) -> bool
+    {
+        self.valid_range() && self.end.is_some()
+    }
+
     pub fn overlaps(&self, other: &Self) -> bool
     {
-        debug_assert!(self.valid_range(), "{self:?} is an invalid range");
-        debug_assert!(other.valid_range(), "{other:?} is an invalid range");
+        debug_assert!(self.real_range(), "{self:?} is an invalid range");
+        debug_assert!(other.real_range(), "{other:?} is an invalid range");
 
         let this_start = self.start.unwrap();
         let this_end = self.end.unwrap();
@@ -66,23 +72,31 @@ impl LiveRange
     }
 }
 
-fn live_ranges_non_overlapping(
+fn live_ranges_overlapping(
     live_ranges: impl Iterator<Item=LiveRange>,
     allow_same_start_end: bool
 ) -> bool
 {
-    let mut live_ranges: Vec<_> = dbg!(live_ranges.collect());
-    live_ranges.sort_by_key(|x| x.start);
+    let mut live_ranges: Vec<_> = live_ranges.collect();
+    debug_assert!(live_ranges.iter().all(LiveRange::valid_range), "{:?} has invalid ranges", live_ranges);
 
-    live_ranges.iter().zip(live_ranges.iter().skip(1)).all(|(this, next)|
+    live_ranges.sort_by_key(|x| x.start.unwrap());
+
+    live_ranges.iter().zip(live_ranges.iter().skip(1)).any(|(this, next)|
     {
-        if allow_same_start_end { this.end <= next.start } else { this.end < next.start }
+        let Some(this_end) = this.end else {
+            return false;
+        };
+
+        if allow_same_start_end { this_end > next.start.unwrap() } else { this_end >= next.start.unwrap() }
     })
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct LiveRanges
 {
+    pub inputs: Vec<DiffValue>,
+    pub outputs: Vec<DiffValue>,
     pub loops: Vec<LiveRange>,
     pub values: Vec<LiveRange>,
     pub tensors: Vec<LiveRange>
@@ -90,13 +104,50 @@ pub struct LiveRanges
 
 impl LiveRanges
 {
-    pub fn tensors_non_overlapping(
+    pub fn tensors_overlapping(
         &self,
         tensors: &[TensorPtr],
         allow_same_start_end: bool
     ) -> bool
     {
-        live_ranges_non_overlapping(tensors.iter().map(|tensor_ptr| self.tensors[tensor_ptr.0].clone()), allow_same_start_end)
+        live_ranges_overlapping(tensors.iter().map(|tensor_ptr| self.tensors[tensor_ptr.0].clone()), allow_same_start_end)
+    }
+
+    pub fn get_live_range(&self, value: DiffValue) -> Option<&LiveRange>
+    {
+        match value
+        {
+            DiffValue::Value(value) => Some(&self.values[value.0]),
+            DiffValue::Tensor(tensor) => Some(&self.tensors[tensor.0]),
+            DiffValue::OneHot(_) => None
+        }
+    }
+
+    pub fn get_live_range_mut(&mut self, value: DiffValue) -> Option<&mut LiveRange>
+    {
+        match value
+        {
+            DiffValue::Value(value) => Some(&mut self.values[value.0]),
+            DiffValue::Tensor(tensor) => Some(&mut self.tensors[tensor.0]),
+            DiffValue::OneHot(_) => None
+        }
+    }
+
+    pub fn reset(&mut self)
+    {
+        self.loops = Vec::new();
+        self.values.iter_mut().for_each(|x| { mem::take(x); });
+        self.tensors.iter_mut().for_each(|x| { mem::take(x); });
+
+        self.inputs.clone().into_iter().for_each(|input|
+        {
+            self.get_live_range_mut(input).unwrap().start = Some(-1);
+        });
+
+        self.outputs.clone().into_iter().for_each(|output|
+        {
+            self.get_live_range_mut(output).unwrap().end = Some(i32::MAX);
+        });
     }
 
     pub fn calculate(
@@ -106,6 +157,8 @@ impl LiveRanges
         variable_names: &VariableNames
     )
     {
+        self.reset();
+
         self.calculate_loop_live_ranges(gradient_operations);
 
         let mut inside_loop_values = Vec::new();

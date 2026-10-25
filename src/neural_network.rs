@@ -1582,7 +1582,7 @@ mod tests
             Some(0.1)
         );
 
-        debug_assert!(test_loss < 0.1, "{test_loss} must be close to 0");
+        assert!(test_loss < 0.1, "{test_loss} must be close to 0");
     }
 
     #[test]

@@ -1082,7 +1082,7 @@ impl OperationsRecorderMemory
         let scalar = self.new_value(false);
         self.set_value(scalar.as_value(), value);
 
-        self.live_ranges.values[scalar.as_value().0].start = Some(-1);
+        self.live_ranges.inputs.push(scalar.as_value().into());
 
         scalar
     }
@@ -1257,12 +1257,7 @@ impl OperationsRecorderMemory
 
     fn get_live_range(&self, value: DiffValue) -> Option<&LiveRange>
     {
-        match value
-        {
-            DiffValue::Value(value) => Some(&self.live_ranges.values[value.0]),
-            DiffValue::Tensor(tensor) => Some(&self.live_ranges.tensors[tensor.0]),
-            DiffValue::OneHot(_) => None
-        }
+        self.live_ranges.get_live_range(value)
     }
 
     fn loop_of_selector(&self, selector_index: PhiOtherSelectorIndex) -> LoopIndex
@@ -1967,7 +1962,7 @@ impl OperationsRecorder
     pub fn new_tensor(&mut self, rows: usize, columns: usize) -> DiffTensorPtr
     {
         let input = self.memory.new_tensor(true, TensorMemoryValue::Size{rows, columns, batch_size: 1});
-        self.memory.live_ranges.tensors[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.inputs.push(input.as_value().into());
 
         input
     }
@@ -1975,7 +1970,7 @@ impl OperationsRecorder
     pub fn new_tensor_no_gradient(&mut self, TensorShape{rows, columns, batch_size}: TensorShape) -> DiffTensorPtr
     {
         let input = self.memory.new_tensor(false, TensorMemoryValue::Size{rows, columns, batch_size});
-        self.memory.live_ranges.tensors[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.inputs.push(input.as_value().into());
 
         input
     }
@@ -1983,7 +1978,7 @@ impl OperationsRecorder
     pub fn new_value(&mut self) -> DiffScalar
     {
         let input = self.memory.new_value(true);
-        self.memory.live_ranges.values[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.inputs.push(input.as_value().into());
 
         input
     }
@@ -2129,7 +2124,7 @@ impl OperationsRecorder
             self.memory.set_tensors_check.push(input.as_value().into());
         }
 
-        self.memory.live_ranges.tensors[input.as_value().0].start = Some(-1);
+        self.memory.live_ranges.inputs.push(input.as_value().into());
     }
 
     pub fn set_new_value(&mut self, value: f32) -> DiffScalar
@@ -2236,14 +2231,14 @@ impl OperationsRecorder
 
                 self.store_tensor_until_end(gradient_ptr);
 
-                self.memory.live_ranges.tensors[gradient_ptr.0].start = Some(-1);
+                self.memory.live_ranges.inputs.push(gradient_ptr.into());
                 self.memory.tensors_memory[gradient_ptr.0].value = new_value;
             },
             DiffWrapper::Value(DiffScalar{gradient, ..}) =>
             {
                 let gradient = gradient.expect("gradient must exist");
 
-                self.memory.live_ranges.values[gradient.0].start = Some(-1);
+                self.memory.live_ranges.inputs.push(gradient.into());
 
                 self.set_value(gradient, 1.0)
             }
@@ -2827,7 +2822,7 @@ impl OperationsRecorder
     {
         debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
 
-        self.memory.live_ranges.tensors[index_ptr.0].end = Some(i32::MAX);
+        self.memory.live_ranges.outputs.push(index_ptr.into());
     }
 
     pub fn store_tensor_as_output(&mut self, index_ptr: TensorPtr)
@@ -2856,7 +2851,7 @@ impl OperationsRecorder
             }
         }
 
-        self.memory.live_ranges.values[index.0].end = Some(i32::MAX);
+        self.memory.live_ranges.outputs.push(index.into());
     }
 
     pub fn begin_loop(&mut self, inputs: Vec<InputTypePtr>) -> LoopIndex
@@ -5402,7 +5397,7 @@ impl OperationsRecorder
 
     fn is_ptr_output(&self, ptr: TensorPtr) -> bool
     {
-        self.memory.live_ranges.tensors[ptr.0].end == Some(i32::MAX)
+        self.memory.live_ranges.outputs.contains(&DiffValue::Tensor(ptr))
     }
 
     fn skip_last_selectors(&mut self)
@@ -5834,8 +5829,6 @@ impl OperationsRecorder
 
     fn copy_reuse_conflicts(&mut self)
     {
-        let mut start_live_ranges = self.memory.live_ranges.clone();
-
         self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
 
         let mut i = self.gradient_operations.len().saturating_sub(1);
@@ -5843,7 +5836,6 @@ impl OperationsRecorder
         {
             fn copy_if_src_reused(
                 this: &mut OperationsRecorder,
-                start_live_ranges: LiveRanges,
                 src: TensorPtr,
                 dst: TensorPtr,
                 i: usize
@@ -5854,8 +5846,6 @@ impl OperationsRecorder
 
                     if dst_start < i as i32
                     {
-                        this.memory.live_ranges = start_live_ranges;
-
                         let shape = this.tensor_shape(dst);
                         let new_output = this.memory.new_tensor(false, shape.into()).as_value();
 
@@ -5866,13 +5856,21 @@ impl OperationsRecorder
                         {
                             offset += 1;
                         }
-                    } else
-                    {
-                        this.memory.live_ranges = start_live_ranges;
                     }
                 }
 
-                let needs_copy = true;//this.live_ranges.tensors_non_overlapping();
+                let check_tensors: Vec<TensorPtr> = if let Some(xs) = this.memory.forced_same_memory.iter().find(|x| x.contains(&src))
+                {
+                    xs.iter().copied().chain(iter::once(dst)).collect()
+                } else if let Some(xs) = this.memory.forced_same_memory.iter().find(|x| x.contains(&dst))
+                {
+                    xs.iter().copied().chain(iter::once(src)).collect()
+                } else
+                {
+                    vec![src, dst]
+                };
+
+                let needs_copy = this.memory.live_ranges.tensors_overlapping(&check_tensors, true);
 
                 needs_copy.then(||
                 {
@@ -5894,7 +5892,7 @@ impl OperationsRecorder
                         $(
                             GradientOp::$name{added, output, ..} =>
                             {
-                                let replace_added = if let Some(new_added) = copy_if_src_reused(self, start_live_ranges, added, output, i)
+                                let replace_added = if let Some(new_added) = copy_if_src_reused(self, added, output, i)
                                 {
                                     let GradientOp::$name{added, ..} = &mut self.gradient_operations[i + 1] else
                                     {
@@ -5911,7 +5909,6 @@ impl OperationsRecorder
 
                                 self.memory.force_same_memory(replace_added, output);
 
-                                start_live_ranges = self.memory.live_ranges.clone();
                                 self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
                             },
                         )+
@@ -5935,8 +5932,6 @@ impl OperationsRecorder
 
             i -= 1;
         }
-
-        self.memory.live_ranges = start_live_ranges;
     }
 
     pub fn is_ready(&self) -> bool
@@ -5963,7 +5958,7 @@ impl OperationsRecorder
 
             if range.start.is_some() && range.end.is_some()
             {
-                debug_assert!(range.valid_range(), "{} has an invalid range: {range:?}", self.memory.format_variable(index));
+                debug_assert!(range.real_range(), "{} has an invalid range: {range:?}", self.memory.format_variable(index));
             }
         };
 
@@ -6655,6 +6650,14 @@ impl OperationsRecorder
 
                     None
                 },
+                GradientOp::GetOtherSelectorTensor{info, first, other, output} if access_tensor(other) == access_tensor(output) =>
+                {
+                    Some(GradientOp::IfNotSetTensor{index: info, src: access_tensor(first), dst: access_tensor(output)})
+                },
+                GradientOp::GetOtherSelectorTensor{info, first, other, output} if access_tensor(first) == access_tensor(output) =>
+                {
+                    Some(GradientOp::IfSetTensor{index: info, src: access_tensor(other), dst: access_tensor(output)})
+                },
                 GradientOp::Copy{src, dst} if access_tensor(src) == access_tensor(dst) => None,
                 GradientOp::PushStackValue{loop_index, value} => Some(map_push_stack(loop_index, value.into(), gradient_op)),
                 GradientOp::PushStackTensor{loop_index, tensor} => Some(map_push_stack(loop_index, tensor.into(), gradient_op)),
@@ -6831,6 +6834,18 @@ impl OperationsRecorder
 
     fn combine_inplace_assignments(&mut self, input_remaps: &mut Vec<(TensorPtr, TensorPtr)>)
     {
+        self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
+
+        self.memory.forced_same_memory.iter_mut().for_each(|same_memories|
+        {
+            same_memories.retain(|x| self.memory.live_ranges.tensors[x.0].start.is_some());
+
+            if !same_memories.iter().all(|x| self.memory.allow_after_coalesce_use.contains(x))
+            {
+                debug_assert!(!self.memory.live_ranges.tensors_overlapping(&same_memories, true), "{same_memories:?} has overlap");
+            }
+        });
+
         for i in (0..self.gradient_operations.len()).rev()
         {
             if self.gradient_operations[i].is_any_arg_or_output(|x|
@@ -6846,33 +6861,36 @@ impl OperationsRecorder
                     {
                         if let Some(same_memories) = self.memory.forced_same_memory.iter().find(|xs| xs.contains(&x))
                         {
-                            if !same_memories.iter().all(|x| self.memory.allow_after_coalesce_use.contains(x))
-                            {
-                                debug_assert!(self.memory.live_ranges.tensors_non_overlapping(&same_memories, true));
-                            }
-
                             let same_memories = same_memories.clone();
 
                             let output = *same_memories.iter().max_by_key(|v| self.memory.live_ranges.tensors[v.0].end).unwrap();
 
-                            same_memories.into_iter().filter(|arg| *arg == output).for_each(|arg|
+                            same_memories.into_iter().filter(|arg| *arg != output).for_each(|arg|
                             {
                                 {
-                                    let arg_start = self.memory.live_ranges.tensors[arg.0].start;
+                                    let arg_range = self.memory.live_ranges.tensors[arg.0].clone();
 
-                                    if arg_start == Some(-1)
+                                    if arg_range.start == Some(-1)
                                     {
                                         input_remaps.push((arg, output));
                                     }
 
-                                    let combined_start = &mut self.memory.live_ranges.tensors[output.0].start;
+                                    let combined_range = &mut self.memory.live_ranges.tensors[output.0];
 
-                                    *combined_start = if let Some(x) = *combined_start
+                                    combined_range.start = if let Some(x) = combined_range.start
                                     {
-                                        Some(arg_start.map(|y| x.min(y)).unwrap_or(x))
+                                        Some(arg_range.start.map(|y| x.min(y)).unwrap_or(x))
                                     } else
                                     {
-                                        arg_start
+                                        arg_range.start
+                                    };
+
+                                    combined_range.end = if let Some(x) = combined_range.end
+                                    {
+                                        Some(arg_range.end.map(|y| x.max(y)).unwrap_or(x))
+                                    } else
+                                    {
+                                        arg_range.end
                                     };
                                 }
 
@@ -6892,6 +6910,10 @@ impl OperationsRecorder
                 GradientOp::GetOtherSelectorTensor{info, first, other, output} if other == output =>
                 {
                     self.gradient_operations[i] = GradientOp::IfNotSetTensor{index: info, src: first, dst: output};
+                },
+                GradientOp::GetOtherSelectorTensor{info, first, other, output} if first == output =>
+                {
+                    self.gradient_operations[i] = GradientOp::IfSetTensor{index: info, src: other, dst: output};
                 },
                 _ => ()
             }
@@ -7037,8 +7059,6 @@ impl OperationsRecorder
 
     pub fn calculate_live_ranges(&mut self)
     {
-        let start_live_ranges = self.memory.live_ranges.clone();
-
         loop
         {
             self.memory.live_ranges.calculate(
@@ -7055,8 +7075,6 @@ impl OperationsRecorder
             }
 
             self.remove_unused_pushes();
-
-            self.memory.live_ranges = start_live_ranges.clone();
         }
     }
 
@@ -7065,16 +7083,13 @@ impl OperationsRecorder
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
         self.state = RecorderState::Ready;
 
-        let start_live_ranges = self.memory.live_ranges.clone();
         self.calculate_live_ranges();
 
         self.skip_last_selectors();
 
-        self.memory.live_ranges = start_live_ranges;
         self.calculate_live_ranges();
 
         let mut input_remaps = Vec::new();
-
         self.combine_inplace_assignments(&mut input_remaps);
 
         let mut memory_assignments = Vec::new();
@@ -10160,7 +10175,7 @@ mod tests
 
     fn compare_tensor(correct: LayerType, calculated: LayerType)
     {
-        correct.as_vec().into_iter().for_each(|x| debug_assert!(!x.is_nan()));
+        correct.as_vec().into_iter().for_each(|x| assert!(!x.is_nan()));
 
         correct.as_vec().into_iter().zip(calculated.as_vec().into_iter())
             .for_each(|(correct, calculated)| compare_single(correct, calculated));
