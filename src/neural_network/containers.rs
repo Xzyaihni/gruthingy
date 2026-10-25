@@ -5014,12 +5014,53 @@ impl OperationsRecorder
 
         drop(compute_pass);
 
-        self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
-
-        self.memory.tensors_raw_data.iter().filter(|x| x.output_buffer.is_some()).for_each(|raw_array|
+        self.memory.store_tensors_check.iter().map(|store_tensor|
         {
+            let StoreCheckKey::Resolved(store_tensor) = store_tensor else {
+                panic!("{store_tensor:?} must be resolved");
+            };
+
+            *store_tensor
+        }).for_each(|store_tensor: TensorIndex|
+        {
+            let data_pointer = self.memory.tensors[store_tensor.0];
+
+            let raw_array = &self.memory.tensors_raw_data[data_pointer.raw_index.0];
             copy_equal_buffers(&mut self.raw_array_memory.encoder, &raw_array.buffer, raw_array.output_buffer.as_ref().expect("must exist"));
         });
+
+        self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
+
+        self.raw_array_memory.map_on_submit_buffers.retain_mut(|AsyncBufferReader{buffer, index: _index, callback}|
+        {
+            if let Some(callback) = callback.take()
+            {
+                #[cfg(debug_assertions)]
+                {
+                    self.memory.verify_raw_ptr_use_index(*_index);
+                }
+
+                let callback = map_callback_getter(buffer.clone(), callback);
+
+                self.raw_array_memory.encoder.as_mut().unwrap().map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., callback);
+
+                true
+            } else
+            {
+                self.raw_array_memory.device.poll(wgpu::PollType::Wait{
+                    submission_index: Some(self.raw_array_memory.current_in_flight_queue.clone().unwrap()),
+                    timeout: None
+                }).unwrap();
+
+                false
+            }
+        });
+
+        self.raw_array_memory.current_in_flight_queue = Some(self.raw_array_memory.queue.submit(
+            [self.raw_array_memory.encoder.take().unwrap().finish()]
+        ));
+
+        self.raw_array_memory.encoder = Some(self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
 
         #[cfg(feature="timedebug")]
         {
@@ -5041,6 +5082,8 @@ impl OperationsRecorder
             {
                 self.raw_array_memory.encoder.as_mut().unwrap().resolve_query_set(&query_set, 0..max_queries, &query_buffer, 0);
                 copy_equal_buffers(&mut self.raw_array_memory.encoder, &query_buffer, &query_buffer_output);
+
+                self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
 
                 self.raw_array_memory.queue.submit([self.raw_array_memory.encoder.take().unwrap().finish()]);
 
@@ -5100,37 +5143,6 @@ impl OperationsRecorder
                 eprintln!("{name}: {average:.1}μs on average");
             });
         }
-
-        self.raw_array_memory.map_on_submit_buffers.retain_mut(|AsyncBufferReader{buffer, index: _index, callback}|
-        {
-            if let Some(callback) = callback.take()
-            {
-                #[cfg(debug_assertions)]
-                {
-                    self.memory.verify_raw_ptr_use_index(*_index);
-                }
-
-                let callback = map_callback_getter(buffer.clone(), callback);
-
-                self.raw_array_memory.encoder.as_mut().unwrap().map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., callback);
-
-                true
-            } else
-            {
-                self.raw_array_memory.device.poll(wgpu::PollType::Wait{
-                    submission_index: Some(self.raw_array_memory.current_in_flight_queue.clone().unwrap()),
-                    timeout: None
-                }).unwrap();
-
-                false
-            }
-        });
-
-        self.raw_array_memory.current_in_flight_queue = Some(self.raw_array_memory.queue.submit(
-            [self.raw_array_memory.encoder.take().unwrap().finish()]
-        ));
-
-        self.raw_array_memory.encoder = Some(self.raw_array_memory.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
 
         if cfg!(feature="dumpmemory")
         {
