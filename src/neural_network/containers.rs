@@ -7104,6 +7104,55 @@ impl OperationsRecorder
         }
     }
 
+    fn print_possible_combinable(&self)
+    {
+        let mut used_many = Vec::new();
+        let mut used_once = Vec::new();
+
+        self.gradient_operations.iter().for_each(|op|
+        {
+            op.for_args(|arg|
+            {
+                if let DiffValue::Tensor(arg) = arg
+                {
+                    if self.memory.forced_same_memory.iter().any(|x| x.contains(&arg)) { return; }
+                }
+
+                if used_many.contains(&arg)
+                {
+                    return;
+                }
+
+                if !used_once.contains(&arg)
+                {
+                    used_once.push(arg);
+                } else
+                {
+                    used_many.push(used_once.remove(used_once.iter().position(|x| *x == arg).unwrap()));
+                }
+            });
+        });
+
+        used_once.into_iter().for_each(|value|
+        {
+            let Some(live_range) = self.memory.live_ranges.get_live_range(value) else {
+                return;
+            };
+
+            let store_index = live_range.start.unwrap();
+
+            if store_index == -1 { return; }
+
+            let use_index = live_range.end.unwrap();
+
+            if use_index == i32::MAX { return; }
+
+            let f = |i: i32| NotationGradientOp::from_nameable(&self.memory, self.gradient_operations[i as usize].clone());
+
+            eprintln!("{:?} AND {:?} can be combined", f(store_index), f(use_index));
+        });
+    }
+
     pub fn resolve_memory(&mut self, optional_info: bool)
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
@@ -7114,6 +7163,11 @@ impl OperationsRecorder
         self.skip_last_selectors();
 
         self.calculate_live_ranges();
+
+        if optional_info
+        {
+            self.print_possible_combinable();
+        }
 
         let mut input_remaps = Vec::new();
         self.combine_inplace_assignments(&mut input_remaps);
