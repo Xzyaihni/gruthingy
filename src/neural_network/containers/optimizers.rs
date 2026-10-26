@@ -145,7 +145,7 @@ impl Default for Sgd
 {
     fn default() -> Self
     {
-        Self{learning_rate: 0.001}
+        Self{learning_rate: 0.0001}
     }
 }
 
@@ -197,7 +197,7 @@ impl Default for PowerSign
     {
         Self{
             b1: 0.9,
-            learning_rate: 0.1
+            learning_rate: 0.0001
         }
     }
 }
@@ -258,7 +258,7 @@ impl Default for Adam
     fn default() -> Self
     {
         Self{
-            a: 0.001,
+            a: 0.0001,
             b1: 0.9,
             b2: 0.999,
             epsilon: 1e-8
