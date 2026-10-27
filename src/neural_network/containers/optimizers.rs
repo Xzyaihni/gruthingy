@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Serialize, Deserialize};
 
 use super::{
@@ -102,7 +104,7 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
     }
 }
 
-pub trait Optimizer: Default + Clone
+pub trait Optimizer: fmt::Debug + Default + Clone
 {
     type WeightParam<T>;
 
@@ -247,7 +249,7 @@ impl NewableLayer for AdamGradientInfo<OptimizerInfoPtr>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Adam
 {
-    pub a: f32,
+    pub learning_rate: f32,
     pub b1: f32,
     pub b2: f32,
     pub epsilon: f32
@@ -258,7 +260,7 @@ impl Default for Adam
     fn default() -> Self
     {
         Self{
-            a: 0.0001,
+            learning_rate: 0.0001,
             b1: 0.9,
             b2: 0.999,
             epsilon: 1e-8
@@ -285,6 +287,6 @@ impl Optimizer for Adam
 
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
-        self.a = learning_rate;
+        self.learning_rate = learning_rate;
     }
 }

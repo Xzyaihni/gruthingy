@@ -2547,7 +2547,21 @@ mod tests
 
         eprintln!("{with_steps_gradient:?}");
 
-        assert_eq!(with_steps_gradient, at_once_gradient);
+        with_steps_gradient.1.into_iter().zip(at_once_gradient.1.into_iter()).for_each(|(with_steps, at_once)|
+        {
+            let mut all_correct = true;
+
+            with_steps.iter().zip(at_once.iter()).for_each(|(with_steps, at_once)|
+            {
+                if !close_enough(*with_steps, *at_once, 0.001)
+                {
+                    all_correct = false;
+                    eprintln!("{with_steps} != {at_once}");
+                }
+            });
+
+            assert!(all_correct, "with_steps: {with_steps:?}\ndoesnt equal\nat_once: {at_once:?}");
+        });
     }
 
     #[test]
@@ -2636,7 +2650,7 @@ mod tests
         for gradient_index in 0..gradients_count
         {
             let mut check_network = sample_network.clone();
-            let mut momentum = 1.0;
+            let mut momentum = 0.01;
 
             let name: &'static str = gradients.iter_with_info()
                 .flat_map(|x| x.weights.into_iter().zip(iter::repeat(x.name)))

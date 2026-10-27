@@ -1329,6 +1329,8 @@ where
 
             println!("using {} inputs", EmbeddingType::name());
 
+            println!("optimizer: {:?}", &self.optimizer);
+
             println!("steps amount: {}", info.steps_num);
 
             println!("iterations per epoch: ~{iterations_per_epoch}");

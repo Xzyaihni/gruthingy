@@ -4465,7 +4465,7 @@ impl OperationsRecorder
 
                     do_kernel_operation!(Adam, i, 0);
 
-                    [adam.a, adam.b1, adam.b2, adam.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
+                    [adam.learning_rate, adam.b1, adam.b2, adam.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
                     {
                         compute_pass.as_mut().unwrap().set_immediates(index as u32 * FLOAT_BYTES as u32, &value.to_ne_bytes());
                     });
@@ -4927,10 +4927,6 @@ impl OperationsRecorder
 
                     debug_assert_eq!(lhs.shape.rows, output.shape.rows);
 
-                    try_end_compute_pass(&mut compute_pass);
-
-                    self.raw_array_memory.encoder.as_mut().unwrap().clear_buffer(get_buffer(&self.memory, *output), 0, None);
-
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
@@ -4943,6 +4939,10 @@ impl OperationsRecorder
                         GradientOp::OuterProductOneHot{lhs, rhs, output: _} =>
                         {
                             debug_calculate_values!(OuterProductOneHot, (lhs, rhs),());
+
+                            try_end_compute_pass(&mut compute_pass);
+
+                            self.raw_array_memory.encoder.as_mut().unwrap().clear_buffer(get_buffer(&self.memory, *output), 0, None);
 
                             do_kernel_operation!(OuterProductOneHot, i, 0);
                         },
@@ -5853,6 +5853,96 @@ impl OperationsRecorder
         self.memory.force_same_memory(before, after)
     }
 
+    fn combine_sequential_operations(&mut self) -> bool
+    {
+        self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
+
+        let mut any_replaced = false;
+
+        let used_once: Vec<_> = self.used_once_values().collect();
+        used_once.into_iter().for_each(|value|
+        {
+            let Some(live_range) = self.memory.live_ranges.get_live_range(value) else {
+                return;
+            };
+
+            let start = live_range.start.unwrap();
+            if start == -1 { return; }
+
+            let start = start as usize;
+            let end = live_range.end.unwrap() as usize;
+
+            let new_op = match (self.gradient_operations[start].clone(), self.gradient_operations[end].clone())
+            {
+                (
+                    GradientOp::MulComponentwise{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
+                    GradientOp::Add{lhs: add_lhs, rhs: add_rhs, output: add_output}
+                ) =>
+                {
+                    let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
+                    GradientOp::MulComponentwiseAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                },
+                (
+                    GradientOp::Matmulv{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
+                    GradientOp::Add{lhs: add_lhs, rhs: add_rhs, output: add_output}
+                ) =>
+                {
+                    let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
+                    GradientOp::MatmulvAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                },
+                (
+                    GradientOp::MatmulOneHotv{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
+                    GradientOp::Add{lhs: add_lhs, rhs: add_rhs, output: add_output}
+                ) =>
+                {
+                    let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
+                    GradientOp::MatmulOneHotvAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                },
+                (
+                    GradientOp::MatmulvTransposed{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
+                    GradientOp::Add{lhs: add_lhs, rhs: add_rhs, output: add_output}
+                ) =>
+                {
+                    let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
+                    GradientOp::MatmulvTransposedAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                },
+                (
+                    GradientOp::OuterProduct{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
+                    GradientOp::Add{lhs: add_lhs, rhs: add_rhs, output: add_output}
+                ) =>
+                {
+                    let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
+                    GradientOp::OuterProductAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                },
+                (
+                    GradientOp::OuterProductOneHot{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
+                    GradientOp::Add{lhs: add_lhs, rhs: add_rhs, output: add_output}
+                ) =>
+                {
+                    let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
+                    GradientOp::OuterProductOneHotAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                },
+                _ => return
+            };
+
+            {
+                let mut used_args = Vec::new();
+                let mut any_reused = false;
+
+                new_op.for_args(|arg| if used_args.contains(&arg) { any_reused = true } else { used_args.push(arg) });
+
+                if any_reused { return; }
+            }
+
+            self.gradient_operations[end] = new_op;
+            self.gradient_operations[start] = GradientOp::None;
+
+            any_replaced = true;
+        });
+
+        any_replaced
+    }
+
     fn copy_reuse_conflicts(&mut self)
     {
         self.memory.live_ranges.calculate(&self.gradient_operations, &self.loops, &self.memory.variable_names);
@@ -5944,6 +6034,7 @@ impl OperationsRecorder
             }
 
             for_added_output!{
+                MulComponentwiseAdd,
                 MatmulvAdd,
                 MatmulOneHotvAdd,
                 MatmulvTransposedAdd,
@@ -7104,7 +7195,7 @@ impl OperationsRecorder
         }
     }
 
-    fn print_possible_combinable(&self)
+    fn used_once_values(&self) -> impl Iterator<Item=DiffValue> + use<'_>
     {
         let mut used_many = Vec::new();
         let mut used_once = Vec::new();
@@ -7113,11 +7204,6 @@ impl OperationsRecorder
         {
             op.for_args(|arg|
             {
-                if let DiffValue::Tensor(arg) = arg
-                {
-                    if self.memory.forced_same_memory.iter().any(|x| x.contains(&arg)) { return; }
-                }
-
                 if used_many.contains(&arg)
                 {
                     return;
@@ -7133,7 +7219,25 @@ impl OperationsRecorder
             });
         });
 
-        used_once.into_iter().for_each(|value|
+        used_once.into_iter().filter(|arg|
+        {
+            if let DiffValue::Tensor(arg) = arg
+            {
+                if self.memory.forced_same_memory.iter().any(|x| x.contains(arg)) { return false; }
+            }
+
+            if let Some(live_range) = self.memory.live_ranges.get_live_range(*arg)
+            {
+                if live_range.end == Some(i32::MAX) { return false; }
+            }
+
+            true
+        })
+    }
+
+    fn print_possible_combinable(&self)
+    {
+        self.used_once_values().for_each(|value|
         {
             let Some(live_range) = self.memory.live_ranges.get_live_range(value) else {
                 return;
@@ -7144,8 +7248,6 @@ impl OperationsRecorder
             if store_index == -1 { return; }
 
             let use_index = live_range.end.unwrap();
-
-            if use_index == i32::MAX { return; }
 
             let f = |i: i32| NotationGradientOp::from_nameable(&self.memory, self.gradient_operations[i as usize].clone());
 
@@ -7234,6 +7336,7 @@ impl OperationsRecorder
                     | GradientOp::GetOtherSelectorTensor{..}
                     | GradientOp::GradientSelectAddValue{..}
                     | GradientOp::GradientSelectAddTensor{..}
+                    | GradientOp::MulComponentwiseAdd{..}
                     | GradientOp::MatmulvAdd{..}
                     | GradientOp::MatmulOneHotvAdd{..}
                     | GradientOp::MatmulvTransposedAdd{..}
@@ -7713,6 +7816,8 @@ impl OperationsRecorder
 
         self.copy_coalesce();
 
+        while self.combine_sequential_operations() {}
+
         self.copy_reuse_conflicts();
     }
 
@@ -7996,71 +8101,27 @@ impl OperationsRecorder
 
                 this.gradient_operations[info.operation_index.0] = new_previous_op;
 
-                let new_id = this.gradient_operations.len();
+                let new_id = {
+                    this.gradient_operations.push(new_op);
 
-                let new_id = match new_op
-                {
-                    GradientOp::MatmulvTransposed{lhs, rhs, output: output_temp} =>
+                    let new_id = this.gradient_operations.len();
+
+                    let add_op = match output
                     {
-                        debug_assert_eq!(output_temp, add_rhs.into_tensor());
-
-                        this.gradient_operations.push(GradientOp::MatmulvTransposedAdd{
-                            lhs,
-                            rhs,
-                            added: add_lhs.into_tensor(),
-                            output: output.into_tensor()
-                        });
-
-                        new_id
-                    },
-                    GradientOp::OuterProduct{lhs, rhs, output: output_temp} =>
-                    {
-                        debug_assert_eq!(output_temp, add_rhs.into_tensor());
-
-                        this.gradient_operations.push(GradientOp::OuterProductAdd{
-                            lhs,
-                            rhs,
-                            added: add_lhs.into_tensor(),
-                            output: output.into_tensor()
-                        });
-
-                        new_id
-                    },
-                    GradientOp::OuterProductOneHot{lhs, rhs, output: output_temp} =>
-                    {
-                        debug_assert_eq!(output_temp, add_rhs.into_tensor());
-
-                        this.gradient_operations.push(GradientOp::OuterProductOneHotAdd{
-                            lhs,
-                            rhs,
-                            added: add_lhs.into_tensor(),
-                            output: output.into_tensor()
-                        });
-
-                        new_id
-                    },
-                    new_op => {
-                        this.gradient_operations.push(new_op);
-
-                        let new_id = this.gradient_operations.len();
-
-                        let add_op = match output
+                        DiffValue::Tensor(output) =>
                         {
-                            DiffValue::Tensor(output) =>
-                            {
-                                GradientOp::Add{lhs: add_lhs.into_tensor(), rhs: add_rhs.into_tensor(), output}
-                            },
-                            DiffValue::Value(output) =>
-                            {
-                                GradientOp::AddScalars{lhs: add_lhs.into_value(), rhs: add_rhs.into_value(), output}
-                            },
-                            DiffValue::OneHot(_) => unimplemented!()
-                        };
+                            GradientOp::Add{lhs: add_lhs.into_tensor(), rhs: add_rhs.into_tensor(), output}
+                        },
+                        DiffValue::Value(output) =>
+                        {
+                            GradientOp::AddScalars{lhs: add_lhs.into_value(), rhs: add_rhs.into_value(), output}
+                        },
+                        DiffValue::OneHot(_) => unimplemented!()
+                    };
 
-                        this.gradient_operations.push(add_op);
+                    this.gradient_operations.push(add_op);
 
-                        new_id
-                    }
+                    new_id
                 };
 
                 info.operation_index = GradientOperationIndex(new_id);
