@@ -113,6 +113,8 @@ pub trait Optimizer: fmt::Debug + Default + Clone
     fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr;
 
     fn set_learning_rate(&mut self, learning_rate: f32);
+
+    fn set_lambda(&mut self, _lambda: f32) { unimplemented!() }
 }
 
 impl Optimizer for ()
@@ -129,6 +131,11 @@ impl Optimizer for ()
     }
 
     fn set_learning_rate(&mut self, _learning_rate: f32)
+    {
+        unreachable!()
+    }
+
+    fn set_lambda(&mut self, _lambda: f32)
     {
         unreachable!()
     }
@@ -334,5 +341,10 @@ impl Optimizer for AdamW
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
+    }
+
+    fn set_lambda(&mut self, lambda: f32)
+    {
+        self.lambda = lambda;
     }
 }

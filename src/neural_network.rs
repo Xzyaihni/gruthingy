@@ -920,6 +920,7 @@ pub struct TrainingInfo
     pub batch_size: usize,
     pub steps_num: StepsNum,
     pub learning_rate: Option<f32>,
+    pub lambda: Option<f32>,
     pub calculate_accuracy: bool,
     pub less_info: bool
 }
@@ -933,6 +934,7 @@ impl From<&Config> for TrainingInfo
             batch_size: config.batch_size,
             steps_num: StepsNum::new(config.steps_num, config.steps_deviation),
             learning_rate: config.learning_rate,
+            lambda: config.lambda,
             calculate_accuracy: config.calculate_accuracy,
             less_info: config.less_info
         }
@@ -1307,6 +1309,11 @@ where
             self.optimizer.set_learning_rate(learning_rate);
         }
 
+        if let Some(lambda) = info.lambda
+        {
+            self.optimizer.set_lambda(lambda);
+        }
+
         self.network.prepare_with_gradient(self.optimizer.clone(), self.gradient_clip, EmbeddingType::one_hot_count());
 
         let average_inputs_per_batch = info.batch_size * info.steps_num.mid();
@@ -1576,7 +1583,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 4000, None, None);
+        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 5000, None, None);
     }
 
     #[test]
@@ -1721,6 +1728,7 @@ mod tests
             calculate_accuracy: false,
             iterations,
             learning_rate: Some(0.01),
+            lambda: None,
             less_info: false,
             steps_num: StepsNum::Steps(steps_num)
         };

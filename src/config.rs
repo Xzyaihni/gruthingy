@@ -570,6 +570,7 @@ pub struct Config
     pub embeddings_size: usize,
     pub output_embeddings_size: usize,
     pub learning_rate: Option<f32>,
+    pub lambda: Option<f32>,
     pub calculate_accuracy: bool,
     pub network_path: PathBuf,
     pub embeddings_path: PathBuf,
@@ -608,6 +609,7 @@ impl Config
         let mut embeddings_size = 32;
         let mut output_embeddings_size = 64;
         let mut learning_rate = None;
+        let mut lambda = None;
         let mut calculate_accuracy = false;
         let mut network_path = "network.nn".into();
         let mut embeddings_path = "embeddings.nn".into();
@@ -643,6 +645,7 @@ impl Config
         parser.push(&mut embeddings_size, 'e', "embeddings", "size of the embeddings vector");
         parser.push(&mut output_embeddings_size, None, "output-embeddings", "size of the output embeddings vector");
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
+        parser.push(&mut lambda, None, "lambda", "lambda for the adamw optimizer");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
         parser.push(&mut network_path, 'p', "path", "path to the network");
         parser.push(&mut embeddings_path, 'E', "embeddings-path", "path to the embeddings network");
@@ -693,6 +696,7 @@ impl Config
             embeddings_size,
             output_embeddings_size,
             learning_rate,
+            lambda,
             calculate_accuracy,
             network_path,
             embeddings_path,
