@@ -10,14 +10,7 @@ var<storage, read_write> output: array<f32>;
 var<immediate> rows: u32;
 
 #include "default_workgroup_size.wgsl"
-
-fn keep_this(column: u32) -> bool
-{
-    let packed = states[column / 32];
-    let bit_index = column % 32;
-
-    return ((packed >> bit_index) & 1) == 1;
-}
+#include "dropout_keep_this.wgsl"
 
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
