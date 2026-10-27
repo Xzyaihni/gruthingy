@@ -79,7 +79,7 @@ pub use containers::{
 #[allow(unused_imports)]
 pub use containers::{
     close_enough,
-    optimizers::{Sgd, PowerSign, Adam}
+    optimizers::{Sgd, PowerSign, Adam, AdamW}
 };
 
 #[allow(unused_imports)]

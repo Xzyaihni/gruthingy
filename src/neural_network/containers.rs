@@ -31,7 +31,8 @@ use optimizers::{
     PowerSignGradientInfo,
     PowerSign,
     AdamGradientInfo,
-    Adam
+    Adam,
+    AdamW
 };
 
 mod shader_preprocessor;
@@ -1487,6 +1488,7 @@ struct KernelLayouts
     r1_w1_i1: KernelLayout,
     r1_w2_i2: KernelLayout,
     r1_w3_i5: KernelLayout,
+    r1_w3_i6: KernelLayout,
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
     r2_w2_i0: KernelLayout
@@ -1546,7 +1548,7 @@ impl WgpuInitInfo
             label: None,
             required_features,
             required_limits: wgpu::Limits{
-                max_immediate_size: 5 * 4,
+                max_immediate_size: 6 * 4,
                 max_buffer_size: maybe_max_buffer.unwrap_or(default_limits.max_buffer_size),
                 max_storage_buffer_binding_size: maybe_max_buffer.unwrap_or(default_limits.max_storage_buffer_binding_size),
                 ..default_limits
@@ -1652,6 +1654,21 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 5)
             };
 
+            let r1_w3_i6 = {
+                let name = "r1_w3_i6";
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some(name),
+                    entries: &[
+                        input_layout_entry(0),
+                        output_layout_entry(1),
+                        output_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, name, 6)
+            };
+
             let r2_w1_i0 = {
                 let name = "r2_w1_i0";
                 let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
@@ -1700,6 +1717,7 @@ impl WgpuInitInfo
                 r1_w1_i1,
                 r1_w2_i2,
                 r1_w3_i5,
+                r1_w3_i6,
                 r2_w1_i0,
                 r2_w1_i1,
                 r2_w2_i0
@@ -1749,7 +1767,8 @@ impl WgpuInitInfo
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.r1_w2_i2),
-                OpKernel::Adam => ("kernels/adam.wgsl", &kernel_layouts.r1_w3_i5)
+                OpKernel::Adam => ("kernels/adam.wgsl", &kernel_layouts.r1_w3_i5),
+                OpKernel::AdamW => ("kernels/adamw.wgsl", &kernel_layouts.r1_w3_i6)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -2600,6 +2619,22 @@ impl OperationsRecorder
         let output = self.memory.new_tensor_index(shape.into());
 
         self.gradient_operations.push(GradientOp::OptimizerAdam{gradient, adam, m: info.m, v: info.v, output});
+
+        output
+    }
+
+    pub fn adamw_optimizer(
+        &mut self,
+        gradient: TensorPtr,
+        adamw: AdamW,
+        info: AdamGradientInfo<TensorPtr>
+    ) -> TensorPtr
+    {
+        let shape = self.tensor_shape(gradient);
+
+        let output = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::OptimizerAdamW{gradient, adamw, m: info.m, v: info.v, output});
 
         output
     }
@@ -4468,6 +4503,34 @@ impl OperationsRecorder
                     do_kernel_operation!(Adam, i, 0);
 
                     [adam.learning_rate, adam.b1, adam.b2, adam.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
+                    {
+                        compute_pass.as_mut().unwrap().set_immediates(index as u32 * FLOAT_BYTES as u32, &value.to_ne_bytes());
+                    });
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((),());
+                },
+                GradientOp::OptimizerAdamW{gradient, adamw, m, v, output} =>
+                {
+                    debug_calculate_values!(OptimizerAdamW, (gradient, m, v),());
+
+                    debug_assert!(t > 0);
+
+                    debug_assert_eq!(gradient.shape, output.shape);
+                    debug_assert_eq!(m.shape, output.shape);
+                    debug_assert_eq!(v.shape, output.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w3_i6, &[
+                        bind_group_entry(0, *gradient),
+                        bind_group_entry(1, *m),
+                        bind_group_entry(2, *v),
+                        bind_group_entry(3, *output)
+                    ], "OptimizerAdamW", 0);
+
+                    do_kernel_operation!(AdamW, i, 0);
+
+                    [adamw.learning_rate, adamw.b1, adamw.b2, adamw.lambda, adamw.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
                     {
                         compute_pass.as_mut().unwrap().set_immediates(index as u32 * FLOAT_BYTES as u32, &value.to_ne_bytes());
                     });
@@ -6408,6 +6471,7 @@ impl OperationsRecorder
                 GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
                 GradientOp::OptimizerPowerSign{gradient, powersign: _, m, output} => t_storage!(gradient, m, output),
                 GradientOp::OptimizerAdam{gradient, adam: _, m, v, output} => t_storage!(gradient, m, v, output),
+                GradientOp::OptimizerAdamW{gradient, adamw: _, m, v, output} => t_storage!(gradient, m, v, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
                 GradientOp::Dropout{value, probability: _, seed_index: _, output} => t_storage!(value, output),
@@ -9361,6 +9425,7 @@ pub enum GradientOp<T, V, J, O, S>
     OptimizerSgd{gradient: T, sgd: Sgd, output: T},
     OptimizerPowerSign{gradient: T, powersign: PowerSign, m: T, output: T},
     OptimizerAdam{gradient: T, adam: Adam, m: T, v: T, output: T},
+    OptimizerAdamW{gradient: T, adamw: AdamW, m: T, v: T, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -9482,6 +9547,10 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::OptimizerAdam{gradient, adam, m, v, output} =>
             {
                 GradientOp::OptimizerAdam{gradient: tf(gradient), adam, m: tf(m), v: tf(v), output: tf(output)}
+            },
+            Self::OptimizerAdamW{gradient, adamw, m, v, output} =>
+            {
+                GradientOp::OptimizerAdamW{gradient: tf(gradient), adamw, m: tf(m), v: tf(v), output: tf(output)}
             },
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
@@ -9694,6 +9763,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::OptimizerAdam{output: tf(&mut state, output), gradient, adam, m, v}
             },
+            Self::OptimizerAdamW{gradient, adamw, m, v, output} =>
+            {
+                Self::OptimizerAdamW{output: tf(&mut state, output), gradient, adamw, m, v}
+            },
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(&mut state, output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(&mut state, output), value},
             Self::SigmoidDiff{output, gradient, value} => Self::SigmoidDiff{output: tf(&mut state, output), gradient, value},
@@ -9880,6 +9953,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::OptimizerAdam{gradient, adam, m, v, output} =>
             {
                 Self::OptimizerAdam{gradient: tf(&mut state, gradient), adam, m: tf(&mut state, m), v: tf(&mut state, v), output}
+            },
+            Self::OptimizerAdamW{gradient, adamw, m, v, output} =>
+            {
+                Self::OptimizerAdamW{gradient: tf(&mut state, gradient), adamw, m: tf(&mut state, m), v: tf(&mut state, v), output}
             },
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {

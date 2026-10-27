@@ -96,7 +96,8 @@ define_op_kernels!{
     SoftmaxCrossEntropyDiff,
     Sgd,
     PowerSign,
-    Adam
+    Adam,
+    AdamW
 }
 
 #[derive(Debug, Clone)]

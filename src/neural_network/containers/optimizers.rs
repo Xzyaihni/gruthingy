@@ -288,3 +288,51 @@ impl Optimizer for Adam
         self.learning_rate = learning_rate;
     }
 }
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdamW
+{
+    pub learning_rate: f32,
+    pub b1: f32,
+    pub b2: f32,
+    pub lambda: f32,
+    pub epsilon: f32
+}
+
+impl Default for AdamW
+{
+    fn default() -> Self
+    {
+        Self{
+            learning_rate: 0.001,
+            b1: 0.9,
+            b2: 0.999,
+            lambda: 0.01,
+            epsilon: 1e-8
+        }
+    }
+}
+
+impl Optimizer for AdamW
+{
+    type WeightParam<T> = AdamGradientInfo<T>;
+
+    fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, mut f: F) -> Self::WeightParam<U>
+    {
+        AdamGradientInfo{
+            m: f(&x.m),
+            v: f(&x.v)
+        }
+    }
+
+    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
+    {
+        recorder.adamw_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
+    }
+
+    fn set_learning_rate(&mut self, learning_rate: f32)
+    {
+        self.learning_rate = learning_rate;
+    }
+}

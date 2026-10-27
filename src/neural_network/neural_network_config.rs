@@ -2,6 +2,7 @@
 use super::{
     Sgd,
     Adam,
+    AdamW,
     PowerSign,
     OneHotEmbeddings,
     BagOfWordsEmbeddings,
@@ -36,8 +37,8 @@ pub const USE_EMBEDDING_LAYER: bool = true;
 // only applies to EmbeddingsDictionary and WordDictionary
 pub const LOWERCASE_ONLY: bool = true;
 
-// options: Sgd, Adam, PowerSign
-pub type NOptimizer = Adam;
+// options: Sgd, Adam, AdamW, PowerSign
+pub type NOptimizer = AdamW;
 
 // options: PostcardFormat, JsonFormat, MixedFormat<Save, Load>
 pub type SaveFormat = PostcardFormat;
