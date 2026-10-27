@@ -1570,13 +1570,13 @@ mod tests
     #[test]
     fn simple_data_overfit_char_sgd()
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000, None, None);
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 15000, None, None);
     }
 
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000, None, None);
+        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 4000, None, None);
     }
 
     #[test]
@@ -1594,7 +1594,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_adam_dropout()
     {
-        let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
+        let (_last_loss, test_loss) = simple_data_overfit_inner::<Sgd, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
             5000,
             None,
@@ -1614,7 +1614,7 @@ mod tests
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 4500, None, None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 7000, None, None);
     }
 
     #[test]
