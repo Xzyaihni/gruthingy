@@ -18,16 +18,20 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
     let index = global_id.x;
 
     let src_length = arrayLength(&src);
-    let batch_size = arrayLength(&dst) / src_length;
 
     if index >= src_length
     {
         return;
     }
 
+    let batch_size = arrayLength(&dst) / src_length;
+
+    let columns = src_length / rows;
+
     let column = index / rows;
+
     for (var batch_index = 0u; batch_index < batch_size; batch_index++)
     {
-        dst[batch_index * src_length + index] = select(0.0, src[index], keep_this(batch_index * src_length + column));
+        dst[batch_index * src_length + index] = select(0.0, src[index], keep_this(batch_index * columns + column));
     }
 }

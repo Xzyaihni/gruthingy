@@ -6025,6 +6025,13 @@ impl OperationsRecorder
                     GradientOp::OuterProductOneHotAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
+                    GradientOp::BatchReplicate{value, output: _},
+                    GradientOp::Dropout{value: _, probability, seed_index, output}
+                ) =>
+                {
+                    GradientOp::BatchReplicateDropout{value, probability, seed_index, output}
+                },
+                (
                     GradientOp::SumBatch{value, scalar, output: _},
                     GradientOp::MulScalar{lhs: _, rhs, output}
                 ) =>
