@@ -1718,7 +1718,7 @@ impl WgpuInitInfo
                 OpKernel::MulComponentwiseAdd => ("kernels/mul_componentwise_add.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.r1_w1_i0),
-                OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::Dropout => ("kernels/dropout.wgsl", &kernel_layouts.r2_w1_i1),
@@ -2528,7 +2528,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn mul_scalar(&mut self, a: DiffTensorPtr, b: DiffScalar) -> DiffTensorPtr
+    pub fn mul_scalar(&mut self, a: DiffTensorPtr, b: f32) -> DiffTensorPtr
     {
         let shape = self.tensor_shape(a.as_value());
 
@@ -2539,7 +2539,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn mul_scalar_no_diff(&mut self, a: TensorPtr, b: ValueIndex) -> TensorPtr
+    pub fn mul_scalar_no_diff(&mut self, a: TensorPtr, b: f32) -> TensorPtr
     {
         let shape = self.tensor_shape(a);
 
@@ -2550,7 +2550,7 @@ impl OperationsRecorder
         output
     }
 
-    pub fn cap_magnitude(&mut self, value: TensorPtr, magnitude: ValueIndex) -> TensorPtr
+    pub fn cap_magnitude(&mut self, value: TensorPtr, magnitude: f32) -> TensorPtr
     {
         let shape = self.tensor_shape(value);
 
@@ -4063,7 +4063,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MulScalar{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulScalar, (lhs),(rhs));
+                    debug_calculate_values!(MulScalar, (lhs),());
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
@@ -4074,7 +4074,7 @@ impl OperationsRecorder
 
                     do_kernel_operation!(MulScalar, i, 0);
 
-                    compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[rhs.0].to_ne_bytes());
+                    compute_pass.as_mut().unwrap().set_immediates(0, &rhs.to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -4208,7 +4208,7 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::SumBatch{value, output} =>
+                GradientOp::SumBatch{value, scalar, output} =>
                 {
                     debug_calculate_values!(SumBatch, (value),());
 
@@ -4217,12 +4217,14 @@ impl OperationsRecorder
                     debug_assert_eq!(value.shape.rows, output.shape.rows);
                     debug_assert_eq!(value.shape.columns, output.shape.columns);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i1, &[
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
                     ], "SumBatch", 0);
 
                     do_kernel_operation!(SumBatch, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &scalar.to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, value.shape.single_size());
 
@@ -4371,7 +4373,7 @@ impl OperationsRecorder
                 },
                 GradientOp::CapMagnitude{value, magnitude, output} =>
                 {
-                    debug_calculate_values!(CapMagnitude, (value),(magnitude));
+                    debug_calculate_values!(CapMagnitude, (value),());
 
                     debug_assert_eq!(value.shape, output.shape);
 
@@ -4399,7 +4401,7 @@ impl OperationsRecorder
 
                     do_kernel_operation!(CapMagnitude, i, 0);
 
-                    compute_pass.as_mut().unwrap().set_immediates(0, &self.memory.values[magnitude.0].to_ne_bytes());
+                    compute_pass.as_mut().unwrap().set_immediates(0, &magnitude.to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -5241,7 +5243,7 @@ impl OperationsRecorder
                 },
                 Op::MulScalar{lhs, rhs, output} =>
                 {
-                    GradientOp::MulScalar{lhs: lhs.as_value(), rhs: rhs.as_value(), output: output.as_value()}
+                    GradientOp::MulScalar{lhs: lhs.as_value(), rhs: *rhs, output: output.as_value()}
                 },
                 Op::MulScalars{lhs, rhs, output} =>
                 {
@@ -5922,6 +5924,13 @@ impl OperationsRecorder
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
                     GradientOp::OuterProductOneHotAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
+                (
+                    GradientOp::SumBatch{value, scalar, output: _},
+                    GradientOp::MulScalar{lhs: _, rhs, output}
+                ) =>
+                {
+                    GradientOp::SumBatch{value, scalar: scalar * rhs, output}
+                },
                 _ => return
             };
 
@@ -6394,7 +6403,7 @@ impl OperationsRecorder
                 | GradientOp::MulComponentwiseAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::SumTensor{value, output} => t_storage!(value, output),
                 GradientOp::MaxTensor{value, output} => t_storage!(value, output),
-                GradientOp::SumBatch{value, output} => t_storage!(value, output),
+                GradientOp::SumBatch{value, scalar: _, output} => t_storage!(value, output),
                 GradientOp::CapMagnitude{value, magnitude: _, output} => { t_src!(value); t_dst!(output); t_storage!(value, output) },
                 GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
                 GradientOp::OptimizerPowerSign{gradient, powersign: _, m, output} => t_storage!(gradient, m, output),
@@ -8312,7 +8321,7 @@ impl OperationsRecorder
 
                 if let Some(src_gradient) = src.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::SumBatch{value: gradient, output: src_gradient});
+                    add_gradient_operation(self, selectors, GradientOp::SumBatch{value: gradient, scalar: 1.0, output: src_gradient});
                 }
             },
             Op::Dropout{value, probability, seed_index, output} =>
@@ -8413,9 +8422,7 @@ impl OperationsRecorder
 
                 if let Some(rhs_gradient) = rhs.as_gradient()
                 {
-                    let m1_index = self.memory.set_new_value(-1.0).as_value();
-
-                    add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: gradient, rhs: m1_index, output: rhs_gradient});
+                    add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: gradient, rhs: -1.0, output: rhs_gradient});
                 }
             },
             Op::MulScalars{lhs, rhs, output} =>
@@ -8437,8 +8444,6 @@ impl OperationsRecorder
             {
                 let gradient = gradient_or_return!(output);
 
-                let shape = self.memory.tensor_shape_value(gradient);
-
                 if let Some(lhs_gradient) = lhs.as_gradient()
                 {
                     if let Op::MulComponentwise{rhs, ..} = op
@@ -8446,7 +8451,7 @@ impl OperationsRecorder
                         add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: gradient, output: lhs_gradient});
                     } else if let Op::MulScalar{rhs, ..} = op
                     {
-                        add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: gradient, rhs: rhs.as_value(), output: lhs_gradient});
+                        add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: gradient, rhs, output: lhs_gradient});
                     } else
                     {
                         unreachable!()
@@ -8469,18 +8474,6 @@ impl OperationsRecorder
                             );
                         }
                     }
-                } else if let Op::MulScalar{rhs, ..} = op
-                {
-                    if let Some(_rhs_gradient) = rhs.as_gradient()
-                    {
-                        let pre_fold = self.memory.new_tensor_index(shape);
-                        self.gradient_operations.push(GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: gradient, output: pre_fold});
-
-                        unimplemented!()
-                    }
-                } else
-                {
-                    unreachable!()
                 }
             },
             Op::SumTensor{value, output} =>
@@ -8531,13 +8524,11 @@ impl OperationsRecorder
 
                 if let Some(lhs_gradient) = lhs.as_gradient()
                 {
-                    let power_index = self.memory.set_new_value(power as f32).as_value();
-
                     let pow_d_lhs = self.memory.new_tensor_index(shape.clone());
                     self.gradient_operations.push(GradientOp::Pow{lhs: lhs.as_value(), power: (power - 1) as u32, output: pow_d_lhs});
 
                     let pow_d = self.memory.new_tensor_index(shape);
-                    self.gradient_operations.push(GradientOp::MulScalar{lhs: pow_d_lhs, rhs: power_index, output: pow_d});
+                    self.gradient_operations.push(GradientOp::MulScalar{lhs: pow_d_lhs, rhs: power as f32, output: pow_d});
 
                     add_gradient_operation(self, selectors, GradientOp::MulComponentwise{lhs: pow_d, rhs: gradient, output: lhs_gradient});
                 }
@@ -9299,7 +9290,7 @@ impl<T: Debug, V: Debug, J: Debug, O: Debug> Debug for NotationGradientOp<T, V, 
             GradientOp::TanhDiff{value, gradient, output} => write!(f, "{output:?} ← tanh'({value:?}) ⊙ {gradient:?}"),
             GradientOp::Sigmoid{value, output} => write!(f, "{output:?} ← σ({value:?})"),
             GradientOp::SigmoidDiff{value, gradient, output} => write!(f, "{output:?} ← σ'({value:?}) ⊙ {gradient:?}"),
-            GradientOp::MulScalar{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
+            GradientOp::MulScalar{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs}"),
             GradientOp::Matmulv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
             GradientOp::MatmulvTransposed{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?}"),
             GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?} + {added:?}"),
@@ -9355,18 +9346,18 @@ pub enum GradientOp<T, V, J, O, S>
     Add{lhs: T, rhs: T, output: T},
     Sub{lhs: T, rhs: T, output: T},
     SubFromScalar{lhs: V, rhs: T, output: T},
-    MulScalar{lhs: T, rhs: V, output: T},
+    MulScalar{lhs: T, rhs: f32, output: T},
     MulScalars{lhs: V, rhs: V, output: V},
     MulComponentwise{lhs: T, rhs: T, output: T},
     MulComponentwiseAdd{lhs: T, rhs: T, added: T, output: T},
     SumTensor{value: T, output: T},
     MaxTensor{value: T, output: T},
-    SumBatch{value: T, output: T},
+    SumBatch{value: T, scalar: f32, output: T},
     Fill{value: T, output: T},
     BatchReplicate{value: T, output: T},
     Dropout{value: T, probability: f32, seed_index: SeedIndex, output: T},
     DropoutDiff{value: T, probability: f32, seed_index: SeedIndex, output: T},
-    CapMagnitude{value: T, magnitude: V, output: T},
+    CapMagnitude{value: T, magnitude: f32, output: T},
     OptimizerSgd{gradient: T, sgd: Sgd, output: T},
     OptimizerPowerSign{gradient: T, powersign: PowerSign, m: T, output: T},
     OptimizerAdam{gradient: T, adam: Adam, m: T, v: T, output: T},
@@ -9462,7 +9453,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::Add{lhs, rhs, output} => GradientOp::Add{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::Sub{lhs, rhs, output} => GradientOp::Sub{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::SubFromScalar{lhs, rhs, output} => GradientOp::SubFromScalar{lhs: vf(lhs), rhs: tf(rhs), output: tf(output)},
-            Self::MulScalar{lhs, rhs, output} => GradientOp::MulScalar{lhs: tf(lhs), rhs: vf(rhs), output: tf(output)},
+            Self::MulScalar{lhs, rhs, output} => GradientOp::MulScalar{lhs: tf(lhs), rhs, output: tf(output)},
             Self::MulScalars{lhs, rhs, output} => GradientOp::MulScalars{lhs: vf(lhs), rhs: vf(rhs), output: vf(output)},
             Self::MulComponentwise{lhs, rhs, output} => GradientOp::MulComponentwise{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::MulComponentwiseAdd{lhs, rhs, added, output} =>
@@ -9471,7 +9462,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             },
             Self::SumTensor{value, output} => GradientOp::SumTensor{value: tf(value), output: tf(output)},
             Self::MaxTensor{value, output} => GradientOp::MaxTensor{value: tf(value), output: tf(output)},
-            Self::SumBatch{value, output} => GradientOp::SumBatch{value: tf(value), output: tf(output)},
+            Self::SumBatch{value, scalar, output} => GradientOp::SumBatch{value: tf(value), scalar, output: tf(output)},
             Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
             Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
             Self::Dropout{value, probability, seed_index, output} =>
@@ -9482,7 +9473,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             {
                 GradientOp::DropoutDiff{value: tf(value), probability, seed_index, output: tf(output)}
             },
-            Self::CapMagnitude{value, magnitude, output} => GradientOp::CapMagnitude{value: tf(value), magnitude: vf(magnitude), output: tf(output)},
+            Self::CapMagnitude{value, magnitude, output} => GradientOp::CapMagnitude{value: tf(value), magnitude, output: tf(output)},
             Self::OptimizerSgd{gradient, sgd, output} => GradientOp::OptimizerSgd{gradient: tf(gradient), sgd, output: tf(output)},
             Self::OptimizerPowerSign{gradient, powersign, m, output} =>
             {
@@ -9729,7 +9720,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(&mut state, output), lhs, rhs},
             Self::SumTensor{output, value} => Self::SumTensor{output: tf(&mut state, output), value},
             Self::MaxTensor{output, value} => Self::MaxTensor{output: tf(&mut state, output), value},
-            Self::SumBatch{output, value} => Self::SumBatch{output: tf(&mut state, output), value},
+            Self::SumBatch{output, scalar, value} => Self::SumBatch{output: tf(&mut state, output), scalar, value},
             Self::Dot{output, lhs, rhs} => Self::Dot{output: tf(&mut state, output), lhs, rhs},
             Self::SoftmaxCrossEntropy{softmaxed_output, output, targets, values} =>
             {
@@ -9800,7 +9791,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::Add{lhs, rhs, output} => Self::Add{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::Sub{lhs, rhs, output} => Self::Sub{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::SubFromScalar{lhs, rhs, output} => Self::SubFromScalar{rhs: tf(&mut state, rhs), lhs: vf(&mut state, lhs), output},
-            Self::MulScalar{lhs, rhs, output} => Self::MulScalar{lhs: tf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
+            Self::MulScalar{lhs, rhs, output} => Self::MulScalar{lhs: tf(&mut state, lhs), rhs, output},
             Self::MulComponentwise{lhs, rhs, output} => Self::MulComponentwise{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::MulComponentwiseAdd{lhs, rhs, added, output} =>
             {
@@ -9808,7 +9799,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             },
             Self::SumTensor{value, output} => Self::SumTensor{value: tf(&mut state, value), output},
             Self::MaxTensor{value, output} => Self::MaxTensor{value: tf(&mut state, value), output},
-            Self::SumBatch{value, output} => Self::SumBatch{value: tf(&mut state, value), output},
+            Self::SumBatch{value, scalar, output} => Self::SumBatch{value: tf(&mut state, value), scalar, output},
             Self::Pow{lhs, power, output} => Self::Pow{lhs: tf(&mut state, lhs), power, output},
             Self::LeakyRelu{value, output} => Self::LeakyRelu{value: tf(&mut state, value), output},
             Self::LeakyReluDiff{value, gradient, output} =>
@@ -9879,7 +9870,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             },
             Self::CapMagnitude{value, magnitude, output} =>
             {
-                Self::CapMagnitude{value: tf(&mut state, value), magnitude: vf(&mut state, magnitude), output}
+                Self::CapMagnitude{value: tf(&mut state, value), magnitude, output}
             },
             Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{gradient: tf(&mut state, gradient), sgd, output},
             Self::OptimizerPowerSign{gradient, powersign, m, output} =>
@@ -9948,7 +9939,7 @@ pub enum Op
     Add{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     Sub{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     SubFromScalar{lhs: DiffScalar, rhs: DiffTensorPtr, output: DiffTensorPtr},
-    MulScalar{lhs: DiffTensorPtr, rhs: DiffScalar, output: DiffTensorPtr},
+    MulScalar{lhs: DiffTensorPtr, rhs: f32, output: DiffTensorPtr},
     MulScalars{lhs: DiffScalar, rhs: DiffScalar, output: DiffScalar},
     MulComponentwise{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
     SumTensor{value: DiffTensorPtr, output: DiffTensorPtr},
@@ -10025,7 +10016,7 @@ impl Op
             Self::Add{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::Sub{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::SubFromScalar{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
-            Self::MulScalar{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
+            Self::MulScalar{lhs, ..} => f(lhs.into()),
             Self::MulScalars{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::MulComponentwise{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
             Self::SumTensor{value, ..} => { f(value.into()) },
@@ -10643,8 +10634,7 @@ mod tests
             let a_shape = recorder.tensor_shape(a.as_value());
             let s_filled = recorder.fill_batched(a_shape, s);
 
-            let m1 = recorder.set_new_value(-1.0);
-            let sn = recorder.mul_scalar(s_filled, m1);
+            let sn = recorder.mul_scalar(s_filled, -1.0);
 
             recorder.mul_componentwise(a, sn)
         })
@@ -11700,10 +11690,7 @@ mod tests
 
                 if let Some(state) = state
                 {
-                    let mul_value = recorder.set_new_value(0.02);
-                    recorder.name_diff_scalar(mul_value, "mul_value");
-
-                    let state_new = recorder.mul_scalar(state, mul_value);
+                    let state_new = recorder.mul_scalar(state, 0.02);
 
                     let mm = recorder.matmulv(b, state_new);
                     recorder.name_diff_tensor(mm, "mm");

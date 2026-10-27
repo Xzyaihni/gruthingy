@@ -52,36 +52,34 @@ pub struct OptimizerInfo<O, P>
     pub weights: Vec<DiffTensorPtr>,
     pub params: Vec<P>,
     pub gradient_clip: Option<f32>,
+    pub batch_size: u32,
     pub optimizer: O
 }
 
 impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
 {
-    pub fn add_operations(&self, recorder: &mut OperationsRecorder)
+    pub fn add_operations(
+        &self,
+        recorder: &mut OperationsRecorder
+    )
     {
         if O::is_none_optimizer()
         {
             return;
         }
 
-        let batch_size = self.weights.first().map(|x| recorder.tensor_shape(x.as_value()).batch_size).unwrap_or(1);
-
-        let batch_size_recip = recorder.set_new_value((batch_size as f32).recip()).as_value();
+        let batch_size_recip = (self.batch_size as f32).recip();
 
         self.weights.iter().zip(self.params.iter()).for_each(|(weight, param)|
         {
             let gradient = weight.as_gradient().expect("all weights must have a gradient");
             let weight = weight.as_value();
 
-            debug_assert_eq!(recorder.tensor_shape(weight).batch_size, batch_size);
-
             let average_gradient = recorder.mul_scalar_no_diff(gradient, batch_size_recip);
             recorder.name_tensor(average_gradient, "average_gradient");
 
             let clipped_gradient = self.gradient_clip.map(|gradient_clip|
             {
-                let gradient_clip = recorder.set_new_value(gradient_clip).as_value();
-
                 recorder.cap_magnitude(average_gradient, gradient_clip)
             }).unwrap_or(average_gradient);
 
@@ -147,7 +145,7 @@ impl Default for Sgd
 {
     fn default() -> Self
     {
-        Self{learning_rate: 0.0001}
+        Self{learning_rate: 0.01}
     }
 }
 
@@ -199,7 +197,7 @@ impl Default for PowerSign
     {
         Self{
             b1: 0.9,
-            learning_rate: 0.0001
+            learning_rate: 0.001
         }
     }
 }
@@ -260,7 +258,7 @@ impl Default for Adam
     fn default() -> Self
     {
         Self{
-            learning_rate: 0.0001,
+            learning_rate: 0.001,
             b1: 0.9,
             b2: 0.999,
             epsilon: 1e-8

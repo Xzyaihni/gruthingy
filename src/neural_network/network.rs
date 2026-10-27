@@ -1412,6 +1412,7 @@ where
                 weights: self.weights_ptr.as_ref().unwrap().iter().map(|x| x.weight_original).collect(),
                 params: self.optimizer_info.as_ref().unwrap().iter().cloned().collect(),
                 gradient_clip,
+                batch_size: self.sizes.batch_size as u32,
                 optimizer
             });
 
