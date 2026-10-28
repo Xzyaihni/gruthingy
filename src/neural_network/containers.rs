@@ -10431,22 +10431,27 @@ mod tests
     const LAYER_CURR: usize = 2;
 
 
-    fn compare_single(correct: f32, calculated: f32)
-    {
-        let epsilon = 0.5;
-        assert!(
-            close_enough(correct, calculated, epsilon),
-            "correct: {}, calculated: {}",
-            correct, calculated
-        );
-    }
-
     fn compare_tensor(correct: LayerType, calculated: LayerType)
     {
         correct.as_vec().into_iter().for_each(|x| assert!(!x.is_nan()));
 
-        correct.as_vec().into_iter().zip(calculated.as_vec().into_iter())
-            .for_each(|(correct, calculated)| compare_single(correct, calculated));
+        let all_correct = correct.as_vec().into_iter().zip(calculated.as_vec().into_iter()).all(|(correct, calculated)|
+        {
+            let is_correct = close_enough(correct, calculated, 0.0001);
+
+            if !is_correct
+            {
+                eprintln!("{correct} != {calculated}");
+            }
+
+            is_correct
+        });
+
+        assert!(
+            all_correct,
+            "correct:    {correct:?}\ndoesnt match\ncalculated: {calculated:?}\ndelta: {:?}",
+            correct.iter().zip(calculated.iter()).map(|(a, b)| a - b).collect::<Vec<_>>()
+        );
     }
 
     fn init_log()
@@ -10575,11 +10580,14 @@ mod tests
             new_recorder.get_tensor_blocking(output_value)
         };
 
-        fn finite_difference(mut f: impl FnMut(f32) -> LayerType) -> f32
+        fn finite_difference(
+            i: usize,
+            mut f: impl FnMut(f32) -> LayerType
+        ) -> f32
         {
             let epsilon: f32 = 0.0003;
 
-            let mut f = |x| f(x).as_ref().sum();
+            let mut f = |x| f(x).as_vec()[i];
 
             (-f(epsilon * 2.0) + 8.0 * f(epsilon) - 8.0 * f(-epsilon) + f(-2.0 * epsilon)) / (12.0 * epsilon)
         }
@@ -10589,7 +10597,7 @@ mod tests
         {
             let v = a_value.clone();
 
-            let this_fg = finite_difference(|epsilon|
+            let this_fg = finite_difference(index, |epsilon|
             {
                 let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
@@ -10604,7 +10612,7 @@ mod tests
         {
             let v = b_value.clone();
 
-            let this_fg = finite_difference(|epsilon|
+            let this_fg = finite_difference(index, |epsilon|
             {
                 let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
@@ -10623,9 +10631,6 @@ mod tests
 
         let a_fg = vec_to_layer(a_fg.into(), a_value);
         let b_fg = vec_to_layer(b_fg.into(), b_value);
-
-        eprintln!("derivative of a ({a_fg:?} vs {a_g:?})");
-        eprintln!("derivative of b ({b_fg:?} vs {b_g:?})");
 
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.end_capture();
