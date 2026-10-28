@@ -4048,10 +4048,21 @@ impl OperationsRecorder
                         continue;
                     }
                 },
-                GradientOp::JumpIfLast(RawJumpInfo{loop_index, operation_index}) =>
+                GradientOp::JumpIf(condition, RawJumpInfo{loop_index, operation_index}) =>
                 {
-                    if self.loops[loop_index.0].times == 1
+                    let needs_jump = match condition
                     {
+                        JumpCondition::IfLast => self.loops[loop_index.0].times == 1,
+                        JumpCondition::IfNotLast => self.loops[loop_index.0].times != 1
+                    };
+
+                    if needs_jump
+                    {
+                        if cfg!(feature="printcalculations")
+                        {
+                            eprintln!("jumping to {}", operation_index.0);
+                        }
+
                         i = operation_index.0;
                         continue;
                     }
@@ -5805,18 +5816,14 @@ impl OperationsRecorder
             }
         }
 
-        op_actions.sort_by_key(|x|
-        {
-            x.operation_index().0
-        });
-
-        op_actions.into_iter().rev().for_each(|op_action|
+        op_actions.into_iter().for_each(|op_action|
         {
             match op_action
             {
                 OpAction::SkipOnLast(loop_index, defined_index) =>
                 {
-                    self.gradient_operations.insert(defined_index.0, GradientOp::JumpIfLast(JumpInfo::JumpOverNext(loop_index)));
+                    let op = Box::new(self.gradient_operations[defined_index.0].clone());
+                    self.gradient_operations[defined_index.0] = GradientOp::JumpIf(JumpCondition::IfLast, JumpInfo::JumpOverNext(loop_index, op));
                 },
                 OpAction::Remove(defined_index) =>
                 {
@@ -6441,14 +6448,14 @@ impl OperationsRecorder
             });
         }
 
-        self.gradient_operations.iter().for_each(|op|
+        let mut usage_for_op = |op: StandardGradientOp|
         {
-            match op.clone()
+            match op
             {
                 GradientOp::None
                 | GradientOp::FeedforwardEndMarker
                 | GradientOp::SetInputs(_)
-                | GradientOp::JumpIfLast(_)
+                | GradientOp::JumpIf(_, _)
                 | GradientOp::SetOtherSelector(_)
                 | GradientOp::GetOtherSelectorValue{..}
                 | GradientOp::OtherSelectorValueGradient{..}
@@ -6546,6 +6553,18 @@ impl OperationsRecorder
                 GradientOp::OuterProductOneHot{lhs, rhs, output}
                 | GradientOp::OuterProductOneHotAdd{lhs, rhs, added: _, output} => { t_dst!(output); t_storage!(lhs, output); o_storage!(rhs) }
             }
+        };
+
+        self.gradient_operations.iter().for_each(|op|
+        {
+            if let GradientOp::JumpIf(_, JumpInfo::JumpOverNext(_, op)) = op
+            {
+                usage_for_op((**op).clone());
+
+                return;
+            }
+
+            usage_for_op(op.clone())
         });
     }
 
@@ -6744,7 +6763,14 @@ impl OperationsRecorder
             current_value.with_shape(shape)
         };
 
-        let mut next_must_exist: bool = false;
+        let access_onehot = |one_hot_index: OneHotIndex|
+        {
+            self.memory.one_hot_buffers[one_hot_index.0].unwrap_or_else(||
+            {
+                panic!("{} was marked unused and then got used", self.memory.format_variable(one_hot_index));
+            })
+        };
+
         let mut loops_labels: Vec<(LoopIndex, GradientOperationIndex)> = Vec::new();
 
         self.raw_operations.reserve_exact(self.gradient_operations.len());
@@ -6763,9 +6789,6 @@ impl OperationsRecorder
 
                 gradient_op.map(&access_tensor, convert::identity, |_| unreachable!(), |_| unreachable!(), convert::identity)
             };
-
-            let this_must_exist = next_must_exist;
-            next_must_exist = false;
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
@@ -6867,6 +6890,7 @@ impl OperationsRecorder
                 });
             }
 
+            let mut push_after = None;
             let new_op = match gradient_op
             {
                 GradientOp::None => None,
@@ -6934,18 +6958,17 @@ impl OperationsRecorder
 
                                 Some(RawJumpInfo{loop_index: index, operation_index: target_index})
                             },
-                            JumpInfo::JumpOverNext(index) =>
+                            JumpInfo::JumpOverNext(index, op) =>
                             {
-                                match self.gradient_operations[gradient_operation_index + 1]
-                                {
-                                    GradientOp::None => None,
-                                    _ =>
-                                    {
-                                        next_must_exist = true;
+                                push_after = Some(op.map(
+                                    &access_tensor,
+                                    convert::identity,
+                                    |_| unreachable!(),
+                                    &access_onehot,
+                                    convert::identity
+                                ));
 
-                                        Some(RawJumpInfo{loop_index: index, operation_index: GradientOperationIndex(operation_index.0 + 2)})
-                                    }
-                                }
+                                Some(RawJumpInfo{loop_index: index, operation_index: GradientOperationIndex(self.raw_operations.len() + 2)})
                             }
                         };
 
@@ -6955,26 +6978,20 @@ impl OperationsRecorder
 
                             RawJumpInfo{loop_index: LoopIndex(usize::MAX), operation_index: GradientOperationIndex(usize::MAX)}
                         })
-                    }, |one_hot_index|
-                    {
-                        self.memory.one_hot_buffers[one_hot_index.0].unwrap_or_else(||
-                        {
-                            panic!("{} was marked unused and then got used", self.memory.format_variable(one_hot_index));
-                        })
-                    }, convert::identity);
+                    }, &access_onehot, convert::identity);
 
                     (!ignore_output).then_some(output)
                 }
             };
 
-            if this_must_exist
-            {
-                debug_assert!(new_op.is_some());
-            }
-
             if let Some(raw_op) = new_op
             {
                 self.raw_operations.push(raw_op);
+
+                if let Some(after_op) = push_after
+                {
+                    self.raw_operations.push(after_op);
+                }
             }
         }
 
@@ -7451,7 +7468,7 @@ impl OperationsRecorder
                 let mut tensor_args = Vec::new();
                 let mut value_args = Vec::new();
 
-                op.clone().map_args_with_state((), |_s, t_arg|
+                op.clone().map_args_nonjump_with_state((), |_s, t_arg|
                 {
                     tensor_args.push(t_arg);
                     t_arg
@@ -7474,7 +7491,7 @@ impl OperationsRecorder
                 debug_assert!(!any_duplicates(&tensor_args), "{op:?} has duplicate arguments");
                 debug_assert!(!any_duplicates(&value_args), "{op:?} has duplicate arguments");
 
-                op.clone().map_outputs_with_state((), |_s, t_out|
+                op.clone().map_outputs_nonjump_with_state((), |_s, t_out|
                 {
                     let t_out_index = self.memory.raw_ptr_to_memory(t_out.to_linear_pointer());
 
@@ -7894,16 +7911,20 @@ impl OperationsRecorder
 
             self.resolve_stack_values(used_stack_values);
         }
+        dbg!(&self);
 
         self.combine_zero_outs();
 
+        dbg!(&self);
         if let Some(optimizer) = optimizer
         {
             optimizer.add_operations(self);
         }
 
+        dbg!(&self);
         self.optimize_operations();
 
+        dbg!(&self);
         self.recording_operations = Vec::new();
 
         self.state = RecorderState::AwaitingResolve;
@@ -7913,10 +7934,13 @@ impl OperationsRecorder
     {
         self.remove_unused_pushes();
 
+        dbg!(&self);
         self.copy_coalesce();
 
+        dbg!(&self);
         while self.combine_sequential_operations() {}
 
+        dbg!(&self);
         self.copy_reuse_conflicts();
     }
 
@@ -7933,6 +7957,7 @@ impl OperationsRecorder
     {
         let mut add_gradient_operation = |this: &mut Self, selectors: &mut Vec<LoopSelectorInfo>, gradient_op: StandardGradientOp|
         {
+            dbg!(&this);
             let make_new = |this: &mut Self, x: DiffValue| -> DiffValue
             {
                 if let DiffValue::Tensor(x) = x
@@ -8088,7 +8113,7 @@ impl OperationsRecorder
 
                 let mut lhs = None;
 
-                let new_previous_op = previous_op.map_outputs(|x|
+                let new_previous_op = previous_op.clone().map_outputs(|x|
                 {
                     if x == output
                     {
@@ -8200,10 +8225,43 @@ impl OperationsRecorder
 
                 this.gradient_operations[info.operation_index.0] = new_previous_op;
 
-                let new_id = {
-                    this.gradient_operations.push(new_op);
+                match new_op
+                {
+                    GradientOp::OtherSelectorTensorGradient{index, first, other, src} if DiffValue::Tensor(first) == add_rhs =>
+                    {
+                        let new_id = this.gradient_operations.len();
 
-                    let new_id = this.gradient_operations.len();
+                        this.gradient_operations.push(GradientOp::GradientSelectAddTensor{
+                            index,
+                            first: other,
+                            other: output.into_tensor(),
+                            src,
+                            added: add_lhs.into_tensor()
+                        });
+
+                        info.operation_index = GradientOperationIndex(new_id);
+                        info.extra_operation_index = new_extra_operation_index;
+
+                        return;
+                    },
+                    _ => ()
+                }
+
+                let new_id = {
+                    let skip_conditional = match previous_op
+                    {
+                        GradientOp::GradientSelectAddTensor{other, ..} if DiffValue::Tensor(other) == output => true,
+                        _ => false
+                    };
+
+                    if skip_conditional
+                    {
+                        let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(new_op));
+                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfNotLast, jump_info));
+                    } else
+                    {
+                        this.gradient_operations.push(new_op);
+                    }
 
                     let add_op = match output
                     {
@@ -8218,7 +8276,16 @@ impl OperationsRecorder
                         DiffValue::OneHot(_) => unimplemented!()
                     };
 
-                    this.gradient_operations.push(add_op);
+                    let new_id = this.gradient_operations.len();
+
+                    if skip_conditional
+                    {
+                        let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(add_op));
+                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfNotLast, jump_info));
+                    } else
+                    {
+                        this.gradient_operations.push(add_op);
+                    }
 
                     new_id
                 };
@@ -8285,6 +8352,7 @@ impl OperationsRecorder
                 simple_insert(this, assigned_gradients, gradient_op.clone());
             }
 
+            dbg!(&gradient_op);
             if inside_loop.is_some()
             {
                 if let Some(this_selector) = selectors.iter_mut().find(|info|
@@ -8311,6 +8379,7 @@ impl OperationsRecorder
 
                     let temp = this.memory.new_diff_intermediate(other, |(a, b)| new_names.push((a, b, "_temp")));
 
+                    dbg!(&other);
                     let add_op = match other
                     {
                         DiffValue::Value(_) =>
@@ -8366,6 +8435,7 @@ impl OperationsRecorder
                     }
                 }
             }
+            dbg!(&this);
         };
 
         macro_rules! gradient_or_return
@@ -9259,12 +9329,19 @@ impl From<f32> for OwnedDiffValue
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpCondition
+{
+    IfLast,
+    IfNotLast
+}
+
 #[derive(Clone)]
 enum JumpInfo<I=InputTypePtr>
 {
     JumpTo{inputs: Vec<I>, index: LoopIndex},
     JumpFrom(LoopIndex),
-    JumpOverNext(LoopIndex)
+    JumpOverNext(LoopIndex, Box<StandardGradientOp>)
 }
 
 impl<I: Debug> Debug for JumpInfo<I>
@@ -9275,7 +9352,7 @@ impl<I: Debug> Debug for JumpInfo<I>
         {
             Self::JumpTo{inputs, index} => write!(f, "id {}: {inputs:?}", index.0),
             Self::JumpFrom(index) => write!(f, "jump to id {}", index.0),
-            Self::JumpOverNext(index) => write!(f, "jump over next if id {} loop is last iteration", index.0)
+            Self::JumpOverNext(_, op) => write!(f, "jump over {op:?}")
         }
     }
 }
@@ -9288,7 +9365,7 @@ impl<I> JumpInfo<I>
         {
             Self::JumpTo{inputs, index} => JumpInfo::JumpTo{inputs: inputs.into_iter().map(f).collect(), index},
             Self::JumpFrom(x) => JumpInfo::JumpFrom(x),
-            Self::JumpOverNext(x) => JumpInfo::JumpOverNext(x)
+            Self::JumpOverNext(x, op) => JumpInfo::JumpOverNext(x, op)
         }
     }
 }
@@ -9367,7 +9444,7 @@ pub enum GradientOp<T, V, J, O, S>
     FeedforwardEndMarker,
     SetInputs(LoopIndex),
     Jump(J),
-    JumpIfLast(J),
+    JumpIf(JumpCondition, J),
     SetOtherSelector(S),
     GetOtherSelectorValue{info: S, first: V, other: V, output: V},
     GetOtherSelectorTensor{info: S, first: T, other: T, output: T},
@@ -9590,7 +9667,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
                 GradientOp::OuterProductOneHotAdd{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::Jump(x) => GradientOp::Jump(jump_f(x)),
-            Self::JumpIfLast(x) => GradientOp::JumpIfLast(jump_f(x)),
+            Self::JumpIf(condition, x) => GradientOp::JumpIf(condition, jump_f(x)),
             Self::SetInputs(x) => GradientOp::SetInputs(x),
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {
@@ -9604,7 +9681,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
     }
 }
 
-impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
+impl StandardGradientOp
 {
     fn map_outputs(self, f: impl FnMut(DiffValue) -> DiffValue) -> Self
     {
@@ -9637,9 +9714,6 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
     }
 
     fn is_any_arg(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
-    where
-        J: Clone,
-        S: Clone
     {
         let mut is_any = false;
 
@@ -9649,9 +9723,6 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
     }
 
     fn is_any_output(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
-    where
-        J: Clone,
-        S: Clone
     {
         let mut is_any = false;
 
@@ -9661,9 +9732,6 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
     }
 
     fn is_any_arg_or_output(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
-    where
-        J: Clone,
-        S: Clone
     {
         let mut is_any = false;
 
@@ -9680,9 +9748,6 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
     }
 
     fn for_args(&self, f: impl FnMut(DiffValue))
-    where
-        J: Clone,
-        S: Clone
     {
         self.clone().map_args_with_state(f, |inner_f, x|
         {
@@ -9700,9 +9765,6 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
     }
 
     fn for_outputs(&self, f: impl FnMut(DiffValue))
-    where
-        J: Clone,
-        S: Clone
     {
         self.clone().map_outputs_with_state(f, |inner_f, x|
         {
@@ -9716,9 +9778,43 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
     }
 }
 
-impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
+impl StandardGradientOp
 {
     fn map_outputs_with_state<State>(
+        self,
+        state: State,
+        tf: impl FnMut(&mut State, TensorPtr) -> TensorPtr,
+        vf: impl FnMut(&mut State, ValueIndex) -> ValueIndex
+    ) -> Self
+    {
+        if let Self::JumpIf(condition, JumpInfo::JumpOverNext(index, op)) = self
+        {
+            return Self::JumpIf(condition, JumpInfo::JumpOverNext(index, Box::new(op.map_outputs_nonjump_with_state(state, tf, vf))));
+        }
+
+        self.map_outputs_nonjump_with_state(state, tf, vf)
+    }
+
+    fn map_args_with_state<State>(
+        self,
+        state: State,
+        tf: impl FnMut(&mut State, TensorPtr) -> TensorPtr,
+        vf: impl FnMut(&mut State, ValueIndex) -> ValueIndex,
+        of: impl FnMut(&mut State, OneHotIndex) -> OneHotIndex
+    ) -> Self
+    {
+        if let Self::JumpIf(condition, JumpInfo::JumpOverNext(index, op)) = self
+        {
+            return Self::JumpIf(condition, JumpInfo::JumpOverNext(index, Box::new(op.map_args_nonjump_with_state(state, tf, vf, of))));
+        }
+
+        self.map_args_nonjump_with_state(state, tf, vf, of)
+    }
+}
+
+impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
+{
+    fn map_outputs_nonjump_with_state<State>(
         self,
         mut state: State,
         mut tf: impl FnMut(&mut State, T) -> T,
@@ -9839,13 +9935,13 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::IfNotSetTensor{index, dst, src} => Self::IfNotSetTensor{index, dst: tf(&mut state, dst), src},
             Self::SetOtherSelectorGradient{loop_index, selector_index} => Self::SetOtherSelectorGradient{loop_index, selector_index},
             Self::Jump(x) => Self::Jump(x),
-            Self::JumpIfLast(x) => Self::JumpIfLast(x),
+            Self::JumpIf(condition, x) => Self::JumpIf(condition, x),
             Self::SetInputs(x) => Self::SetInputs(x),
             Self::FeedforwardEndMarker => Self::FeedforwardEndMarker
         }
     }
 
-    fn map_args_with_state<State>(
+    fn map_args_nonjump_with_state<State>(
         self,
         mut state: State,
         mut tf: impl FnMut(&mut State, T) -> T,
@@ -10002,7 +10098,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::IfNotSetTensor{index, dst, src} => Self::IfNotSetTensor{index, dst, src: tf(&mut state, src)},
             Self::SetOtherSelectorGradient{loop_index, selector_index} => Self::SetOtherSelectorGradient{loop_index, selector_index},
             Self::Jump(x) => Self::Jump(x),
-            Self::JumpIfLast(x) => Self::JumpIfLast(x),
+            Self::JumpIf(condition, x) => Self::JumpIf(condition, x),
             Self::SetInputs(x) => Self::SetInputs(x),
             Self::FeedforwardEndMarker => Self::FeedforwardEndMarker
         }
