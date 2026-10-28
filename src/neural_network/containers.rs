@@ -8608,29 +8608,41 @@ impl OperationsRecorder
             {
                 let gradient = gradient_or_return!(output);
 
-                let shape = self.memory.tensor_shape_value(lhs.as_value());
+                let shape = self.memory.tensor_shape(lhs.as_value());
 
                 if let Some(lhs_gradient) = lhs.as_gradient()
                 {
-                    let filled_gradient = self.memory.new_tensor_index(shape.clone());
+                    let mul_rhs = (shape.size() as f32).recip();
+
+                    let filled_gradient = self.memory.new_tensor_index(shape.clone().into());
                     self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
+
+                    let divided_gradient = self.memory.new_tensor_index(shape.into());
+
+                    self.gradient_operations.push(GradientOp::MulScalar{lhs: filled_gradient, rhs: mul_rhs, output: divided_gradient});
 
                     add_gradient_operation(
                         self,
                         selectors,
-                        GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: filled_gradient, output: lhs_gradient}
+                        GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: divided_gradient, output: lhs_gradient}
                     );
                 }
 
                 if let Some(rhs_gradient) = rhs.as_gradient()
                 {
-                    let filled_gradient = self.memory.new_tensor_index(shape);
+                    let mul_rhs = (shape.size() as f32).recip();
+
+                    let filled_gradient = self.memory.new_tensor_index(shape.clone().into());
                     self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
+
+                    let divided_gradient = self.memory.new_tensor_index(shape.into());
+
+                    self.gradient_operations.push(GradientOp::MulScalar{lhs: filled_gradient, rhs: mul_rhs, output: divided_gradient});
 
                     add_gradient_operation(
                         self,
                         selectors,
-                        GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: filled_gradient, output: rhs_gradient}
+                        GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: divided_gradient, output: rhs_gradient}
                     );
                 }
             },
