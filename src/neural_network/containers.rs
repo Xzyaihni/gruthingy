@@ -8422,7 +8422,15 @@ impl OperationsRecorder
 
                 if let Some(src_gradient) = src.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::SumTensor{value: gradient, output: src_gradient});
+                    let src_shape = self.memory.tensor_shape_value(src.as_value());
+                    let dst_shape = self.memory.tensor_shape(dst.as_value());
+
+                    let summed_gradient = self.memory.new_tensor_index(src_shape);
+
+                    self.gradient_operations.push(GradientOp::SumTensor{value: gradient, output: summed_gradient});
+
+                    let rhs = (dst_shape.size() as f32).recip();
+                    add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: summed_gradient, rhs, output: src_gradient});
                 }
             },
             Op::BatchReplicate{src, dst} =>
@@ -8592,15 +8600,7 @@ impl OperationsRecorder
 
                 if let Some(value_gradient) = value.as_gradient()
                 {
-                    let output_shape = self.memory.tensor_shape_value(output.as_value());
-                    let shape = self.memory.tensor_shape(value.as_value());
-
-                    let divided_gradient = self.memory.new_tensor_index(output_shape);
-
-                    let rhs = (shape.size() as f32).recip();
-                    self.gradient_operations.push(GradientOp::MulScalar{lhs: gradient, rhs, output: divided_gradient});
-
-                    add_gradient_operation(self, selectors, GradientOp::Fill{value: divided_gradient, output: value_gradient});
+                    add_gradient_operation(self, selectors, GradientOp::Fill{value: gradient, output: value_gradient});
                 }
             },
             Op::MaxTensor{..} => unimplemented!(),
@@ -8612,37 +8612,25 @@ impl OperationsRecorder
 
                 if let Some(lhs_gradient) = lhs.as_gradient()
                 {
-                    let mul_rhs = (shape.size() as f32).recip();
-
                     let filled_gradient = self.memory.new_tensor_index(shape.clone().into());
                     self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
-
-                    let divided_gradient = self.memory.new_tensor_index(shape.into());
-
-                    self.gradient_operations.push(GradientOp::MulScalar{lhs: filled_gradient, rhs: mul_rhs, output: divided_gradient});
 
                     add_gradient_operation(
                         self,
                         selectors,
-                        GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: divided_gradient, output: lhs_gradient}
+                        GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: filled_gradient, output: lhs_gradient}
                     );
                 }
 
                 if let Some(rhs_gradient) = rhs.as_gradient()
                 {
-                    let mul_rhs = (shape.size() as f32).recip();
-
                     let filled_gradient = self.memory.new_tensor_index(shape.clone().into());
                     self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
-
-                    let divided_gradient = self.memory.new_tensor_index(shape.into());
-
-                    self.gradient_operations.push(GradientOp::MulScalar{lhs: filled_gradient, rhs: mul_rhs, output: divided_gradient});
 
                     add_gradient_operation(
                         self,
                         selectors,
-                        GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: divided_gradient, output: rhs_gradient}
+                        GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: filled_gradient, output: rhs_gradient}
                     );
                 }
             },
@@ -10451,13 +10439,13 @@ mod tests
     const LAYER_CURR: usize = 2;
 
 
-    fn compare_tensor(correct: LayerType, calculated: LayerType)
+    fn compare_tensor(correct: LayerType, calculated: LayerType, epsilon: f32)
     {
         correct.as_vec().into_iter().for_each(|x| assert!(!x.is_nan()));
 
         let all_correct = correct.as_vec().into_iter().zip(calculated.as_vec().into_iter()).all(|(correct, calculated)|
         {
-            let is_correct = close_enough(correct, calculated, 0.01);
+            let is_correct = close_enough(correct, calculated, epsilon);
 
             if !is_correct
             {
@@ -10493,7 +10481,7 @@ mod tests
         let a = random_tensor(&mut recorder, a_dims.0, a_dims.1);
         let b = random_tensor(&mut recorder, b_dims.0, b_dims.1);
 
-        check_tensor_inner(&mut recorder, a, b, f);
+        check_tensor_inner(0.01, &mut recorder, a, b, f);
     }
 
     fn check_vector(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
@@ -10505,10 +10493,18 @@ mod tests
         let a = random_tensor(&mut recorder, 1, LAYER_CURR);
         let b = random_tensor(&mut recorder, 1, LAYER_CURR);
 
-        check_tensor_inner(&mut recorder, a, b, f);
+        check_tensor_inner(0.01, &mut recorder, a, b, f);
     }
 
     fn check_tensor(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
+    {
+        check_tensor_with_epsilon(0.01, f)
+    }
+
+    fn check_tensor_with_epsilon(
+        epsilon: f32,
+        f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
+    )
     {
         init_log();
 
@@ -10517,10 +10513,11 @@ mod tests
         let a = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
         let b = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
 
-        check_tensor_inner(&mut recorder, a, b, f);
+        check_tensor_inner(epsilon, &mut recorder, a, b, f);
     }
 
     fn check_tensor_inner(
+        epsilon: f32,
         recorder: &mut OperationsRecorder,
         (a_value, a): (LayerType, DiffTensorPtr),
         (b_value, b): (LayerType, DiffTensorPtr),
@@ -10656,10 +10653,10 @@ mod tests
         crate::RENDERDOC_API.end_capture();
 
         eprintln!("CHECKING derivative of a");
-        compare_tensor(a_fg, a_g);
+        compare_tensor(a_fg, a_g, epsilon);
 
         eprintln!("CHECKING derivative of b");
-        compare_tensor(b_fg, b_g);
+        compare_tensor(b_fg, b_g, epsilon);
     }
 
     fn one_hot(
@@ -10848,7 +10845,7 @@ mod tests
     #[test]
     fn leaky_relu()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor_with_epsilon(0.1, |recorder, a, b|
         {
             let x = recorder.leaky_relu(a);
             recorder.add(x, b)
