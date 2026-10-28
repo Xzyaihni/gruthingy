@@ -8416,23 +8416,7 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: src_gradient});
                 }
             },
-            Op::Fill{src, dst} =>
-            {
-                let gradient = gradient_or_return!(dst);
-
-                if let Some(src_gradient) = src.as_gradient()
-                {
-                    let src_shape = self.memory.tensor_shape_value(src.as_value());
-                    let dst_shape = self.memory.tensor_shape(dst.as_value());
-
-                    let summed_gradient = self.memory.new_tensor_index(src_shape);
-
-                    self.gradient_operations.push(GradientOp::SumTensor{value: gradient, output: summed_gradient});
-
-                    let rhs = (dst_shape.size() as f32).recip();
-                    add_gradient_operation(self, selectors, GradientOp::MulScalar{lhs: summed_gradient, rhs, output: src_gradient});
-                }
-            },
+            Op::Fill{..} => unimplemented!(),
             Op::BatchReplicate{src, dst} =>
             {
                 let gradient = gradient_or_return!(dst);
@@ -8594,46 +8578,9 @@ impl OperationsRecorder
                     }
                 }
             },
-            Op::SumTensor{value, output} =>
-            {
-                let gradient = gradient_or_return!(output);
-
-                if let Some(value_gradient) = value.as_gradient()
-                {
-                    add_gradient_operation(self, selectors, GradientOp::Fill{value: gradient, output: value_gradient});
-                }
-            },
+            Op::SumTensor{..} => unimplemented!(),
             Op::MaxTensor{..} => unimplemented!(),
-            Op::Dot{lhs, rhs, output} =>
-            {
-                let gradient = gradient_or_return!(output);
-
-                let shape = self.memory.tensor_shape(lhs.as_value());
-
-                if let Some(lhs_gradient) = lhs.as_gradient()
-                {
-                    let filled_gradient = self.memory.new_tensor_index(shape.clone().into());
-                    self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
-
-                    add_gradient_operation(
-                        self,
-                        selectors,
-                        GradientOp::MulComponentwise{lhs: rhs.as_value(), rhs: filled_gradient, output: lhs_gradient}
-                    );
-                }
-
-                if let Some(rhs_gradient) = rhs.as_gradient()
-                {
-                    let filled_gradient = self.memory.new_tensor_index(shape.clone().into());
-                    self.gradient_operations.push(GradientOp::Fill{value: gradient, output: filled_gradient});
-
-                    add_gradient_operation(
-                        self,
-                        selectors,
-                        GradientOp::MulComponentwise{lhs: lhs.as_value(), rhs: filled_gradient, output: rhs_gradient}
-                    );
-                }
-            },
+            Op::Dot{..} => unimplemented!(),
             Op::Pow{lhs, power, output} =>
             {
                 let gradient = gradient_or_return!(output);
@@ -10755,64 +10702,6 @@ mod tests
     }
 
     #[test]
-    fn sum_tensor_product()
-    {
-        check_tensor(|recorder, a, b|
-        {
-            let s = recorder.sum_tensor(b);
-
-            let a_shape = recorder.tensor_shape(a.as_value());
-            let s_filled = recorder.fill_batched(a_shape, s);
-
-            recorder.mul_componentwise(a, s_filled)
-        })
-    }
-
-    #[test]
-    fn sum_tensor_addition()
-    {
-        check_tensor(|recorder, a, b|
-        {
-            let s = recorder.sum_tensor(b);
-
-            let a_shape = recorder.tensor_shape(a.as_value());
-            let s_filled = recorder.fill_batched(a_shape, s);
-
-            recorder.add(a, s_filled)
-        })
-    }
-
-    #[test]
-    fn sum_tensor_product_negative()
-    {
-        check_tensor(|recorder, a, b|
-        {
-            let s = recorder.sum_tensor(b);
-
-            let a_shape = recorder.tensor_shape(a.as_value());
-            let s_filled = recorder.fill_batched(a_shape, s);
-
-            let sn = recorder.mul_scalar(s_filled, -1.0);
-
-            recorder.mul_componentwise(a, sn)
-        })
-    }
-
-    #[test]
-    fn dot_product()
-    {
-        check_vector(|recorder, a, b|
-        {
-            let a_dot_b = recorder.dot(a, b);
-
-            let a_shape = recorder.tensor_shape(a.as_value());
-            let a_dot_b_filled = recorder.fill_batched(a_shape, a_dot_b);
-
-            recorder.add(a, a_dot_b_filled)
-        })
-    }
-
-    #[test]
     fn scalar_minus_tensor()
     {
         check_tensor(|recorder, a, b|
@@ -10821,24 +10710,6 @@ mod tests
             let subbed = recorder.sub_from_scalar(s, b);
 
             recorder.add(a, subbed)
-        })
-    }
-
-    #[test]
-    fn scalar_minus_tensor_stuff()
-    {
-        check_tensor(|recorder, a, b|
-        {
-            let s = recorder.sum_tensor(a);
-
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let s_filled = recorder.fill_batched(b_shape, s);
-
-            let right = recorder.sub(s_filled, b);
-
-            let two = recorder.set_new_value(2.0);
-
-            recorder.sub_from_scalar(two, right)
         })
     }
 
@@ -10889,14 +10760,7 @@ mod tests
         let a_columns = LAYER_PREV + 1;
         check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
-            let s = recorder.sum_tensor(b);
-
-            let mm = recorder.matmulv(a, b);
-
-            let mm_shape = recorder.tensor_shape(mm.as_value());
-            let s_filled = recorder.fill_batched(mm_shape, s);
-
-            recorder.add(mm, s_filled)
+            recorder.matmulv(a, b)
         })
     }
 
@@ -10906,21 +10770,14 @@ mod tests
         let a_columns = LAYER_PREV + 1;
         check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
-            let s = recorder.sum_tensor(b);
-
             let mm = recorder.matmulv(a, b);
-
-            let mm_shape = recorder.tensor_shape(mm.as_value());
-            let s_filled = recorder.fill_batched(mm_shape, s);
-
-            let left = recorder.add(mm, s_filled);
 
             let k = recorder.matmulv(a, b);
             let l = recorder.matmulv(a, b);
 
             let right = recorder.add(k, l);
 
-            recorder.mul_componentwise(left, right)
+            recorder.mul_componentwise(mm, right)
         })
     }
 
@@ -10930,19 +10787,12 @@ mod tests
         let a_columns = LAYER_PREV + 1;
         check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
         {
-            let s = recorder.sum_tensor(b);
-
             let mm = recorder.matmulv(a, b);
-
-            let mm_shape = recorder.tensor_shape(mm.as_value());
-            let s_filled = recorder.fill_batched(mm_shape, s);
-
-            let left = recorder.add(mm, s_filled);
 
             let k = recorder.matmulv(a, b);
             let right = recorder.matmulv_add(a, b, k);
 
-            recorder.mul_componentwise(left, right)
+            recorder.mul_componentwise(mm, right)
         })
     }
 
@@ -10968,19 +10818,12 @@ mod tests
             let targets_index = recorder.new_one_hot(1, a_columns, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
 
-            let s = recorder.sum_tensor(b);
-
             let mm = recorder.matmulv(a, b);
-
-            let mm_shape = recorder.tensor_shape(mm.as_value());
-            let s_filled = recorder.fill_batched(mm_shape, s);
-
-            let left = recorder.add(mm, s_filled);
 
             let k = recorder.matmulv(a, b);
             let right = recorder.matmul_onehotv_add(a, targets_index, k);
 
-            recorder.mul_componentwise(left, right)
+            recorder.mul_componentwise(mm, right)
         })
     }
 
@@ -10993,32 +10836,9 @@ mod tests
             let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
 
-            let (sm, entropy) = recorder.softmax_cross_entropy(a, targets_index);
+            let (sm, _entropy) = recorder.softmax_cross_entropy(a, targets_index);
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let entropy_filled = recorder.fill_batched(b_shape, entropy);
-
-            let bsm = recorder.add(b, sm);
-
-            recorder.add(bsm, entropy_filled)
-        });
-    }
-
-    #[test]
-    fn softmax_cross_entropy_easy()
-    {
-        let targets = create_targets();
-        check_vector(|recorder, a, b|
-        {
-            let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
-            recorder.set_one_hot_data(targets_index, targets.clone());
-
-            let sm = recorder.softmax_cross_entropy(a, targets_index).1;
-
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let sm_filled = recorder.fill_batched(b_shape, sm);
-
-            recorder.add(b, sm_filled)
+            recorder.add(b, sm)
         });
     }
 
@@ -11034,28 +10854,9 @@ mod tests
             let two = recorder.set_new_value(2.0);
             let btwo = recorder.add_scalar(b, two);
 
-            let sm = recorder.softmax_cross_entropy(btwo, targets_index).1;
+            let sm = recorder.softmax_cross_entropy(btwo, targets_index).0;
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let sm_filled = recorder.fill_batched(b_shape, sm);
-
-            recorder.add(a, sm_filled)
-        })
-    }
-
-    #[test]
-    fn copy_scalar()
-    {
-        check_tensor(|recorder, a, b|
-        {
-            let a_sum = recorder.sum_tensor(a);
-
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let a_sum_filled = recorder.fill_batched(b_shape, a_sum);
-
-            let a_sum_copy = recorder.copy(a_sum_filled);
-
-            recorder.add(b, a_sum_copy)
+            recorder.add(a, sm)
         })
     }
 
@@ -11084,28 +10885,22 @@ mod tests
         {
             recorder.allow_unread(a.as_value());
 
-            let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_tensor(a_sum, "a_sum");
-
             let shape = recorder.tensor_shape(a.as_value());
 
             let i = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(i, "i");
 
-            let final_state_selector = recorder.phi_other_selector(a_sum);
+            let final_state_selector = recorder.phi_other_selector(a);
 
             let loop_index = recorder.begin_loop(vec![i.into()]);
 
             let ai = recorder.mul_componentwise(a, DiffTensorPtr::no_gradient(i));
             recorder.name_diff_tensor(ai, "ai");
 
-            let ai_sum = recorder.sum_tensor(ai);
-            recorder.name_diff_tensor(ai_sum, "ai_sum");
-
             let final_selected = recorder.select_tensor(final_state_selector);
             recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let final_state = recorder.add(final_selected, ai_sum);
+            let final_state = recorder.add(final_selected, ai);
             recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
@@ -11115,10 +10910,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_state)
         })
     }
 
@@ -11149,18 +10941,15 @@ mod tests
             let loop_index = recorder.begin_loop(vec![i.into()]);
 
             let bc = {
-                let is = recorder.sum_tensor(DiffTensorPtr::no_gradient(i));
-                recorder.name_diff_tensor(is, "is");
+                let i = DiffTensorPtr::no_gradient(i);
+                recorder.name_diff_tensor(i, "i");
 
                 let bc_selected = recorder.select_tensor(bc_selector);
 
                 let bc_added = recorder.add(bc_selected, b);
                 recorder.name_diff_tensor(bc_added, "bc_added");
 
-                let bc_added_shape = recorder.tensor_shape(bc_added.as_value());
-                let is_filled = recorder.fill_batched(bc_added_shape, is);
-
-                let bis = recorder.mul_componentwise(bc_added, is_filled);
+                let bis = recorder.mul_componentwise(bc_added, i);
                 recorder.name_diff_tensor(bis, "bis");
 
                 recorder.add(bis, b)
@@ -11190,9 +10979,6 @@ mod tests
         {
             recorder.allow_unread(a.as_value());
 
-            let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_tensor(a_sum, "a_sum");
-
             let shape = recorder.tensor_shape(a.as_value());
 
             let i = recorder.new_tensor_no_gradient(shape).as_value();
@@ -11201,7 +10987,7 @@ mod tests
             let m = recorder.new_tensor_no_gradient(shape).as_value();
             recorder.name_tensor(m, "m");
 
-            let final_state_selector = recorder.phi_other_selector(a_sum);
+            let final_state_selector = recorder.phi_other_selector(a);
 
             let loop_index = recorder.begin_loop(vec![m.into(), i.into()]);
 
@@ -11211,13 +10997,10 @@ mod tests
             let aim = recorder.mul_componentwise(ai, DiffTensorPtr::no_gradient(m));
             recorder.name_diff_tensor(aim, "aim");
 
-            let aim_sum = recorder.sum_tensor(aim);
-            recorder.name_diff_tensor(aim_sum, "aim_sum");
-
             let final_selected = recorder.select_tensor(final_state_selector);
             recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let final_state = recorder.add(final_selected, aim_sum);
+            let final_state = recorder.add(final_selected, aim);
             recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
@@ -11232,10 +11015,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs);
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_state)
         })
     }
 
@@ -11247,9 +11027,6 @@ mod tests
 
         check_tensor(|recorder, a, b|
         {
-            let a_sum = recorder.sum_tensor(a);
-            recorder.name_diff_tensor(a_sum, "a_sum");
-
             let shape = recorder.tensor_shape(a.as_value());
 
             let i = recorder.new_tensor_no_gradient(shape).as_value();
@@ -11257,29 +11034,20 @@ mod tests
 
             recorder.allow_reassign(i);
 
-            let final_state_selector = recorder.phi_other_selector(a_sum);
+            let final_state_selector = recorder.phi_other_selector(a);
 
             let loop_index = recorder.begin_loop(vec![i.into()]);
 
             let ai = recorder.mul_componentwise(a, DiffTensorPtr::no_gradient(i));
             recorder.name_diff_tensor(ai, "ai");
 
-            let ai_sum = recorder.sum_tensor(ai);
-            recorder.name_diff_tensor(ai_sum, "ai_sum");
-
             let final_selected = recorder.select_tensor(final_state_selector);
             recorder.name_diff_tensor(final_selected, "final_selected");
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_selected_filled = recorder.fill_batched(b_shape, final_selected);
-
-            let intermediate = recorder.mul_componentwise(b, final_selected_filled);
+            let intermediate = recorder.mul_componentwise(b, final_selected);
             recorder.name_diff_tensor(intermediate, "intermediate");
 
-            let intermediate_sum = recorder.sum_tensor(intermediate);
-            recorder.name_diff_tensor(intermediate_sum, "intermediate_sum");
-
-            let final_state = recorder.add(intermediate_sum, ai_sum);
+            let final_state = recorder.add(intermediate, ai);
             recorder.name_diff_tensor(final_state, "final_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_state);
@@ -11289,10 +11057,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().collect::<Vec<_>>());
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_state)
         })
     }
 
@@ -11315,9 +11080,6 @@ mod tests
 
             recorder.name_diff_tensor(s0, "s0");
 
-            let ss0 = recorder.sum_tensor(s0);
-            recorder.name_diff_tensor(ss0, "ss0");
-
             let s1 = {
                 let s1i = recorder.set_new_tensor(is[1].clone().into_normal()).as_value();
                 recorder.name_tensor(s1i, "s1i");
@@ -11332,10 +11094,7 @@ mod tests
 
             recorder.name_diff_tensor(s1, "s1");
 
-            let ss1 = recorder.sum_tensor(s1);
-            recorder.name_diff_tensor(ss1, "ss1");
-
-            let combined_state = recorder.add(ss0, ss1);
+            let combined_state = recorder.add(s0, s1);
 
             recorder.name_diff_tensor(combined_state, "combined_state");
 
@@ -11354,13 +11113,10 @@ mod tests
             let s2 = recorder.mul_componentwise(ai, s1);
             recorder.name_diff_tensor(s2, "s2");
 
-            let ss2 = recorder.sum_tensor(s2);
-            recorder.name_diff_tensor(ss2, "ss2");
-
             let final_combined_selected = recorder.select_tensor(final_state_selector);
             recorder.name_diff_tensor(final_combined_selected, "final_combined_selected");
 
-            let final_combined_state = recorder.add(final_combined_selected, ss2);
+            let final_combined_state = recorder.add(final_combined_selected, s2);
             recorder.name_diff_tensor(final_combined_state, "final_combined_state");
 
             recorder.set_phi_other_selector(final_state_selector, final_combined_state);
@@ -11370,10 +11126,7 @@ mod tests
             recorder.set_loop_times(loop_index, loops_count);
             recorder.set_loop_inputs(loop_index, is.iter().cloned().skip(2).collect::<Vec<_>>());
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_combined_state)
         })
     }
 
@@ -11452,12 +11205,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            let f_sum = recorder.sum_tensor(s2);
-
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let f_sum_filled = recorder.fill_batched(b_shape, f_sum);
-
-            recorder.add(b, f_sum_filled)
+            recorder.add(b, s2)
         })
     }
 
@@ -11548,10 +11296,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_combined_state)
         })
     }
 
@@ -11664,10 +11409,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_combined_state)
         })
     }
 
@@ -11786,10 +11528,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            let b_shape = recorder.tensor_shape(b.as_value());
-            let final_state_filled = recorder.fill_batched(b_shape, final_combined_state);
-
-            recorder.add(b, final_state_filled)
+            recorder.add(b, final_combined_state)
         })
     }
 
