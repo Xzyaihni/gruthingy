@@ -425,7 +425,6 @@ impl LiveRanges
                     {
                         GradientOp::Softmax{values, softmaxed_output}
                     },
-                    GradientOp::SoftmaxCrossEntropy{..} => op_cloned,
                     GradientOp::OtherSelectorValueGradient{..} => op_cloned,
                     GradientOp::OtherSelectorTensorGradient{
                         index,

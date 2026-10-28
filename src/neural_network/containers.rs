@@ -5962,18 +5962,8 @@ impl OperationsRecorder
         let mut any_replaced = false;
 
         let used_once: Vec<_> = self.used_once_values().collect();
-        used_once.into_iter().for_each(|value|
+        used_once.into_iter().for_each(|(start, end, _value)|
         {
-            let Some(live_range) = self.memory.live_ranges.get_live_range(value) else {
-                return;
-            };
-
-            let start = live_range.start.unwrap();
-            if start == -1 { return; }
-
-            let start = start as usize;
-            let end = live_range.end.unwrap() as usize;
-
             let new_op = match (self.gradient_operations[start].clone(), self.gradient_operations[end].clone())
             {
                 (
@@ -7314,12 +7304,12 @@ impl OperationsRecorder
         }
     }
 
-    fn used_once_values(&self) -> impl Iterator<Item=DiffValue> + use<'_>
+    fn used_once_values(&self) -> impl Iterator<Item=(usize, usize, DiffValue)> + use<'_>
     {
         let mut used_many = Vec::new();
         let mut used_once = Vec::new();
 
-        self.gradient_operations.iter().for_each(|op|
+        self.gradient_operations.iter().enumerate().for_each(|(index, op)|
         {
             op.for_args(|arg|
             {
@@ -7328,47 +7318,37 @@ impl OperationsRecorder
                     return;
                 }
 
-                if !used_once.contains(&arg)
+                if !used_once.iter().any(|(_, x)| *x == arg)
                 {
-                    used_once.push(arg);
+                    used_once.push((index, arg));
                 } else
                 {
-                    used_many.push(used_once.remove(used_once.iter().position(|x| *x == arg).unwrap()));
+                    used_many.push(used_once.remove(used_once.iter().position(|(_, x)| *x == arg).unwrap()).1);
                 }
             });
         });
 
-        used_once.into_iter().filter(|arg|
+        used_once.into_iter().filter_map(|(use_index, arg)|
         {
             if let DiffValue::Tensor(arg) = arg
             {
-                if self.memory.forced_same_memory.iter().any(|x| x.contains(arg)) { return false; }
+                if self.memory.forced_same_memory.iter().any(|x| x.contains(&arg)) { return None; }
             }
 
-            if let Some(live_range) = self.memory.live_ranges.get_live_range(*arg)
+            let start_index = self.gradient_operations.iter().enumerate().find(|(_index, op)|
             {
-                if live_range.end == Some(i32::MAX) { return false; }
-            }
+                op.is_any_output(|output| output == arg)
+            })?.0;
 
-            true
+            Some((start_index, use_index, arg))
         })
     }
 
     fn print_possible_combinable(&self)
     {
-        self.used_once_values().for_each(|value|
+        self.used_once_values().for_each(|(store_index, use_index, _value)|
         {
-            let Some(live_range) = self.memory.live_ranges.get_live_range(value) else {
-                return;
-            };
-
-            let store_index = live_range.start.unwrap();
-
-            if store_index == -1 { return; }
-
-            let use_index = live_range.end.unwrap();
-
-            let f = |i: i32| NotationGradientOp::from_nameable(&self.memory, self.gradient_operations[i as usize].clone());
+            let f = |i: usize| NotationGradientOp::from_nameable(&self.memory, self.gradient_operations[i].clone());
 
             eprintln!("{:?} AND {:?} can be combined", f(store_index), f(use_index));
         });
@@ -9668,6 +9648,18 @@ impl<J, S> GradientOp<TensorPtr, ValueIndex, J, OneHotIndex, S>
         is_any
     }
 
+    fn is_any_output(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
+    where
+        J: Clone,
+        S: Clone
+    {
+        let mut is_any = false;
+
+        self.for_outputs(|x| if f(x) { is_any = true; });
+
+        is_any
+    }
+
     fn is_any_arg_or_output(&self, mut f: impl FnMut(DiffValue) -> bool) -> bool
     where
         J: Clone,
@@ -10415,82 +10407,75 @@ mod tests
     }
 
     #[allow(dead_code)]
-    fn check_tensor_with_dims(
-        a_dims: (usize, usize),
-        b_dims: (usize, usize),
-        f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
+    fn check_tensor_with_dims<const N: usize>(
+        dims: [(usize, usize); N],
+        f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     )
     {
         init_log();
 
         let mut recorder = OperationsRecorder::new();
 
-        let a = random_tensor(&mut recorder, a_dims.0, a_dims.1);
-        let b = random_tensor(&mut recorder, b_dims.0, b_dims.1);
+        let values = dims.map(|(a, b)| random_tensor(&mut recorder, a, b));
 
-        check_tensor_inner(0.01, &mut recorder, a, b, f);
+        check_tensor_inner(0.01, &mut recorder, values, f);
     }
 
-    fn check_vector(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
+    fn check_vector<const N: usize>(f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr)
     {
         init_log();
 
         let mut recorder = OperationsRecorder::new();
 
-        let a = random_tensor(&mut recorder, 1, LAYER_CURR);
-        let b = random_tensor(&mut recorder, 1, LAYER_CURR);
+        let values = (0..N).map(|_| random_tensor(&mut recorder, 1, LAYER_CURR)).collect::<Vec<_>>().try_into().unwrap();
 
-        check_tensor_inner(0.01, &mut recorder, a, b, f);
+        check_tensor_inner(0.01, &mut recorder, values, f);
     }
 
-    fn check_tensor(f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr)
+    fn check_tensor<const N: usize>(f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr)
     {
         check_tensor_with_epsilon(0.01, f)
     }
 
-    fn check_tensor_with_epsilon(
+    fn check_tensor_with_epsilon<const N: usize>(
         epsilon: f32,
-        f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
+        f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     )
     {
         init_log();
 
         let mut recorder = OperationsRecorder::new();
 
-        let a = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
-        let b = random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR);
+        let values = (0..N).map(|_| random_tensor(&mut recorder, LAYER_PREV, LAYER_CURR)).collect::<Vec<_>>().try_into().unwrap();
 
-        check_tensor_inner(epsilon, &mut recorder, a, b, f);
+        check_tensor_inner(epsilon, &mut recorder, values, f);
     }
 
-    fn check_tensor_inner(
+    fn check_tensor_inner<const N: usize>(
         epsilon: f32,
         recorder: &mut OperationsRecorder,
-        (a_value, a): (LayerType, DiffTensorPtr),
-        (b_value, b): (LayerType, DiffTensorPtr),
-        mut f: impl FnMut(&mut OperationsRecorder, DiffTensorPtr, DiffTensorPtr) -> DiffTensorPtr
+        values: [(LayerType, DiffTensorPtr); N],
+        mut f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     )
     {
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.begin_capture();
 
-        recorder.name_diff_tensor(a, "a");
-        recorder.name_diff_tensor(b, "b");
+        let names = ["a", "b", "c"];
 
-        recorder.allow_discard(a.as_value());
-        recorder.allow_discard(b.as_value());
+        values.iter().zip(names.clone()).for_each(|(x, name)| recorder.name_diff_tensor(x.1, name));
 
-        let out = f(recorder, a, b);
+        values.iter().for_each(|x| recorder.allow_discard(x.1.as_value()));
+
+        let out = f(recorder, values.clone().map(|(_, x)| x));
 
         recorder.name_diff_tensor(out, "out");
 
-        let a_gradient = a.as_gradient().unwrap();
-        let b_gradient = b.as_gradient().unwrap();
+        let values_gradient = values.clone().map(|x| x.1.as_gradient().unwrap());
 
         recorder.finish();
 
-        recorder.store_tensor_as_output(a_gradient);
-        recorder.store_tensor_as_output(b_gradient);
+        values_gradient.iter().for_each(|x| recorder.store_tensor_as_output(*x));
 
         recorder.gradient(out.into());
 
@@ -10498,23 +10483,19 @@ mod tests
         recorder.resolve_memory(true);
         dbg!(&recorder);
 
-        let a_gradient = recorder.resolve_tensor_ptr(a_gradient);
-        let b_gradient = recorder.resolve_tensor_ptr(b_gradient);
+        let values_gradient = values_gradient.map(|x| recorder.resolve_tensor_ptr(x));
 
         recorder.calculate(0, true);
 
-        let a_g = recorder.get_tensor_blocking(a_gradient);
-        let b_g = recorder.get_tensor_blocking(b_gradient);
+        let g = values_gradient.map(|x| recorder.get_tensor_blocking(x));
 
         let mut new_recorder = OperationsRecorder::new();
 
-        let new_a = new_recorder.new_tensor_no_gradient(a_value.shape());
-        let new_b = new_recorder.new_tensor_no_gradient(b_value.shape());
+        let new_values = values.clone().map(|x| new_recorder.new_tensor_no_gradient(x.0.shape()));
 
-        new_recorder.allow_discard(new_a.as_value());
-        new_recorder.allow_discard(new_b.as_value());
+        new_values.iter().for_each(|x| new_recorder.allow_discard(x.as_value()));
 
-        let output = f(&mut new_recorder, new_a, new_b);
+        let output = f(&mut new_recorder, new_values);
         let output_value = output.as_value();
 
         new_recorder.store_tensor_as_output(output_value);
@@ -10522,8 +10503,7 @@ mod tests
         new_recorder.finish();
         new_recorder.no_gradient();
 
-        new_recorder.host_settable(new_a.as_value());
-        new_recorder.host_settable(new_b.as_value());
+        new_values.iter().for_each(|x| new_recorder.host_settable(x.as_value()));
 
         dbg!(&new_recorder);
         new_recorder.resolve_memory(true);
@@ -10531,13 +10511,11 @@ mod tests
 
         let output_value = new_recorder.resolve_tensor_ptr(output_value);
 
-        let new_a = new_recorder.resolve_tensor_ptr(new_a.as_value());
-        let new_b = new_recorder.resolve_tensor_ptr(new_b.as_value());
+        let new_values = new_values.map(|x| new_recorder.resolve_tensor_ptr(x.as_value()));
 
-        let mut vals = |a: LayerTypeRef, b: LayerTypeRef|
+        let mut vals = |values: [LayerType; N]|
         {
-            new_recorder.set_tensor(new_a, a);
-            new_recorder.set_tensor(new_b, b);
+            new_values.iter().zip(values.iter()).for_each(|(new_x, x)| new_recorder.set_tensor(*new_x, x.as_ref()));
 
             new_recorder.calculate(0, true);
 
@@ -10545,46 +10523,39 @@ mod tests
         };
 
         fn finite_difference(
-            i: usize,
+            original: LayerType,
             mut f: impl FnMut(f32) -> LayerType
         ) -> f32
         {
             let epsilon: f32 = 0.0003;
 
-            let mut f = |x| f(x).as_vec()[i];
+            let mut f = |x| f(x).iter().zip(original.iter()).map(|(a, b)| a - b).sum::<f32>();
 
             (-f(epsilon * 2.0) + 8.0 * f(epsilon) - 8.0 * f(-epsilon) + f(-2.0 * epsilon)) / (12.0 * epsilon)
         }
 
-        let mut a_fg = vec![0.0; a_value.total_len()];
-        for index in 0..a_fg.len()
+        let fg: [_; N] = values.iter().enumerate().map(|(value_index, (value, _))|
         {
-            let v = a_value.clone();
-
-            let this_fg = finite_difference(index, |epsilon|
+            let mut fg = vec![0.0; value.total_len()];
+            for index in 0..fg.len()
             {
-                let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
+                let v = value.clone();
 
-                vals(v.add(epsilon.as_ref()).as_ref(), b_value.as_ref())
-            });
+                let this_fg = finite_difference(vals(values.clone().map(|x| x.0)), |epsilon|
+                {
+                    let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
 
-            a_fg[index] = this_fg;
-        }
+                    let mut vs = values.clone().map(|x| x.0);
+                    vs[value_index] = v.add(epsilon.as_ref());
 
-        let mut b_fg = vec![0.0; b_value.total_len()];
-        for index in 0..b_fg.len()
-        {
-            let v = b_value.clone();
+                    vals(vs)
+                });
 
-            let this_fg = finite_difference(index, |epsilon|
-            {
-                let epsilon = one_hot(v.clone(), index, epsilon, 0.0);
+                fg[index] = this_fg;
+            }
 
-                vals(a_value.as_ref(), v.add(epsilon.as_ref()).as_ref())
-            });
-
-            b_fg[index] = this_fg;
-        }
+            fg
+        }).collect::<Vec<_>>().try_into().unwrap();
 
         let vec_to_layer = |v: Box<[f32]>, mut layer: LayerType|
         {
@@ -10593,17 +10564,16 @@ mod tests
             layer
         };
 
-        let a_fg = vec_to_layer(a_fg.into(), a_value);
-        let b_fg = vec_to_layer(b_fg.into(), b_value);
-
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.end_capture();
 
-        eprintln!("CHECKING derivative of a");
-        compare_tensor(a_fg, a_g, epsilon);
+        fg.into_iter().zip(g.into_iter()).zip(values.iter().map(|(a, _)| a)).zip(names).for_each(|(((fg, g), value), name)|
+        {
+            let fg = vec_to_layer(fg.into(), value.clone());
 
-        eprintln!("CHECKING derivative of b");
-        compare_tensor(b_fg, b_g, epsilon);
+            eprintln!("CHECKING derivative of {name}");
+            compare_tensor(fg, g, epsilon);
+        });
     }
 
     fn one_hot(
@@ -10645,25 +10615,25 @@ mod tests
     #[test]
     fn subtraction()
     {
-        check_tensor(|recorder, a, b| recorder.sub(a, b))
+        check_tensor(|recorder, [a, b]| recorder.sub(a, b))
     }
 
     #[test]
     fn addition()
     {
-        check_tensor(|recorder, a, b| recorder.add(a, b))
+        check_tensor(|recorder, [a, b]| recorder.add(a, b))
     }
 
     #[test]
     fn multiplication()
     {
-        check_tensor(|recorder, a, b| recorder.mul_componentwise(a, b))
+        check_tensor(|recorder, [a, b]| recorder.mul_componentwise(a, b))
     }
 
     #[test]
     fn non_diff_subdiff()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let one = recorder.set_new_value(1.0);
             let inner_sum = recorder.add(a, b);
@@ -10675,7 +10645,7 @@ mod tests
     #[test]
     fn basic_combined()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let mul_result = recorder.mul_componentwise(a, b);
             recorder.name_diff_tensor(mul_result, "mul_result");
@@ -10687,7 +10657,7 @@ mod tests
     #[test]
     fn complex_combined()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let left = recorder.mul_componentwise(a, b);
             let bb = recorder.pow(b, 2);
@@ -10704,7 +10674,7 @@ mod tests
     #[test]
     fn scalar_minus_tensor()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let s = recorder.set_new_value(13.12);
             let subbed = recorder.sub_from_scalar(s, b);
@@ -10716,7 +10686,7 @@ mod tests
     #[test]
     fn leaky_relu()
     {
-        check_tensor_with_epsilon(0.1, |recorder, a, b|
+        check_tensor_with_epsilon(0.1, |recorder, [a, b]|
         {
             let x = recorder.leaky_relu(a);
             recorder.add(x, b)
@@ -10727,7 +10697,7 @@ mod tests
     #[test]
     fn logistic_function()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let x = recorder.sigmoid(a);
             recorder.add(x, b)
@@ -10737,7 +10707,7 @@ mod tests
     #[test]
     fn hyperbolic_tangent()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let x = recorder.tanh(a);
             recorder.add(x, b)
@@ -10747,7 +10717,7 @@ mod tests
     #[test]
     fn pow()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let output = recorder.pow(a, 2);
             recorder.add(output, b)
@@ -10758,7 +10728,7 @@ mod tests
     fn matrix_multiplication_easy()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
+        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             recorder.matmulv(a, b)
         })
@@ -10768,7 +10738,7 @@ mod tests
     fn matrix_multiplication_more()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
+        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let mm = recorder.matmulv(a, b);
 
@@ -10785,7 +10755,7 @@ mod tests
     fn matrix_multiplication_lots()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
+        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let mm = recorder.matmulv(a, b);
 
@@ -10813,7 +10783,7 @@ mod tests
     {
         let a_columns = LAYER_PREV + 1;
         let targets = create_targets_with_size(a_columns);
-        check_tensor_with_dims((a_columns, 2), (1, a_columns), |recorder, a, b|
+        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let targets_index = recorder.new_one_hot(1, a_columns, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
@@ -10828,42 +10798,25 @@ mod tests
     }
 
     #[test]
-    fn softmax_easy()
-    {
-        let targets = create_targets();
-        check_vector(|recorder, a, b|
-        {
-            let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
-            recorder.set_one_hot_data(targets_index, targets.clone());
-
-            let (sm, _entropy) = recorder.softmax_cross_entropy(a, targets_index);
-
-            recorder.add(b, sm)
-        });
-    }
-
-    #[test]
     fn softmax_cross_entropy_complicated()
     {
         let targets = create_targets();
-        check_vector(|recorder, a, b|
+        check_vector(|recorder, [a]|
         {
             let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
 
             let two = recorder.set_new_value(2.0);
-            let btwo = recorder.add_scalar(b, two);
+            let atwo = recorder.add_scalar(a, two);
 
-            let sm = recorder.softmax_cross_entropy(btwo, targets_index).0;
-
-            recorder.add(a, sm)
+            recorder.softmax_cross_entropy(atwo, targets_index).1
         })
     }
 
     #[test]
     fn double_dependency()
     {
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let ab = recorder.mul_componentwise(a, b);
             recorder.name_diff_tensor(ab, "ab");
@@ -10881,7 +10834,7 @@ mod tests
         let loops_count = 3;
         let is: Vec<OwnedInputType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             recorder.allow_unread(a.as_value());
 
@@ -10922,7 +10875,7 @@ mod tests
         let zeros = LayerType::new(LAYER_CURR, LAYER_PREV);
         let is: Vec<OwnedInputType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             recorder.allow_unread(b.as_value());
 
@@ -10975,7 +10928,7 @@ mod tests
         let is: Vec<OwnedInputType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
         let ms: Vec<OwnedInputType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             recorder.allow_unread(a.as_value());
 
@@ -11025,7 +10978,7 @@ mod tests
         let loops_count = 3;
         let is: Vec<OwnedInputType> = (0..loops_count).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let shape = recorder.tensor_shape(a.as_value());
 
@@ -11067,7 +11020,7 @@ mod tests
         let loops_count = 3;
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
-        check_tensor(|recorder, a, b|
+        check_tensor(|recorder, [a, b]|
         {
             let s0 = {
                 let s0i = recorder.set_new_tensor(is[0].clone().into_normal()).as_value();
@@ -11141,7 +11094,7 @@ mod tests
 
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
 
-        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        check_tensor_with_dims([(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
@@ -11224,7 +11177,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        check_tensor_with_dims([(input_size, hidden_size)], |recorder, [a]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
@@ -11296,7 +11249,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add(b, final_combined_state)
+            final_combined_state
         })
     }
 
@@ -11315,7 +11268,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        check_tensor_with_dims([(input_size, hidden_size)], |recorder, [a]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
@@ -11409,7 +11362,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add(b, final_combined_state)
+            final_combined_state
         })
     }
 
@@ -11429,7 +11382,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        check_tensor_with_dims([(input_size, hidden_size)], |recorder, [a]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
@@ -11528,7 +11481,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add(b, final_combined_state)
+            final_combined_state
         })
     }
 
@@ -11547,7 +11500,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims((input_size, hidden_size), (hidden_size, output_size), |recorder, a, b|
+        check_tensor_with_dims([(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
