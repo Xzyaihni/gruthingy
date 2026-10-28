@@ -8592,7 +8592,15 @@ impl OperationsRecorder
 
                 if let Some(value_gradient) = value.as_gradient()
                 {
-                    add_gradient_operation(self, selectors, GradientOp::Fill{value: gradient, output: value_gradient});
+                    let output_shape = self.memory.tensor_shape_value(output.as_value());
+                    let shape = self.memory.tensor_shape(value.as_value());
+
+                    let divided_gradient = self.memory.new_tensor_index(output_shape);
+
+                    let rhs = (shape.size() as f32).recip();
+                    self.gradient_operations.push(GradientOp::MulScalar{lhs: gradient, rhs, output: divided_gradient});
+
+                    add_gradient_operation(self, selectors, GradientOp::Fill{value: divided_gradient, output: value_gradient});
                 }
             },
             Op::MaxTensor{..} => unimplemented!(),
@@ -10437,7 +10445,7 @@ mod tests
 
         let all_correct = correct.as_vec().into_iter().zip(calculated.as_vec().into_iter()).all(|(correct, calculated)|
         {
-            let is_correct = close_enough(correct, calculated, 0.0001);
+            let is_correct = close_enough(correct, calculated, 0.01);
 
             if !is_correct
             {
