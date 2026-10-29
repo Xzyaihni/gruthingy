@@ -398,6 +398,13 @@ impl TensorRawDataPointer
 }
 
 #[derive(Debug, Clone)]
+struct LoopInputInfo
+{
+    condition: LoopInputCondition,
+    input: InputType
+}
+
+#[derive(Debug, Clone)]
 struct LoopInfo
 {
     times: usize,
@@ -411,8 +418,16 @@ struct LoopInfo
     used_values: Vec<DiffValue>,
     input_values: LoopValuesIndex,
     stack_values: LoopStackIndex,
-    inputs: Vec<Option<InputType>>,
+    inputs: Vec<Option<LoopInputInfo>>,
     expected_pairs: Vec<(DiffValue, DiffValue)>
+}
+
+impl LoopInfo
+{
+    fn is_first(&self) -> bool
+    {
+        self.times == self.times_total
+    }
 }
 
 #[allow(dead_code)]
@@ -595,6 +610,51 @@ impl<T, TargetType> LoopStackValue<T, TargetType>
     fn set_source(&self, _x: TargetType) {}
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum LoopInputCondition
+{
+    ExistsNonLast,
+    ExistsLast,
+    ExistsNonFirst,
+    Always
+}
+
+impl From<JumpCondition> for LoopInputCondition
+{
+    fn from(value: JumpCondition) -> Self
+    {
+        match value
+        {
+            JumpCondition::IfLast => Self::ExistsNonLast,
+            JumpCondition::IfNotLast => Self::ExistsLast,
+            JumpCondition::IfFirst => Self::ExistsNonFirst
+        }
+    }
+}
+
+impl LoopInputCondition
+{
+    fn combine_with_loop_condition(self, condition: JumpCondition) -> Self
+    {
+        let condition: Self = condition.into();
+
+        match (self, condition)
+        {
+            (_, Self::Always) => unreachable!(),
+            (Self::ExistsNonLast, Self::ExistsNonLast) => self,
+            (Self::ExistsLast, Self::ExistsLast) => self,
+            (Self::ExistsNonFirst, Self::ExistsNonFirst) => self,
+            (Self::ExistsLast, Self::ExistsNonFirst)
+            | (Self::ExistsNonFirst, Self::ExistsLast) => unreachable!(),
+            (Self::ExistsNonLast, Self::ExistsLast)
+            | (Self::ExistsLast, Self::ExistsNonLast)
+            | (Self::ExistsNonLast, Self::ExistsNonFirst)
+            | (Self::ExistsNonFirst, Self::ExistsNonLast) => Self::Always,
+            (Self::Always, _) => Self::Always
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LoopInputs
@@ -768,8 +828,8 @@ impl VariableNames
 struct SetTensorMemoryChecks
 {
     set_ptrs: Vec<TensorPtr>,
-    allow_unread: Vec<StoreCheckKey<TensorPtr, DiffValueRaw>>,
-    allow_reassign: Vec<StoreCheckKey<TensorPtr, DiffValueRaw>>,
+    allow_unread: Vec<StoreCheckKey<DiffValue, DiffValueRaw>>,
+    allow_reassign: Vec<StoreCheckKey<DiffValue, DiffValueRaw>>,
     unread_memory: Vec<DiffValueRaw>,
     read_memory: Vec<DiffValueRaw>,
     set_memory: Vec<DiffValueRaw>
@@ -2080,7 +2140,7 @@ impl OperationsRecorder
     {
         #[cfg(debug_assertions)]
         {
-            self.memory.set_tensor_memory.borrow_mut().allow_unread.push(StoreCheckKey::PreResolve(_index));
+            self.memory.set_tensor_memory.borrow_mut().allow_unread.push(StoreCheckKey::PreResolve(DiffValue::Tensor(_index)));
         }
     }
 
@@ -2088,7 +2148,7 @@ impl OperationsRecorder
     {
         #[cfg(debug_assertions)]
         {
-            self.memory.set_tensor_memory.borrow_mut().allow_reassign.push(StoreCheckKey::PreResolve(_index));
+            self.memory.set_tensor_memory.borrow_mut().allow_reassign.push(StoreCheckKey::PreResolve(DiffValue::Tensor(_index)));
         }
     }
 
@@ -3708,11 +3768,21 @@ impl OperationsRecorder
                     let loop_info = &self.loops[loop_index.0];
 
                     let inputs_count = loop_info.inputs.len();
+                    let is_last = loop_info.times <= 1;
+                    let is_first = loop_info.is_first();
 
                     (0..inputs_count).for_each(|input_index|
                     {
-                        if let Some(input_ptr) = loop_info.inputs[input_index]
+                        if let Some(input_ptr) = loop_info.inputs[input_index].clone()
                         {
+                            match input_ptr.condition
+                            {
+                                LoopInputCondition::ExistsNonLast => if is_last { return },
+                                LoopInputCondition::ExistsLast => if !is_last { return },
+                                LoopInputCondition::ExistsNonFirst => if is_first { return },
+                                LoopInputCondition::Always => ()
+                            }
+
                             let values = &mut self.loops_memory.loops_values[loop_info.input_values.0].input_values;
 
                             let is_dependent = match values
@@ -3812,14 +3882,14 @@ impl OperationsRecorder
 
                             #[cfg(debug_assertions)]
                             {
-                                match input_ptr
+                                match input_ptr.input
                                 {
                                     InputType::Normal(tensor) => self.memory.verify_raw_ptr_assign_index(tensor.index),
                                     InputType::OneHot(one_hot) => self.memory.verify_raw_ptr_assign_index(one_hot)
                                 }
                             }
 
-                            let raw_index = match input_ptr
+                            let raw_index = match input_ptr.input
                             {
                                 InputType::Normal(tensor) => self.memory.tensors[tensor.index.0],
                                 InputType::OneHot(one_hot) => self.memory.one_hot_buffers[one_hot.0].unwrap().to_linear_pointer()
@@ -4019,7 +4089,7 @@ impl OperationsRecorder
                         debug_calculate_values_result!((dst),());
                     }
                 },
-                GradientOp::SetOtherSelectorGradient{loop_index, selector_index} =>
+                GradientOp::SetOtherSelectorIfLast{loop_index, selector_index} =>
                 {
                     if self.loops[loop_index.0].times <= 1
                     {
@@ -4053,7 +4123,8 @@ impl OperationsRecorder
                     let needs_jump = match condition
                     {
                         JumpCondition::IfLast => self.loops[loop_index.0].times == 1,
-                        JumpCondition::IfNotLast => self.loops[loop_index.0].times != 1
+                        JumpCondition::IfNotLast => self.loops[loop_index.0].times != 1,
+                        JumpCondition::IfFirst => self.loops[loop_index.0].is_first()
                     };
 
                     if needs_jump
@@ -6460,7 +6531,7 @@ impl OperationsRecorder
                 | GradientOp::GetOtherSelectorValue{..}
                 | GradientOp::OtherSelectorValueGradient{..}
                 | GradientOp::GradientSelectAddValue{..}
-                | GradientOp::SetOtherSelectorGradient{..}
+                | GradientOp::SetOtherSelectorIfLast{..}
                 | GradientOp::PushStackValue{..}
                 | GradientOp::PopStackValue{..}
                 | GradientOp::ZeroValue(_)
@@ -6924,7 +6995,7 @@ impl OperationsRecorder
                             {
                                 loops[index.0].inputs = inputs.into_iter().map(|x|
                                 {
-                                    match x
+                                    let input_mapped = match x
                                     {
                                         InputTypePtr::Normal(x) =>
                                         {
@@ -6939,7 +7010,36 @@ impl OperationsRecorder
                                         {
                                             self.memory.one_hot_buffers[x.0].is_some().then_some(InputType::OneHot(x))
                                         }
-                                    }
+                                    };
+
+                                    let input = DiffValue::from(x);
+
+                                    let condition = self.gradient_operations.iter().fold(None, |condition, op|
+                                    {
+                                        if let GradientOp::JumpIf(jump_condition, JumpInfo::JumpOverNext(_, jump_op)) = op
+                                        {
+                                            if jump_op.is_any_arg(|arg| arg == input)
+                                            {
+                                                return Some(condition
+                                                    .map(|x: LoopInputCondition| x.combine_with_loop_condition(*jump_condition))
+                                                    .unwrap_or((*jump_condition).into()));
+                                            }
+                                        }
+
+                                        if op.is_any_arg(|arg| arg == input)
+                                        {
+                                            return Some(LoopInputCondition::Always);
+                                        }
+
+                                        condition
+                                    });
+
+                                    input_mapped.map(|input|
+                                    {
+                                        let condition = condition.unwrap();
+
+                                        LoopInputInfo{condition, input}
+                                    })
                                 }).collect();
 
                                 debug_assert!(!loops_labels.iter().any(|x| x.0 == index));
@@ -7194,10 +7294,25 @@ impl OperationsRecorder
     {
         let variable_names = self.memory.variable_names.clone();
 
-        fn resolve_check_tensors<T: From<TensorIndex> + PartialEq + Clone>(
+        trait MaybeFrom<T>
+        {
+            fn maybe_from(value: T) -> Self;
+        }
+
+        impl MaybeFrom<OneHotIndex> for DiffValueRaw
+        {
+            fn maybe_from(value: OneHotIndex) -> Self { DiffValueRaw::OneHot(value) }
+        }
+
+        impl MaybeFrom<OneHotIndex> for TensorIndex
+        {
+            fn maybe_from(_value: OneHotIndex) -> Self { unreachable!() }
+        }
+
+        fn resolve_check_tensors<R: Into<DiffValue> + PartialEq + Clone, T: From<TensorIndex> + MaybeFrom<OneHotIndex> + PartialEq + Clone>(
             variable_names: &VariableNames,
             tensors_memory: &[TensorMemorySlot],
-            tensors_list: &mut Vec<StoreCheckKey<TensorPtr, T>>,
+            tensors_list: &mut Vec<StoreCheckKey<R, T>>,
             must_resolve: bool
         )
         {
@@ -7205,22 +7320,27 @@ impl OperationsRecorder
 
             let mut new_store_check = Vec::new();
 
-            fn resolve_tensor_key<T: From<TensorIndex> + PartialEq>(
+            fn resolve_tensor_key<R: Into<DiffValue> + PartialEq, T: From<TensorIndex> + MaybeFrom<OneHotIndex> + PartialEq>(
                 tensors_memory: &[TensorMemorySlot],
-                new_store_check: &[StoreCheckKey<TensorPtr, T>],
-                k: StoreCheckKey<TensorPtr, T>
-            ) -> Result<Option<StoreCheckKey<TensorPtr, T>>, ResolveError>
+                new_store_check: &[StoreCheckKey<R, T>],
+                k: StoreCheckKey<R, T>
+            ) -> Result<Option<StoreCheckKey<R, T>>, ResolveError>
             {
-                let this_index: TensorIndex = match k
+                let this_index: T = match k
                 {
                     StoreCheckKey::PreResolve(ptr) =>
                     {
-                        tensors_memory[ptr.0].memory.ok_or(ResolveError(ptr))?
+                        match ptr.into()
+                        {
+                            DiffValue::Tensor(ptr) => tensors_memory[ptr.0].memory.ok_or(ResolveError(ptr))?.into(),
+                            DiffValue::OneHot(one_hot) => T::maybe_from(one_hot),
+                            DiffValue::Value(_) => unimplemented!()
+                        }
                     },
                     StoreCheckKey::Resolved(_) => unreachable!()
                 };
 
-                let new_k = StoreCheckKey::Resolved(this_index.into());
+                let new_k = StoreCheckKey::Resolved(this_index);
 
                 // new_k has overlap with other ptrs so this check will give some false negatives
                 // disable graph coloring for an exact check
@@ -7321,6 +7441,28 @@ impl OperationsRecorder
         }
     }
 
+    fn allow_unused_for_conditionals(&self)
+    {
+        // i wouldnt need this if i perfectly optimized out every unused operation but im not doing that
+        self.gradient_operations.iter().for_each(|op|
+        {
+            let add_unused = |arg: DiffValue|
+            {
+                self.memory.set_tensor_memory.borrow_mut().allow_reassign.push(StoreCheckKey::PreResolve(arg));
+            };
+
+            match op
+            {
+                GradientOp::GradientSelectAddTensor{added, ..} => add_unused((*added).into()),
+                GradientOp::JumpIf(_, JumpInfo::JumpOverNext(_, op)) =>
+                {
+                    op.for_args(|arg| add_unused(arg));
+                },
+                _ => ()
+            }
+        });
+    }
+
     fn used_once_values(&self) -> impl Iterator<Item=(usize, usize, DiffValue)> + use<'_>
     {
         let mut used_many = Vec::new();
@@ -7406,6 +7548,8 @@ impl OperationsRecorder
                 self.memory.set_tensors_check.push(parent.into());
             }
         });
+
+        self.allow_unused_for_conditionals();
 
         if optional_info
         {
@@ -8227,12 +8371,15 @@ impl OperationsRecorder
 
                 match new_op
                 {
-                    GradientOp::OtherSelectorTensorGradient{index, first, other, src} if DiffValue::Tensor(first) == add_rhs =>
+                    GradientOp::OtherSelectorTensorGradient{index: _, first, other, src} if DiffValue::Tensor(first) == add_rhs =>
                     {
                         let new_id = this.gradient_operations.len();
 
+                        let selector_index = add_selector(this);
+
+                        dbg!("hi");
                         this.gradient_operations.push(GradientOp::GradientSelectAddTensor{
-                            index,
+                            index: selector_index,
                             first: other,
                             other: output.into_tensor(),
                             src,
@@ -8250,44 +8397,53 @@ impl OperationsRecorder
                 let new_id = {
                     let skip_conditional = match previous_op
                     {
-                        GradientOp::GradientSelectAddTensor{other, ..} if DiffValue::Tensor(other) == output => true,
-                        _ => false
+                        GradientOp::GradientSelectAddTensor{index, other, ..} if DiffValue::Tensor(other) == output => Some(index),
+                        _ => None
                     };
 
-                    if skip_conditional
-                    {
-                        let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(new_op));
-                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfNotLast, jump_info));
-                    } else
-                    {
-                        this.gradient_operations.push(new_op);
-                    }
+                    this.gradient_operations.push(new_op);
 
-                    let add_op = match output
+                    let add_op = |output: DiffValue| -> StandardGradientOp
                     {
-                        DiffValue::Tensor(output) =>
+                        match output
                         {
-                            GradientOp::Add{lhs: add_lhs.into_tensor(), rhs: add_rhs.into_tensor(), output}
-                        },
-                        DiffValue::Value(output) =>
-                        {
-                            GradientOp::AddScalars{lhs: add_lhs.into_value(), rhs: add_rhs.into_value(), output}
-                        },
-                        DiffValue::OneHot(_) => unimplemented!()
+                            DiffValue::Tensor(output) =>
+                            {
+                                GradientOp::Add{lhs: add_lhs.into_tensor(), rhs: add_rhs.into_tensor(), output}
+                            },
+                            DiffValue::Value(output) =>
+                            {
+                                GradientOp::AddScalars{lhs: add_lhs.into_value(), rhs: add_rhs.into_value(), output}
+                            },
+                            DiffValue::OneHot(_) => unimplemented!()
+                        }
                     };
 
-                    let new_id = this.gradient_operations.len();
-
-                    if skip_conditional
+                    if let Some(skip_conditional) = skip_conditional
                     {
-                        let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(add_op));
-                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfNotLast, jump_info));
+                        let add_output = make_new(this, output);
+
+                        let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(add_op(add_output)));
+                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfFirst, jump_info));
+
+                        let new_id = this.gradient_operations.len();
+
+                        this.gradient_operations.push(GradientOp::GetOtherSelectorTensor{
+                            info: skip_conditional,
+                            other: add_output.into_tensor(),
+                            first: add_rhs.into_tensor(),
+                            output: output.into_tensor()
+                        });
+
+                        new_id
                     } else
                     {
-                        this.gradient_operations.push(add_op);
-                    }
+                        let new_id = this.gradient_operations.len();
 
-                    new_id
+                        this.gradient_operations.push(add_op(output));
+
+                        new_id
+                    }
                 };
 
                 info.operation_index = GradientOperationIndex(new_id);
@@ -8753,7 +8909,7 @@ impl OperationsRecorder
             {
                 let gradient_index = self.phi_other_selectors_recording[index.0].gradient_index.expect("must be initialized");
 
-                self.gradient_operations.push(GradientOp::SetOtherSelectorGradient{
+                self.gradient_operations.push(GradientOp::SetOtherSelectorIfLast{
                     loop_index: self.memory.phi_other_selectors_values[gradient_index.0].loop_index,
                     selector_index: gradient_index
                 });
@@ -9041,6 +9197,18 @@ impl From<OneHotIndex> for DiffValueRaw
     fn from(index: OneHotIndex) -> Self
     {
         Self::OneHot(index)
+    }
+}
+
+impl From<InputType> for DiffValueRaw
+{
+    fn from(index: InputType) -> Self
+    {
+        match index
+        {
+            InputType::Normal(tensor) => Self::Tensor(tensor.into()),
+            InputType::OneHot(one_hot) => Self::OneHot(one_hot)
+        }
     }
 }
 
@@ -9333,7 +9501,8 @@ impl From<f32> for OwnedDiffValue
 pub enum JumpCondition
 {
     IfLast,
-    IfNotLast
+    IfNotLast,
+    IfFirst
 }
 
 #[derive(Clone)]
@@ -9454,7 +9623,7 @@ pub enum GradientOp<T, V, J, O, S>
     GradientSelectAddTensor{index: PhiOtherSelectorIndex, first: T, other: T, src: T, added: T},
     IfSetTensor{index: PhiOtherSelectorIndex, dst: T, src: T},
     IfNotSetTensor{index: PhiOtherSelectorIndex, dst: T, src: T},
-    SetOtherSelectorGradient{loop_index: LoopIndex, selector_index: PhiOtherSelectorIndex},
+    SetOtherSelectorIfLast{loop_index: LoopIndex, selector_index: PhiOtherSelectorIndex},
     PushStackValue{loop_index: LoopIndex, value: V},
     PushStackTensor{loop_index: LoopIndex, tensor: T},
     PopStackValue{loop_index: LoopIndex, output: V},
@@ -9563,7 +9732,7 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             },
             Self::IfSetTensor{index, dst, src} => GradientOp::IfSetTensor{index, dst: tf(dst), src: tf(src)},
             Self::IfNotSetTensor{index, dst, src} => GradientOp::IfNotSetTensor{index, dst: tf(dst), src: tf(src)},
-            Self::SetOtherSelectorGradient{loop_index, selector_index} => GradientOp::SetOtherSelectorGradient{loop_index, selector_index},
+            Self::SetOtherSelectorIfLast{loop_index, selector_index} => GradientOp::SetOtherSelectorIfLast{loop_index, selector_index},
             Self::PushStackValue{loop_index, value} => GradientOp::PushStackValue{loop_index, value: vf(value)},
             Self::PushStackTensor{loop_index, tensor} => GradientOp::PushStackTensor{loop_index, tensor: tf(tensor)},
             Self::PopStackValue{loop_index, output} => GradientOp::PopStackValue{loop_index, output: vf(output)},
@@ -9933,7 +10102,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             },
             Self::IfSetTensor{index, dst, src} => Self::IfSetTensor{index, dst: tf(&mut state, dst), src},
             Self::IfNotSetTensor{index, dst, src} => Self::IfNotSetTensor{index, dst: tf(&mut state, dst), src},
-            Self::SetOtherSelectorGradient{loop_index, selector_index} => Self::SetOtherSelectorGradient{loop_index, selector_index},
+            Self::SetOtherSelectorIfLast{loop_index, selector_index} => Self::SetOtherSelectorIfLast{loop_index, selector_index},
             Self::Jump(x) => Self::Jump(x),
             Self::JumpIf(condition, x) => Self::JumpIf(condition, x),
             Self::SetInputs(x) => Self::SetInputs(x),
@@ -10096,7 +10265,7 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             },
             Self::IfSetTensor{index, dst, src} => Self::IfSetTensor{index, dst, src: tf(&mut state, src)},
             Self::IfNotSetTensor{index, dst, src} => Self::IfNotSetTensor{index, dst, src: tf(&mut state, src)},
-            Self::SetOtherSelectorGradient{loop_index, selector_index} => Self::SetOtherSelectorGradient{loop_index, selector_index},
+            Self::SetOtherSelectorIfLast{loop_index, selector_index} => Self::SetOtherSelectorIfLast{loop_index, selector_index},
             Self::Jump(x) => Self::Jump(x),
             Self::JumpIf(condition, x) => Self::JumpIf(condition, x),
             Self::SetInputs(x) => Self::SetInputs(x),
