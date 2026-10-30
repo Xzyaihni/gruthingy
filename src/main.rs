@@ -295,8 +295,14 @@ fn train_until_best(config: Config)
                 Err((place, err)) => complain(format!("{place}: {err}")),
                 Ok(true) =>
                 {
-                    let learning_rate = network.get_learning_rate();
-                    network.set_learning_rate(learning_rate *  config.lr_factor);
+                    let network_info = network.extra_info_mut();
+                    if (network_info.iterations - network_info.last_lr_reduction) > config.patience as u64
+                    {
+                        network_info.last_lr_reduction = network_info.iterations;
+
+                        let learning_rate = network.get_learning_rate();
+                        network.set_learning_rate(learning_rate *  config.lr_factor);
+                    }
                 },
                 Ok(false) => ()
             }

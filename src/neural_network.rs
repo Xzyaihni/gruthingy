@@ -942,7 +942,8 @@ impl From<&Config> for TrainingInfo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtraInfo
 {
-    pub iterations: u64
+    pub iterations: u64,
+    pub last_lr_reduction: u64
 }
 
 impl Default for ExtraInfo
@@ -950,7 +951,8 @@ impl Default for ExtraInfo
     fn default() -> Self
     {
         Self{
-            iterations: 0
+            iterations: 0,
+            last_lr_reduction: 0
         }
     }
 }
@@ -1280,6 +1282,16 @@ where
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.dictionary.vectorized(reader)
+    }
+
+    pub fn extra_info(&self) -> &ExtraInfo
+    {
+        &self.extra_info
+    }
+
+    pub fn extra_info_mut(&mut self) -> &mut ExtraInfo
+    {
+        &mut self.extra_info
     }
 
     pub fn get_learning_rate(&self) -> f32
