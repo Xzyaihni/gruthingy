@@ -296,8 +296,9 @@ fn train_until_best(config: Config)
                 Ok(true) =>
                 {
                     let network_info = network.extra_info_mut();
-                    if (network_info.iterations - network_info.last_lr_reduction) > config.patience as u64
+                    if (network_info.iterations - network_info.last_lr_reduction) > (config.patience * config.iterations) as u64
                     {
+                        eprintln!("reducing learning rate, last reduced at iteration {}", network_info.last_lr_reduction);
                         network_info.last_lr_reduction = network_info.iterations;
 
                         let learning_rate = network.get_learning_rate();
