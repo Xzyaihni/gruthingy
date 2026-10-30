@@ -919,6 +919,7 @@ pub struct TrainingInfo
     pub iterations: usize,
     pub batch_size: usize,
     pub steps_num: StepsNum,
+    pub learning_rate: Option<f32>,
     pub lambda: Option<f32>,
     pub calculate_accuracy: bool,
     pub less_info: bool
@@ -932,6 +933,7 @@ impl From<&Config> for TrainingInfo
             iterations: config.iterations,
             batch_size: config.batch_size,
             steps_num: StepsNum::new(config.steps_num, config.steps_deviation),
+            learning_rate: config.learning_rate,
             lambda: config.lambda,
             calculate_accuracy: config.calculate_accuracy,
             less_info: config.less_info
@@ -1323,6 +1325,11 @@ where
         for<'b> InputOutputEmbeddingsIter<'b, EmbeddingType, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         self.network.set_train_mode();
+
+        if let Some(learning_rate) = info.learning_rate
+        {
+            self.optimizer.set_learning_rate(learning_rate);
+        }
 
         if let Some(lambda) = info.lambda
         {
@@ -1738,13 +1745,11 @@ mod tests
         );
 
         let steps_num = 4;
-
-        network.set_learning_rate(0.01);
-
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,
             iterations,
+            learning_rate: Some(0.01),
             lambda: None,
             less_info: false,
             steps_num: StepsNum::Steps(steps_num)
