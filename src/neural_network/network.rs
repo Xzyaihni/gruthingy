@@ -868,7 +868,8 @@ pub struct WeightInfo
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeightInfo
 {
-    pub weight: DiffTensor
+    pub weight: ShapedTensorIndex,
+    pub gradient: Option<ShapedTensorIndex>
 }
 
 pub type SaveWeightType = LayerType;
@@ -922,7 +923,7 @@ where
 
                 #[cfg(test)]
                 {
-                    x.recorder.get_tensor_blocking(weight_info.weight.as_value())
+                    x.recorder.get_tensor_blocking(weight_info.weight)
                 }
             })
         } else
@@ -1400,7 +1401,7 @@ where
 
             self.prepare_setup_shared();
 
-            if cfg!(test)
+            if cfg!(test) && ThisOptimizer::is_none_optimizer()
             {
                 self.weights_ptr.as_ref().unwrap().iter().for_each(|weight|
                 {
@@ -1431,7 +1432,7 @@ where
 
             self.recorder.gradient_with(self.outputs.loss_ptr.expect("must be initialized").into(), optimizer_info);
 
-            self.prepare_shared(true);
+            self.prepare_shared(true, !ThisOptimizer::is_none_optimizer());
 
             self.optimizer_info.as_mut().map(|infos|
             {
@@ -1464,7 +1465,7 @@ where
 
             self.recorder.no_gradient();
 
-            self.prepare_shared(false);
+            self.prepare_shared(false, false);
 
             let output_ptr = DiffTensorPtr::no_gradient(self.outputs.output_ptr.unwrap().as_value());
             self.outputs.output = self.recorder.resolve_diff_tensor_ptr(output_ptr);
@@ -1502,7 +1503,7 @@ where
         });
     }
 
-    fn prepare_shared(&mut self, store_gradient: bool)
+    fn prepare_shared(&mut self, store_gradient: bool, _has_optimizer: bool)
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
     {
@@ -1522,17 +1523,21 @@ where
         {
             if !store_gradient { weight_info.weight_original.clear_gradient(); }
 
+            let weight = self.recorder.resolve_tensor_ptr(weight_info.weight_original.as_value());
+
             #[cfg(not(test))]
             {
-                WeightInfo{
-                    weight: self.recorder.resolve_tensor_ptr(weight_info.weight_original.as_value())
-                }
+                WeightInfo{weight}
             }
 
             #[cfg(test)]
             {
                 WeightInfo{
-                    weight: self.recorder.resolve_diff_tensor_ptr(weight_info.weight_original)
+                    weight,
+                    gradient: (!_has_optimizer).then(||
+                    {
+                        weight_info.weight_original.as_gradient().map(|g| self.recorder.resolve_tensor_ptr(g))
+                    }).flatten()
                 }
             }
         });
@@ -1837,7 +1842,7 @@ where
 
         let f = |weight: &WeightInfo|
         {
-            self.recorder.get_tensor_blocking(weight.weight.as_gradient().unwrap())
+            self.recorder.get_tensor_blocking(weight.gradient.unwrap())
         };
 
         let gradients = if inputs_count == 1
@@ -2466,7 +2471,8 @@ mod tests
         at_once.weights = Some(at_once.weights_ptr.take().unwrap().map(|x|
         {
             WeightInfo{
-                weight: at_once.recorder.resolve_diff_tensor_ptr(x.weight_original)
+                weight: at_once.recorder.resolve_tensor_ptr(x.weight_original.as_value()),
+                gradient: Some(at_once.recorder.resolve_tensor_ptr(x.weight_original.as_gradient().unwrap()))
             }
         }));
 
@@ -2484,7 +2490,7 @@ mod tests
 
             let f = |x: WeightInfo|
             {
-                let gradient = x.weight.as_gradient().unwrap();
+                let gradient = x.gradient.unwrap();
 
                 if !at_once.recorder.is_undefined_location(gradient)
                 {
@@ -2651,7 +2657,7 @@ mod tests
         for gradient_index in 0..gradients_count
         {
             let mut check_network = sample_network.clone();
-            let mut momentum = 0.01;
+            let mut momentum = 0.0001;
 
             let name: &'static str = gradients.iter_with_info()
                 .flat_map(|x| x.weights.into_iter().zip(iter::repeat(x.name)))
@@ -2661,8 +2667,23 @@ mod tests
 
             eprintln!("{gradient_index}/{gradients_count}: checking {name}..");
 
+            let numerical_gradient = {
+                let loss_with_epsilon = |epsilon: f32| -> f32
+                {
+                    let mut shifted_network = sample_network.clone();
+                    *shifted_network.weights.iter_mut().flatten().nth(gradient_index).unwrap() += epsilon;
+
+                    load_network(shifted_network).gradients((), inputs_outputs.iter().cloned()).0
+                };
+
+                let epsilon = 0.001;
+                (loss_with_epsilon(epsilon) - loss_with_epsilon(-epsilon)) / (2.0 * epsilon)
+            };
+
             let mut this_gradient = *gradients.iter().flatten().nth(gradient_index).unwrap();
-            eprintln!("starting gradient: {this_gradient}");
+            eprintln!("starting gradient: {this_gradient} ({numerical_gradient})");
+
+            assert!(close_enough(this_gradient, numerical_gradient, 0.1), "{this_gradient} != {numerical_gradient}");
 
             let mut new_loss = starting_loss;
 

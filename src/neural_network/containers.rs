@@ -7446,9 +7446,12 @@ impl OperationsRecorder
         // i wouldnt need this if i perfectly optimized out every unused operation but im not doing that
         self.gradient_operations.iter().for_each(|op|
         {
-            let add_unused = |arg: DiffValue|
+            let add_unused = |_arg: DiffValue|
             {
-                self.memory.set_tensor_memory.borrow_mut().allow_reassign.push(StoreCheckKey::PreResolve(arg));
+                #[cfg(debug_assertions)]
+                {
+                    self.memory.set_tensor_memory.borrow_mut().allow_reassign.push(StoreCheckKey::PreResolve(_arg));
+                }
             };
 
             match op
