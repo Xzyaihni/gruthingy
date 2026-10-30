@@ -8371,19 +8371,30 @@ impl OperationsRecorder
 
                 match new_op
                 {
-                    GradientOp::OtherSelectorTensorGradient{index: _, first, other, src} if DiffValue::Tensor(first) == add_rhs =>
+                    GradientOp::OtherSelectorTensorGradient{index, first, other, src} if DiffValue::Tensor(first) == add_rhs =>
                     {
+                        let add_output = make_new(this, output).into_tensor();
+
+                        let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(GradientOp::Add{
+                            lhs: add_lhs.into_tensor(),
+                            rhs: src,
+                            output: add_output
+                        }));
+
+                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfNotLast, jump_info));
+
+                        this.gradient_operations.push(GradientOp::Copy{
+                            dst: other,
+                            src
+                        });
+
                         let new_id = this.gradient_operations.len();
 
-                        let selector_index = add_selector(this);
-
-                        dbg!("hi");
-                        this.gradient_operations.push(GradientOp::GradientSelectAddTensor{
-                            index: selector_index,
-                            first: other,
-                            other: output.into_tensor(),
-                            src,
-                            added: add_lhs.into_tensor()
+                        this.gradient_operations.push(GradientOp::GetOtherSelectorTensor{
+                            info: index,
+                            output: output.into_tensor(),
+                            first: add_lhs.into_tensor(),
+                            other: add_output
                         });
 
                         info.operation_index = GradientOperationIndex(new_id);
@@ -8424,7 +8435,7 @@ impl OperationsRecorder
                         let add_output = make_new(this, output);
 
                         let jump_info = JumpInfo::JumpOverNext(inside_loop.unwrap(), Box::new(add_op(add_output)));
-                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfFirst, jump_info));
+                        this.gradient_operations.push(GradientOp::JumpIf(JumpCondition::IfNotLast, jump_info));
 
                         let new_id = this.gradient_operations.len();
 
