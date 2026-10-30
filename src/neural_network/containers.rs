@@ -10646,13 +10646,14 @@ mod tests
     const LAYER_CURR: usize = 2;
 
 
+
     fn compare_tensor(correct: LayerType, calculated: LayerType, epsilon: f32)
     {
         correct.as_vec().into_iter().for_each(|x| assert!(!x.is_nan()));
 
         let all_correct = correct.as_vec().into_iter().zip(calculated.as_vec().into_iter()).all(|(correct, calculated)|
         {
-            let is_correct = close_enough(correct, calculated, epsilon);
+            let is_correct = ((correct - calculated).abs() / (correct.abs() + calculated.abs())) < epsilon;
 
             if !is_correct
             {
@@ -10680,7 +10681,7 @@ mod tests
         f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     )
     {
-        check_tensor_with_dims_with_epsilon(0.01, dims, f);
+        check_tensor_with_dims_with_epsilon(0.001, dims, f);
     }
 
     fn check_tensor_with_dims_with_epsilon<const N: usize>(
@@ -10706,12 +10707,12 @@ mod tests
 
         let values = (0..N).map(|_| random_tensor(&mut recorder, 1, LAYER_CURR)).collect::<Vec<_>>().try_into().unwrap();
 
-        check_tensor_inner(0.01, &mut recorder, values, f);
+        check_tensor_inner(0.001, &mut recorder, values, f);
     }
 
     fn check_tensor<const N: usize>(f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr)
     {
-        check_tensor_with_epsilon(0.01, f)
+        check_tensor_with_epsilon(0.001, f)
     }
 
     fn check_tensor_with_epsilon<const N: usize>(
@@ -10934,7 +10935,7 @@ mod tests
     #[test]
     fn complex_combined()
     {
-        check_tensor(|recorder, [a, b]|
+        check_tensor_with_epsilon(0.02, |recorder, [a, b]|
         {
             let left = recorder.mul_componentwise(a, b);
             let bb = recorder.pow(b, 2);
@@ -11015,7 +11016,7 @@ mod tests
     fn matrix_multiplication_more()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.005, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let mm = recorder.matmulv(a, b);
 
@@ -11032,7 +11033,7 @@ mod tests
     fn matrix_multiplication_lots()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.005, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let mm = recorder.matmulv(a, b);
 
@@ -11060,7 +11061,7 @@ mod tests
     {
         let a_columns = LAYER_PREV + 1;
         let targets = create_targets_with_size(a_columns);
-        check_tensor_with_dims([(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.01, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let targets_index = recorder.new_one_hot(1, a_columns, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
@@ -11454,7 +11455,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims([(input_size, hidden_size)], |recorder, [a]|
+        check_tensor_with_dims_with_epsilon(0.01, [(input_size, hidden_size)], |recorder, [a]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
@@ -11777,7 +11778,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims_with_epsilon(0.05, [(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.2, [(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {

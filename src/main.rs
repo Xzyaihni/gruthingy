@@ -293,7 +293,11 @@ fn train_until_best(config: Config)
             match test_thread.join().unwrap()
             {
                 Err((place, err)) => complain(format!("{place}: {err}")),
-                Ok(true) => return eprintln!("achieved best possible loss"),
+                Ok(true) =>
+                {
+                    let learning_rate = network.get_learning_rate();
+                    network.set_learning_rate(learning_rate *  config.lr_factor);
+                },
                 Ok(false) => ()
             }
         }
@@ -370,7 +374,7 @@ fn train_until_best(config: Config)
                         eprintln!("copying network to best at: {}", best_path.display());
 
                         err_mapper(fs::copy(&test_config.network_path, &best_path), "best copy")?;
-                    } else if lines_count.saturating_sub(lowest_line_index + 1) > test_config.validation_attempts
+                    } else if lines_count.saturating_sub(lowest_line_index + 1) > test_config.patience
                     {
                         return Ok(true);
                     }

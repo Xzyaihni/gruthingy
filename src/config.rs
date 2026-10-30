@@ -580,7 +580,8 @@ pub struct Config
     pub tokens_amount: usize,
     pub temperature: f32,
     pub inputs_in_flight: Option<usize>,
-    pub validation_attempts: usize,
+    pub patience: usize,
+    pub lr_factor: f32,
     pub bpe_limit: Option<usize>,
     pub input_dropout_probability: f32,
     pub dropout_probability: f32,
@@ -619,7 +620,8 @@ impl Config
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
         let mut inputs_in_flight = 1000;
-        let mut validation_attempts = 10;
+        let mut patience = 10;
+        let mut lr_factor = 0.1;
         let mut bpe_limit = None;
         let mut input_dropout_probability = 0.2;
         let mut dropout_probability = 0.5;
@@ -655,7 +657,8 @@ impl Config
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
         parser.push(&mut inputs_in_flight, None, "in-flight", "inputs in flight for inference, more is faster but uses more memory, 0 for unlimited");
-        parser.push(&mut validation_attempts, None, "validation-attempts", "n of increasing validation loss in test_until_best until stop");
+        parser.push(&mut patience, None, "patience", "n -I runs of non-decreasing validation loss in train_until_best until lr reduction");
+        parser.push(&mut lr_factor, None, "lr-factor", "factor by which to multiply learning rate in train_until_best");
         parser.push(&mut bpe_limit, None, "bpe-limit", "maximum amount of ngrams in a bpe, dynamic by default");
         parser.push(&mut input_dropout_probability, None, "input-dropout", "input dropout probability");
         parser.push(&mut dropout_probability, None, "dropout", "dropout probability");
@@ -706,7 +709,8 @@ impl Config
             tokens_amount,
             temperature,
             inputs_in_flight,
-            validation_attempts,
+            patience,
+            lr_factor,
             bpe_limit,
             input_dropout_probability,
             dropout_probability,

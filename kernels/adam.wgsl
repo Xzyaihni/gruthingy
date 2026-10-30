@@ -39,7 +39,7 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
     let m_corrected = new_m / (1.0 - pow(info.b1, info.t));
     let v_corrected = new_v / (1.0 - pow(info.b2, info.t));
 
-    weights[index] -= info.learning_rate * m_corrected / (sqrt(v_corrected) + info.epsilon);
+    weights[index] -= info.learning_rate * (m_corrected / (sqrt(v_corrected) + info.epsilon));
 
     m[index] = new_m;
     v[index] = new_v;

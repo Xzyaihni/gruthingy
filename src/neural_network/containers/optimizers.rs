@@ -112,6 +112,7 @@ pub trait Optimizer: fmt::Debug + Default + Clone
 
     fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr;
 
+    fn get_learning_rate(&self) -> f32;
     fn set_learning_rate(&mut self, learning_rate: f32);
 
     fn set_lambda(&mut self, _lambda: f32) { unimplemented!() }
@@ -129,6 +130,8 @@ impl Optimizer for ()
     {
         unreachable!()
     }
+
+    fn get_learning_rate(&self) -> f32 { unreachable!() }
 
     fn set_learning_rate(&mut self, _learning_rate: f32)
     {
@@ -165,6 +168,11 @@ impl Optimizer for Sgd
     fn add_operations(self, recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
         recorder.sgd_optimizer(gradient, self)
+    }
+
+    fn get_learning_rate(&self) -> f32
+    {
+        self.learning_rate
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
@@ -223,6 +231,11 @@ impl Optimizer for PowerSign
     fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
         recorder.powersign_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
+    }
+
+    fn get_learning_rate(&self) -> f32
+    {
+        self.learning_rate
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)
@@ -290,6 +303,11 @@ impl Optimizer for Adam
         recorder.adam_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
     }
 
+    fn get_learning_rate(&self) -> f32
+    {
+        self.learning_rate
+    }
+
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
@@ -336,6 +354,11 @@ impl Optimizer for AdamW
     fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
         recorder.adamw_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
+    }
+
+    fn get_learning_rate(&self) -> f32
+    {
+        self.learning_rate
     }
 
     fn set_learning_rate(&mut self, learning_rate: f32)

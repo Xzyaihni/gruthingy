@@ -2683,7 +2683,7 @@ mod tests
             let mut this_gradient = *gradients.iter().flatten().nth(gradient_index).unwrap();
             eprintln!("starting gradient: {this_gradient} ({numerical_gradient})");
 
-            assert!(close_enough(this_gradient, numerical_gradient, 0.1), "{this_gradient} != {numerical_gradient}");
+            assert!((this_gradient - numerical_gradient).abs() < 0.001, "{this_gradient} != {numerical_gradient}");
 
             let mut new_loss = starting_loss;
 
