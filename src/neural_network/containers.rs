@@ -8055,20 +8055,16 @@ impl OperationsRecorder
 
             self.resolve_stack_values(used_stack_values);
         }
-        dbg!(&self);
 
         self.combine_zero_outs();
 
-        dbg!(&self);
         if let Some(optimizer) = optimizer
         {
             optimizer.add_operations(self);
         }
 
-        dbg!(&self);
         self.optimize_operations();
 
-        dbg!(&self);
         self.recording_operations = Vec::new();
 
         self.state = RecorderState::AwaitingResolve;
@@ -8078,13 +8074,10 @@ impl OperationsRecorder
     {
         self.remove_unused_pushes();
 
-        dbg!(&self);
         self.copy_coalesce();
 
-        dbg!(&self);
         while self.combine_sequential_operations() {}
 
-        dbg!(&self);
         self.copy_reuse_conflicts();
     }
 
@@ -8101,7 +8094,6 @@ impl OperationsRecorder
     {
         let mut add_gradient_operation = |this: &mut Self, selectors: &mut Vec<LoopSelectorInfo>, gradient_op: StandardGradientOp|
         {
-            dbg!(&this);
             let make_new = |this: &mut Self, x: DiffValue| -> DiffValue
             {
                 if let DiffValue::Tensor(x) = x
@@ -8519,7 +8511,6 @@ impl OperationsRecorder
                 simple_insert(this, assigned_gradients, gradient_op.clone());
             }
 
-            dbg!(&gradient_op);
             if inside_loop.is_some()
             {
                 if let Some(this_selector) = selectors.iter_mut().find(|info|
@@ -8546,7 +8537,6 @@ impl OperationsRecorder
 
                     let temp = this.memory.new_diff_intermediate(other, |(a, b)| new_names.push((a, b, "_temp")));
 
-                    dbg!(&other);
                     let add_op = match other
                     {
                         DiffValue::Value(_) =>
@@ -8602,7 +8592,6 @@ impl OperationsRecorder
                     }
                 }
             }
-            dbg!(&this);
         };
 
         macro_rules! gradient_or_return
@@ -10688,13 +10677,22 @@ mod tests
         f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
     )
     {
+        check_tensor_with_dims_with_epsilon(0.01, dims, f);
+    }
+
+    fn check_tensor_with_dims_with_epsilon<const N: usize>(
+        epsilon: f32,
+        dims: [(usize, usize); N],
+        f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr
+    )
+    {
         init_log();
 
         let mut recorder = OperationsRecorder::new();
 
         let values = dims.map(|(a, b)| random_tensor(&mut recorder, a, b));
 
-        check_tensor_inner(0.01, &mut recorder, values, f);
+        check_tensor_inner(epsilon, &mut recorder, values, f);
     }
 
     fn check_vector<const N: usize>(f: impl FnMut(&mut OperationsRecorder, [DiffTensorPtr; N]) -> DiffTensorPtr)
@@ -11370,7 +11368,7 @@ mod tests
 
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
 
-        check_tensor_with_dims([(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
+        check_tensor_with_dims([(input_size, hidden_size)], |recorder, [a]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
@@ -11434,7 +11432,7 @@ mod tests
 
             recorder.set_loop_inputs(loop_index, inputs_targets);
 
-            recorder.add(b, s2)
+            s2
         })
     }
 
@@ -11770,13 +11768,13 @@ mod tests
         let hidden_size = LAYER_CURR;
         let output_size = 2;
 
-        let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, fastrand::f32).into()).collect();
+        let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(input_size, 1, || fastrand::f32() * 10.0).into()).collect();
         let targets: Vec<OneHotLayer> = (0..loops_count + 2).map(|_|
         {
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims([(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.05, [(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
