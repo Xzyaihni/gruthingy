@@ -347,6 +347,8 @@ fn train_until_best(config: Config)
 
                 let mut file = err_mapper(file, "opening losses file")?;
 
+                err_mapper(file.write_all((loss.to_string() + "\n").as_bytes()), "writing loss")?;
+
                 {
                     let mut losses = String::new();
                     err_mapper(BufReader::new(&file).read_to_string(&mut losses), "reading losses file")?;
@@ -376,17 +378,16 @@ fn train_until_best(config: Config)
                         }), "finding lowest loss")?
                         .unwrap_or((0, f32::INFINITY));
 
-                    eprintln!("copying network to best at: {}", best_path.display());
+                    if loss < lowest_loss
+                    {
+                        eprintln!("copying network to best at: {}", best_path.display());
 
-                    err_mapper(fs::copy(&test_config.network_path, &best_path), "best copy")?;
-
-                    if !(loss < lowest_loss) && (lines_count.saturating_sub(lowest_line_index + 1) > test_config.patience)
+                        err_mapper(fs::copy(&test_config.network_path, &best_path), "best copy")?;
+                    } else if lines_count.saturating_sub(lowest_line_index + 1) > test_config.patience
                     {
                         return Ok(true);
                     }
                 }
-
-                err_mapper(file.write_all((loss.to_string() + "\n").as_bytes()), "writing loss")?;
 
                 Ok(false)
             }))
