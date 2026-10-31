@@ -623,8 +623,8 @@ impl Config
         let mut patience = 10;
         let mut lr_factor = 0.1;
         let mut bpe_limit = None;
-        let mut input_dropout_probability = 0.2;
-        let mut dropout_probability = 0.5;
+        let mut input_dropout_probability = 0.1;
+        let mut dropout_probability = 0.2;
         let mut bpe_dropout_probability = 0.1;
         let mut gradient_clip = 5.0;
         let mut replace_invalid = true;
