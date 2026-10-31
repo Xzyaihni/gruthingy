@@ -333,7 +333,7 @@ impl Default for AdamW
             learning_rate: 0.001,
             b1: 0.9,
             b2: 0.999,
-            lambda: 0.01,
+            lambda: 0.0001,
             epsilon: 1e-8
         }
     }
