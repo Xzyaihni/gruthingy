@@ -347,8 +347,6 @@ fn train_until_best(config: Config)
 
                 let mut file = err_mapper(file, "opening losses file")?;
 
-                err_mapper(file.write_all((loss.to_string() + "\n").as_bytes()), "writing loss")?;
-
                 {
                     let mut losses = String::new();
                     err_mapper(BufReader::new(&file).read_to_string(&mut losses), "reading losses file")?;
@@ -377,6 +375,10 @@ fn train_until_best(config: Config)
                             })
                         }), "finding lowest loss")?
                         .unwrap_or((0, f32::INFINITY));
+
+                    eprintln!("lowest loss at line {lowest_line_index}: {lowest_loss}");
+
+                    err_mapper(file.write_all((loss.to_string() + "\n").as_bytes()), "writing loss")?;
 
                     if loss < lowest_loss
                     {
