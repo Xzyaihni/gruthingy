@@ -626,7 +626,7 @@ impl Config
         let mut input_dropout_probability = 0.2;
         let mut dropout_probability = 0.5;
         let mut bpe_dropout_probability = 0.1;
-        let mut gradient_clip = 1.0;
+        let mut gradient_clip = 5.0;
         let mut replace_invalid = true;
         let mut dictionary_path = "dictionary.txt".into();
         let mut less_info = false;
