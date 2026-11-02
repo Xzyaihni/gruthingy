@@ -5281,6 +5281,10 @@ impl OperationsRecorder
             {
                 eprintln!("{name}: {average:.1}μs on average");
             });
+
+            eprintln!("{:#?}", self.raw_array_memory.device.get_internal_counters());
+
+            eprintln!("{:#?}", self.raw_array_memory.device.generate_allocator_report());
         }
 
         if cfg!(feature="dumpmemory")
