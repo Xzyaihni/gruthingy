@@ -1805,7 +1805,7 @@ impl WgpuInitInfo
                 module: &shader,
                 entry_point: Some("run"),
                 compilation_options: wgpu::PipelineCompilationOptions{
-                    zero_initialize_workgroup_memory: true,
+                    zero_initialize_workgroup_memory: false,
                     ..Default::default()
                 },
                 cache: None
