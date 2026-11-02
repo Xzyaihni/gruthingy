@@ -1659,31 +1659,16 @@ impl WgpuInitInfo
                 }
             };
 
-            let r1_w1_i0 = {
-                let name = "r1_w1_i0";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1)
-                    ]
-                });
+            let r1_w1_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                label: Some("r1_w1"),
+                entries: &[
+                    input_layout_entry(0),
+                    output_layout_entry(1)
+                ]
+            });
 
-                from_bind_group_layout(bind_group_layout, name, 0)
-            };
-
-            let r1_w1_i1 = {
-                let name = "r1_w1_i1";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, name, 1)
-            };
+            let r1_w1_i0 = from_bind_group_layout(r1_w1_bind_group_layout.clone(), "r1_w1_i0", 0);
+            let r1_w1_i1 = from_bind_group_layout(r1_w1_bind_group_layout, "r1_w1_i1", 1);
 
             let r1_w2_i2 = {
                 let name = "r1_w2_i2";
@@ -1699,63 +1684,30 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 2)
             };
 
-            let r1_w3_i5 = {
-                let name = "r1_w3_i5";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1),
-                        output_layout_entry(2),
-                        output_layout_entry(3)
-                    ]
-                });
+            let r1_w3_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                label: Some("r1_w3"),
+                entries: &[
+                    input_layout_entry(0),
+                    output_layout_entry(1),
+                    output_layout_entry(2),
+                    output_layout_entry(3)
+                ]
+            });
 
-                from_bind_group_layout(bind_group_layout, name, 5)
-            };
+            let r1_w3_i5 = from_bind_group_layout(r1_w3_bind_group_layout.clone(), "r1_w3_i5", 5);
+            let r1_w3_i6 = from_bind_group_layout(r1_w3_bind_group_layout, "r1_w3_i6", 6);
 
-            let r1_w3_i6 = {
-                let name = "r1_w3_i6";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        output_layout_entry(1),
-                        output_layout_entry(2),
-                        output_layout_entry(3)
-                    ]
-                });
+            let r2_w1_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                label: Some("r2_w1"),
+                entries: &[
+                    input_layout_entry(0),
+                    input_layout_entry(1),
+                    output_layout_entry(2)
+                ]
+            });
 
-                from_bind_group_layout(bind_group_layout, name, 6)
-            };
-
-            let r2_w1_i0 = {
-                let name = "r2_w1_i0";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        input_layout_entry(1),
-                        output_layout_entry(2)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, name, 0)
-            };
-
-            let r2_w1_i1 = {
-                let name = "r2_w1_i1";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        input_layout_entry(1),
-                        output_layout_entry(2)
-                    ]
-                });
-
-                from_bind_group_layout(bind_group_layout, name, 1)
-            };
+            let r2_w1_i0 = from_bind_group_layout(r2_w1_bind_group_layout.clone(), "r2_w1_i0", 0);
+            let r2_w1_i1 = from_bind_group_layout(r2_w1_bind_group_layout, "r2_w1_i1", 1);
 
             let r2_w2_i0 = {
                 let name = "r2_w2_i0";
