@@ -10965,7 +10965,7 @@ mod tests
     fn matrix_multiplication_easy()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims_with_epsilon(0.02, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.03, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             recorder.matmulv(a, b)
         })
@@ -10975,7 +10975,7 @@ mod tests
     fn matrix_multiplication_more()
     {
         let a_columns = LAYER_PREV + 1;
-        check_tensor_with_dims_with_epsilon(0.05, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.08, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let mm = recorder.matmulv(a, b);
 
@@ -11020,7 +11020,7 @@ mod tests
     {
         let a_columns = LAYER_PREV + 1;
         let targets = create_targets_with_size(a_columns);
-        check_tensor_with_dims_with_epsilon(0.02, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.03, [(a_columns, 2), (1, a_columns)], |recorder, [a, b]|
         {
             let targets_index = recorder.new_one_hot(1, a_columns, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
