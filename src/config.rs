@@ -558,6 +558,11 @@ impl<T: ParsableInner + DisplayableDefault> ArgParsable for Option<T>
     }
 }
 
+fn parent_dir_of(path: &PathBuf) -> PathBuf
+{
+    path.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| PathBuf::new())
+}
+
 #[derive(Clone)]
 pub struct Config
 {
@@ -612,7 +617,7 @@ impl Config
         let mut learning_rate = None;
         let mut lambda = None;
         let mut calculate_accuracy = false;
-        let mut network_path = "network.nn".into();
+        let mut network_path: PathBuf = "network.nn".into();
         let mut embeddings_path = "embeddings.nn".into();
         let mut test_path = None;
         let mut input = None;
@@ -628,7 +633,7 @@ impl Config
         let mut bpe_dropout_probability = 0.05;
         let mut gradient_clip = 5.0;
         let mut replace_invalid = true;
-        let mut dictionary_path = "dictionary.txt".into();
+        let mut dictionary_path: PathBuf = "dictionary.txt".into();
         let mut less_info = false;
         let mut optional_info = false;
         let mut correct_guesses = false;
@@ -689,6 +694,8 @@ impl Config
 
         let inputs_in_flight = (inputs_in_flight != 0).then_some(inputs_in_flight);
 
+        let dictionary_path = parent_dir_of(&network_path).join(dictionary_path);
+
         Self{
             iterations,
             batch_size,
@@ -735,13 +742,29 @@ impl Config
         })
     }
 
-    #[allow(dead_code)]
-    pub fn get_output(&self) -> &str
+    fn network_dir(&self) -> PathBuf
     {
-        self.output.as_ref().unwrap_or_else(||
+        parent_dir_of(&self.network_path)
+    }
+
+    pub fn try_get_output(&self) -> Option<PathBuf>
+    {
+        self.output.as_ref().map(|output_path| self.network_dir().join(output_path))
+    }
+
+    #[allow(dead_code)]
+    pub fn get_output(&self) -> PathBuf
+    {
+        self.try_get_output().unwrap_or_else(||
         {
             complain("plz provide the output (-o or --output)")
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn get_output_with_default(&self, default_path: &str) -> PathBuf
+    {
+        self.try_get_output().unwrap_or_else(|| self.network_dir().join(default_path))
     }
 
     pub fn get_input_file(&self) -> File

@@ -440,13 +440,12 @@ fn run(config: Config)
 {
     let mut network = load_network(&config, None, false);
 
-    let f = config.output.as_ref().map(|filepath|
+    let f = config.try_get_output().map(|filepath|
     {
-        File::create(filepath)
-            .unwrap_or_else(|err|
-            {
-                complain(format!("couldnt create a file at {filepath}: {err}"))
-            })
+        File::create(&filepath).unwrap_or_else(|err|
+        {
+            complain(format!("couldnt create a file at {}: {err}", filepath.display()))
+        })
     });
 
     let text = Cursor::new(config.get_input());
@@ -594,7 +593,7 @@ fn weights_image(config: Config)
 
     let weights = network.inner_network().weights_info();
 
-    let output_folder = PathBuf::from(config.output.unwrap_or_else(|| "output".to_owned()));
+    let output_folder = PathBuf::from(config.get_output_with_default("output"));
 
     let layer_name = |index|
     {
@@ -885,7 +884,7 @@ fn accuracy_data(config: Config)
         mut correct_guesses: Vec<(Box<[u8]>, T, Box<[u8]>)>
     ) -> Result<(), serde_json::Error>
     {
-        let path = config.output.clone().unwrap_or_else(|| "output.json".to_owned());
+        let path = config.get_output_with_default(&"output.json");
 
         let file = File::create(path).unwrap();
         let writer = BufWriter::new(file);
