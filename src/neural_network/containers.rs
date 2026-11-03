@@ -1745,7 +1745,7 @@ impl WgpuInitInfo
                 OpKernel::Sub => ("kernels/sub.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::SubFromScalar => ("kernels/sub_from_scalar.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::MulComponentwise => ("kernels/mul_componentwise.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MulComponentwiseAdd => ("kernels/mul_componentwise_add.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MulComponentwiseAddInplace => ("kernels/mul_componentwise_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MulScalar => ("kernels/mul_scalar.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::SumTensor => ("kernels/sum_tensor.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i1),
@@ -1763,15 +1763,15 @@ impl WgpuInitInfo
                 OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvAdd => ("kernels/matmulv_add.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvAddInplace => ("kernels/matmulv_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MatmulOneHotv => ("kernels/matmul_onehotv.wgsl", &kernel_layouts.r2_w1_i1),
-                OpKernel::MatmulOneHotvAdd => ("kernels/matmul_onehotv_add.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulOneHotvAddInplace => ("kernels/matmul_onehotv_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvTransposedAddInplace => ("kernels/matmulv_transposed_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
-                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::OuterProductAddInplace => ("kernels/outer_product_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
-                OpKernel::OuterProductOneHotAdd => ("kernels/outer_product_one_hot_add.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::OuterProductOneHotAddInplace => ("kernels/outer_product_one_hot_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MaxTensor => ("kernels/max_tensor.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SoftmaxPartA => ("kernels/softmax_part_a.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::SoftmaxPartB => ("kernels/softmax_part_b.wgsl", &kernel_layouts.r1_w1_i0),
@@ -4098,7 +4098,7 @@ impl OperationsRecorder
                     }
                 },
                 this_op@GradientOp::MulComponentwise{lhs, rhs, output}
-                | this_op@GradientOp::MulComponentwiseAdd{lhs, rhs, added: _, output} =>
+                | this_op@GradientOp::MulComponentwiseAddInplace{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape, rhs.shape);
                     debug_assert_eq!(rhs.shape, output.shape);
@@ -4117,9 +4117,9 @@ impl OperationsRecorder
 
                             do_kernel_operation!(MulComponentwise, i, 0);
                         },
-                        GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} =>
+                        GradientOp::MulComponentwiseAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(MulComponentwiseAdd, (lhs, rhs, added),());
+                            debug_calculate_values!(MulComponentwiseAddInplace, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
@@ -4129,7 +4129,7 @@ impl OperationsRecorder
                                 bind_group_entry(2, *output)
                             ], "MulComponentwiseAdd", 0);
 
-                            do_kernel_operation!(MulComponentwiseAdd, i, 0);
+                            do_kernel_operation!(MulComponentwiseAddInplace, i, 0);
                         },
                         _ => ()
                     }
@@ -4935,7 +4935,7 @@ impl OperationsRecorder
                     debug_calculate_values_result!((output),());
                 },
                 this_op@GradientOp::MatmulOneHotv{lhs, rhs, output}
-                | this_op@GradientOp::MatmulOneHotvAdd{lhs, rhs, added: _, output} =>
+                | this_op@GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -4959,13 +4959,13 @@ impl OperationsRecorder
 
                             do_kernel_operation!(MatmulOneHotv, i, 0);
                         },
-                        GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+                        GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(MatmulOneHotvAdd, (lhs, rhs, added),());
+                            debug_calculate_values!(MatmulOneHotvAddInplace, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation!(MatmulOneHotvAdd, i, 0);
+                            do_kernel_operation!(MatmulOneHotvAddInplace, i, 0);
                         },
                         _ => ()
                     }
@@ -4977,7 +4977,7 @@ impl OperationsRecorder
                     debug_calculate_values_result!((output),());
                 },
                 this_op@GradientOp::Matmulv{lhs, rhs, output}
-                | this_op@GradientOp::MatmulvAdd{lhs, rhs, added: _, output} =>
+                | this_op@GradientOp::MatmulvAddInplace{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -5003,13 +5003,13 @@ impl OperationsRecorder
 
                             do_kernel_operation!(Matmulv, i, 0);
                         },
-                        GradientOp::MatmulvAdd{lhs: _, rhs, added, output} =>
+                        GradientOp::MatmulvAddInplace{lhs: _, rhs, added, output} =>
                         {
-                            debug_calculate_values!(MatmulvAdd, (lhs, rhs, added),());
+                            debug_calculate_values!(MatmulvAddInplace, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation!(MatmulvAdd, i, 0);
+                            do_kernel_operation!(MatmulvAddInplace, i, 0);
                         },
                         _ => unreachable!()
                     }
@@ -5019,7 +5019,7 @@ impl OperationsRecorder
                     debug_calculate_values_result!((output),());
                 },
                 this_op@GradientOp::MatmulvTransposed{lhs, rhs, output}
-                | this_op@GradientOp::MatmulvTransposedAdd{lhs, rhs, added: _, output} =>
+                | this_op@GradientOp::MatmulvTransposedAddInplace{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -5045,13 +5045,13 @@ impl OperationsRecorder
 
                             do_kernel_operation!(MatmulvTransposed, i, 0);
                         },
-                        GradientOp::MatmulvTransposedAdd{lhs: _, rhs, added, output} =>
+                        GradientOp::MatmulvTransposedAddInplace{lhs: _, rhs, added, output} =>
                         {
-                            debug_calculate_values!(MatmulvTransposedAdd, (lhs, rhs, added),());
+                            debug_calculate_values!(MatmulvTransposedAddInplace, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation!(MatmulvTransposedAdd, i, 0);
+                            do_kernel_operation!(MatmulvTransposedAddInplace, i, 0);
                         },
                         _ => unreachable!()
                     }
@@ -5061,7 +5061,7 @@ impl OperationsRecorder
                     debug_calculate_values_result!((output),());
                 },
                 this_op@GradientOp::OuterProductOneHot{lhs, rhs, output}
-                | this_op@GradientOp::OuterProductOneHotAdd{lhs, rhs, added: _, output} =>
+                | this_op@GradientOp::OuterProductOneHotAddInplace{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -5089,13 +5089,13 @@ impl OperationsRecorder
 
                             do_kernel_operation!(OuterProductOneHot, i, 0);
                         },
-                        GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+                        GradientOp::OuterProductOneHotAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(OuterProductOneHotAdd, (lhs, rhs, added),());
+                            debug_calculate_values!(OuterProductOneHotAddInplace, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation!(OuterProductOneHotAdd, i, 0);
+                            do_kernel_operation!(OuterProductOneHotAddInplace, i, 0);
                         },
                         _ => ()
                     }
@@ -5107,7 +5107,7 @@ impl OperationsRecorder
                     debug_calculate_values_result!((output),());
                 },
                 this_op@GradientOp::OuterProduct{lhs, rhs, output}
-                | this_op@GradientOp::OuterProductAdd{lhs, rhs, added: _, output} =>
+                | this_op@GradientOp::OuterProductAddInplace{lhs, rhs, added: _, output} =>
                 {
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
@@ -5133,13 +5133,13 @@ impl OperationsRecorder
 
                             do_kernel_operation!(OuterProduct, i, 0);
                         },
-                        GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
+                        GradientOp::OuterProductAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(OuterProductAdd, (lhs, rhs, added),());
+                            debug_calculate_values!(OuterProductAddInplace, (lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
-                            do_kernel_operation!(OuterProductAdd, i, 0);
+                            do_kernel_operation!(OuterProductAddInplace, i, 0);
                         },
                         _ => unreachable!()
                     }
@@ -5477,7 +5477,7 @@ impl OperationsRecorder
                 },
                 Op::MatmulvAdd{lhs, rhs, added, output} =>
                 {
-                    GradientOp::MatmulvAdd{lhs: lhs.as_value(), rhs: rhs.as_value(), added: added.as_value(), output: output.as_value()}
+                    GradientOp::MatmulvAddInplace{lhs: lhs.as_value(), rhs: rhs.as_value(), added: added.as_value(), output: output.as_value()}
                 },
                 Op::MatmulOneHotv{lhs, rhs, output} =>
                 {
@@ -5485,7 +5485,7 @@ impl OperationsRecorder
                 },
                 Op::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
-                    GradientOp::MatmulOneHotvAdd{lhs: lhs.as_value(), rhs: *rhs, added: added.as_value(), output: output.as_value()}
+                    GradientOp::MatmulOneHotvAddInplace{lhs: lhs.as_value(), rhs: *rhs, added: added.as_value(), output: output.as_value()}
                 },
                 Op::OuterProduct{lhs, rhs, output} =>
                 {
@@ -6049,7 +6049,7 @@ impl OperationsRecorder
                 ) =>
                 {
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
-                    GradientOp::MulComponentwiseAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                    GradientOp::MulComponentwiseAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
                     GradientOp::Matmulv{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
@@ -6057,7 +6057,7 @@ impl OperationsRecorder
                 ) =>
                 {
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
-                    GradientOp::MatmulvAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                    GradientOp::MatmulvAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
                     GradientOp::MatmulOneHotv{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
@@ -6065,7 +6065,7 @@ impl OperationsRecorder
                 ) =>
                 {
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
-                    GradientOp::MatmulOneHotvAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                    GradientOp::MatmulOneHotvAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
                     GradientOp::MatmulvTransposed{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
@@ -6073,7 +6073,7 @@ impl OperationsRecorder
                 ) =>
                 {
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
-                    GradientOp::MatmulvTransposedAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                    GradientOp::MatmulvTransposedAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
                     GradientOp::OuterProduct{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
@@ -6081,7 +6081,7 @@ impl OperationsRecorder
                 ) =>
                 {
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
-                    GradientOp::OuterProductAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                    GradientOp::OuterProductAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
                     GradientOp::OuterProductOneHot{lhs: mul_lhs, rhs: mul_rhs, output: mul_output},
@@ -6089,7 +6089,7 @@ impl OperationsRecorder
                 ) =>
                 {
                     let added = if add_lhs == mul_output { add_rhs } else { add_lhs };
-                    GradientOp::OuterProductOneHotAdd{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
+                    GradientOp::OuterProductOneHotAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
                     GradientOp::BatchReplicate{value, output: _},
@@ -6217,12 +6217,12 @@ impl OperationsRecorder
             }
 
             for_added_output!{
-                MulComponentwiseAdd,
-                MatmulvAdd,
-                MatmulOneHotvAdd,
-                MatmulvTransposedAdd,
-                OuterProductAdd,
-                OuterProductOneHotAdd
+                MulComponentwiseAddInplace,
+                MatmulvAddInplace,
+                MatmulOneHotvAddInplace,
+                MatmulvTransposedAddInplace,
+                OuterProductAddInplace,
+                OuterProductOneHotAddInplace
             }
 
             if i == 0
@@ -6574,7 +6574,7 @@ impl OperationsRecorder
                 GradientOp::SubFromScalar{lhs: _, rhs, output} => t_storage!(rhs, output),
                 GradientOp::MulScalar{lhs, rhs: _, output} => t_storage!(lhs, output),
                 GradientOp::MulComponentwise{lhs, rhs, output}
-                | GradientOp::MulComponentwiseAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                | GradientOp::MulComponentwiseAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::SumTensor{value, output} => t_storage!(value, output),
                 GradientOp::MaxTensor{value, output} => t_storage!(value, output),
                 GradientOp::SumBatch{value, scalar: _, output} => t_storage!(value, output),
@@ -6613,15 +6613,15 @@ impl OperationsRecorder
                     t_src!(softmaxed_values); t_dst!(output); t_storage!(softmaxed_values, gradient, output); o_storage!(targets)
                 },
                 GradientOp::Matmulv{lhs, rhs, output}
-                | GradientOp::MatmulvAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                | GradientOp::MatmulvAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::MatmulOneHotv{lhs, rhs, output}
-                | GradientOp::MatmulOneHotvAdd{lhs, rhs, added: _, output} => { t_storage!(lhs, output); o_storage!(rhs) },
+                | GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added: _, output} => { t_storage!(lhs, output); o_storage!(rhs) },
                 GradientOp::MatmulvTransposed{lhs, rhs, output}
-                | GradientOp::MatmulvTransposedAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                | GradientOp::MatmulvTransposedAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::OuterProduct{lhs, rhs, output}
-                | GradientOp::OuterProductAdd{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                | GradientOp::OuterProductAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::OuterProductOneHot{lhs, rhs, output}
-                | GradientOp::OuterProductOneHotAdd{lhs, rhs, added: _, output} => { t_dst!(output); t_storage!(lhs, output); o_storage!(rhs) }
+                | GradientOp::OuterProductOneHotAddInplace{lhs, rhs, added: _, output} => { t_dst!(output); t_storage!(lhs, output); o_storage!(rhs) }
             }
         };
 
@@ -7598,12 +7598,12 @@ impl OperationsRecorder
                     | GradientOp::GetOtherSelectorTensor{..}
                     | GradientOp::GradientSelectAddValue{..}
                     | GradientOp::GradientSelectAddTensor{..}
-                    | GradientOp::MulComponentwiseAdd{..}
-                    | GradientOp::MatmulvAdd{..}
-                    | GradientOp::MatmulOneHotvAdd{..}
-                    | GradientOp::MatmulvTransposedAdd{..}
-                    | GradientOp::OuterProductAdd{..}
-                    | GradientOp::OuterProductOneHotAdd{..}
+                    | GradientOp::MulComponentwiseAddInplace{..}
+                    | GradientOp::MatmulvAddInplace{..}
+                    | GradientOp::MatmulOneHotvAddInplace{..}
+                    | GradientOp::MatmulvTransposedAddInplace{..}
+                    | GradientOp::OuterProductAddInplace{..}
+                    | GradientOp::OuterProductOneHotAddInplace{..}
                 );
 
                 if allow_overlap
@@ -9578,7 +9578,7 @@ impl<T: Debug, V: Debug, J: Debug, O: Debug> Debug for NotationGradientOp<T, V, 
             GradientOp::AddScalar{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} + {rhs:?}"),
             GradientOp::AddScalars{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} + {rhs:?}"),
             GradientOp::MulComponentwise{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊙ {rhs:?}"),
-            GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊙ {rhs:?} + {added:?}"),
+            GradientOp::MulComponentwiseAddInplace{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊙ {rhs:?} + {added:?}"),
             GradientOp::Tanh{value, output} => write!(f, "{output:?} ← tanh({value:?})"),
             GradientOp::TanhDiff{value, gradient, output} => write!(f, "{output:?} ← tanh'({value:?}) ⊙ {gradient:?}"),
             GradientOp::Sigmoid{value, output} => write!(f, "{output:?} ← σ({value:?})"),
@@ -9586,14 +9586,14 @@ impl<T: Debug, V: Debug, J: Debug, O: Debug> Debug for NotationGradientOp<T, V, 
             GradientOp::MulScalar{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs}"),
             GradientOp::Matmulv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?}"),
             GradientOp::MatmulvTransposed{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?}"),
-            GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?} + {added:?}"),
-            GradientOp::MatmulvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
+            GradientOp::MatmulvTransposedAddInplace{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?}ᵀ ⋅ {rhs:?} + {added:?}"),
+            GradientOp::MatmulvAddInplace{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} + {added:?}"),
             GradientOp::MatmulOneHotv{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} (one hot)"),
-            GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} (one hot) + {added:?}"),
+            GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⋅ {rhs:?} (one hot) + {added:?}"),
             GradientOp::OuterProduct{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?}"),
-            GradientOp::OuterProductAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
+            GradientOp::OuterProductAddInplace{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} + {added:?}"),
             GradientOp::OuterProductOneHot{lhs, rhs, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} (one hot)"),
-            GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} (one hot) + {added:?}"),
+            GradientOp::OuterProductOneHotAddInplace{lhs, rhs, added, output} => write!(f, "{output:?} ← {lhs:?} ⊗ {rhs:?} (one hot) + {added:?}"),
             GradientOp::SumTensor{value, output} => write!(f, "{output:?} ← ∑{value:?}"),
             GradientOp::GetOtherSelectorValue{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),
             GradientOp::GetOtherSelectorTensor{info, first, other, output} => write!(f, "{output:?} ← {first:?} | {other:?} (id {})", info.0),
@@ -9642,7 +9642,7 @@ pub enum GradientOp<T, V, J, O, S>
     MulScalar{lhs: T, rhs: f32, output: T},
     MulScalars{lhs: V, rhs: V, output: V},
     MulComponentwise{lhs: T, rhs: T, output: T},
-    MulComponentwiseAdd{lhs: T, rhs: T, added: T, output: T},
+    MulComponentwiseAddInplace{lhs: T, rhs: T, added: T, output: T},
     SumTensor{value: T, output: T},
     MaxTensor{value: T, output: T},
     SumBatch{value: T, scalar: f32, output: T},
@@ -9669,15 +9669,15 @@ pub enum GradientOp<T, V, J, O, S>
     Softmax{values: T, softmaxed_output: T},
     SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: O, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
-    MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
+    MatmulvAddInplace{lhs: T, rhs: T, added: T, output: T},
     MatmulOneHotv{lhs: T, rhs: O, output: T},
-    MatmulOneHotvAdd{lhs: T, rhs: O, added: T, output: T},
+    MatmulOneHotvAddInplace{lhs: T, rhs: O, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
-    MatmulvTransposedAdd{lhs: T, rhs: T, added: T, output: T},
+    MatmulvTransposedAddInplace{lhs: T, rhs: T, added: T, output: T},
     OuterProduct{lhs: T, rhs: T, output: T},
-    OuterProductAdd{lhs: T, rhs: T, added: T, output: T},
+    OuterProductAddInplace{lhs: T, rhs: T, added: T, output: T},
     OuterProductOneHot{lhs: T, rhs: O, output: T},
-    OuterProductOneHotAdd{lhs: T, rhs: O, added: T, output: T}
+    OuterProductOneHotAddInplace{lhs: T, rhs: O, added: T, output: T}
 }
 
 impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
@@ -9751,9 +9751,9 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::MulScalar{lhs, rhs, output} => GradientOp::MulScalar{lhs: tf(lhs), rhs, output: tf(output)},
             Self::MulScalars{lhs, rhs, output} => GradientOp::MulScalars{lhs: vf(lhs), rhs: vf(rhs), output: vf(output)},
             Self::MulComponentwise{lhs, rhs, output} => GradientOp::MulComponentwise{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
-            Self::MulComponentwiseAdd{lhs, rhs, added, output} =>
+            Self::MulComponentwiseAddInplace{lhs, rhs, added, output} =>
             {
-                GradientOp::MulComponentwiseAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+                GradientOp::MulComponentwiseAddInplace{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
             Self::SumTensor{value, output} => GradientOp::SumTensor{value: tf(value), output: tf(output)},
             Self::MaxTensor{value, output} => GradientOp::MaxTensor{value: tf(value), output: tf(output)},
@@ -9813,29 +9813,32 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
                 }
             },
             Self::Matmulv{lhs, rhs, output} => GradientOp::Matmulv{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
-            Self::MatmulvAdd{lhs, rhs, added, output} => GradientOp::MatmulvAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)},
+            Self::MatmulvAddInplace{lhs, rhs, added, output} =>
+            {
+                GradientOp::MatmulvAddInplace{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+            },
             Self::MatmulOneHotv{lhs, rhs, output} =>
             {
                 GradientOp::MatmulOneHotv{lhs: tf(lhs), rhs: onehot_f(rhs), output: tf(output)}
             },
-            Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+            Self::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
             {
-                GradientOp::MatmulOneHotvAdd{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
+                GradientOp::MatmulOneHotvAddInplace{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
-            Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+            Self::MatmulvTransposedAddInplace{lhs, rhs, added, output} =>
             {
-                GradientOp::MatmulvTransposedAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+                GradientOp::MatmulvTransposedAddInplace{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
             Self::OuterProduct{lhs, rhs, output} => GradientOp::OuterProduct{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
-            Self::OuterProductAdd{lhs, rhs, added, output} =>
+            Self::OuterProductAddInplace{lhs, rhs, added, output} =>
             {
-                GradientOp::OuterProductAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+                GradientOp::OuterProductAddInplace{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
             Self::OuterProductOneHot{lhs, rhs, output} => GradientOp::OuterProductOneHot{lhs: tf(lhs), rhs: onehot_f(rhs), output: tf(output)},
-            Self::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+            Self::OuterProductOneHotAddInplace{lhs, rhs, added, output} =>
             {
-                GradientOp::OuterProductOneHotAdd{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
+                GradientOp::OuterProductOneHotAddInplace{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::Jump(x) => GradientOp::Jump(jump_f(x)),
             Self::JumpIf(condition, x) => GradientOp::JumpIf(condition, jump_f(x)),
@@ -10007,7 +10010,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::SubFromScalar{output, lhs, rhs} => Self::SubFromScalar{output: tf(&mut state, output), lhs, rhs},
             Self::MulScalar{output, lhs, rhs} => Self::MulScalar{output: tf(&mut state, output), lhs, rhs},
             Self::MulComponentwise{output, lhs, rhs} => Self::MulComponentwise{output: tf(&mut state, output), lhs, rhs},
-            Self::MulComponentwiseAdd{output, lhs, rhs, added} => Self::MulComponentwiseAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MulComponentwiseAddInplace{output, lhs, rhs, added} =>
+            {
+                Self::MulComponentwiseAddInplace{output: tf(&mut state, output), lhs, rhs, added}
+            },
             Self::Fill{output, value} => Self::Fill{output: tf(&mut state, output), value},
             Self::BatchReplicate{output, value} => Self::BatchReplicate{output: tf(&mut state, output), value},
             Self::BatchReplicateDropout{output, probability, seed_index, value} =>
@@ -10048,15 +10054,21 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
                 Self::SoftmaxCrossEntropyDiff{output: tf(&mut state, output), softmaxed_values, gradient, targets}
             },
             Self::Matmulv{output, lhs, rhs} => Self::Matmulv{output: tf(&mut state, output), lhs, rhs},
-            Self::MatmulvAdd{output, lhs, rhs, added} => Self::MatmulvAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MatmulvAddInplace{output, lhs, rhs, added} => Self::MatmulvAddInplace{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulOneHotv{output, lhs, rhs} => Self::MatmulOneHotv{output: tf(&mut state, output), lhs, rhs},
-            Self::MatmulOneHotvAdd{output, lhs, rhs, added} => Self::MatmulOneHotvAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MatmulOneHotvAddInplace{output, lhs, rhs, added} => Self::MatmulOneHotvAddInplace{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(&mut state, output), lhs, rhs},
-            Self::MatmulvTransposedAdd{output, lhs, rhs, added} => Self::MatmulvTransposedAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MatmulvTransposedAddInplace{output, lhs, rhs, added} =>
+            {
+                Self::MatmulvTransposedAddInplace{output: tf(&mut state, output), lhs, rhs, added}
+            },
             Self::OuterProduct{output, lhs, rhs} => Self::OuterProduct{output: tf(&mut state, output), lhs, rhs},
-            Self::OuterProductAdd{output, lhs, rhs, added} => Self::OuterProductAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::OuterProductAddInplace{output, lhs, rhs, added} => Self::OuterProductAddInplace{output: tf(&mut state, output), lhs, rhs, added},
             Self::OuterProductOneHot{output, lhs, rhs} => Self::OuterProductOneHot{output: tf(&mut state, output), lhs, rhs},
-            Self::OuterProductOneHotAdd{output, lhs, rhs, added} => Self::OuterProductOneHotAdd{output: tf(&mut state, output), lhs, rhs, added},
+            Self::OuterProductOneHotAddInplace{output, lhs, rhs, added} =>
+            {
+                Self::OuterProductOneHotAddInplace{output: tf(&mut state, output), lhs, rhs, added}
+            },
             Self::CopyScalar{dst, src} => Self::CopyScalar{dst: vf(&mut state, dst), src},
             Self::AddScalars{output, lhs, rhs} => Self::AddScalars{output: vf(&mut state, output), lhs, rhs},
             Self::MulScalars{output, lhs, rhs} => Self::MulScalars{output: vf(&mut state, output), lhs, rhs},
@@ -10135,9 +10147,9 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::SubFromScalar{lhs, rhs, output} => Self::SubFromScalar{rhs: tf(&mut state, rhs), lhs: vf(&mut state, lhs), output},
             Self::MulScalar{lhs, rhs, output} => Self::MulScalar{lhs: tf(&mut state, lhs), rhs, output},
             Self::MulComponentwise{lhs, rhs, output} => Self::MulComponentwise{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
-            Self::MulComponentwiseAdd{lhs, rhs, added, output} =>
+            Self::MulComponentwiseAddInplace{lhs, rhs, added, output} =>
             {
-                Self::MulComponentwiseAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+                Self::MulComponentwiseAddInplace{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::SumTensor{value, output} => Self::SumTensor{value: tf(&mut state, value), output},
             Self::MaxTensor{value, output} => Self::MaxTensor{value: tf(&mut state, value), output},
@@ -10170,32 +10182,32 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::Matmulv{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output}
             },
-            Self::MatmulvAdd{lhs, rhs, added, output} =>
+            Self::MatmulvAddInplace{lhs, rhs, added, output} =>
             {
-                Self::MatmulvAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+                Self::MatmulvAddInplace{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::MatmulOneHotv{lhs, rhs, output} =>
             {
                 Self::MatmulOneHotv{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output}
             },
-            Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+            Self::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
             {
-                Self::MatmulOneHotvAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
+                Self::MatmulOneHotvAddInplace{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
-            Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+            Self::MatmulvTransposedAddInplace{lhs, rhs, added, output} =>
             {
-                Self::MatmulvTransposedAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+                Self::MatmulvTransposedAddInplace{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::OuterProduct{lhs, rhs, output} => Self::OuterProduct{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
-            Self::OuterProductAdd{lhs, rhs, added, output} =>
+            Self::OuterProductAddInplace{lhs, rhs, added, output} =>
             {
-                Self::OuterProductAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+                Self::OuterProductAddInplace{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::OuterProductOneHot{lhs, rhs, output} => Self::OuterProductOneHot{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output},
-            Self::OuterProductOneHotAdd{lhs, rhs, added, output} =>
+            Self::OuterProductOneHotAddInplace{lhs, rhs, added, output} =>
             {
-                Self::OuterProductOneHotAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
+                Self::OuterProductOneHotAddInplace{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::CopyScalar{src, dst} => Self::CopyScalar{src: vf(&mut state, src), dst},
             Self::AddScalars{lhs, rhs, output} => Self::AddScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
