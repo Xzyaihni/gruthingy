@@ -3131,13 +3131,15 @@ impl OperationsRecorder
         struct QueryIndex
         {
             set: usize,
-            index: u32
+            index: u32,
+            operation_index: usize
         }
 
         #[cfg(feature="timedebug")]
         let mut current_timestamp = QueryIndex{
             set: 0,
-            index: 0
+            index: 0,
+            operation_index: 0
         };
 
         #[cfg(feature="timedebug")]
@@ -3158,9 +3160,11 @@ impl OperationsRecorder
             let timestamps = &mut timestamps;
             let current_timestamp = &mut current_timestamp;
             let query_sets = &mut query_sets;
-            move |device: &wgpu::Device, encoder: &mut Option<wgpu::CommandEncoder>, name: &'static str|
+            move |device: &wgpu::Device, encoder: &mut Option<wgpu::CommandEncoder>, name: &'static str, i: usize|
             {
                 let this_timestamps = timestamps.entry(name).or_default();
+
+                current_timestamp.operation_index = i;
 
                 if let Some(last_recorded) = this_timestamps.last_mut()
                 {
@@ -3255,7 +3259,7 @@ impl OperationsRecorder
                         this_operation_name = stringify!($name);
 
                         try_end_compute_pass(&mut compute_pass);
-                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name);
+                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name, i);
                     }
 
                     #[cfg(debug_assertions)]
@@ -3306,7 +3310,7 @@ impl OperationsRecorder
                     #[cfg(feature="timedebug")]
                     {
                         try_end_compute_pass(&mut compute_pass);
-                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name);
+                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name, i);
                     }
 
                     #[cfg(debug_assertions)]
@@ -5237,9 +5241,15 @@ impl OperationsRecorder
 
             let timestamp_period = self.raw_array_memory.queue.get_timestamp_period();
 
+            struct Timing
+            {
+                operation_index: usize,
+                time: f64
+            }
+
             let name_timings: Vec<_> = timestamps.into_iter().map(|(name, timestamps)|
             {
-                let elapsed_timings: Vec<f64> = timestamps.into_iter().map(|(start, end)|
+                let elapsed_timings: Vec<Timing> = timestamps.into_iter().map(|(start, end)|
                 {
                     let get_query = |query_index: QueryIndex|
                     {
@@ -5248,17 +5258,47 @@ impl OperationsRecorder
 
                     let ticks = get_query(end.unwrap()) - get_query(start);
 
-                    ticks as f64 * timestamp_period as f64
+                    let time = ticks as f64 * timestamp_period as f64;
+
+                    Timing{time, operation_index: start.operation_index}
                 }).collect();
 
                 (name, elapsed_timings)
             }).collect();
 
+            {
+                let mut total = 0.0;
+                let mut times = vec![0.0; self.raw_operations.len()];
+
+                name_timings.iter().for_each(|(_name, ts)|
+                {
+                    ts.iter().for_each(|x|
+                    {
+                        total += x.time;
+                        times[x.operation_index] += x.time;
+                    });
+                });
+
+                self.raw_operations.iter().zip(times).for_each(|(op, time)|
+                {
+                    let percent = (time / total) * 100.0;
+                    let op = NotationGradientOp(op.clone().map(|t|
+                    {
+                        DebugStringRaw(self.memory.format_tensor_raw_ptr(t))
+                    }, |v|
+                    {
+                        DebugStringRaw(self.memory.format_variable(v))
+                    }, convert::identity, convert::identity, convert::identity));
+
+                    eprintln!("{percent:.2}% {op:?}");
+                });
+            }
+
             let (mut totals, mut averages): (Vec<(&'static str, f64)>, Vec<(&'static str, f64)>) = name_timings.into_iter().map(|(name, times)|
             {
                 let times_count = times.len();
 
-                let total_ns = times.into_iter().sum::<f64>();
+                let total_ns = times.into_iter().map(|x| x.time).sum::<f64>();
 
                 let average = (total_ns / times_count as f64) * 0.001;
                 let total = total_ns * 0.001;
@@ -5282,9 +5322,9 @@ impl OperationsRecorder
                 eprintln!("{name}: {average:.1}μs on average");
             });
 
-            eprintln!("{:#?}", self.raw_array_memory.device.get_internal_counters());
+            // eprintln!("{:#?}", self.raw_array_memory.device.get_internal_counters());
 
-            eprintln!("{:#?}", self.raw_array_memory.device.generate_allocator_report());
+            // eprintln!("{:#?}", self.raw_array_memory.device.generate_allocator_report());
         }
 
         if cfg!(feature="dumpmemory")
