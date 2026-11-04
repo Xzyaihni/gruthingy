@@ -7,6 +7,7 @@ use crate::neural_network::{
     OneHotLayer,
     OneHotIndex,
     LayerSizes,
+    SeedIndex,
     network::{WeightsFullInfo, NetworkOutput}
 };
 
@@ -78,6 +79,36 @@ pub trait NetworkUnitNewable
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
 }
 
+pub struct SeedsCreator(Vec<SeedIndex>);
+
+impl SeedsCreator
+{
+    pub fn new() -> Self
+    {
+        Self(Vec::new())
+    }
+
+    pub fn get(&mut self, recorder: &mut OperationsRecorder, index: usize) -> SeedIndex
+    {
+        if index < self.0.len()
+        {
+            self.0[index]
+        } else
+        {
+            self.0.push(recorder.new_dropout_seed());
+
+            self.get(recorder, index)
+        }
+    }
+}
+
+pub struct DropoutInfo
+{
+    pub input_probability: f32,
+    pub hidden_probability: f32,
+    pub seeds: SeedsCreator
+}
+
 pub trait NetworkUnit: GenericUnit<WeightInfoPtr> + Clone
 where
     Self: Sized
@@ -88,17 +119,19 @@ where
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>;
 
     fn record_feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         // my backprop thingy struggles too much if i dont do a copy lol
-        self.record_feedforward_unit(recorder, previous_state, input).map(|x| recorder.copy(x))
+        self.record_feedforward_unit(recorder, previous_state, input, dropout).map(|x| recorder.copy(x))
     }
 }

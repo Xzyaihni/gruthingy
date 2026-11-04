@@ -13,7 +13,7 @@ use crate::{
         OperationsRecorder,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::NetworkUnit
+        network_unit::{DropoutInfo, NetworkUnit}
     }
 };
 
@@ -92,22 +92,25 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let mut seed_index = 0;
+        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped.unwrap();
-
-            debug_assert!(bias.weight_dropped.is_none());
-
-            let bias = bias.weight_replicated;
-
-            match input
+            let value = match input
             {
-                DiffInputType::Normal(x) => recorder.matmulv_add(weights, x, bias),
-                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights, x, bias)
-            }
+                DiffInputType::Normal(x) => recorder.matmulv_add(weights.weight, x, bias.weight),
+                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights.weight, x, bias.weight)
+            };
+
+            let seed = dropout.seeds.get(recorder, seed_index);
+            let value = recorder.dropout_with_seed(value, dropout.input_probability, seed);
+
+            seed_index += 1;
+
+            value
         };
 
         let mut update_gate = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
@@ -128,7 +131,12 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
-                *gate = recorder.matmulv_add(hidden.weight_dropped.unwrap(), previous_hidden, *gate);
+                let value = recorder.matmulv_add(hidden.weight, previous_hidden, *gate);
+
+                let seed = dropout.seeds.get(recorder, seed_index);
+                *gate = recorder.dropout_with_seed(value, dropout.hidden_probability, seed);
+
+                seed_index += 1;
             };
 
             do_gate(&mut forget_gate_inner, self.hidden_forget, previous_state.hidden);
@@ -196,7 +204,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::{close_enough, ShapedTensorIndex, LayerType, LayerSizes};
+    use crate::neural_network::{close_enough, ShapedTensorIndex, LayerType, LayerSizes, network_unit::SeedsCreator};
 
 
     fn assert_close_enough(a: f32, b: f32, epsilon: f32)
@@ -218,17 +226,12 @@ mod tests
             w
         };
 
-        let mut one_weight_info = |name: &'static str, is_bias: bool, value: f32|
+        let mut one_weight_info = |name: &'static str, value: f32|
         {
             let weight = one_weight(&mut recorder, value);
 
-            let weight_info = WeightInfoPtr{
-                weight_dropped: (!is_bias).then(|| weight.clone()),
-                weight_replicated: weight,
-                weight_original: weight
-            };
-
-            recorder.name_diff_tensor(weight_info.weight_original, name);
+            let weight_info = WeightInfoPtr{weight};
+            recorder.name_diff_tensor(weight_info.weight, name);
 
             weight_info
         };
@@ -253,20 +256,20 @@ mod tests
         {
             sizes: LayerSizes{hidden: 1, initial_input: 1, input: 1, output: 1, final_output: 1, layers: 1, batch_size: 1},
 
-            input_update: one_weight_info("input_update", false, 1.65),
-            input_forget: one_weight_info("input_forget", false, 1.63),
-            input_output: one_weight_info("input_output", false, -0.19),
-            input_memory: one_weight_info("input_memory", false, 0.94),
+            input_update: one_weight_info("input_update", 1.65),
+            input_forget: one_weight_info("input_forget", 1.63),
+            input_output: one_weight_info("input_output", -0.19),
+            input_memory: one_weight_info("input_memory", 0.94),
 
-            hidden_update: one_weight_info("hidden_update", false, 2.00),
-            hidden_forget: one_weight_info("hidden_forget", false, 2.70),
-            hidden_output: one_weight_info("hidden_output", false, 4.38),
-            hidden_memory: one_weight_info("hidden_memory", false, 1.41),
+            hidden_update: one_weight_info("hidden_update", 2.00),
+            hidden_forget: one_weight_info("hidden_forget", 2.70),
+            hidden_output: one_weight_info("hidden_output", 4.38),
+            hidden_memory: one_weight_info("hidden_memory", 1.41),
 
-            update_bias: one_weight_info("update_bias", true, 0.62),
-            forget_bias: one_weight_info("forget_bias", true, 1.62),
-            output_bias: one_weight_info("output_bias", true, 0.59),
-            memory_bias: one_weight_info("memory_bias", true, -0.32)
+            update_bias: one_weight_info("update_bias", 0.62),
+            forget_bias: one_weight_info("forget_bias", 1.62),
+            output_bias: one_weight_info("output_bias", 0.59),
+            memory_bias: one_weight_info("memory_bias", -0.32)
         };
 
         let state = LSTMState::<DiffTensorPtr>{
@@ -279,7 +282,13 @@ mod tests
         recorder.name_diff_tensor(input, "input");
 
         let output = {
-            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input));
+            let mut dropout_info = DropoutInfo{
+                input_probability: 0.0,
+                hidden_probability: 0.0,
+                seeds: SeedsCreator::new()
+            };
+
+            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input), &mut dropout_info);
 
             NetworkOutput{
                 state: output.state,

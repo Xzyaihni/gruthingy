@@ -73,6 +73,7 @@ pub use containers::{
     OwnedInputType,
     OneHotLayer,
     Softmaxer,
+    SeedIndex,
     optimizers::{NewableLayer, Optimizer, OptimizerInfo, OptimizerInfoPtr}
 };
 

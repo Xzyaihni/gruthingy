@@ -1551,7 +1551,8 @@ struct KernelLayouts
     r1_w3_i6: KernelLayout,
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
-    r2_w2_i0: KernelLayout
+    r2_w2_i0: KernelLayout,
+    r3_w1_i0: KernelLayout
 }
 
 #[cfg(test)]
@@ -1724,6 +1725,21 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 0)
             };
 
+            let r3_w1_i0 = {
+                let name = "r3_w1_i0";
+                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some(name),
+                    entries: &[
+                        input_layout_entry(0),
+                        input_layout_entry(1),
+                        input_layout_entry(2),
+                        output_layout_entry(3)
+                    ]
+                });
+
+                from_bind_group_layout(bind_group_layout, name, 0)
+            };
+
             KernelLayouts{
                 r1_w1_i0,
                 r1_w1_i1,
@@ -1732,7 +1748,8 @@ impl WgpuInitInfo
                 r1_w3_i6,
                 r2_w1_i0,
                 r2_w1_i1,
-                r2_w2_i0
+                r2_w2_i0,
+                r3_w1_i0
             }
         };
 
@@ -1751,7 +1768,6 @@ impl WgpuInitInfo
                 OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.r1_w1_i1),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1_i0),
-                OpKernel::BatchReplicateDropout => ("kernels/batch_replicate_dropout.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::Dropout => ("kernels/dropout.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::Magnitude => ("kernels/magnitude.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::CapMagnitude => ("kernels/cap_magnitude.wgsl", &kernel_layouts.r1_w1_i1),
@@ -1767,6 +1783,7 @@ impl WgpuInitInfo
                 OpKernel::MatmulOneHotv => ("kernels/matmul_onehotv.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulOneHotvAddInplace => ("kernels/matmul_onehotv_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r3_w1_i0),
                 OpKernel::MatmulvTransposedAddInplace => ("kernels/matmulv_transposed_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductAddInplace => ("kernels/outer_product_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
@@ -2655,16 +2672,33 @@ impl OperationsRecorder
         output
     }
 
+    pub fn new_dropout_seed(&mut self) -> SeedIndex
+    {
+        let seed_index = SeedIndex(self.memory.seeds.len());
+        self.memory.seeds.push(0);
+
+        seed_index
+    }
+
     pub fn dropout(&mut self, value: DiffTensorPtr, probability: f32) -> DiffTensorPtr
     {
+        let seed = self.new_dropout_seed();
+
+        self.dropout_with_seed(value, probability, seed)
+    }
+
+    pub fn dropout_with_seed(&mut self, value: DiffTensorPtr, probability: f32, seed: SeedIndex) -> DiffTensorPtr
+    {
+        if probability == 0.0
+        {
+            return value;
+        }
+
         let shape = self.tensor_shape(value.as_value());
 
         let output = self.new_tensor_op(shape.into());
 
-        let seed_index = SeedIndex(self.memory.seeds.len());
-        self.memory.seeds.push(0);
-
-        self.add_recording_operation(Op::Dropout{value, probability, seed_index, output});
+        self.add_recording_operation(Op::Dropout{value, probability, seed_index: seed, output});
 
         output
     }
@@ -3076,6 +3110,11 @@ impl OperationsRecorder
 
             loop_info.times = loop_info.times_total;
         }
+
+        self.memory.seeds.iter_mut().for_each(|seed|
+        {
+            *seed = fastrand::u64(..);
+        });
 
         #[cfg(debug_assertions)]
         {
@@ -3536,16 +3575,11 @@ impl OperationsRecorder
                 scratch_buffers_locations: &[Vec<ScratchBufferIndex>],
                 staging_belt: &mut wgpu::util::StagingBelt,
                 encoder: &mut Option<wgpu::CommandEncoder>,
-                seeds: &mut [u64],
+                seed: u64,
                 probability: f32,
-                seed_index: SeedIndex,
                 i: usize
             ) -> &'a wgpu::Buffer
             {
-                let seed = fastrand::u64(..);
-
-                seeds[seed_index.0] = seed;
-
                 let scratch_buffer = {
                     let index: ScratchBufferIndex = scratch_buffers_locations[i][0];
 
@@ -4382,42 +4416,6 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::BatchReplicateDropout{value, probability, seed_index, output} =>
-                {
-                    debug_calculate_values!(BatchReplicateDropout, (value),());
-
-                    debug_assert_eq!(value.shape.batch_size, 1);
-
-                    debug_assert_eq!(value.shape.rows, output.shape.rows);
-                    debug_assert_eq!(value.shape.columns, output.shape.columns);
-
-                    try_end_compute_pass(&mut compute_pass);
-
-                    let states = dropout_states(
-                        &self.raw_array_memory.scratch_buffers,
-                        &self.raw_array_memory.scratch_buffers_locations,
-                        &mut self.raw_array_memory.staging_belt,
-                        &mut self.raw_array_memory.encoder,
-                        &mut self.memory.seeds,
-                        *probability,
-                        *seed_index,
-                        i
-                    );
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
-                        bind_group_entry(0, *value),
-                        create_bind_group_entry(1, states),
-                        bind_group_entry(2, *output)
-                    ], "BatchReplicateDropout", 0);
-
-                    do_kernel_operation!(BatchReplicateDropout, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
-
-                    single_workgroup(&mut compute_pass, output.size());
-
-                    debug_calculate_values_result!((output),());
-                },
                 GradientOp::Dropout{value, probability, seed_index, output} =>
                 {
                     debug_calculate_values!(Dropout, (value),());
@@ -4431,21 +4429,18 @@ impl OperationsRecorder
                         &self.raw_array_memory.scratch_buffers_locations,
                         &mut self.raw_array_memory.staging_belt,
                         &mut self.raw_array_memory.encoder,
-                        &mut self.memory.seeds,
+                        self.memory.seeds[seed_index.0],
                         *probability,
-                        *seed_index,
                         i
                     );
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
                         bind_group_entry(0, *value),
                         create_bind_group_entry(1, states),
                         bind_group_entry(2, *output)
                     ], "Dropout", 0);
 
                     do_kernel_operation!(Dropout, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4464,21 +4459,18 @@ impl OperationsRecorder
                         &self.raw_array_memory.scratch_buffers_locations,
                         &mut self.raw_array_memory.staging_belt,
                         &mut self.raw_array_memory.encoder,
-                        &mut self.memory.seeds,
+                        self.memory.seeds[seed_index.0],
                         *probability,
-                        *seed_index,
                         i
                     );
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
                         bind_group_entry(0, *value),
                         create_bind_group_entry(1, states),
                         bind_group_entry(2, *output)
                     ], "DropoutDiff", 0);
 
                     do_kernel_operation!(Dropout, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(value.shape.rows as u32).to_ne_bytes());
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -5015,6 +5007,34 @@ impl OperationsRecorder
                     }
 
                     exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+                {
+                    debug_calculate_values!(MatmulvTransposedAdd, (lhs, rhs, added),());
+
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.rows, rhs.shape.rows);
+                    debug_assert_eq!(lhs.shape.columns, output.shape.rows);
+
+                    debug_assert_eq!(rhs.shape.columns, 1);
+                    debug_assert_eq!(output.shape.columns, 1);
+
+                    debug_assert_eq!(output.shape, added.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i0, &[
+                        bind_group_entry(0, *lhs),
+                        bind_group_entry(1, *rhs),
+                        bind_group_entry(2, *added),
+                        bind_group_entry(3, *output)
+                    ], "MatmulvTransposedAdd", 0);
+
+                    do_kernel_operation!(MatmulvTransposedAdd, i, 0);
+
+                    exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
 
                     debug_calculate_values_result!((output),());
                 },
@@ -6092,13 +6112,6 @@ impl OperationsRecorder
                     GradientOp::OuterProductOneHotAddInplace{lhs: mul_lhs, rhs: mul_rhs, added, output: add_output}
                 },
                 (
-                    GradientOp::BatchReplicate{value, output: _},
-                    GradientOp::Dropout{value: _, probability, seed_index, output}
-                ) =>
-                {
-                    GradientOp::BatchReplicateDropout{value, probability, seed_index, output}
-                },
-                (
                     GradientOp::SumBatch{value, scalar, output: _},
                     GradientOp::MulScalar{lhs: _, rhs, output}
                 ) =>
@@ -6585,7 +6598,6 @@ impl OperationsRecorder
                 GradientOp::OptimizerAdamW{gradient, adamw: _, m, v, output} => t_storage!(gradient, m, v, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
-                GradientOp::BatchReplicateDropout{value, probability: _, seed_index: _, output} => t_storage!(value, output),
                 GradientOp::Dropout{value, probability: _, seed_index: _, output} => t_storage!(value, output),
                 GradientOp::DropoutDiff{value, probability: _, seed_index: _, output} => t_storage!(value, output),
                 GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
@@ -6616,6 +6628,7 @@ impl OperationsRecorder
                 | GradientOp::MatmulvAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::MatmulOneHotv{lhs, rhs, output}
                 | GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added: _, output} => { t_storage!(lhs, output); o_storage!(rhs) },
+                GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => t_storage!(lhs, rhs, added, output),
                 GradientOp::MatmulvTransposed{lhs, rhs, output}
                 | GradientOp::MatmulvTransposedAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::OuterProduct{lhs, rhs, output}
@@ -6880,11 +6893,10 @@ impl OperationsRecorder
             {
                 GradientOp::Dot{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
                 GradientOp::Dropout{value, ..}
-                | GradientOp::DropoutDiff{value, ..}
-                | GradientOp::BatchReplicateDropout{output: value, ..} =>
+                | GradientOp::DropoutDiff{value, ..} =>
                 {
                     let shape = self.memory.tensor_shape(value);
-                    let states = shape.columns * shape.batch_size;
+                    let states = shape.size();
 
                     // u32 stores 32 packed bools
                     Some(vec![(states.div_ceil(32)).into()])
@@ -9648,7 +9660,6 @@ pub enum GradientOp<T, V, J, O, S>
     SumBatch{value: T, scalar: f32, output: T},
     Fill{value: T, output: T},
     BatchReplicate{value: T, output: T},
-    BatchReplicateDropout{value: T, probability: f32, seed_index: SeedIndex, output: T},
     Dropout{value: T, probability: f32, seed_index: SeedIndex, output: T},
     DropoutDiff{value: T, probability: f32, seed_index: SeedIndex, output: T},
     CapMagnitude{value: T, magnitude: f32, output: T},
@@ -9673,6 +9684,7 @@ pub enum GradientOp<T, V, J, O, S>
     MatmulOneHotv{lhs: T, rhs: O, output: T},
     MatmulOneHotvAddInplace{lhs: T, rhs: O, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
+    MatmulvTransposedAdd{lhs: T, rhs: T, added: T, output: T},
     MatmulvTransposedAddInplace{lhs: T, rhs: T, added: T, output: T},
     OuterProduct{lhs: T, rhs: T, output: T},
     OuterProductAddInplace{lhs: T, rhs: T, added: T, output: T},
@@ -9760,10 +9772,6 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::SumBatch{value, scalar, output} => GradientOp::SumBatch{value: tf(value), scalar, output: tf(output)},
             Self::Fill{value, output} => GradientOp::Fill{value: tf(value), output: tf(output)},
             Self::BatchReplicate{value, output} => GradientOp::BatchReplicate{value: tf(value), output: tf(output)},
-            Self::BatchReplicateDropout{value, probability, seed_index, output} =>
-            {
-                GradientOp::BatchReplicateDropout{value: tf(value), probability, seed_index, output: tf(output)}
-            },
             Self::Dropout{value, probability, seed_index, output} =>
             {
                 GradientOp::Dropout{value: tf(value), probability, seed_index, output: tf(output)}
@@ -9826,6 +9834,10 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
                 GradientOp::MatmulOneHotvAddInplace{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
+            Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::MatmulvTransposedAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+            },
             Self::MatmulvTransposedAddInplace{lhs, rhs, added, output} =>
             {
                 GradientOp::MatmulvTransposedAddInplace{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
@@ -10016,10 +10028,6 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             },
             Self::Fill{output, value} => Self::Fill{output: tf(&mut state, output), value},
             Self::BatchReplicate{output, value} => Self::BatchReplicate{output: tf(&mut state, output), value},
-            Self::BatchReplicateDropout{output, probability, seed_index, value} =>
-            {
-                Self::BatchReplicateDropout{output: tf(&mut state, output), probability, seed_index, value}
-            },
             Self::Dropout{value, probability, seed_index, output} =>
             {
                 Self::Dropout{value, probability, seed_index, output: tf(&mut state, output)}
@@ -10058,6 +10066,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MatmulOneHotv{output, lhs, rhs} => Self::MatmulOneHotv{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulOneHotvAddInplace{output, lhs, rhs, added} => Self::MatmulOneHotvAddInplace{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(&mut state, output), lhs, rhs},
+            Self::MatmulvTransposedAdd{output, lhs, rhs, added} =>
+            {
+                Self::MatmulvTransposedAdd{output: tf(&mut state, output), lhs, rhs, added}
+            },
             Self::MatmulvTransposedAddInplace{output, lhs, rhs, added} =>
             {
                 Self::MatmulvTransposedAddInplace{output: tf(&mut state, output), lhs, rhs, added}
@@ -10195,6 +10207,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
                 Self::MatmulOneHotvAddInplace{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
+            Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
+            {
+                Self::MatmulvTransposedAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+            },
             Self::MatmulvTransposedAddInplace{lhs, rhs, added, output} =>
             {
                 Self::MatmulvTransposedAddInplace{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
@@ -10214,10 +10230,6 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MulScalars{lhs, rhs, output} => Self::MulScalars{lhs: vf(&mut state, lhs), rhs: vf(&mut state, rhs), output},
             Self::Fill{value, output} => Self::Fill{value: tf(&mut state, value), output},
             Self::BatchReplicate{value, output} => Self::BatchReplicate{value: tf(&mut state, value), output},
-            Self::BatchReplicateDropout{value, probability, seed_index, output} =>
-            {
-                Self::BatchReplicateDropout{value: tf(&mut state, value), probability, seed_index, output}
-            },
             Self::Dropout{value, probability, seed_index, output} =>
             {
                 Self::Dropout{value: tf(&mut state, value), probability, seed_index, output}

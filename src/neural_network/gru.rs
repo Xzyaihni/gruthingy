@@ -13,7 +13,7 @@ use crate::{
         WeightInfoPtr,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::NetworkUnit
+        network_unit::{DropoutInfo, NetworkUnit}
     }
 };
 
@@ -72,22 +72,25 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let mut seed_index = 0;
+        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped.unwrap();
-
-            debug_assert!(bias.weight_dropped.is_none());
-
-            let bias = bias.weight_replicated;
-
-            match input
+            let value = match input
             {
-                DiffInputType::Normal(x) => recorder.matmulv_add(weights, x, bias),
-                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights, x, bias)
-            }
+                DiffInputType::Normal(x) => recorder.matmulv_add(weights.weight, x, bias.weight),
+                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights.weight, x, bias.weight)
+            };
+
+            let seed = dropout.seeds.get(recorder, seed_index);
+            let value = recorder.dropout_with_seed(value, dropout.input_probability, seed);
+
+            seed_index += 1;
+
+            value
         };
 
         let mut update_gate = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
@@ -105,7 +108,12 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
             {
-                *gate = recorder.matmulv_add(hidden.weight_dropped.unwrap(), *previous_state, *gate);
+                let value = recorder.matmulv_add(hidden.weight, *previous_state, *gate);
+
+                let seed = dropout.seeds.get(recorder, seed_index);
+                *gate = recorder.dropout_with_seed(value, dropout.hidden_probability, seed);
+
+                seed_index += 1;
             };
 
             do_gate(&mut update_gate, self.hidden_update);
@@ -124,7 +132,11 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         if let Some(previous_state) = previous_state
         {
             let activation_v = recorder.mul_componentwise(reset_gate.unwrap(), *previous_state);
-            let mm = recorder.matmulv(self.hidden_activation.weight_dropped.unwrap(), activation_v);
+
+            let mm_pre = recorder.matmulv(self.hidden_activation.weight, activation_v);
+
+            let seed = dropout.seeds.get(recorder, seed_index);
+            let mm = recorder.dropout_with_seed(mm_pre, dropout.hidden_probability, seed);
 
             activation_gate = recorder.add(activation_gate, mm);
         }

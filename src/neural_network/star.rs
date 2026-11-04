@@ -10,7 +10,7 @@ use crate::{
         WeightInfoPtr,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::NetworkUnit
+        network_unit::{DropoutInfo, NetworkUnit}
     }
 };
 
@@ -41,22 +41,25 @@ impl NetworkUnit for Star<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let mut seed_index = 0;
+        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let weights = weights.weight_dropped.unwrap();
-
-            debug_assert!(bias.weight_dropped.is_none());
-
-            let bias = bias.weight_replicated;
-
-            match input
+            let value = match input
             {
-                DiffInputType::Normal(x) => recorder.matmulv_add(weights, x, bias),
-                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights, x, bias)
-            }
+                DiffInputType::Normal(x) => recorder.matmulv_add(weights.weight, x, bias.weight),
+                DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights.weight, x, bias.weight)
+            };
+
+            let seed = dropout.seeds.get(recorder, seed_index);
+            let value = recorder.dropout_with_seed(value, dropout.input_probability, seed);
+
+            seed_index += 1;
+
+            value
         };
 
         let z_pre = matmul_inputv_add(recorder, self.input_z, input, self.z_bias);
@@ -70,7 +73,11 @@ impl NetworkUnit for Star<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
-            k = recorder.matmulv_add(self.hidden.weight_dropped.unwrap(), *previous_state, k);
+            let k_pre = recorder.matmulv_add(self.hidden.weight, *previous_state, k);
+
+            let seed = dropout.seeds.get(recorder, seed_index);
+            k = recorder.dropout_with_seed(k_pre, dropout.hidden_probability, seed);
+
             recorder.name_diff_tensor(k, "k_inner");
         }
 

@@ -14,7 +14,7 @@ use crate::{
         WeightInfoPtr,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::{NetworkUnit, Embeddingsable, EmbeddingsableOwned}
+        network_unit::{DropoutInfo, NetworkUnit, Embeddingsable, EmbeddingsableOwned}
     }
 };
 
@@ -30,7 +30,7 @@ impl Embeddingsable for EmbeddingUnit<WeightInfoPtr>
 {
     fn embeddings(&self, recorder: &mut OperationsRecorder, input: OneHotIndex) -> DiffTensorPtr
     {
-        recorder.matmul_onehotv_add(self.weights.weight_dropped.unwrap(), input, self.bias.weight_replicated)
+        recorder.matmul_onehotv_add(self.weights.weight, input, self.bias.weight)
     }
 }
 
@@ -70,7 +70,8 @@ impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
         &self,
         recorder: &mut OperationsRecorder,
         _previous_state: Option<&Self::State<DiffTensorPtr>>,
-        input: DiffInputType
+        input: DiffInputType,
+        _dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
         let hidden = self.embeddings(recorder, input.into_one_hot());
