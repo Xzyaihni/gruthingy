@@ -4,7 +4,7 @@ let output_length = arrayLength(&output);
 let batch_size = arrayLength(&rhs) / one_hot_count;
 
 let lhs_rows = output_length / batch_size;
-let lhs_single_length = lhs_length / batch_size;
+let lhs_single_length = select(lhs_length / batch_size, lhs_length, is_lhs_single_batch);
 let lhs_columns = lhs_single_length / lhs_rows;
 
 let column_stride = lhs_rows;
@@ -22,10 +22,19 @@ for (var o = 0u; o < one_hot_count; o++)
     {
         if o == 0
         {
-            output[workgroup_id.x] = map_output(workgroup_id.x, 0.0);
+            output[workgroup_id.x] = map_output(lhs_rows, workgroup_id.x, 0.0);
         }
     } else
     {
-        output[workgroup_id.x] = map_output(workgroup_id.x, lhs[batch_start + row + one_hot_index * column_stride]);
+        let lhs_index = select(batch_start, 0, is_lhs_single_batch) + row + one_hot_index * column_stride;
+        let value = lhs[lhs_index];
+
+        if o == 0
+        {
+            output[workgroup_id.x] = map_output_first(lhs_rows, workgroup_id.x, value);
+        } else
+        {
+            output[workgroup_id.x] += map_output(lhs_rows, workgroup_id.x, value);
+        }
     }
 }

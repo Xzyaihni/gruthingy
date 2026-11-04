@@ -1552,7 +1552,8 @@ struct KernelLayouts
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
     r2_w2_i0: KernelLayout,
-    r3_w1_i0: KernelLayout
+    r3_w1_i0: KernelLayout,
+    r3_w1_i1: KernelLayout
 }
 
 #[cfg(test)]
@@ -1725,20 +1726,18 @@ impl WgpuInitInfo
                 from_bind_group_layout(bind_group_layout, name, 0)
             };
 
-            let r3_w1_i0 = {
-                let name = "r3_w1_i0";
-                let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some(name),
-                    entries: &[
-                        input_layout_entry(0),
-                        input_layout_entry(1),
-                        input_layout_entry(2),
-                        output_layout_entry(3)
-                    ]
-                });
+            let r3_w1_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                label: Some("r3_w1"),
+                entries: &[
+                    input_layout_entry(0),
+                    input_layout_entry(1),
+                    input_layout_entry(2),
+                    output_layout_entry(3)
+                ]
+            });
 
-                from_bind_group_layout(bind_group_layout, name, 0)
-            };
+            let r3_w1_i0 = from_bind_group_layout(r3_w1_bind_group_layout.clone(), "r3_w1_i0", 0);
+            let r3_w1_i1 = from_bind_group_layout(r3_w1_bind_group_layout, "r3_w1_i1", 1);
 
             KernelLayouts{
                 r1_w1_i0,
@@ -1749,7 +1748,8 @@ impl WgpuInitInfo
                 r2_w1_i0,
                 r2_w1_i1,
                 r2_w2_i0,
-                r3_w1_i0
+                r3_w1_i0,
+                r3_w1_i1
             }
         };
 
@@ -1779,12 +1779,16 @@ impl WgpuInitInfo
                 OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvBatched => ("kernels/matmulv_batched.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::MatmulvAddInplace => ("kernels/matmulv_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvAddBatched => ("kernels/matmulv_add_batched.wgsl", &kernel_layouts.r3_w1_i0),
                 OpKernel::MatmulOneHotv => ("kernels/matmul_onehotv.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulOneHotvBatched => ("kernels/matmul_onehotv_batched.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulOneHotvAddInplace => ("kernels/matmul_onehotv_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulOneHotvAddBatched => ("kernels/matmul_onehotv_add_batched.wgsl", &kernel_layouts.r3_w1_i1),
                 OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvTransposedAdd => ("kernels/matmulv_transposed_add.wgsl", &kernel_layouts.r3_w1_i0),
                 OpKernel::MatmulvTransposedAddInplace => ("kernels/matmulv_transposed_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::MatmulvTransposedAddBatched => ("kernels/matmulv_transposed_add_batched.wgsl", &kernel_layouts.r3_w1_i0),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductAddInplace => ("kernels/outer_product_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
@@ -2710,13 +2714,12 @@ impl OperationsRecorder
 
     pub fn matmulv(&mut self, a: DiffTensorPtr, b: DiffTensorPtr) -> DiffTensorPtr
     {
-        let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
+        let TensorShape{rows: a_rows, columns: a_columns, ..} = self.tensor_shape(a.as_value());
         let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
 
         debug_assert_eq!(a_columns, b_rows);
-        debug_assert_eq!(a_batch_size, b_batch_size);
 
-        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: a_batch_size});
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: b_batch_size});
 
         self.add_recording_operation(Op::Matmulv{lhs: a, rhs: b, output});
 
@@ -2725,7 +2728,7 @@ impl OperationsRecorder
 
     pub fn matmulv_add(&mut self, a: DiffTensorPtr, b: DiffTensorPtr, added: DiffTensorPtr) -> DiffTensorPtr
     {
-        let TensorShape{rows: a_rows, columns: a_columns, batch_size: a_batch_size} = self.tensor_shape(a.as_value());
+        let TensorShape{rows: a_rows, columns: a_columns, ..} = self.tensor_shape(a.as_value());
         let TensorShape{rows: b_rows, columns: b_columns, batch_size: b_batch_size} = self.tensor_shape(b.as_value());
 
         let added_shape = self.tensor_shape(added.as_value());
@@ -2735,10 +2738,7 @@ impl OperationsRecorder
         debug_assert_eq!(a_rows, added_shape.rows);
         debug_assert_eq!(b_columns, added_shape.columns);
 
-        debug_assert_eq!(a_batch_size, b_batch_size);
-        debug_assert_eq!(a_batch_size, added_shape.batch_size);
-
-        let output = self.new_tensor_op(added_shape);
+        let output = self.new_tensor_op(TensorShape{batch_size: b_batch_size, ..added_shape});
 
         self.add_recording_operation(Op::MatmulvAdd{lhs: a, rhs: b, added, output});
 
@@ -2747,10 +2747,12 @@ impl OperationsRecorder
 
     pub fn matmul_onehotv(&mut self, a: DiffTensorPtr, b: OneHotIndex) -> DiffTensorPtr
     {
-        let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
+        let TensorShape{rows: a_rows, ..} = self.tensor_shape(a.as_value());
         let b_columns = 1;
 
-        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: a_batch_size});
+        let b_batch_size = self.one_hot_batch_size(b);
+
+        let output = self.new_tensor_op(TensorShape{rows: a_rows, columns: b_columns, batch_size: b_batch_size});
 
         self.add_recording_operation(Op::MatmulOneHotv{lhs: a, rhs: b, output});
 
@@ -2762,6 +2764,8 @@ impl OperationsRecorder
         let TensorShape{rows: a_rows, batch_size: a_batch_size, ..} = self.tensor_shape(a.as_value());
         let b_columns = 1;
 
+        let b_batch_size = self.one_hot_batch_size(b);
+
         let added_shape = self.tensor_shape(added.as_value());
 
         debug_assert_eq!(a_rows, added_shape.rows);
@@ -2769,7 +2773,7 @@ impl OperationsRecorder
 
         debug_assert_eq!(a_batch_size, added_shape.batch_size);
 
-        let output = self.new_tensor_op(added_shape);
+        let output = self.new_tensor_op(TensorShape{batch_size: b_batch_size, ..added_shape});
 
         self.add_recording_operation(Op::MatmulOneHotvAdd{lhs: a, rhs: b, added, output});
 
@@ -4926,43 +4930,131 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                this_op@GradientOp::MatmulOneHotv{lhs, rhs, output}
-                | this_op@GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added: _, output} =>
+                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
-                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
-                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+                    debug_calculate_values!(MatmulOneHotvAddBatched, (lhs, rhs),());
+
+                    debug_assert_eq!(lhs.shape.batch_size, 1);
+                    debug_assert_eq!(added.shape.batch_size, 1);
+
+                    debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
 
                     debug_assert_eq!(lhs.shape.rows, output.shape.rows);
 
+                    debug_assert_eq!(added.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i1, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *output)
-                    ], "MatmulOneHotv", 0);
+                        bind_group_entry(2, *added),
+                        bind_group_entry(3, *output)
+                    ], "MatmulOneHotvAddBatched", 0);
 
-                    #[allow(unused_variables)]
-                    match this_op
-                    {
-                        GradientOp::MatmulOneHotv{lhs, rhs, output: _} =>
-                        {
-                            debug_calculate_values!(MatmulOneHotv, (lhs, rhs),());
-
-                            do_kernel_operation!(MatmulOneHotv, i, 0);
-                        },
-                        GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
-                        {
-                            debug_calculate_values!(MatmulOneHotvAddInplace, (lhs, rhs, added),());
-
-                            debug_assert_eq!(added, output);
-
-                            do_kernel_operation!(MatmulOneHotvAddInplace, i, 0);
-                        },
-                        _ => ()
-                    }
+                    do_kernel_operation!(MatmulOneHotvAddBatched, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes());
+
+                    exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+
+                    debug_calculate_values_result!((output),());
+                },
+                this_op@GradientOp::MatmulOneHotv{lhs, rhs, output}
+                | this_op@GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added: _, output} =>
+                {
+                    let is_batched = lhs.shape.batch_size == 1;
+
+                    if is_batched
+                    {
+                        debug_calculate_values!(MatmulOneHotvBatched, (lhs, rhs),());
+
+                        debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
+
+                        debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                        debug_assert_eq!(lhs.shape.batch_size, 1);
+                        debug_assert_eq!(output.shape.columns, 1);
+
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ], "MatmulOneHotv", 0);
+
+                        let GradientOp::MatmulOneHotv{lhs, rhs, output: _} = this_op else {
+                            unreachable!()
+                        };
+
+                        do_kernel_operation!(MatmulOneHotvBatched, i, 0);
+
+                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes());
+
+                        exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+                    } else
+                    {
+                        debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                        debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                        debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                        debug_assert_eq!(output.shape.columns, 1);
+
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ], "MatmulOneHotv", 0);
+
+                        #[allow(unused_variables)]
+                        match this_op
+                        {
+                            GradientOp::MatmulOneHotv{lhs, rhs, output: _} =>
+                            {
+                                debug_calculate_values!(MatmulOneHotv, (lhs, rhs),());
+
+                                do_kernel_operation!(MatmulOneHotv, i, 0);
+                            },
+                            GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
+                            {
+                                debug_calculate_values!(MatmulOneHotvAddInplace, (lhs, rhs, added),());
+
+                                debug_assert_eq!(added, output);
+
+                                do_kernel_operation!(MatmulOneHotvAddInplace, i, 0);
+                            },
+                            _ => ()
+                        }
+
+                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes());
+
+                        exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+                    }
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
+                {
+                    debug_calculate_values!(MatmulvAddBatched, (lhs, rhs),());
+
+                    debug_assert_eq!(lhs.shape.batch_size, 1);
+                    debug_assert_eq!(added.shape.batch_size, 1);
+
+                    debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                    debug_assert_eq!(added.shape.columns, 1);
+                    debug_assert_eq!(output.shape.columns, 1);
+
+                    debug_assert_eq!(added.shape.rows, output.shape.rows);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i0, &[
+                        bind_group_entry(0, *lhs),
+                        bind_group_entry(1, *rhs),
+                        bind_group_entry(2, *added),
+                        bind_group_entry(3, *output)
+                    ], "MatmulvAddBatched", 0);
+
+                    do_kernel_operation!(MatmulvAddBatched, i, 0);
 
                     exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
 
@@ -4971,42 +5063,73 @@ impl OperationsRecorder
                 this_op@GradientOp::Matmulv{lhs, rhs, output}
                 | this_op@GradientOp::MatmulvAddInplace{lhs, rhs, added: _, output} =>
                 {
-                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
-                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+                    let is_batched = lhs.shape.batch_size == 1;
 
-                    debug_assert_eq!(lhs.shape.columns, rhs.shape.rows);
-                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
-
-                    debug_assert_eq!(rhs.shape.columns, 1);
-                    debug_assert_eq!(output.shape.columns, 1);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *output)
-                    ], "Matmulv", 0);
-
-                    #[allow(unused_variables)]
-                    match this_op
+                    if is_batched
                     {
-                        GradientOp::Matmulv{lhs: _, rhs, output: _} =>
+                        debug_calculate_values!(MatmulvBatched, (lhs, rhs),());
+
+                        debug_assert_eq!(lhs.shape.batch_size, 1);
+                        debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
+
+                        debug_assert_eq!(lhs.shape.columns, rhs.shape.rows);
+                        debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                        debug_assert_eq!(rhs.shape.columns, 1);
+                        debug_assert_eq!(output.shape.columns, 1);
+
+                        let GradientOp::Matmulv{lhs, rhs, output: _} = this_op else {
+                            unreachable!()
+                        };
+
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ], "MatmulvBatched", 0);
+
+                        do_kernel_operation!(MatmulvBatched, i, 0);
+
+                        exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
+                    } else
+                    {
+                        debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                        debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                        debug_assert_eq!(lhs.shape.columns, rhs.shape.rows);
+                        debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+
+                        debug_assert_eq!(rhs.shape.columns, 1);
+                        debug_assert_eq!(output.shape.columns, 1);
+
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                            bind_group_entry(0, *lhs),
+                            bind_group_entry(1, *rhs),
+                            bind_group_entry(2, *output)
+                        ], "Matmulv", 0);
+
+                        #[allow(unused_variables)]
+                        match this_op
                         {
-                            debug_calculate_values!(Matmulv, (lhs, rhs),());
+                            GradientOp::Matmulv{lhs: _, rhs, output: _} =>
+                            {
+                                debug_calculate_values!(Matmulv, (lhs, rhs),());
 
-                            do_kernel_operation!(Matmulv, i, 0);
-                        },
-                        GradientOp::MatmulvAddInplace{lhs: _, rhs, added, output} =>
-                        {
-                            debug_calculate_values!(MatmulvAddInplace, (lhs, rhs, added),());
+                                do_kernel_operation!(Matmulv, i, 0);
+                            },
+                            GradientOp::MatmulvAddInplace{lhs: _, rhs, added, output} =>
+                            {
+                                debug_calculate_values!(MatmulvAddInplace, (lhs, rhs, added),());
 
-                            debug_assert_eq!(added, output);
+                                debug_assert_eq!(added, output);
 
-                            do_kernel_operation!(MatmulvAddInplace, i, 0);
-                        },
-                        _ => unreachable!()
+                                do_kernel_operation!(MatmulvAddInplace, i, 0);
+                            },
+                            _ => unreachable!()
+                        }
+
+                        exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                     }
-
-                    exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
 
                     debug_calculate_values_result!((output),());
                 },
@@ -5014,25 +5137,26 @@ impl OperationsRecorder
                 {
                     debug_calculate_values!(MatmulvTransposedAdd, (lhs, rhs, added),());
 
-                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
-                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, 1);
+                    debug_assert_eq!(added.shape.batch_size, 1);
 
                     debug_assert_eq!(lhs.shape.rows, rhs.shape.rows);
                     debug_assert_eq!(lhs.shape.columns, output.shape.rows);
 
                     debug_assert_eq!(rhs.shape.columns, 1);
+                    debug_assert_eq!(added.shape.columns, 1);
                     debug_assert_eq!(output.shape.columns, 1);
 
-                    debug_assert_eq!(output.shape, added.shape);
+                    debug_assert_eq!(output.shape.rows, added.shape.rows);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i0, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *added),
                         bind_group_entry(3, *output)
-                    ], "MatmulvTransposedAdd", 0);
+                    ], "MatmulvTransposedAddBatched", 0);
 
-                    do_kernel_operation!(MatmulvTransposedAdd, i, 0);
+                    do_kernel_operation!(MatmulvTransposedAddBatched, i, 0);
 
                     exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
 
@@ -5497,7 +5621,7 @@ impl OperationsRecorder
                 },
                 Op::MatmulvAdd{lhs, rhs, added, output} =>
                 {
-                    GradientOp::MatmulvAddInplace{lhs: lhs.as_value(), rhs: rhs.as_value(), added: added.as_value(), output: output.as_value()}
+                    GradientOp::MatmulvAdd{lhs: lhs.as_value(), rhs: rhs.as_value(), added: added.as_value(), output: output.as_value()}
                 },
                 Op::MatmulOneHotv{lhs, rhs, output} =>
                 {
@@ -5505,7 +5629,7 @@ impl OperationsRecorder
                 },
                 Op::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
-                    GradientOp::MatmulOneHotvAddInplace{lhs: lhs.as_value(), rhs: *rhs, added: added.as_value(), output: output.as_value()}
+                    GradientOp::MatmulOneHotvAdd{lhs: lhs.as_value(), rhs: *rhs, added: added.as_value(), output: output.as_value()}
                 },
                 Op::OuterProduct{lhs, rhs, output} =>
                 {
@@ -6624,8 +6748,10 @@ impl OperationsRecorder
                 {
                     t_src!(softmaxed_values); t_dst!(output); t_storage!(softmaxed_values, gradient, output); o_storage!(targets)
                 },
+                GradientOp::MatmulvAdd{lhs, rhs, added, output} => t_storage!(lhs, rhs, added, output),
                 GradientOp::Matmulv{lhs, rhs, output}
                 | GradientOp::MatmulvAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
+                GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} => { t_storage!(lhs, added, output); o_storage!(rhs) },
                 GradientOp::MatmulOneHotv{lhs, rhs, output}
                 | GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added: _, output} => { t_storage!(lhs, output); o_storage!(rhs) },
                 GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => t_storage!(lhs, rhs, added, output),
@@ -9681,8 +9807,10 @@ pub enum GradientOp<T, V, J, O, S>
     SoftmaxCrossEntropyDiff{softmaxed_values: T, gradient: T, targets: O, output: T},
     Matmulv{lhs: T, rhs: T, output: T},
     MatmulvAddInplace{lhs: T, rhs: T, added: T, output: T},
+    MatmulvAdd{lhs: T, rhs: T, added: T, output: T},
     MatmulOneHotv{lhs: T, rhs: O, output: T},
     MatmulOneHotvAddInplace{lhs: T, rhs: O, added: T, output: T},
+    MatmulOneHotvAdd{lhs: T, rhs: O, added: T, output: T},
     MatmulvTransposed{lhs: T, rhs: T, output: T},
     MatmulvTransposedAdd{lhs: T, rhs: T, added: T, output: T},
     MatmulvTransposedAddInplace{lhs: T, rhs: T, added: T, output: T},
@@ -9825,6 +9953,10 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             {
                 GradientOp::MatmulvAddInplace{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
             },
+            Self::MatmulvAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::MatmulvAdd{lhs: tf(lhs), rhs: tf(rhs), added: tf(added), output: tf(output)}
+            },
             Self::MatmulOneHotv{lhs, rhs, output} =>
             {
                 GradientOp::MatmulOneHotv{lhs: tf(lhs), rhs: onehot_f(rhs), output: tf(output)}
@@ -9832,6 +9964,10 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
             {
                 GradientOp::MatmulOneHotvAddInplace{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
+            },
+            Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+            {
+                GradientOp::MatmulOneHotvAdd{lhs: tf(lhs), rhs: onehot_f(rhs), added: tf(added), output: tf(output)}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => GradientOp::MatmulvTransposed{lhs: tf(lhs), rhs: tf(rhs), output: tf(output)},
             Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>
@@ -10063,8 +10199,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             },
             Self::Matmulv{output, lhs, rhs} => Self::Matmulv{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulvAddInplace{output, lhs, rhs, added} => Self::MatmulvAddInplace{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MatmulvAdd{output, lhs, rhs, added} => Self::MatmulvAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulOneHotv{output, lhs, rhs} => Self::MatmulOneHotv{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulOneHotvAddInplace{output, lhs, rhs, added} => Self::MatmulOneHotvAddInplace{output: tf(&mut state, output), lhs, rhs, added},
+            Self::MatmulOneHotvAdd{output, lhs, rhs, added} => Self::MatmulOneHotvAdd{output: tf(&mut state, output), lhs, rhs, added},
             Self::MatmulvTransposed{output, lhs, rhs} => Self::MatmulvTransposed{output: tf(&mut state, output), lhs, rhs},
             Self::MatmulvTransposedAdd{output, lhs, rhs, added} =>
             {
@@ -10198,6 +10336,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::MatmulvAddInplace{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
             },
+            Self::MatmulvAdd{lhs, rhs, added, output} =>
+            {
+                Self::MatmulvAdd{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), added: tf(&mut state, added), output}
+            },
             Self::MatmulOneHotv{lhs, rhs, output} =>
             {
                 Self::MatmulOneHotv{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), output}
@@ -10205,6 +10347,10 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
             {
                 Self::MatmulOneHotvAddInplace{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
+            },
+            Self::MatmulOneHotvAdd{lhs, rhs, added, output} =>
+            {
+                Self::MatmulOneHotvAdd{lhs: tf(&mut state, lhs), rhs: of(&mut state, rhs), added: tf(&mut state, added), output}
             },
             Self::MatmulvTransposed{lhs, rhs, output} => Self::MatmulvTransposed{lhs: tf(&mut state, lhs), rhs: tf(&mut state, rhs), output},
             Self::MatmulvTransposedAdd{lhs, rhs, added, output} =>

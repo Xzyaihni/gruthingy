@@ -13,9 +13,14 @@ var<immediate> one_hot_count: u32;
 
 #include "div_ceil.wgsl"
 
-fn map_output(index: u32, value: f32) -> f32
+fn map_output(lhs_rows: u32, index: u32, value: f32) -> f32
 {
     return value;
+}
+
+fn map_output_first(lhs_rows: u32, index: u32, value: f32) -> f32
+{
+    return map_output(lhs_rows, index, value);
 }
 
 @compute @workgroup_size(WORKGROUP_SIZE)
@@ -24,5 +29,7 @@ fn run(
     @builtin(local_invocation_index) local_invocation_index: u32
 )
 {
+    const is_lhs_single_batch = false;
+
     #include "matmul_onehotv_common.wgsl"
 }

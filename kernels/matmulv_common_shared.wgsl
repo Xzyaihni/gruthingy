@@ -31,7 +31,7 @@ for (var span_id = 0u; span_id < inside_spans; span_id++)
 
         if spanned_column < lhs_columns
         {
-            let lhs_offset = batch_start + row * row_stride;
+            let lhs_offset = select(batch_start, 0, is_lhs_single_batch) + row * row_stride;
             let rhs_offset = batch_index * lhs_columns;
 
             let value = lhs[lhs_offset + spanned_column * column_stride] * rhs[rhs_offset + spanned_column];
@@ -57,9 +57,4 @@ for (var span_id = 0u; span_id < inside_spans; span_id++)
         // WORKGROUP_SIZE must be at least 2 for this
         total += workgroup_chunk[0] + workgroup_chunk[1];
     }
-}
-
-if local_invocation_index == 0
-{
-    output[workgroup_id.x] = map_output(workgroup_id.x, total);
 }
