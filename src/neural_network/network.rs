@@ -2487,6 +2487,8 @@ mod tests
     {
         let is_input_one_hot = true;
 
+        let batch_size = 2;
+
         let input_size = 5;
         let output_size = input_size;
 
@@ -2497,10 +2499,13 @@ mod tests
 
             iter::repeat_with(||
             {
-                let oh = |v| OneHotLayer::new([[v % input_size].into()].into(), 1, input_size, 1);
+                let oh = |v, k|
+                {
+                    OneHotLayer::new(vec![[v % input_size].into(), [k % input_size].into()].into_boxed_slice(), 1, input_size, batch_size)
+                };
 
-                let input = OwnedInputType::OneHot(oh(input_index));
-                let output = oh(input_index + 1);
+                let input = OwnedInputType::OneHot(oh(input_index, input_index + 2));
+                let output = oh(input_index + 1, input_index + 3);
 
                 input_index += 1;
 
@@ -2518,7 +2523,7 @@ mod tests
             input: input_size,
             output: output_size,
             final_output: output_size,
-            batch_size: 2
+            batch_size
         };
 
         let input_dropout_probability = 0.0;
@@ -2551,7 +2556,7 @@ mod tests
 
         let load_network = |save_network|
         {
-            let mut loaded_network = NetworkType::<OptimizerType>::load::<(), ()>(save_network, network_config.clone(), 1);
+            let mut loaded_network = NetworkType::<OptimizerType>::load::<(), ()>(save_network, network_config.clone(), batch_size);
 
             loaded_network.set_train_mode();
             loaded_network.prepare_with_gradient((), None, 1);
