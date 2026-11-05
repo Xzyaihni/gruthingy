@@ -5264,9 +5264,38 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::OuterProductAdd{..} =>
+                GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
                 {
-                    unimplemented!()
+                    debug_calculate_values!(OuterProductAdd, (lhs, rhs, added),());
+
+                    debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, added.shape.batch_size);
+                    debug_assert_eq!(lhs.shape.batch_size, output.shape.batch_size);
+
+                    debug_assert_eq!(lhs.shape.columns, 1);
+                    debug_assert_eq!(rhs.shape.columns, 1);
+
+                    debug_assert_eq!(lhs.shape.rows, output.shape.rows);
+                    debug_assert_eq!(rhs.shape.rows, output.shape.columns);
+
+                    debug_assert_eq!(added.shape.rows, output.shape.rows);
+                    debug_assert_eq!(added.shape.columns, output.shape.columns);
+
+                    copy_tensor(wgpu_info!(), &self.memory, *added, *output);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                        bind_group_entry(0, *lhs),
+                        bind_group_entry(1, *rhs),
+                        bind_group_entry(2, *output)
+                    ], "OuterProductAddInplace", 0);
+
+                    do_kernel_operation!(OuterProductAddInplace, i, 0);
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(output.shape.batch_size as u32).to_ne_bytes());
+
+                    single_workgroup(&mut compute_pass, output.size());
+
+                    debug_calculate_values_result!((output),());
                 },
                 this_op@GradientOp::OuterProduct{lhs, rhs, output}
                 | this_op@GradientOp::OuterProductAddInplace{lhs, rhs, added: _, output} =>
