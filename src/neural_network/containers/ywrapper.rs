@@ -921,10 +921,18 @@ impl<'a> YWrapperMut<'a>
         for batch_index in 0..self.shape.batch_size
         {
             let mut out = nalgebra::DMatrixViewMut::from_slice(self.batch_slice_mut(batch_index).values, rows, columns);
-            let lhs = nalgebra::DVectorView::from(lhs.batch_slice_ref(batch_index).values);
+
+            let lhs = if lhs.batch_size != 1
+            {
+                lhs.batch_slice_ref(batch_index)
+            } else
+            {
+                lhs
+            };
+
             let rhs = nalgebra::DVectorView::from(rhs.batch_slice_ref(batch_index).values);
 
-            out.ger(1.0, &lhs, &rhs, 0.0);
+            out.ger(1.0, &nalgebra::DVectorView::from(lhs.values), &rhs, 0.0);
         }
     }
 
@@ -993,7 +1001,14 @@ impl<'a> YWrapperMut<'a>
         for batch_index in 0..self.shape.batch_size
         {
             let output = self.batch_slice_mut(batch_index);
-            let lhs = lhs.batch_slice_ref(batch_index);
+
+            let lhs = if lhs.batch_size != 1
+            {
+                lhs.batch_slice_ref(batch_index)
+            } else
+            {
+                lhs
+            };
 
             let count = rhs.count;
             let start = batch_index * count;

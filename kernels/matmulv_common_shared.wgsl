@@ -2,8 +2,7 @@ let lhs_length = arrayLength(&lhs);
 let rhs_length = arrayLength(&rhs);
 let output_length = arrayLength(&output);
 
-let lhs_rows = lhs_length / rhs_length;
-let batch_size = output_length / lhs_rows;
+let lhs_rows = output_length / batch_size;
 let lhs_columns = rhs_length / batch_size;
 let lhs_single_length = lhs_rows * lhs_columns;
 

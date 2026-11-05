@@ -1555,7 +1555,6 @@ struct KernelLayouts
     r2_w1_i0: KernelLayout,
     r2_w1_i1: KernelLayout,
     r2_w2_i0: KernelLayout,
-    r3_w1_i0: KernelLayout,
     r3_w1_i1: KernelLayout
 }
 
@@ -1739,7 +1738,6 @@ impl WgpuInitInfo
                 ]
             });
 
-            let r3_w1_i0 = from_bind_group_layout(r3_w1_bind_group_layout.clone(), "r3_w1_i0", 0);
             let r3_w1_i1 = from_bind_group_layout(r3_w1_bind_group_layout, "r3_w1_i1", 1);
 
             KernelLayouts{
@@ -1751,7 +1749,6 @@ impl WgpuInitInfo
                 r2_w1_i0,
                 r2_w1_i1,
                 r2_w2_i0,
-                r3_w1_i0,
                 r3_w1_i1
             }
         };
@@ -1781,20 +1778,20 @@ impl WgpuInitInfo
                 OpKernel::SigmoidDiff => ("kernels/sigmoid_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvBatched => ("kernels/matmulv_batched.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvAddInplace => ("kernels/matmulv_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvBatchedAdd => ("kernels/matmulv_batched_add.wgsl", &kernel_layouts.r3_w1_i0),
-                OpKernel::MatmulvAddBatched => ("kernels/matmulv_add_batched.wgsl", &kernel_layouts.r3_w1_i0),
+                OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvBatched => ("kernels/matmulv_batched.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvAddInplace => ("kernels/matmulv_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvBatchedAdd => ("kernels/matmulv_batched_add.wgsl", &kernel_layouts.r3_w1_i1),
+                OpKernel::MatmulvAddBatched => ("kernels/matmulv_add_batched.wgsl", &kernel_layouts.r3_w1_i1),
                 OpKernel::MatmulOneHotv => ("kernels/matmul_onehotv.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulOneHotvBatched => ("kernels/matmul_onehotv_batched.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulOneHotvAddInplace => ("kernels/matmul_onehotv_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulOneHotvAddBatched => ("kernels/matmul_onehotv_add_batched.wgsl", &kernel_layouts.r3_w1_i1),
-                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvTransposedBatched => ("kernels/matmulv_transposed_batched.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvTransposedAddInplace => ("kernels/matmulv_transposed_add_inplace.wgsl", &kernel_layouts.r2_w1_i0),
-                OpKernel::MatmulvTransposedBatchedAdd => ("kernels/matmulv_transposed_batched_add.wgsl", &kernel_layouts.r3_w1_i0),
-                OpKernel::MatmulvTransposedAddBatched => ("kernels/matmulv_transposed_add_batched.wgsl", &kernel_layouts.r3_w1_i0),
+                OpKernel::MatmulvTransposed => ("kernels/matmulv_transposed.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvTransposedBatched => ("kernels/matmulv_transposed_batched.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvTransposedAddInplace => ("kernels/matmulv_transposed_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::MatmulvTransposedBatchedAdd => ("kernels/matmulv_transposed_batched_add.wgsl", &kernel_layouts.r3_w1_i1),
+                OpKernel::MatmulvTransposedAddBatched => ("kernels/matmulv_transposed_add_batched.wgsl", &kernel_layouts.r3_w1_i1),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductAddInplace => ("kernels/outer_product_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
@@ -5115,7 +5112,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(added.shape.rows, output.shape.rows);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i0, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i1, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *added),
@@ -5129,6 +5126,8 @@ impl OperationsRecorder
                     {
                         do_kernel_operation!(MatmulvAddBatched, i, 0);
                     }
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes());
 
                     exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.rows);
 
@@ -5156,13 +5155,15 @@ impl OperationsRecorder
                             unreachable!()
                         };
 
-                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                             bind_group_entry(0, *lhs),
                             bind_group_entry(1, *rhs),
                             bind_group_entry(2, *output)
                         ], "MatmulvBatched", 0);
 
                         do_kernel_operation!(MatmulvBatched, i, 0);
+
+                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes());
 
                         exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.rows);
                     } else
@@ -5176,7 +5177,7 @@ impl OperationsRecorder
                         debug_assert_eq!(rhs.shape.columns, 1);
                         debug_assert_eq!(output.shape.columns, 1);
 
-                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                             bind_group_entry(0, *lhs),
                             bind_group_entry(1, *rhs),
                             bind_group_entry(2, *output)
@@ -5202,6 +5203,8 @@ impl OperationsRecorder
                             _ => unreachable!()
                         }
 
+                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes());
+
                         exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                     }
 
@@ -5222,7 +5225,7 @@ impl OperationsRecorder
 
                     debug_assert_eq!(output.shape.rows, added.shape.rows);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i0, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i1, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *added),
@@ -5236,6 +5239,8 @@ impl OperationsRecorder
                     {
                         do_kernel_operation!(MatmulvTransposedAddBatched, i, 0);
                     }
+
+                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes());
 
                     exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.columns);
 
@@ -5263,13 +5268,15 @@ impl OperationsRecorder
                             unreachable!()
                         };
 
-                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                             bind_group_entry(0, *lhs),
                             bind_group_entry(1, *rhs),
                             bind_group_entry(2, *output)
                         ], "MatmulvTransposedBatched", 0);
 
                         do_kernel_operation!(MatmulvTransposedBatched, i, 0);
+
+                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes());
 
                         exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.columns);
                     } else
@@ -5283,7 +5290,7 @@ impl OperationsRecorder
                         debug_assert_eq!(rhs.shape.columns, 1);
                         debug_assert_eq!(output.shape.columns, 1);
 
-                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                        try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
                             bind_group_entry(0, *lhs),
                             bind_group_entry(1, *rhs),
                             bind_group_entry(2, *output)
@@ -5308,6 +5315,8 @@ impl OperationsRecorder
                             },
                             _ => unreachable!()
                         }
+
+                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes());
 
                         exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
                     }
@@ -12476,7 +12485,7 @@ mod tests
             let max_batches = ((65535 / (rows * columns)) as usize).min(i);
             let batch_size = if max_batches == 1 { 1 } else { fastrand::usize(1..max_batches) };
 
-            let a_batch_size = if fastrand::bool() { 1 } else { batch_size };
+            let a_batch_size = batch_size;
             let a_shape = TensorShape{rows, columns: 1, batch_size: a_batch_size};
             let b_shape = TensorShape{rows: columns, columns: 1, batch_size};
             let output_shape = TensorShape{rows, columns, batch_size};
@@ -12507,7 +12516,7 @@ mod tests
             let max_batches = ((65535 / (rows * columns)) as usize).min(i);
             let batch_size = if max_batches == 1 { 1 } else { fastrand::usize(1..max_batches) };
 
-            let a_batch_size = if fastrand::bool() { 1 } else { batch_size };
+            let a_batch_size = batch_size;
             let a_shape = TensorShape{rows, columns: 1, batch_size: a_batch_size};
             let output_shape = TensorShape{rows, columns, batch_size};
 

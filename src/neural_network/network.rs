@@ -1747,7 +1747,7 @@ where
 
         let f = |weight: &WeightInfo|
         {
-            self.recorder.get_tensor_blocking(weight.gradient.unwrap())
+            self.recorder.get_tensor_blocking(weight.gradient.unwrap()).as_ref().average_tensor()
         };
 
         let gradients = if inputs_count == 1
@@ -2518,7 +2518,7 @@ mod tests
             input: input_size,
             output: output_size,
             final_output: output_size,
-            batch_size: 1
+            batch_size: 2
         };
 
         let input_dropout_probability = 0.0;
