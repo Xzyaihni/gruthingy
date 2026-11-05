@@ -78,6 +78,8 @@ define_op_kernels!{
     SigmoidDiff,
     LeakyRelu,
     LeakyReluDiff,
+    GaussianRelu,
+    GaussianReluDiff,
     Matmulv,
     MatmulvBatched,
     MatmulvAddInplace,

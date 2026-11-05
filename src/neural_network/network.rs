@@ -44,11 +44,17 @@ use crate::{
 };
 
 #[allow(unused_imports)]
-use crate::neural_network::LayerTypeRef;
+use crate::neural_network::{LayerTypeRef, ACTIVATION_FUNCTION};
 
 #[allow(unused_imports)]
 use super::close_enough;
 
+
+pub enum ActivationFunction
+{
+    LeakyRelu,
+    GaussianRelu
+}
 
 #[derive(Serialize)]
 pub struct AccuracyCertaintyInfo
@@ -1713,7 +1719,22 @@ where
                 let output_mapped = self.recorder.matmulv(weights.output.weight, output);
                 let output_dropped = self.recorder.dropout(output_mapped, self.dropouts.dropout_probability);
 
-                let output_activated = self.recorder.leaky_relu(output_dropped);
+                let output_activated;
+
+                #[cfg(not(test))]
+                {
+                    output_activated = match ACTIVATION_FUNCTION
+                    {
+                        ActivationFunction::LeakyRelu => self.recorder.leaky_relu(output_dropped),
+                        ActivationFunction::GaussianRelu => self.recorder.gaussian_relu(output_dropped)
+                    };
+                }
+
+                #[cfg(test)]
+                {
+                    // this one has way more numerical stability when doing my numerical gradient approximations
+                    output_activated = self.recorder.leaky_relu(output_dropped);
+                }
 
                 self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
                 {

@@ -41,6 +41,7 @@ pub use network_unit::{
 };
 
 pub use network::{
+    ActivationFunction,
     AccuracyCertaintyInfo,
     PrecomputedRng,
     Network,
@@ -1597,28 +1598,50 @@ mod tests
 
     type ThisDictionary = CharDictionary;
 
-    #[test]
-    fn simple_data_overfit_char_sgd()
+    enum TestStrategy
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 15000, None, None);
+        None,
+        NonBatch,
+        MultiLayer(usize),
+        InputDropout(f32),
+        Clip(f32),
+        Dropout(f32)
+    }
+
+    #[test]
+    fn simple_data_overfit_char_sgd_simple()
+    {
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000, TestStrategy::None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_sgd_non_batched()
+    {
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 17000, TestStrategy::NonBatch);
     }
 
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 5000, None, None);
+        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 5000, TestStrategy::None);
     }
 
     #[test]
     fn simple_data_overfit_char_adam_normal()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1500, None, None);
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1500, TestStrategy::None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_adam_multi_layer()
+    {
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000, TestStrategy::MultiLayer(3));
     }
 
     #[test]
     fn simple_data_overfit_char_adam_clip()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, Some(0.1), None);
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, TestStrategy::Clip(0.1));
     }
 
     #[test]
@@ -1626,12 +1649,23 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Sgd, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            5000,
-            None,
-            Some(0.1)
+            10000,
+            TestStrategy::Dropout(0.2)
         );
 
-        assert!(test_loss < 0.3, "{test_loss} must be close to 0");
+        assert!(test_loss < 0.01, "{test_loss} must be close to 0");
+    }
+
+    #[test]
+    fn simple_data_overfit_char_adam_input_dropout()
+    {
+        let (_last_loss, test_loss) = simple_data_overfit_inner::<Sgd, _>(
+            CharDictionary::new(InputData::String("abcdefg".to_owned())),
+            10000,
+            TestStrategy::InputDropout(0.2)
+        );
+
+        assert!(test_loss < 0.01, "{test_loss} must be close to 0");
     }
 
     #[test]
@@ -1644,7 +1678,7 @@ mod tests
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 7000, None, None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 7000, TestStrategy::None);
     }
 
     #[test]
@@ -1657,14 +1691,13 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 4000, None, None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 4000, TestStrategy::None);
     }
 
     fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(
         dictionary: D,
         iterations: usize,
-        gradient_clip: Option<f32>,
-        dropout: Option<f32>
+        strategy: TestStrategy
     )
     where
         for<'de> OptimizerType: Serialize + Deserialize<'de>,
@@ -1675,7 +1708,7 @@ mod tests
         for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
         for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
-        let (last_loss, test_loss) = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, gradient_clip, dropout);
+        let (last_loss, test_loss) = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, strategy);
 
         assert!(last_loss < 0.001, "train loss {last_loss} must be close to 0");
         assert!(test_loss < 0.001, "test loss {test_loss} must be close to 0");
@@ -1684,8 +1717,7 @@ mod tests
     fn simple_data_overfit_inner<OptimizerType: Optimizer, D: NetworkDictionary>(
         dictionary: D,
         iterations: usize,
-        gradient_clip: Option<f32>,
-        dropout: Option<f32>
+        strategy: TestStrategy
     ) -> (f64, f64)
     where
         for<'de> OptimizerType: Serialize + Deserialize<'de>,
@@ -1696,7 +1728,7 @@ mod tests
         for<'b> VectorizerType<'b, Cursor<String>, D>: Iterator<Item=VectorWord>,
         for<'b> InputOutputEmbeddingsIter<'b, OneHotEmbeddings, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
-        let batch_size = 2;
+        let batch_size = if let TestStrategy::NonBatch = strategy { 1 } else { 2 };
 
         let is_input_one_hot = ThisDictionary::is_input_one_hot();
 
@@ -1714,8 +1746,13 @@ mod tests
             }).take(1000).collect()
         };
 
-        let layers = 1;
-        let hidden = 8;
+        let layers = if let TestStrategy::MultiLayer(layers) = strategy { layers } else { 1 };
+        let hidden = match strategy
+        {
+            TestStrategy::Dropout(_)
+            | TestStrategy::InputDropout(_) => 20,
+            _ => 8
+        };
 
         let layer_sizes = LayerSizes{
             hidden,
@@ -1727,8 +1764,8 @@ mod tests
             batch_size
         };
 
-        let input_dropout_probability = 0.0;
-        let dropout_probability = dropout.unwrap_or(0.0);
+        let input_dropout_probability = if let TestStrategy::InputDropout(dropout) = strategy { dropout } else { 0.0 };
+        let dropout_probability = if let TestStrategy::Dropout(dropout) = strategy { dropout } else { 0.0 };
 
         type NetworkType<OptimizerType> = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
 
@@ -1742,7 +1779,7 @@ mod tests
             },
             input_dropout_probability,
             dropout_probability,
-            gradient_clip
+            if let TestStrategy::Clip(clip) = strategy { Some(clip) } else { None }
         );
 
         let steps_num = 4;
@@ -1763,7 +1800,7 @@ mod tests
             print_optional_info: false,
             is_multistep: true,
             is_input_one_hot
-        }, 32);
+        }, 64);
 
         let test_loss = network.test_loss(Cursor::new(test_input), None, false);
 

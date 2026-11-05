@@ -15,7 +15,7 @@ has A LOT of options that you can access with **--help**, by default its a mediu
 
 batches are just randomly picked sequences from the input file cuz i didnt wanna assume any kind of input structure, so no sentence end tokens or anything like that
 
-during inference does monte carlo dropout with the --batch amount of dropped out runs (--dropout and --input-dropout have to be the same as during training for it to give accurate approximations)
+during inference does monte carlo dropout with the --batch amount of dropped out runs
 
 
 

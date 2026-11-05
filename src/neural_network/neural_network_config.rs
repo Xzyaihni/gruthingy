@@ -14,6 +14,7 @@ use super::{
     BpeDictionary,
     EmbeddingsDictionary,
     ByteDictionary,
+    ActivationFunction,
     PostcardFormat,
     JsonFormat,
     MixedFormat
@@ -33,6 +34,8 @@ pub type NUnit<T> = Star<T>;
 pub type NDictionary = BpeDictionary;
 
 pub const USE_EMBEDDING_LAYER: bool = true;
+
+pub const ACTIVATION_FUNCTION: ActivationFunction = ActivationFunction::GaussianRelu;
 
 // only applies to EmbeddingsDictionary and WordDictionary
 pub const LOWERCASE_ONLY: bool = true;

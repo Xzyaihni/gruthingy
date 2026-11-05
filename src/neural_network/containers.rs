@@ -1778,6 +1778,8 @@ impl WgpuInitInfo
                 OpKernel::SigmoidDiff => ("kernels/sigmoid_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::LeakyRelu => ("kernels/leaky_relu.wgsl", &kernel_layouts.r1_w1_i0),
                 OpKernel::LeakyReluDiff => ("kernels/leaky_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
+                OpKernel::GaussianRelu => ("kernels/gaussian_relu.wgsl", &kernel_layouts.r1_w1_i0),
+                OpKernel::GaussianReluDiff => ("kernels/gaussian_relu_diff.wgsl", &kernel_layouts.r2_w1_i0),
                 OpKernel::Matmulv => ("kernels/matmulv.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulvBatched => ("kernels/matmulv_batched.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::MatmulvAddInplace => ("kernels/matmulv_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
@@ -2921,6 +2923,11 @@ impl OperationsRecorder
     pub fn leaky_relu(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
     {
         impl_map_tensor_op!(self, a, LeakyRelu)
+    }
+
+    pub fn gaussian_relu(&mut self, a: DiffTensorPtr) -> DiffTensorPtr
+    {
+        impl_map_tensor_op!(self, a, GaussianRelu)
     }
 
     pub fn softmax_cross_entropy(&mut self, values: DiffTensorPtr, targets: OneHotIndex) -> (DiffTensorPtr, DiffTensorPtr)
@@ -4807,6 +4814,42 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
+                GradientOp::GaussianRelu{value, output} =>
+                {
+                    debug_calculate_values!(GaussianRelu, (value),());
+
+                    debug_assert_eq!(value.shape, output.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1_i0, &[
+                        bind_group_entry(0, *value),
+                        bind_group_entry(1, *output)
+                    ], "GaussianRelu", 0);
+
+                    do_kernel_operation!(GaussianRelu, i, 0);
+
+                    single_workgroup(&mut compute_pass, value.size());
+
+                    debug_calculate_values_result!((output),());
+                },
+                GradientOp::GaussianReluDiff{value, gradient, output} =>
+                {
+                    debug_calculate_values!(GaussianReluDiff, (value, gradient),());
+
+                    debug_assert_eq!(value.shape, output.shape);
+                    debug_assert_eq!(gradient.shape, output.shape);
+
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i0, &[
+                        bind_group_entry(0, *value),
+                        bind_group_entry(1, *gradient),
+                        bind_group_entry(2, *output)
+                    ], "GaussianReluDiff", 0);
+
+                    do_kernel_operation!(GaussianReluDiff, i, 0);
+
+                    single_workgroup(&mut compute_pass, value.size());
+
+                    debug_calculate_values_result!((output),());
+                },
                 GradientOp::Softmax{values, softmaxed_output} =>
                 {
                     debug_calculate_values!(Softmax, (values),());
@@ -5789,6 +5832,10 @@ impl OperationsRecorder
                 Op::LeakyRelu{value, output} =>
                 {
                     GradientOp::LeakyRelu{value: value.as_value(), output: output.as_value()}
+                },
+                Op::GaussianRelu{value, output} =>
+                {
+                    GradientOp::GaussianRelu{value: value.as_value(), output: output.as_value()}
                 },
                 Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
                 {
@@ -6910,6 +6957,8 @@ impl OperationsRecorder
                 GradientOp::Pow{lhs, power: _, output} => t_storage!(lhs, output),
                 GradientOp::LeakyRelu{value, output} => t_storage!(value, output),
                 GradientOp::LeakyReluDiff{value, gradient, output} => t_storage!(value, gradient, output),
+                GradientOp::GaussianRelu{value, output} => t_storage!(value, output),
+                GradientOp::GaussianReluDiff{value, gradient, output} => t_storage!(value, gradient, output),
                 GradientOp::Sigmoid{value, output} => t_storage!(value, output),
                 GradientOp::SigmoidDiff{value, gradient, output} => t_storage!(value, gradient, output),
                 GradientOp::Tanh{value, output} => t_storage!(value, output),
@@ -9161,6 +9210,15 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::LeakyReluDiff{value: value.as_value(), gradient, output: value_gradient});
                 }
             },
+            Op::GaussianRelu{value, output} =>
+            {
+                let gradient = gradient_or_return!(output);
+
+                if let Some(value_gradient) = value.as_gradient()
+                {
+                    add_gradient_operation(self, selectors, GradientOp::GaussianReluDiff{value: value.as_value(), gradient, output: value_gradient});
+                }
+            },
             Op::SoftmaxCrossEntropy{values, targets, softmaxed_output, output} =>
             {
                 let gradient = gradient_or_return!(output);
@@ -9985,6 +10043,8 @@ pub enum GradientOp<T, V, J, O, S>
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
+    GaussianRelu{value: T, output: T},
+    GaussianReluDiff{value: T, gradient: T, output: T},
     Sigmoid{value: T, output: T},
     SigmoidDiff{value: T, gradient: T, output: T},
     Tanh{value: T, output: T},
@@ -10120,6 +10180,11 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
             Self::LeakyReluDiff{value, gradient, output} => GradientOp::LeakyReluDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
+            Self::GaussianRelu{value, output} => GradientOp::GaussianRelu{value: tf(value), output: tf(output)},
+            Self::GaussianReluDiff{value, gradient, output} =>
+            {
+                GradientOp::GaussianReluDiff{value: tf(value), gradient: tf(gradient), output: tf(output)}
+            },
             Self::Sigmoid{value, output} => GradientOp::Sigmoid{value: tf(value), output: tf(output)},
             Self::SigmoidDiff{value, gradient, output} => GradientOp::SigmoidDiff{value: tf(value), gradient: tf(gradient), output: tf(output)},
             Self::Tanh{value, output} => GradientOp::Tanh{value: tf(value), output: tf(output)},
@@ -10400,6 +10465,8 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::TanhDiff{output, gradient, value} => Self::TanhDiff{output: tf(&mut state, output), gradient, value},
             Self::LeakyRelu{output, value} => Self::LeakyRelu{output: tf(&mut state, output), value},
             Self::LeakyReluDiff{output, gradient, value} => Self::LeakyReluDiff{output: tf(&mut state, output), gradient, value},
+            Self::GaussianRelu{output, value} => Self::GaussianRelu{output: tf(&mut state, output), value},
+            Self::GaussianReluDiff{output, gradient, value} => Self::GaussianReluDiff{output: tf(&mut state, output), gradient, value},
             Self::SoftmaxCrossEntropyDiff{output, softmaxed_values, gradient, targets} =>
             {
                 Self::SoftmaxCrossEntropyDiff{output: tf(&mut state, output), softmaxed_values, gradient, targets}
@@ -10525,6 +10592,11 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             Self::LeakyReluDiff{value, gradient, output} =>
             {
                 Self::LeakyReluDiff{value: tf(&mut state, value), gradient: tf(&mut state, gradient), output}
+            },
+            Self::GaussianRelu{value, output} => Self::GaussianRelu{value: tf(&mut state, value), output},
+            Self::GaussianReluDiff{value, gradient, output} =>
+            {
+                Self::GaussianReluDiff{value: tf(&mut state, value), gradient: tf(&mut state, gradient), output}
             },
             Self::Sigmoid{value, output} => Self::Sigmoid{value: tf(&mut state, value), output},
             Self::SigmoidDiff{value, gradient, output} => Self::SigmoidDiff{value: tf(&mut state, value), gradient: tf(&mut state, gradient), output},
@@ -10690,6 +10762,7 @@ pub enum Op
     MaxTensor{value: DiffTensorPtr, output: DiffTensorPtr},
     Pow{lhs: DiffTensorPtr, power: i32, output: DiffTensorPtr},
     LeakyRelu{value: DiffTensorPtr, output: DiffTensorPtr},
+    GaussianRelu{value: DiffTensorPtr, output: DiffTensorPtr},
     Sigmoid{value: DiffTensorPtr, output: DiffTensorPtr},
     Tanh{value: DiffTensorPtr, output: DiffTensorPtr},
     Dot{lhs: DiffTensorPtr, rhs: DiffTensorPtr, output: DiffTensorPtr},
@@ -10729,6 +10802,7 @@ impl Op
             Self::MaxTensor{output, ..} => f(output.into()),
             Self::Pow{output, ..} => f(output.into()),
             Self::LeakyRelu{output, ..} => f(output.into()),
+            Self::GaussianRelu{output, ..} => f(output.into()),
             Self::Sigmoid{output, ..} => f(output.into()),
             Self::Tanh{output, ..} => f(output.into()),
             Self::Dot{output, ..} => f(output.into()),
@@ -10767,6 +10841,7 @@ impl Op
             Self::MaxTensor{value, ..} => { f(value.into()) },
             Self::Pow{lhs, ..} => { f(lhs.into()) },
             Self::LeakyRelu{value, ..} => { f(value.into()) },
+            Self::GaussianRelu{value, ..} => { f(value.into()) },
             Self::Sigmoid{value, ..} => { f(value.into()) },
             Self::Tanh{value, ..} => { f(value.into()) },
             Self::Dot{lhs, rhs, ..} => { f(lhs.into()); f(rhs.into()) },
@@ -11360,6 +11435,17 @@ mod tests
         check_tensor_with_epsilon(0.1, |recorder, [a, b]|
         {
             let x = recorder.leaky_relu(a);
+            recorder.add(x, b)
+        })
+    }
+
+    // erf is already an approximation in the impl so this will have a huge error cuz it stacks 2 approximations that are pretty inaccurate
+    #[test]
+    fn gaussian_relu()
+    {
+        check_tensor_with_epsilon(0.2, |recorder, [a, b]|
+        {
+            let x = recorder.gaussian_relu(a);
             recorder.add(x, b)
         })
     }
