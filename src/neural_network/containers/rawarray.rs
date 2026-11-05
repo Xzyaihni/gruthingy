@@ -81,6 +81,7 @@ define_op_kernels!{
     Matmulv,
     MatmulvBatched,
     MatmulvAddInplace,
+    MatmulvBatchedAdd,
     MatmulvAddBatched,
     MatmulOneHotv,
     MatmulOneHotvBatched,
