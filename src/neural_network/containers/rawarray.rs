@@ -93,6 +93,7 @@ define_op_kernels!{
     MatmulvTransposedBatchedAdd,
     MatmulvTransposedAddBatched,
     OuterProduct,
+    OuterProductAdd,
     OuterProductAddInplace,
     OuterProductOneHot,
     OuterProductOneHotAddInplace,

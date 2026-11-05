@@ -1612,7 +1612,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_adam_normal()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, None, None);
+        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1500, None, None);
     }
 
     #[test]

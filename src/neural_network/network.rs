@@ -1646,9 +1646,7 @@ where
             {
                 if let Some(embeddings) = weights_ptr.embeddings.as_ref()
                 {
-                    let input = self.recorder.matmul_onehotv(embeddings.input.weight, input.into_one_hot());
-
-                    return DiffInputType::Normal(self.recorder.dropout(input, self.dropouts.dropout_probability));
+                    return DiffInputType::Normal(self.recorder.matmul_onehotv(embeddings.input.weight, input.into_one_hot()));
                 }
 
                 match input

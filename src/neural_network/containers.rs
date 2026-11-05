@@ -1793,6 +1793,7 @@ impl WgpuInitInfo
                 OpKernel::MatmulvTransposedBatchedAdd => ("kernels/matmulv_transposed_batched_add.wgsl", &kernel_layouts.r3_w1_i1),
                 OpKernel::MatmulvTransposedAddBatched => ("kernels/matmulv_transposed_add_batched.wgsl", &kernel_layouts.r3_w1_i1),
                 OpKernel::OuterProduct => ("kernels/outer_product.wgsl", &kernel_layouts.r2_w1_i1),
+                OpKernel::OuterProductAdd => ("kernels/outer_product_add.wgsl", &kernel_layouts.r3_w1_i1),
                 OpKernel::OuterProductAddInplace => ("kernels/outer_product_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHot => ("kernels/outer_product_one_hot.wgsl", &kernel_layouts.r2_w1_i1),
                 OpKernel::OuterProductOneHotAddInplace => ("kernels/outer_product_one_hot_add_inplace.wgsl", &kernel_layouts.r2_w1_i1),
@@ -5418,15 +5419,14 @@ impl OperationsRecorder
                     debug_assert_eq!(added.shape.rows, output.shape.rows);
                     debug_assert_eq!(added.shape.columns, output.shape.columns);
 
-                    copy_tensor(wgpu_info!(), &self.memory, *added, *output);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1_i1, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r3_w1_i1, &[
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *output)
-                    ], "OuterProductAddInplace", 0);
+                        bind_group_entry(2, *added),
+                        bind_group_entry(3, *output)
+                    ], "OuterProductAdd", 0);
 
-                    do_kernel_operation!(OuterProductAddInplace, i, 0);
+                    do_kernel_operation!(OuterProductAdd, i, 0);
 
                     compute_pass.as_mut().unwrap().set_immediates(0, &(output.shape.batch_size as u32).to_ne_bytes());
 
@@ -6940,7 +6940,7 @@ impl OperationsRecorder
                 GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} => t_storage!(lhs, rhs, added, output),
                 GradientOp::MatmulvTransposed{lhs, rhs, output}
                 | GradientOp::MatmulvTransposedAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
-                GradientOp::OuterProductAdd{lhs, rhs, added, output} => { t_src!(added); t_dst!(output); t_storage!(lhs, rhs, output) },
+                GradientOp::OuterProductAdd{lhs, rhs, added, output} => t_storage!(lhs, rhs, added, output),
                 GradientOp::OuterProduct{lhs, rhs, output}
                 | GradientOp::OuterProductAddInplace{lhs, rhs, added: _, output} => t_storage!(lhs, rhs, output),
                 GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
