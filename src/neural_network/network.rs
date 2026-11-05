@@ -359,18 +359,21 @@ macro_rules! create_weights_container
         {
             pub fn new_randomized(recorder: &mut OperationsRecorder, sizes: $crate::neural_network::LayerSizes) -> Self
             {
-                use $crate::neural_network::network::{initialize_orthogonal, WeightInfoGeneric, LayerSize};
+                use $crate::neural_network::{TensorShape, network::{initialize_orthogonal, WeightInfoGeneric, LayerSize}};
 
                 Self{sizes, $(
                     $name: {
                         let this_size = $this_size.into_number(sizes);
                         let previous_size = $previous_size.into_number(sizes);
 
+                        let shape = TensorShape{rows: this_size, columns: previous_size, batch_size: 1};
+                        let gradient_shape = TensorShape{batch_size: sizes.batch_size, ..shape};
+
                         let weights = match $previous_size
                         {
                             LayerSize::One =>
                             {
-                                let bias = recorder.new_tensor(this_size, previous_size);
+                                let bias = recorder.new_tensor_full_shape(shape, gradient_shape);
 
                                 recorder.set_tensor_ptr_zeroed(bias.as_value());
 
@@ -380,7 +383,7 @@ macro_rules! create_weights_container
                             {
                                 let weights = initialize_orthogonal(this_size, previous_size);
 
-                                recorder.set_new_tensor_gradientable(weights)
+                                recorder.set_new_tensor_gradientable_full_shape(weights, gradient_shape)
                             }
                         };
 
@@ -1056,7 +1059,9 @@ where
                 recorder.set_new_tensor(value)
             } else
             {
-                recorder.set_new_tensor_gradientable(value)
+                let gradient_shape = TensorShape{batch_size, ..value.shape()};
+
+                recorder.set_new_tensor_gradientable_full_shape(value, gradient_shape)
             };
 
             WeightInfoPtr{weight: weights}
@@ -1168,7 +1173,8 @@ where
     {
         let mut create_weights = |name: &'static str, previous: usize, current: usize| -> WeightInfoPtr
         {
-            let weights = self.recorder.set_new_tensor_gradientable(initialize_orthogonal(current, previous));
+            let gradient_shape = TensorShape{rows: current, columns: previous, batch_size: sizes.batch_size};
+            let weights = self.recorder.set_new_tensor_gradientable_full_shape(initialize_orthogonal(current, previous), gradient_shape);
             self.recorder.name_diff_tensor(weights, name);
 
             WeightInfoGeneric{weight: weights}
