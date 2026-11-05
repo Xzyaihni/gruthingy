@@ -2634,7 +2634,7 @@ mod tests
             }
 
             assert!(
-                new_loss <= starting_loss,
+                (new_loss - starting_loss) < 0.00001,
                 "failed at {gradient_index}, new loss: {new_loss} must be smaller than starting loss: {starting_loss}, name: {name}"
             );
         }

@@ -2542,6 +2542,17 @@ impl OperationsRecorder
         dst
     }
 
+    pub fn sum_batch(&mut self, src: TensorPtr) -> TensorPtr
+    {
+        let src_shape = self.tensor_shape(src);
+
+        let dst = self.memory.new_tensor_index(TensorShape{batch_size: 1, ..src_shape}.into());
+
+        self.gradient_operations.push(GradientOp::SumBatch{value: src, scalar: 1.0, output: dst});
+
+        dst
+    }
+
     pub fn fill_batched(&mut self, shape: TensorShape, src: DiffTensorPtr) -> DiffTensorPtr
     {
         let src_shape = self.tensor_shape(src.as_value());
@@ -12381,7 +12392,8 @@ mod tests
             let columns = fastrand::usize(1..i);
             let batch_size = fastrand::usize(1..i);
 
-            let a_shape = TensorShape{rows, columns, batch_size};
+            let a_batch_size = if fastrand::bool() { 1 } else { batch_size };
+            let a_shape = TensorShape{rows, columns, batch_size: a_batch_size};
             let b_shape = TensorShape{rows: columns, columns: 1, batch_size};
             let output_shape = TensorShape{rows, columns: 1, batch_size};
 
@@ -12393,7 +12405,7 @@ mod tests
 
             let gpu_output = run_single_operation(init_info.clone(), [a, b], |recorder, [a, b]| recorder.matmulv(a, b));
 
-            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}, a_batch_size: {a_batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, || {});
         }
     }
@@ -12409,7 +12421,8 @@ mod tests
             let columns = fastrand::usize(1..i);
             let batch_size = fastrand::usize(1..i);
 
-            let a_shape = TensorShape{rows, columns, batch_size};
+            let a_batch_size = if fastrand::bool() { 1 } else { batch_size };
+            let a_shape = TensorShape{rows, columns, batch_size: a_batch_size};
             let output_shape = TensorShape{rows, columns: 1, batch_size};
 
             let a = LayerType::new_with_full(a_shape, big_random_value);
@@ -12442,7 +12455,7 @@ mod tests
                 recorder.matmul_onehotv(a, b_index)
             });
 
-            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}, a_batch_size: {a_batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, ||
             {
                 eprintln!("b: {b:?}");
@@ -12463,7 +12476,8 @@ mod tests
             let max_batches = ((65535 / (rows * columns)) as usize).min(i);
             let batch_size = if max_batches == 1 { 1 } else { fastrand::usize(1..max_batches) };
 
-            let a_shape = TensorShape{rows, columns: 1, batch_size};
+            let a_batch_size = if fastrand::bool() { 1 } else { batch_size };
+            let a_shape = TensorShape{rows, columns: 1, batch_size: a_batch_size};
             let b_shape = TensorShape{rows: columns, columns: 1, batch_size};
             let output_shape = TensorShape{rows, columns, batch_size};
 
@@ -12475,7 +12489,7 @@ mod tests
 
             let gpu_output = run_single_operation(init_info.clone(), [a, b], |recorder, [a, b]| recorder.outer_product(a, b));
 
-            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}, a_batch_size: {a_batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, || {});
         }
     }
@@ -12493,7 +12507,8 @@ mod tests
             let max_batches = ((65535 / (rows * columns)) as usize).min(i);
             let batch_size = if max_batches == 1 { 1 } else { fastrand::usize(1..max_batches) };
 
-            let a_shape = TensorShape{rows, columns: 1, batch_size};
+            let a_batch_size = if fastrand::bool() { 1 } else { batch_size };
+            let a_shape = TensorShape{rows, columns: 1, batch_size: a_batch_size};
             let output_shape = TensorShape{rows, columns, batch_size};
 
             let a = LayerType::new_with_full(a_shape, big_random_value);
@@ -12523,7 +12538,7 @@ mod tests
                 recorder.outer_product_one_hot(a, b_index)
             });
 
-            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}");
+            let description = format!("rows: {rows}, columns: {columns}, batch_size: {batch_size}, a_batch_size: {a_batch_size}");
             compare_outputs(cpu_output, gpu_output, &description, i, ||
             {
                 eprintln!("b: {b:?}");

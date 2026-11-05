@@ -75,7 +75,9 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
             let gradient = weight.as_gradient().expect("all weights must have a gradient");
             let weight = weight.as_value();
 
-            let average_gradient = recorder.mul_scalar_no_diff(gradient, batch_size_recip);
+            let gradient_sum = recorder.sum_batch(gradient);
+
+            let average_gradient = recorder.mul_scalar_no_diff(gradient_sum, batch_size_recip);
             recorder.name_tensor(average_gradient, "average_gradient");
 
             let clipped_gradient = self.gradient_clip.map(|gradient_clip|
