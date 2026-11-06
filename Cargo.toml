@@ -26,6 +26,7 @@ strip = false
 debug = true
 
 [features]
+concurrentbatches = []
 renderdocapi = []
 timedebug = []
 nocoloring = []

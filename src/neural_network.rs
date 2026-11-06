@@ -1659,11 +1659,11 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            5000,
-            TestStrategy::Dropout(0.2)
+            500,
+            TestStrategy::Dropout(0.5)
         );
 
-        assert!(test_loss < 0.1, "{test_loss} must be close to 0");
+        assert!(test_loss < 0.001, "{test_loss} must be close to 0");
     }
 
     #[test]
@@ -1671,11 +1671,11 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            8000,
-            TestStrategy::InputDropout(0.2)
+            800,
+            TestStrategy::InputDropout(0.5)
         );
 
-        assert!(test_loss < 0.1, "{test_loss} must be close to 0");
+        assert!(test_loss < 0.001, "{test_loss} must be close to 0");
     }
 
     #[test]
@@ -1721,7 +1721,7 @@ mod tests
         let (last_loss, test_loss) = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, strategy);
 
         assert!(last_loss < 0.001, "train loss {last_loss} must be close to 0");
-        assert!(test_loss < 0.001, "test loss {test_loss} must be close to 0");
+        assert!(test_loss < 0.0001, "test loss {test_loss} must be close to 0");
     }
 
     fn simple_data_overfit_inner<OptimizerType: Optimizer, D: NetworkDictionary>(
@@ -1810,7 +1810,14 @@ mod tests
             if let TestStrategy::Clip(clip) = strategy { Some(clip) } else { None }
         );
 
-        let steps_num = if let TestStrategy::LongDistance = strategy { 50 } else { 4 };
+        let steps_num = match strategy
+        {
+            TestStrategy::LongDistance
+            | TestStrategy::Dropout(_)
+            | TestStrategy::InputDropout(_) => 50,
+            _ => 4
+        };
+
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,

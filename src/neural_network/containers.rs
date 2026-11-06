@@ -5497,6 +5497,9 @@ impl OperationsRecorder
             });
         }
 
+        #[cfg(not(feature="concurrentbatches"))]
+        self.block_until_finished();
+
         self.raw_array_memory.staging_belt.finish_and_recall_on_submit(self.raw_array_memory.encoder.as_mut().unwrap());
 
         self.raw_array_memory.map_on_submit_buffers.retain_mut(|AsyncBufferReader{buffer, index: _index, callback}|
@@ -5687,7 +5690,7 @@ impl OperationsRecorder
 
         if is_last_step
         {
-            self.raw_array_memory.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            self.block_until_finished();
         }
     }
 
