@@ -1804,6 +1804,7 @@ mod tests
             NetworkConfigInfo{
                 is_input_one_hot,
                 is_multistep: true,
+                print_batch_losses: true,
                 print_optional_info: true
             },
             input_dropout_probability,
@@ -1835,6 +1836,7 @@ mod tests
 
         let config = NetworkConfigInfo{
             print_optional_info: false,
+            print_batch_losses: true,
             is_multistep: true,
             is_input_one_hot
         };

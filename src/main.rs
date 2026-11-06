@@ -188,10 +188,13 @@ where
     for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
     for<'de> D: NetworkDictionary + Deserialize<'de>
 {
+    let print_optional_info = config.as_ref().map(|x| x.optional_info).unwrap_or(false);
+
     let network_config = NetworkConfigInfo{
         is_multistep,
         is_input_one_hot: D::is_input_one_hot(),
-        print_optional_info: config.as_ref().map(|x| x.optional_info).unwrap_or(false)
+        print_batch_losses: print_optional_info,
+        print_optional_info
     };
 
     if path.exists()
@@ -322,7 +325,10 @@ fn train_until_best(config: Config)
             }
         };
 
-        wait_for_test(&mut network, &mut test_thread);
+        if !config.block_for_test
+        {
+            wait_for_test(&mut network, &mut test_thread);
+        }
 
         try_save_network(network.as_ref().unwrap(), &config.network_path);
 

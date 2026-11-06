@@ -99,6 +99,15 @@ impl DropoutRoll for PrecomputedRng
     }
 }
 
+pub fn print_every_batch_loss(batch_loss: &LayerType)
+{
+    let batch_digits = batch_loss.shape().batch_size.ilog10() as usize + 1;
+    for (i, loss) in batch_loss.iter().enumerate()
+    {
+        println!("  b#{i:0$}: {loss}", batch_digits);
+    }
+}
+
 pub fn initialize_orthogonal(m: usize, k: usize) -> LayerType
 {
     fn normal_distribution() -> f32
@@ -1005,6 +1014,7 @@ enum NetworkMode
 pub struct NetworkConfigInfo
 {
     pub print_optional_info: bool,
+    pub print_batch_losses: bool,
     pub is_multistep: bool,
     pub is_input_one_hot: bool
 }
@@ -1816,18 +1826,14 @@ where
 
         self.feedforward_setup_dropout(&mut rng);
 
-        let is_print_optional = self.config.as_ref().unwrap().print_optional_info;
+        let is_print_batch_losses = self.config.as_ref().unwrap().print_batch_losses;
         self.recorder.get_tensor_async(self.outputs.loss.as_value(), move |batch_loss|
         {
             loss_consume(batch_loss.as_ref().average());
 
-            if is_print_optional
+            if is_print_batch_losses
             {
-                let batch_digits = batch_loss.shape().batch_size.ilog10() as usize + 1;
-                for (i, loss) in batch_loss.iter().enumerate()
-                {
-                    println!("  b#{i:0$}: {loss}", batch_digits);
-                }
+                print_every_batch_loss(&batch_loss);
 
                 println!();
             }
@@ -2096,7 +2102,14 @@ where
 
         self.feedforward_with(|recorder| recorder.calculate_feedforward(inputs_in_flight), input);
 
-        self.recorder.get_tensor_blocking(self.outputs.loss.as_value()).as_ref().average()
+        let batch_loss = self.recorder.get_tensor_blocking(self.outputs.loss.as_value());
+
+        if self.config.as_ref().unwrap().print_batch_losses
+        {
+            print_every_batch_loss(&batch_loss);
+        }
+
+        batch_loss.as_ref().average()
     }
 
     fn predict(
@@ -2343,6 +2356,7 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_multistep: false,
             is_input_one_hot: IS_INPUT_ONE_HOT,
+            print_batch_losses: true,
             print_optional_info: false
         };
 
@@ -2480,6 +2494,7 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_multistep,
             is_input_one_hot: IS_INPUT_ONE_HOT,
+            print_batch_losses: true,
             print_optional_info: true
         };
 
@@ -2564,6 +2579,7 @@ mod tests
         let network_config = NetworkConfigInfo{
             is_input_one_hot,
             is_multistep: true,
+            print_batch_losses: true,
             print_optional_info: false
         };
 
