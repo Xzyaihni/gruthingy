@@ -121,12 +121,14 @@ impl UnitFactory for NUnitFactory
     type Unit<T> = NUnit<T>;
 }
 
+type CurrentNetworkType = NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, NDictionary>;
+
 #[cfg(not(test))]
 fn load_network(
     config: &Config,
     sizes: Option<SizesInfo>,
     auto_create: bool
-) -> NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, NDictionary>
+) -> CurrentNetworkType
 {
     load_network_with(config.network_path.as_ref(), Some(config), sizes, true, auto_create)
 }
@@ -278,7 +280,8 @@ fn train_until_best(config: Config)
 
     let training_info = TrainingInfo::from(&config);
 
-    let mut test_thread: Option<JoinHandle<Result<bool, (&'static str, Box<dyn Error + Send>)>>> = None;
+    type TestThreadHandle = JoinHandle<Result<bool, (&'static str, Box<dyn Error + Send>)>>;
+    let mut test_thread: Option<TestThreadHandle> = None;
 
     loop
     {
@@ -287,7 +290,7 @@ fn train_until_best(config: Config)
 
         network.train::<NEmbeddings, _>(training_info.clone(), text_file);
 
-        let wait_for_test = |test_thread: &mut Option<_>|
+        let wait_for_test = |network: &mut CurrentNetworkType, test_thread: &mut Option<TestThreadHandle>|
         {
             if let Some(test_thread) = test_thread.take()
             {
@@ -311,7 +314,7 @@ fn train_until_best(config: Config)
             }
         };
 
-        wait_for_test(&mut test_thread);
+        wait_for_test(&mut network, &mut test_thread);
 
         try_save_network(&network, &config.network_path);
 
@@ -401,7 +404,7 @@ fn train_until_best(config: Config)
 
         if config.block_for_test
         {
-            wait_for_test(&mut test_thread);
+            wait_for_test(&mut network, &mut test_thread);
         }
     }
 }
