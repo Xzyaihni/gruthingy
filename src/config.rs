@@ -625,7 +625,7 @@ impl Config
         let mut output = None;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
-        let mut inputs_in_flight = 1000;
+        let mut inputs_in_flight = 100;
         let mut block_for_test = true;
         let mut patience = 10;
         let mut lr_factor = 0.1;

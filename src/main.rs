@@ -298,16 +298,16 @@ fn train_until_best(config: Config)
         {
             if let Some(test_thread) = test_thread.take()
             {
+                if network.is_none()
+                {
+                    *network = Some(load_network(&config, None, false));
+                }
+
                 match test_thread.join().unwrap()
                 {
                     Err((place, err)) => complain(format!("{place}: {err}")),
                     Ok(true) =>
                     {
-                        if network.is_none()
-                        {
-                            *network = Some(load_network(&config, None, false));
-                        }
-
                         let network = network.as_mut().unwrap();
 
                         let network_info = network.extra_info_mut();

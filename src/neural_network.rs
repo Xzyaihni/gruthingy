@@ -1776,12 +1776,7 @@ mod tests
         eprintln!("training input: {inputs}");
 
         let layers = if let TestStrategy::MultiLayer(layers) = strategy { layers } else { 1 };
-        let hidden = match strategy
-        {
-            TestStrategy::Dropout(_)
-            | TestStrategy::InputDropout(_) => 30,
-            _ => 8
-        };
+        let hidden = 8;
 
         let layer_sizes = LayerSizes{
             hidden,
