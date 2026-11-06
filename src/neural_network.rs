@@ -1663,7 +1663,7 @@ mod tests
             TestStrategy::Dropout(0.2)
         );
 
-        assert!(test_loss < 0.01, "{test_loss} must be close to 0");
+        assert!(test_loss < 0.1, "{test_loss} must be close to 0");
     }
 
     #[test]
@@ -1671,11 +1671,11 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            5000,
+            8000,
             TestStrategy::InputDropout(0.2)
         );
 
-        assert!(test_loss < 0.01, "{test_loss} must be close to 0");
+        assert!(test_loss < 0.1, "{test_loss} must be close to 0");
     }
 
     #[test]

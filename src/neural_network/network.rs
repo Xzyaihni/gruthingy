@@ -1842,6 +1842,31 @@ where
         crate::RENDERDOC_API.end_capture();
     }
 
+    fn input_dropout(input_dropouts: &[Vec<usize>], input: OwnedInputType) -> OwnedInputType
+    {
+        match input
+        {
+            OwnedInputType::Normal(x) => OwnedInputType::Normal(x),
+            OwnedInputType::OneHot(mut x) =>
+            {
+                x.positions.chunks_exact_mut(x.count).enumerate().for_each(|(batch_index, batch_positions)|
+                {
+                    let dropouts = &input_dropouts[batch_index];
+
+                    batch_positions.iter_mut().for_each(|x|
+                    {
+                        if dropouts.contains(&(*x as usize))
+                        {
+                            *x = u32::MAX;
+                        }
+                    });
+                });
+
+                OwnedInputType::OneHot(x)
+            }
+        }
+    }
+
     fn feedforward_with(
         &mut self,
         calculate_function: impl Fn(&mut OperationsRecorder),
@@ -1853,27 +1878,7 @@ where
         let inputs_count = input.len();
         let mut inputs = input.flat_map(|(input, target)|
         {
-            let dropped_input = match input
-            {
-                OwnedInputType::Normal(x) => OwnedInputType::Normal(x),
-                OwnedInputType::OneHot(mut x) =>
-                {
-                    x.positions.chunks_exact_mut(x.count).enumerate().for_each(|(batch_index, batch_positions)|
-                    {
-                        let dropouts = &self.dropouts.input_dropouts[batch_index];
-
-                        batch_positions.iter_mut().for_each(|x|
-                        {
-                            if dropouts.contains(&(*x as usize))
-                            {
-                                *x = u32::MAX;
-                            }
-                        });
-                    });
-
-                    OwnedInputType::OneHot(x)
-                }
-            };
+            let dropped_input = Self::input_dropout(&self.dropouts.input_dropouts, input);
 
             [dropped_input, OwnedInputType::OneHot(target)]
         });
@@ -2155,7 +2160,10 @@ where
 
         let inputs_count = input.len();
 
-        let mut input = input.map(|x| x.batch_replicate(self.sizes.batch_size));
+        let mut input = input.map(|x|
+        {
+            Self::input_dropout(&self.dropouts.input_dropouts, x.batch_replicate(self.sizes.batch_size))
+        });
 
         assert!(inputs_count > 0, "inputs must not be empty");
 
