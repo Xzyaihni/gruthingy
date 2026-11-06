@@ -121,6 +121,7 @@ impl UnitFactory for NUnitFactory
     type Unit<T> = NUnit<T>;
 }
 
+#[allow(dead_code)]
 type CurrentNetworkType = NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, NDictionary>;
 
 #[cfg(not(test))]
@@ -276,7 +277,7 @@ fn train_until_best(config: Config)
     let losses_path = config.network_path.with_extension("losses");
     let best_path = config.network_path.with_extension("best");
 
-    let mut network = load_network(&config, None, true);
+    let mut network: Option<CurrentNetworkType> = Some(load_network(&config, None, true));
 
     let training_info = TrainingInfo::from(&config);
 
@@ -288,9 +289,9 @@ fn train_until_best(config: Config)
         let text_file = config.get_input_file();
         let test_file = config.get_test_file().unwrap_or_else(|| complain(format!("--test-path must be provided")));
 
-        network.train::<NEmbeddings, _>(training_info.clone(), text_file);
+        network.as_mut().unwrap().train::<NEmbeddings, _>(training_info.clone(), text_file);
 
-        let wait_for_test = |network: &mut CurrentNetworkType, test_thread: &mut Option<TestThreadHandle>|
+        let wait_for_test = |network: &mut Option<CurrentNetworkType>, test_thread: &mut Option<TestThreadHandle>|
         {
             if let Some(test_thread) = test_thread.take()
             {
@@ -299,6 +300,13 @@ fn train_until_best(config: Config)
                     Err((place, err)) => complain(format!("{place}: {err}")),
                     Ok(true) =>
                     {
+                        if network.is_none()
+                        {
+                            *network = Some(load_network(&config, None, false));
+                        }
+
+                        let network = network.as_mut().unwrap();
+
                         let network_info = network.extra_info_mut();
                         if (network_info.iterations - network_info.last_lr_reduction) > (config.patience * config.iterations) as u64
                         {
@@ -316,7 +324,12 @@ fn train_until_best(config: Config)
 
         wait_for_test(&mut network, &mut test_thread);
 
-        try_save_network(&network, &config.network_path);
+        try_save_network(network.as_ref().unwrap(), &config.network_path);
+
+        if config.block_for_test
+        {
+            network = None;
+        }
 
         test_thread = {
             let losses_path = losses_path.clone();
