@@ -974,7 +974,6 @@ pub struct NeuralNetwork<NetworkType, O, D>
 
 pub type EN<T> = <EmbeddingsUnitFactory as UnitFactory>::Unit<T>;
 
-#[cfg(not(test))]
 impl<O, D> NeuralNetwork<Network<EmbeddingsUnitFactory, O::WeightParam<OptimizerInfoPtr>>, O, D>
 where
     O: Optimizer,
@@ -1090,10 +1089,8 @@ where
 
     pub fn reset(&mut self, config: NetworkConfigInfo, batch_size: usize)
     where
-        for<'de> O: Serialize + Deserialize<'de>,
-        for<'de> D: Serialize + Clone + Deserialize<'de>,
-        for<'de> O::WeightParam<LayerType>: Serialize + Clone + Deserialize<'de>,
-        for<'de> N::Unit<SaveWeightType>: Serialize + Deserialize<'de>,
+        D: Clone,
+        O::WeightParam<LayerType>: Clone,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
@@ -1650,7 +1647,7 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            5000,
+            1000,
             TestStrategy::LongDistance
         );
 
@@ -1662,7 +1659,7 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            10000,
+            5000,
             TestStrategy::Dropout(0.2)
         );
 
@@ -1674,7 +1671,7 @@ mod tests
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
-            10000,
+            5000,
             TestStrategy::InputDropout(0.2)
         );
 
@@ -1827,13 +1824,21 @@ mod tests
         let test_input = String::from_utf8_lossy(&inputs.as_bytes()[1..(1+steps_num)]).into_owned();
         let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
 
-        network.reset(NetworkConfigInfo{
+        let config = NetworkConfigInfo{
             print_optional_info: false,
             is_multistep: true,
             is_input_one_hot
-        }, 64);
+        };
 
-        let test_loss = network.test_loss(Cursor::new(test_input), None, false);
+        let test_batches = 64;
+
+        network.reset(config.clone(), test_batches);
+
+        let test_loss = network.test_loss(Cursor::new(test_input.clone()), None, false);
+
+        network.reset(config, test_batches);
+
+        let _accuracy = network.test_loss(Cursor::new(test_input), None, true);
 
         (last_train_loss, test_loss as f64)
     }

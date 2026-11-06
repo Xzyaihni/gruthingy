@@ -73,10 +73,12 @@ impl NetworkUnit for Star<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
-            let k_pre = recorder.matmulv_add(self.hidden.weight, *previous_state, k);
+            let state_x = recorder.matmulv(self.hidden.weight, *previous_state);
 
             let seed = dropout.seeds.get(recorder, seed_index);
-            k = recorder.dropout_with_seed(k_pre, dropout.hidden_probability, seed);
+            let k_pre = recorder.dropout_with_seed(state_x, dropout.hidden_probability, seed);
+
+            k = recorder.add(k_pre, k);
 
             recorder.name_diff_tensor(k, "k_inner");
         }

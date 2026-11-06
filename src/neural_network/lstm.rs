@@ -125,16 +125,21 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
-            let mut forget_gate_inner = matmul_inputv_add(recorder, self.input_forget, input, self.forget_bias);
+            let forget_gate_pre = matmul_inputv_add(recorder, self.input_forget, input, self.forget_bias);
+
+            let seed = dropout.seeds.get(recorder, seed_index);
+            let mut forget_gate_inner = recorder.dropout_with_seed(forget_gate_pre, dropout.hidden_probability, seed);
 
             recorder.name_diff_tensor(forget_gate_inner, "forget_gate");
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
             {
-                let value = recorder.matmulv_add(hidden.weight, previous_hidden, *gate);
+                let value_pre = recorder.matmulv(hidden.weight, previous_hidden);
 
                 let seed = dropout.seeds.get(recorder, seed_index);
-                *gate = recorder.dropout_with_seed(value, dropout.hidden_probability, seed);
+                let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
+
+                *gate = recorder.add(value, *gate);
 
                 seed_index += 1;
             };

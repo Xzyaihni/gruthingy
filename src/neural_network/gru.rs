@@ -108,10 +108,12 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
             let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
             {
-                let value = recorder.matmulv_add(hidden.weight, *previous_state, *gate);
+                let value_pre = recorder.matmulv(hidden.weight, *previous_state);
 
                 let seed = dropout.seeds.get(recorder, seed_index);
-                *gate = recorder.dropout_with_seed(value, dropout.hidden_probability, seed);
+                let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
+
+                *gate = recorder.add(value, *gate);
 
                 seed_index += 1;
             };

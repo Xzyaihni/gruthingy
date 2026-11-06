@@ -899,9 +899,11 @@ where
         {
             infos.iter().map(|info| O::map_data_ref(info, |value|
             {
-                let OptimizerInfoPtr::Index(value) = *value else { panic!("must be resolved") };
-
-                x.recorder.get_tensor_blocking(value)
+                match *value
+                {
+                    OptimizerInfoPtr::Ptr(value) => x.recorder.get_tensor_memory_value(value).clone_owned(),
+                    OptimizerInfoPtr::Index(value) => x.recorder.get_tensor_blocking(value)
+                }
             })).collect()
         });
 
@@ -1453,12 +1455,6 @@ where
 
         let config = self.config.clone().unwrap();
 
-        let mut dropout_info = DropoutInfo{
-            input_probability: self.dropouts.dropout_probability,
-            hidden_probability: self.dropouts.dropout_probability,
-            seeds: SeedsCreator::new()
-        };
-
         let batch_size = self.sizes.batch_size;
 
         let create_input = {
@@ -1512,8 +1508,7 @@ where
         let no_state_output = self.record_feedforward_single_input(
             None,
             this_input_first,
-            this_target_first,
-            &mut dropout_info
+            this_target_first
         );
 
         self.recorder.name_diff_tensor(no_state_output.output.0, "no_state_output");
@@ -1561,8 +1556,7 @@ where
             let final_output = self.record_feedforward_single_input(
                 Some(previous_state_selected),
                 this_input_loop,
-                this_target_loop,
-                &mut dropout_info
+                this_target_loop
             );
 
             self.recorder.name_diff_tensor(final_output.output.0, "final_output");
@@ -1610,8 +1604,7 @@ where
         &mut self,
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
         input: InputTypePtr,
-        targets: Option<OneHotIndex>,
-        dropout_info: &mut DropoutInfo
+        targets: Option<OneHotIndex>
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, (DiffTensorPtr, Option<DiffTensorPtr>)>
     {
         self.record_feedforward_single_input_with_activation(|this, layer_index, previous_state, input, dropout_info|
@@ -1625,15 +1618,14 @@ where
             {
                 (output, targets.map(|targets| this.recorder.softmax_cross_entropy(output, targets).1))
             })
-        }, previous_states, input, dropout_info)
+        }, previous_states, input)
     }
 
     fn record_feedforward_single_input_with_activation<F, T>(
         &mut self,
         last_f: F,
         previous_states: Option<Vec<UnitState<N, DiffTensorPtr>>>,
-        input: InputTypePtr,
-        dropout_info: &mut DropoutInfo
+        input: InputTypePtr
     ) -> NetworkOutput<Vec<UnitState<N, DiffTensorPtr>>, T>
     where
         F: FnOnce(&mut Self, usize, Option<&UnitState<N, DiffTensorPtr>>, DiffInputType, &mut DropoutInfo) -> NetworkOutput<UnitState<N, DiffTensorPtr>, T>
@@ -1648,6 +1640,12 @@ where
         #[allow(clippy::needless_range_loop)]
         for l_i in 0..self.sizes.layers
         {
+            let mut dropout_info = DropoutInfo{
+                input_probability: self.dropouts.dropout_probability,
+                hidden_probability: self.dropouts.dropout_probability,
+                seeds: SeedsCreator::new()
+            };
+
             let input = last_output.unwrap_or_else(||
             {
                 if let Some(embeddings) = weights_ptr.embeddings.as_ref()
@@ -1671,7 +1669,7 @@ where
                 let NetworkOutput{
                     state,
                     output: this_output
-                } = last_f(self, l_i, previous_state, input, dropout_info);
+                } = last_f(self, l_i, previous_state, input, &mut dropout_info);
 
                 output = Some(this_output);
 
@@ -1687,7 +1685,7 @@ where
                     &mut self.recorder,
                     previous_state,
                     input,
-                    dropout_info
+                    &mut dropout_info
                 );
 
                 last_output = Some(DiffInputType::Normal(this_output));
@@ -1955,7 +1953,6 @@ where
         })
     }
 
-    #[allow(dead_code)]
     pub fn top_guesses(
         &mut self,
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
@@ -1977,7 +1974,6 @@ where
         })
     }
 
-    #[allow(dead_code)]
     pub fn certainty_guesses(
         &mut self,
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
@@ -2030,7 +2026,6 @@ where
         })
     }
 
-    #[allow(dead_code)]
     pub fn correct_guesses(
         &mut self,
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
@@ -2045,7 +2040,6 @@ where
         })
     }
 
-    #[allow(dead_code)]
     pub fn accuracy(
         &mut self,
         input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
@@ -2204,7 +2198,6 @@ where
     }
 }
 
-#[cfg(not(test))]
 impl<StoreO> Network<EmbeddingsUnitFactory, StoreO>
 where
     EmbeddingsUnitFactory: UnitFactory
@@ -2345,12 +2338,6 @@ mod tests
             print_optional_info: false
         };
 
-        let mut dropout_info = DropoutInfo{
-            input_probability: 0.0,
-            hidden_probability: 0.0,
-            seeds: SeedsCreator::new()
-        };
-
         let mut at_once: NetworkType = Network::new(SIZES, INPUT_DROPOUT_PROBABILITY, DROPOUT_PROBABILITY, network_config);
         at_once.set_train_mode();
 
@@ -2369,7 +2356,7 @@ mod tests
             let NetworkOutput{
                 state: next_state_ptr,
                 output: (this_output, loss)
-            } = at_once.record_feedforward_single_input(previous_state.take(), *this_input, Some(*this_target), &mut dropout_info);
+            } = at_once.record_feedforward_single_input(previous_state.take(), *this_input, Some(*this_target));
 
             at_once.recorder.name_diff_tensor(this_output, "output");
             at_once.recorder.name_diff_tensor(loss.unwrap(), "loss");
