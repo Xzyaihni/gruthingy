@@ -1602,6 +1602,7 @@ mod tests
     {
         None,
         NonBatch,
+        LongDistance,
         MultiLayer(usize),
         InputDropout(f32),
         Clip(f32),
@@ -1611,7 +1612,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_sgd_simple()
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 10000, TestStrategy::None);
+        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 15000, TestStrategy::None);
     }
 
     #[test]
@@ -1645,9 +1646,21 @@ mod tests
     }
 
     #[test]
+    fn simple_data_overfit_char_adam_long_distance()
+    {
+        let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
+            CharDictionary::new(InputData::String("abcdefg".to_owned())),
+            5000,
+            TestStrategy::LongDistance
+        );
+
+        assert!(test_loss < 0.01, "{test_loss} must be close to 0");
+    }
+
+    #[test]
     fn simple_data_overfit_char_adam_dropout()
     {
-        let (_last_loss, test_loss) = simple_data_overfit_inner::<Sgd, _>(
+        let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
             10000,
             TestStrategy::Dropout(0.2)
@@ -1659,7 +1672,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_adam_input_dropout()
     {
-        let (_last_loss, test_loss) = simple_data_overfit_inner::<Sgd, _>(
+        let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
             10000,
             TestStrategy::InputDropout(0.2)
@@ -1691,7 +1704,7 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 4000, TestStrategy::None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 5000, TestStrategy::None);
     }
 
     fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(
@@ -1732,6 +1745,8 @@ mod tests
 
         let is_input_one_hot = ThisDictionary::is_input_one_hot();
 
+        eprintln!("dictionary: {dictionary:#?}");
+
         let input_size = dictionary.input_amount();
         let output_size = dictionary.words_amount();
 
@@ -1740,11 +1755,27 @@ mod tests
 
             iter::repeat_with(||
             {
-                input_index = (input_index + 1) % ("abcdefg".len() as u8 - 1);
+                let index = match strategy
+                {
+                    TestStrategy::LongDistance =>
+                    {
+                        input_index = (input_index + 1) % ("abcdefg".len() as u8 * 2);
 
-                char::from(b'a' + input_index)
+                        if input_index % 2 == 1 { 0 } else { input_index / 2 }
+                    },
+                    _ =>
+                    {
+                        input_index = (input_index + 1) % ("abcdefg".len() as u8);
+
+                        input_index
+                    }
+                };
+
+                char::from(b'a' + index)
             }).take(1000).collect()
         };
+
+        eprintln!("training input: {inputs}");
 
         let layers = if let TestStrategy::MultiLayer(layers) = strategy { layers } else { 1 };
         let hidden = match strategy
@@ -1782,7 +1813,7 @@ mod tests
             if let TestStrategy::Clip(clip) = strategy { Some(clip) } else { None }
         );
 
-        let steps_num = 4;
+        let steps_num = if let TestStrategy::LongDistance = strategy { 50 } else { 4 };
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,

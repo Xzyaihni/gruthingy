@@ -1818,12 +1818,27 @@ where
 
         self.feedforward_setup_dropout(&mut rng);
 
+        let is_print_optional = self.config.as_ref().unwrap().print_optional_info;
         self.recorder.get_tensor_async(self.outputs.loss.as_value(), move |batch_loss|
         {
             loss_consume(batch_loss.as_ref().average());
+
+            if is_print_optional
+            {
+                let batch_digits = batch_loss.shape().batch_size.ilog10() as usize + 1;
+                for (i, loss) in batch_loss.iter().enumerate()
+                {
+                    println!("  b#{i:0$}: {loss}", batch_digits);
+                }
+
+                println!();
+            }
         });
 
         self.feedforward_with(|recorder| recorder.calculate(t, is_last_step), input);
+
+        #[cfg(feature="printcalculations")]
+        self.recorder.block_until_finished();
 
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.end_capture();
