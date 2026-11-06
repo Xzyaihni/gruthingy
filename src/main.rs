@@ -269,8 +269,7 @@ where
 fn train_until_best(config: Config)
 {
     let mut test_config = config.clone();
-    test_config.batch_size = 5;
-    test_config.calculate_accuracy = false;
+    test_config.batch_size = if config.any_dropout() { 10 } else { 1 };
 
     let losses_path = config.network_path.with_extension("losses");
     let best_path = config.network_path.with_extension("best");
@@ -288,26 +287,31 @@ fn train_until_best(config: Config)
 
         network.train::<NEmbeddings, _>(training_info.clone(), text_file);
 
-        if let Some(test_thread) = test_thread.take()
+        let wait_for_test = |test_thread: &mut Option<_>|
         {
-            match test_thread.join().unwrap()
+            if let Some(test_thread) = test_thread.take()
             {
-                Err((place, err)) => complain(format!("{place}: {err}")),
-                Ok(true) =>
+                match test_thread.join().unwrap()
                 {
-                    let network_info = network.extra_info_mut();
-                    if (network_info.iterations - network_info.last_lr_reduction) > (config.patience * config.iterations) as u64
+                    Err((place, err)) => complain(format!("{place}: {err}")),
+                    Ok(true) =>
                     {
-                        eprintln!("reducing learning rate, last reduced at iteration {}", network_info.last_lr_reduction);
-                        network_info.last_lr_reduction = network_info.iterations;
+                        let network_info = network.extra_info_mut();
+                        if (network_info.iterations - network_info.last_lr_reduction) > (config.patience * config.iterations) as u64
+                        {
+                            eprintln!("reducing learning rate, last reduced at iteration {}", network_info.last_lr_reduction);
+                            network_info.last_lr_reduction = network_info.iterations;
 
-                        let learning_rate = network.get_learning_rate();
-                        network.set_learning_rate(learning_rate *  config.lr_factor);
-                    }
-                },
-                Ok(false) => ()
+                            let learning_rate = network.get_learning_rate();
+                            network.set_learning_rate(learning_rate *  config.lr_factor);
+                        }
+                    },
+                    Ok(false) => ()
+                }
             }
-        }
+        };
+
+        wait_for_test(&mut test_thread);
 
         try_save_network(&network, &config.network_path);
 
@@ -394,6 +398,11 @@ fn train_until_best(config: Config)
                 Ok(false)
             }))
         };
+
+        if config.block_for_test
+        {
+            wait_for_test(&mut test_thread);
+        }
     }
 }
 

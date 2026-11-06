@@ -585,6 +585,7 @@ pub struct Config
     pub tokens_amount: usize,
     pub temperature: f32,
     pub inputs_in_flight: Option<usize>,
+    pub block_for_test: bool,
     pub patience: usize,
     pub lr_factor: f32,
     pub bpe_limit: Option<usize>,
@@ -625,6 +626,7 @@ impl Config
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
         let mut inputs_in_flight = 1000;
+        let mut block_for_test = true;
         let mut patience = 10;
         let mut lr_factor = 0.1;
         let mut bpe_limit = None;
@@ -662,6 +664,7 @@ impl Config
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
         parser.push(&mut inputs_in_flight, None, "in-flight", "inputs in flight for inference, more is faster but uses more memory, 0 for unlimited");
+        parser.push_flag(&mut block_for_test, None, "parallel-test", "run the test parallel in train_until_best", false);
         parser.push(&mut patience, None, "patience", "n -I runs of non-decreasing validation loss in train_until_best until lr reduction");
         parser.push(&mut lr_factor, None, "lr-factor", "factor by which to multiply learning rate in train_until_best");
         parser.push(&mut bpe_limit, None, "bpe-limit", "maximum amount of ngrams in a bpe, dynamic by default");
@@ -716,6 +719,7 @@ impl Config
             tokens_amount,
             temperature,
             inputs_in_flight,
+            block_for_test,
             patience,
             lr_factor,
             bpe_limit,
@@ -732,6 +736,11 @@ impl Config
             infinite_loop,
             mode
         }
+    }
+
+    pub fn any_dropout(&self) -> bool
+    {
+        self.input_dropout_probability != 0.0 || self.dropout_probability != 0.0 || self.bpe_dropout_probability != 0.0
     }
 
     pub fn get_input(&self) -> &str

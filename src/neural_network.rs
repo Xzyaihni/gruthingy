@@ -1598,6 +1598,7 @@ mod tests
     enum TestStrategy
     {
         None,
+        Bpe,
         NonBatch,
         LongDistance,
         MultiLayer(usize),
@@ -1660,7 +1661,7 @@ mod tests
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
             500,
-            TestStrategy::Dropout(0.5)
+            TestStrategy::Dropout(0.25)
         );
 
         assert!(test_loss < 0.001, "{test_loss} must be close to 0");
@@ -1672,7 +1673,7 @@ mod tests
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
             CharDictionary::new(InputData::String("abcdefg".to_owned())),
             800,
-            TestStrategy::InputDropout(0.5)
+            TestStrategy::InputDropout(0.25)
         );
 
         assert!(test_loss < 0.001, "{test_loss} must be close to 0");
@@ -1701,7 +1702,7 @@ mod tests
             b"ab12ef34ab32ab5ef1abef".iter().copied()
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 5000, TestStrategy::None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 5000, TestStrategy::Bpe);
     }
 
     fn simple_data_overfit_with<OptimizerType: Optimizer, D: NetworkDictionary>(
@@ -1775,12 +1776,7 @@ mod tests
         eprintln!("training input: {inputs}");
 
         let layers = if let TestStrategy::MultiLayer(layers) = strategy { layers } else { 1 };
-        let hidden = match strategy
-        {
-            TestStrategy::Dropout(_)
-            | TestStrategy::InputDropout(_) => 20,
-            _ => 8
-        };
+        let hidden = 8;
 
         let layer_sizes = LayerSizes{
             hidden,
@@ -1828,7 +1824,8 @@ mod tests
             steps_num: StepsNum::Steps(steps_num)
         };
 
-        let test_input = String::from_utf8_lossy(&inputs.as_bytes()[1..(1+steps_num)]).into_owned();
+        let test_input = String::from_utf8_lossy((if let TestStrategy::Bpe = strategy { &inputs[1..] } else { &inputs }).as_bytes()).into_owned();
+
         let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
 
         let config = NetworkConfigInfo{
