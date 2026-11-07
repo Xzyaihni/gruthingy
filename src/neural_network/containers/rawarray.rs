@@ -111,7 +111,7 @@ define_op_kernels!{
     AdamW
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RawArray
 {
     pub output_buffer: Option<wgpu::Buffer>,

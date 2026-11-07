@@ -149,18 +149,16 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
         let this_activation = recorder.mul_componentwise(activation_gate, update_gate);
 
-        let one = recorder.set_new_value(1.0);
-
         let state = if let Some(previous_state) = previous_state
         {
             let update = recorder.mul_componentwise(update_gate, *previous_state);
 
-            let left = recorder.sub_from_scalar(one, update);
+            let left = recorder.sub_from_scalar(1.0, update);
 
             recorder.add(left, this_activation)
         } else
         {
-            recorder.add_scalar(this_activation, one)
+            recorder.add_scalar(this_activation, 1.0)
         };
 
         NetworkOutput{

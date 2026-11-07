@@ -91,9 +91,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
 
         if let Some(previous_state) = previous_state
         {
-            let one = recorder.set_new_value(1.0);
-
-            let lhs = recorder.sub_from_scalar(one, k);
+            let lhs = recorder.sub_from_scalar(1.0, k);
             recorder.name_diff_tensor(lhs, "lhs");
 
             let hidden_part = recorder.mul_componentwise(lhs, *previous_state);
