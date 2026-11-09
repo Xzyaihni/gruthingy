@@ -1319,6 +1319,7 @@ where
             }
 
             let optimizer_info = Some(OptimizerInfo{
+                previous_optimizer: None,
                 weights: self.weights_ptr.as_ref().unwrap().iter().map(|x| x.weight).collect(),
                 params: self.optimizer_info.as_ref().unwrap().iter().cloned().collect(),
                 gradient_clip,

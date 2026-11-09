@@ -28,12 +28,8 @@ use optimizers::{
     OptimizerInfo,
     OptimizerInfoPtr,
     Optimizer,
-    Sgd,
     PowerSignGradientInfo,
-    PowerSign,
-    AdamGradientInfo,
-    Adam,
-    AdamW
+    AdamGradientInfo
 };
 
 mod shader_preprocessor;
@@ -1451,6 +1447,7 @@ impl OperationsRecorderMemory
             GradientOp::AddScalar{rhs, ..} => Some(rhs.to_ne_bytes().into()),
             GradientOp::SubFromScalar{lhs, ..} => Some(lhs.to_ne_bytes().into()),
             GradientOp::SumBatch{scalar, ..} => Some(scalar.to_ne_bytes().into()),
+            GradientOp::CapMagnitude{magnitude, ..} => Some(magnitude.to_ne_bytes().into()),
             GradientOp::Pow{power, ..} => Some((power as u32).to_ne_bytes().into()),
             GradientOp::MatmulvAdd{output, ..}
             | GradientOp::Matmulv{output, ..}
@@ -1720,6 +1717,8 @@ struct KernelLayouts
     adam: KernelLayout,
     adamw: KernelLayout
 }
+
+const OPTIMIZER_UNIFORM_BUFFER_INDEX: usize = 0;
 
 #[cfg(test)]
 static WGPU_INIT_INFO: std::sync::LazyLock<WgpuInitInfo> = std::sync::LazyLock::new(|| { WgpuInitInfo::init() });
@@ -2009,6 +2008,13 @@ impl RawArrayMemory
 
         let staging_belt = wgpu::util::StagingBelt::new(init_info.device.clone(), 512 * FLOAT_BYTES as wgpu::BufferAddress);
 
+        let uniform_buffers = vec![init_info.device.create_buffer(&wgpu::BufferDescriptor{
+            label: Some("optimizer_uniform"),
+            size: 0,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false
+        })];
+
         Self{
             device: init_info.device,
             queue: init_info.queue,
@@ -2021,7 +2027,7 @@ impl RawArrayMemory
             stack_buffers: HashMap::new(),
             map_on_submit_buffers: Vec::new(),
             current_in_flight_queue: None,
-            uniform_buffers: Vec::new(),
+            uniform_buffers,
             uniform_buffers_locations: Vec::new(),
             scratch_buffers: Vec::new(),
             scratch_buffers_locations: Vec::new(),
@@ -2035,6 +2041,11 @@ impl RawArrayMemory
         {
             self.encoder = Some(self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
         }
+    }
+
+    fn optimizer_uniform_buffer(&self) -> &wgpu::Buffer
+    {
+        &self.uniform_buffers[OPTIMIZER_UNIFORM_BUFFER_INDEX]
     }
 }
 
@@ -2796,13 +2807,13 @@ impl OperationsRecorder
         output
     }
 
-    pub fn sgd_optimizer(&mut self, gradient: TensorPtr, sgd: Sgd) -> TensorPtr
+    pub fn sgd_optimizer(&mut self, gradient: TensorPtr) -> TensorPtr
     {
         let shape = self.tensor_shape(gradient);
 
         let output = self.memory.new_tensor_index(shape.into());
 
-        self.gradient_operations.push(GradientOp::OptimizerSgd{gradient, sgd, output});
+        self.gradient_operations.push(GradientOp::OptimizerSgd{gradient, output});
 
         output
     }
@@ -2810,7 +2821,6 @@ impl OperationsRecorder
     pub fn powersign_optimizer(
         &mut self,
         gradient: TensorPtr,
-        powersign: PowerSign,
         info: PowerSignGradientInfo<TensorPtr>
     ) -> TensorPtr
     {
@@ -2818,7 +2828,7 @@ impl OperationsRecorder
 
         let output = self.memory.new_tensor_index(shape.into());
 
-        self.gradient_operations.push(GradientOp::OptimizerPowerSign{gradient, powersign, m: info.m, output});
+        self.gradient_operations.push(GradientOp::OptimizerPowerSign{gradient, m: info.m, output});
 
         output
     }
@@ -2826,7 +2836,6 @@ impl OperationsRecorder
     pub fn adam_optimizer(
         &mut self,
         gradient: TensorPtr,
-        adam: Adam,
         info: AdamGradientInfo<TensorPtr>
     ) -> TensorPtr
     {
@@ -2834,7 +2843,7 @@ impl OperationsRecorder
 
         let output = self.memory.new_tensor_index(shape.into());
 
-        self.gradient_operations.push(GradientOp::OptimizerAdam{gradient, adam, m: info.m, v: info.v, output});
+        self.gradient_operations.push(GradientOp::OptimizerAdam{gradient, m: info.m, v: info.v, output});
 
         output
     }
@@ -2842,7 +2851,6 @@ impl OperationsRecorder
     pub fn adamw_optimizer(
         &mut self,
         gradient: TensorPtr,
-        adamw: AdamW,
         info: AdamGradientInfo<TensorPtr>
     ) -> TensorPtr
     {
@@ -2850,7 +2858,7 @@ impl OperationsRecorder
 
         let output = self.memory.new_tensor_index(shape.into());
 
-        self.gradient_operations.push(GradientOp::OptimizerAdamW{gradient, adamw, m: info.m, v: info.v, output});
+        self.gradient_operations.push(GradientOp::OptimizerAdamW{gradient, m: info.m, v: info.v, output});
 
         output
     }
@@ -4648,7 +4656,7 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::CapMagnitude{value, magnitude, output} =>
+                GradientOp::CapMagnitude{value, magnitude: _, output} =>
                 {
                     debug_calculate_values!(CapMagnitude, (value),());
 
@@ -4672,27 +4680,27 @@ impl OperationsRecorder
                     exact_workgroup(&mut compute_pass, value.shape.batch_size);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        create_bind_group_entry(0, magnitude_buffer),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        create_bind_group_entry(1, magnitude_buffer),
+                        bind_group_entry(2, *output)
                     ], "CapMagnitude", 0);
 
                     do_kernel_operation!(CapMagnitude, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &magnitude.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, output.size());
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::OptimizerSgd{gradient, sgd, output} =>
+                GradientOp::OptimizerSgd{gradient, output} =>
                 {
                     debug_calculate_values!(OptimizerSgd, (gradient),());
 
                     debug_assert_eq!(gradient.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        bind_group_entry(0, *gradient),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        bind_group_entry(1, *gradient),
+                        bind_group_entry(2, *output)
                     ], "OptimizerSgd", 0);
 
                     do_kernel_operation!(Sgd, i, 0);
@@ -4703,7 +4711,7 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((),());
                 },
-                GradientOp::OptimizerPowerSign{gradient, powersign, m, output} =>
+                GradientOp::OptimizerPowerSign{gradient, m, output} =>
                 {
                     debug_calculate_values!(OptimizerPowerSign, (gradient, m),());
 
@@ -4711,9 +4719,10 @@ impl OperationsRecorder
                     debug_assert_eq!(m.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.powersign, &[
-                        bind_group_entry(0, *gradient),
-                        bind_group_entry(1, *m),
-                        bind_group_entry(2, *output)
+                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        bind_group_entry(1, *gradient),
+                        bind_group_entry(2, *m),
+                        bind_group_entry(3, *output)
                     ], "OptimizerPowerSign", 0);
 
                     do_kernel_operation!(PowerSign, i, 0);
@@ -4725,7 +4734,7 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((),());
                 },
-                GradientOp::OptimizerAdam{gradient, adam, m, v, output} =>
+                GradientOp::OptimizerAdam{gradient, m, v, output} =>
                 {
                     debug_calculate_values!(OptimizerAdam, (gradient, m, v),());
 
@@ -4736,10 +4745,11 @@ impl OperationsRecorder
                     debug_assert_eq!(v.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.adam, &[
-                        bind_group_entry(0, *gradient),
-                        bind_group_entry(1, *m),
-                        bind_group_entry(2, *v),
-                        bind_group_entry(3, *output)
+                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        bind_group_entry(1, *gradient),
+                        bind_group_entry(2, *m),
+                        bind_group_entry(3, *v),
+                        bind_group_entry(4, *output)
                     ], "OptimizerAdam", 0);
 
                     do_kernel_operation!(Adam, i, 0);
@@ -4753,7 +4763,7 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((),());
                 },
-                GradientOp::OptimizerAdamW{gradient, adamw, m, v, output} =>
+                GradientOp::OptimizerAdamW{gradient, m, v, output} =>
                 {
                     debug_calculate_values!(OptimizerAdamW, (gradient, m, v),());
 
@@ -4764,10 +4774,11 @@ impl OperationsRecorder
                     debug_assert_eq!(v.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.adamw, &[
-                        bind_group_entry(0, *gradient),
-                        bind_group_entry(1, *m),
-                        bind_group_entry(2, *v),
-                        bind_group_entry(3, *output)
+                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        bind_group_entry(1, *gradient),
+                        bind_group_entry(2, *m),
+                        bind_group_entry(3, *v),
+                        bind_group_entry(4, *output)
                     ], "OptimizerAdamW", 0);
 
                     do_kernel_operation!(AdamW, i, 0);
@@ -7035,10 +7046,10 @@ impl OperationsRecorder
                 GradientOp::MaxTensor{value, output} => t_storage!(value, output),
                 GradientOp::SumBatch{value, scalar: _, output} => t_storage!(value, output),
                 GradientOp::CapMagnitude{value, magnitude: _, output} => { t_src!(value); t_dst!(output); t_storage!(value, output) },
-                GradientOp::OptimizerSgd{gradient, sgd: _, output} => t_storage!(gradient, output),
-                GradientOp::OptimizerPowerSign{gradient, powersign: _, m, output} => t_storage!(gradient, m, output),
-                GradientOp::OptimizerAdam{gradient, adam: _, m, v, output} => t_storage!(gradient, m, v, output),
-                GradientOp::OptimizerAdamW{gradient, adamw: _, m, v, output} => t_storage!(gradient, m, v, output),
+                GradientOp::OptimizerSgd{gradient, output} => t_storage!(gradient, output),
+                GradientOp::OptimizerPowerSign{gradient, m, output} => t_storage!(gradient, m, output),
+                GradientOp::OptimizerAdam{gradient, m, v, output} => t_storage!(gradient, m, v, output),
+                GradientOp::OptimizerAdamW{gradient, m, v, output} => t_storage!(gradient, m, v, output),
                 GradientOp::Fill{value, output} => t_storage!(value, output),
                 GradientOp::BatchReplicate{value, output} => t_storage!(value, output),
                 GradientOp::Dropout{value, probability: _, seed_index: _, output} => t_storage!(value, output),
@@ -10025,10 +10036,10 @@ pub enum GradientOp<T, V, J, O, S>
     BatchReplicate{value: T, output: T},
     Dropout{value: T, probability: f32, seed_index: SeedIndex, output: T},
     CapMagnitude{value: T, magnitude: f32, output: T},
-    OptimizerSgd{gradient: T, sgd: Sgd, output: T},
-    OptimizerPowerSign{gradient: T, powersign: PowerSign, m: T, output: T},
-    OptimizerAdam{gradient: T, adam: Adam, m: T, v: T, output: T},
-    OptimizerAdamW{gradient: T, adamw: AdamW, m: T, v: T, output: T},
+    OptimizerSgd{gradient: T, output: T},
+    OptimizerPowerSign{gradient: T, m: T, output: T},
+    OptimizerAdam{gradient: T, m: T, v: T, output: T},
+    OptimizerAdamW{gradient: T, m: T, v: T, output: T},
     Pow{lhs: T, power: u32, output: T},
     LeakyRelu{value: T, output: T},
     LeakyReluDiff{value: T, gradient: T, output: T},
@@ -10149,18 +10160,18 @@ impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
                 GradientOp::Dropout{value: tf(value), probability, seed_index, output: tf(output)}
             },
             Self::CapMagnitude{value, magnitude, output} => GradientOp::CapMagnitude{value: tf(value), magnitude, output: tf(output)},
-            Self::OptimizerSgd{gradient, sgd, output} => GradientOp::OptimizerSgd{gradient: tf(gradient), sgd, output: tf(output)},
-            Self::OptimizerPowerSign{gradient, powersign, m, output} =>
+            Self::OptimizerSgd{gradient, output} => GradientOp::OptimizerSgd{gradient: tf(gradient), output: tf(output)},
+            Self::OptimizerPowerSign{gradient, m, output} =>
             {
-                GradientOp::OptimizerPowerSign{gradient: tf(gradient), powersign, m: tf(m), output: tf(output)}
+                GradientOp::OptimizerPowerSign{gradient: tf(gradient), m: tf(m), output: tf(output)}
             },
-            Self::OptimizerAdam{gradient, adam, m, v, output} =>
+            Self::OptimizerAdam{gradient, m, v, output} =>
             {
-                GradientOp::OptimizerAdam{gradient: tf(gradient), adam, m: tf(m), v: tf(v), output: tf(output)}
+                GradientOp::OptimizerAdam{gradient: tf(gradient), m: tf(m), v: tf(v), output: tf(output)}
             },
-            Self::OptimizerAdamW{gradient, adamw, m, v, output} =>
+            Self::OptimizerAdamW{gradient, m, v, output} =>
             {
-                GradientOp::OptimizerAdamW{gradient: tf(gradient), adamw, m: tf(m), v: tf(v), output: tf(output)}
+                GradientOp::OptimizerAdamW{gradient: tf(gradient), m: tf(m), v: tf(v), output: tf(output)}
             },
             Self::Pow{lhs, power, output} => GradientOp::Pow{lhs: tf(lhs), power, output: tf(output)},
             Self::LeakyRelu{value, output} => GradientOp::LeakyRelu{value: tf(value), output: tf(output)},
@@ -10426,18 +10437,18 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
                 Self::Dropout{value, probability, seed_index, output: tf(&mut state, output)}
             },
             Self::CapMagnitude{value, magnitude, output} => Self::CapMagnitude{output: tf(&mut state, output), value, magnitude},
-            Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{output: tf(&mut state, output), gradient, sgd},
-            Self::OptimizerPowerSign{gradient, powersign, m, output} =>
+            Self::OptimizerSgd{gradient, output} => Self::OptimizerSgd{output: tf(&mut state, output), gradient},
+            Self::OptimizerPowerSign{gradient, m, output} =>
             {
-                Self::OptimizerPowerSign{output: tf(&mut state, output), gradient, powersign, m}
+                Self::OptimizerPowerSign{output: tf(&mut state, output), gradient, m}
             },
-            Self::OptimizerAdam{gradient, adam, m, v, output} =>
+            Self::OptimizerAdam{gradient, m, v, output} =>
             {
-                Self::OptimizerAdam{output: tf(&mut state, output), gradient, adam, m, v}
+                Self::OptimizerAdam{output: tf(&mut state, output), gradient, m, v}
             },
-            Self::OptimizerAdamW{gradient, adamw, m, v, output} =>
+            Self::OptimizerAdamW{gradient, m, v, output} =>
             {
-                Self::OptimizerAdamW{output: tf(&mut state, output), gradient, adamw, m, v}
+                Self::OptimizerAdamW{output: tf(&mut state, output), gradient, m, v}
             },
             Self::Pow{output, power, lhs} => Self::Pow{output: tf(&mut state, output), power, lhs},
             Self::Sigmoid{output, value} => Self::Sigmoid{output: tf(&mut state, output), value},
@@ -10661,18 +10672,18 @@ impl<T, J, O, S> GradientOp<T, ValueIndex, J, O, S>
             {
                 Self::CapMagnitude{value: tf(&mut state, value), magnitude, output}
             },
-            Self::OptimizerSgd{gradient, sgd, output} => Self::OptimizerSgd{gradient: tf(&mut state, gradient), sgd, output},
-            Self::OptimizerPowerSign{gradient, powersign, m, output} =>
+            Self::OptimizerSgd{gradient, output} => Self::OptimizerSgd{gradient: tf(&mut state, gradient), output},
+            Self::OptimizerPowerSign{gradient, m, output} =>
             {
-                Self::OptimizerPowerSign{gradient: tf(&mut state, gradient), powersign, m: tf(&mut state, m), output}
+                Self::OptimizerPowerSign{gradient: tf(&mut state, gradient), m: tf(&mut state, m), output}
             },
-            Self::OptimizerAdam{gradient, adam, m, v, output} =>
+            Self::OptimizerAdam{gradient, m, v, output} =>
             {
-                Self::OptimizerAdam{gradient: tf(&mut state, gradient), adam, m: tf(&mut state, m), v: tf(&mut state, v), output}
+                Self::OptimizerAdam{gradient: tf(&mut state, gradient), m: tf(&mut state, m), v: tf(&mut state, v), output}
             },
-            Self::OptimizerAdamW{gradient, adamw, m, v, output} =>
+            Self::OptimizerAdamW{gradient, m, v, output} =>
             {
-                Self::OptimizerAdamW{gradient: tf(&mut state, gradient), adamw, m: tf(&mut state, m), v: tf(&mut state, v), output}
+                Self::OptimizerAdamW{gradient: tf(&mut state, gradient), m: tf(&mut state, m), v: tf(&mut state, v), output}
             },
             Self::SoftmaxCrossEntropyNoSoftmaxed{values, targets, output} =>
             {

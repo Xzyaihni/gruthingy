@@ -49,6 +49,7 @@ impl NewableLayer for ()
 
 pub struct OptimizerInfo<O, P>
 {
+    pub previous_optimizer: Option<O>,
     pub weights: Vec<DiffTensorPtr>,
     pub params: Vec<P>,
     pub gradient_clip: Option<f32>,
@@ -87,7 +88,7 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
 
             recorder.name_tensor(clipped_gradient, "clipped_gradient");
 
-            let new_weight = self.optimizer.clone().add_operations(recorder, param, clipped_gradient);
+            let new_weight = O::add_operations(recorder, param, clipped_gradient);
             recorder.name_tensor(new_weight, "new_weight_override");
 
             recorder.store_tensor_until_end(new_weight);
@@ -112,7 +113,7 @@ pub trait Optimizer: fmt::Debug + Default + Clone
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(x: &Self::WeightParam<T>, f: F) -> Self::WeightParam<U>;
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr;
+    fn add_operations(recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr;
 
     fn get_learning_rate(&self) -> f32;
     fn set_learning_rate(&mut self, learning_rate: f32);
@@ -128,7 +129,7 @@ impl Optimizer for ()
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> {}
 
-    fn add_operations(self, _recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, _gradient: TensorPtr) -> TensorPtr
+    fn add_operations(_recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, _gradient: TensorPtr) -> TensorPtr
     {
         unreachable!()
     }
@@ -167,9 +168,9 @@ impl Optimizer for Sgd
 
     fn map_data_ref<T, U, F: FnMut(&T) -> U>(_x: &Self::WeightParam<T>, _f: F) -> Self::WeightParam<U> {}
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
+    fn add_operations(recorder: &mut OperationsRecorder, _param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
-        recorder.sgd_optimizer(gradient, self)
+        recorder.sgd_optimizer(gradient)
     }
 
     fn get_learning_rate(&self) -> f32
@@ -230,9 +231,9 @@ impl Optimizer for PowerSign
         }
     }
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
+    fn add_operations(recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
-        recorder.powersign_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
+        recorder.powersign_optimizer(gradient, Self::map_data_ref(param, force_ptr))
     }
 
     fn get_learning_rate(&self) -> f32
@@ -300,9 +301,9 @@ impl Optimizer for Adam
         }
     }
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
+    fn add_operations(recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
-        recorder.adam_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
+        recorder.adam_optimizer(gradient, Self::map_data_ref(param, force_ptr))
     }
 
     fn get_learning_rate(&self) -> f32
@@ -353,9 +354,9 @@ impl Optimizer for AdamW
         }
     }
 
-    fn add_operations(self, recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
+    fn add_operations(recorder: &mut OperationsRecorder, param: &Self::WeightParam<OptimizerInfoPtr>, gradient: TensorPtr) -> TensorPtr
     {
-        recorder.adamw_optimizer(gradient, self, Self::map_data_ref(param, force_ptr))
+        recorder.adamw_optimizer(gradient, Self::map_data_ref(param, force_ptr))
     }
 
     fn get_learning_rate(&self) -> f32
