@@ -2,6 +2,8 @@ use std::{
     f32,
     vec,
     iter,
+    rc::Rc,
+    cell::RefCell,
     fmt::{self, Debug},
     cmp::Ordering
 };
@@ -1318,14 +1320,13 @@ where
                 });
             }
 
-            let optimizer_info = Some(OptimizerInfo{
-                previous_optimizer: None,
+            let optimizer_info = Some(Rc::new(RefCell::new(OptimizerInfo{
                 weights: self.weights_ptr.as_ref().unwrap().iter().map(|x| x.weight).collect(),
                 params: self.optimizer_info.as_ref().unwrap().iter().cloned().collect(),
                 gradient_clip,
                 batch_size: self.sizes.batch_size as u32,
                 optimizer
-            });
+            })));
 
             self.optimizer_info.as_ref().map(|infos|
             {

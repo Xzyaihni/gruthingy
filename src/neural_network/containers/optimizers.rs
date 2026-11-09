@@ -47,9 +47,13 @@ impl NewableLayer for ()
     fn new_values<F: FnMut(LayerType) -> OptimizerInfoPtr>(_previous: usize, _current: usize, _f: F) -> Self {}
 }
 
+pub trait OptimizerInterface
+{
+    fn as_bytes(&self, t: f32) -> Vec<u8>;
+}
+
 pub struct OptimizerInfo<O, P>
 {
-    pub previous_optimizer: Option<O>,
     pub weights: Vec<DiffTensorPtr>,
     pub params: Vec<P>,
     pub gradient_clip: Option<f32>,
@@ -105,7 +109,15 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
     }
 }
 
-pub trait Optimizer: fmt::Debug + Default + Clone
+impl<O: Optimizer, W> OptimizerInterface for OptimizerInfo<O, W>
+{
+    fn as_bytes(&self, t: f32) -> Vec<u8>
+    {
+        self.optimizer.as_bytes(t)
+    }
+}
+
+pub trait Optimizer: OptimizerInterface + fmt::Debug + Default + Clone + 'static
 {
     type WeightParam<T>;
 
@@ -147,6 +159,14 @@ impl Optimizer for ()
     }
 }
 
+impl OptimizerInterface for ()
+{
+    fn as_bytes(&self, _t: f32) -> Vec<u8>
+    {
+        unreachable!()
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sgd
@@ -181,6 +201,14 @@ impl Optimizer for Sgd
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
+    }
+}
+
+impl OptimizerInterface for Sgd
+{
+    fn as_bytes(&self, _t: f32) -> Vec<u8>
+    {
+        self.learning_rate.to_ne_bytes().into()
     }
 }
 
@@ -244,6 +272,18 @@ impl Optimizer for PowerSign
     fn set_learning_rate(&mut self, learning_rate: f32)
     {
         self.learning_rate = learning_rate;
+    }
+}
+
+impl OptimizerInterface for PowerSign
+{
+    fn as_bytes(&self, _t: f32) -> Vec<u8>
+    {
+        let mut bytes: Vec<u8> = self.b1.to_ne_bytes().into();
+
+        bytes.extend(&self.learning_rate.to_ne_bytes());
+
+        bytes
     }
 }
 
@@ -317,6 +357,21 @@ impl Optimizer for Adam
     }
 }
 
+impl OptimizerInterface for Adam
+{
+    fn as_bytes(&self, t: f32) -> Vec<u8>
+    {
+        let mut bytes: Vec<u8> = self.learning_rate.to_ne_bytes().into();
+
+        [self.b1, self.b2, self.epsilon, t].into_iter().for_each(|value|
+        {
+            bytes.extend(&value.to_ne_bytes());
+        });
+
+        bytes
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdamW
@@ -372,5 +427,20 @@ impl Optimizer for AdamW
     fn set_lambda(&mut self, lambda: f32)
     {
         self.lambda = lambda;
+    }
+}
+
+impl OptimizerInterface for AdamW
+{
+    fn as_bytes(&self, t: f32) -> Vec<u8>
+    {
+        let mut bytes: Vec<u8> = self.learning_rate.to_ne_bytes().into();
+
+        [self.b1, self.b2, self.lambda, self.epsilon, t].into_iter().for_each(|value|
+        {
+            bytes.extend(&value.to_ne_bytes());
+        });
+
+        bytes
     }
 }

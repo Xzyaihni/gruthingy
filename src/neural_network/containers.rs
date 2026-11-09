@@ -2,6 +2,7 @@ use std::{
     fs,
     f32,
     mem,
+    rc::Rc,
     path::Path,
     num::NonZero,
     sync::mpsc,
@@ -25,6 +26,7 @@ use ywrapper::*;
 use rawarray::*;
 use live_ranges::*;
 use optimizers::{
+    OptimizerInterface,
     OptimizerInfo,
     OptimizerInfoPtr,
     Optimizer,
@@ -2009,7 +2011,7 @@ impl RawArrayMemory
         let staging_belt = wgpu::util::StagingBelt::new(init_info.device.clone(), 512 * FLOAT_BYTES as wgpu::BufferAddress);
 
         let uniform_buffers = vec![init_info.device.create_buffer(&wgpu::BufferDescriptor{
-            label: Some("optimizer_uniform"),
+            label: Some("optimizer_uniform_uninit"),
             size: 0,
             usage: wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false
@@ -2042,17 +2044,13 @@ impl RawArrayMemory
             self.encoder = Some(self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: None}));
         }
     }
-
-    fn optimizer_uniform_buffer(&self) -> &wgpu::Buffer
-    {
-        &self.uniform_buffers[OPTIMIZER_UNIFORM_BUFFER_INDEX]
-    }
 }
 
 pub struct OperationsRecorder
 {
     raw_array_memory: RawArrayMemory,
     memory: OperationsRecorderMemory,
+    optimizer: Option<Rc<RefCell<dyn OptimizerInterface>>>,
     state: RecorderState,
     operations_target: OperationsTarget,
     loops: Vec<LoopInfo>,
@@ -2171,6 +2169,7 @@ impl OperationsRecorder
         Self{
             raw_array_memory: RawArrayMemory::from_init_info(init_info),
             memory: OperationsRecorderMemory::new(),
+            optimizer: None,
             state: RecorderState::Recording,
             operations_target: OperationsTarget::Normal,
             loops: Vec::new(),
@@ -3376,6 +3375,14 @@ impl OperationsRecorder
             *compute_pass = None;
         }
 
+        macro_rules! optimizer_uniform_buffer
+        {
+            () =>
+            {
+                &self.raw_array_memory.uniform_buffers[OPTIMIZER_UNIFORM_BUFFER_INDEX]
+            }
+        }
+
         #[cfg(feature="timedebug")]
         #[derive(Debug, Clone, Copy)]
         struct QueryIndex
@@ -3456,6 +3463,32 @@ impl OperationsRecorder
         self.block_until_finished();
 
         self.raw_array_memory.ensure_encoder_exists();
+
+        if let Some(optimizer) = self.optimizer.as_ref()
+        {
+            let info = RefCell::borrow(&optimizer).as_bytes(t as f32);
+
+            if optimizer_uniform_buffer!().size() == 0
+            {
+                let buffer = self.raw_array_memory.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+                    label: Some("optimizer_uniform"),
+                    contents: &info,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST
+                });
+
+                self.raw_array_memory.uniform_buffers[OPTIMIZER_UNIFORM_BUFFER_INDEX] = buffer;
+            } else
+            {
+                let mut view = self.raw_array_memory.staging_belt.write_buffer(
+                    self.raw_array_memory.encoder.as_mut().unwrap(),
+                    optimizer_uniform_buffer!(),
+                    0,
+                    NonZero::new(info.len() as u64).unwrap()
+                );
+
+                view.copy_from_slice(&info);
+            }
+        }
 
         let mut i = 0;
         while i < end
@@ -4698,14 +4731,12 @@ impl OperationsRecorder
                     debug_assert_eq!(gradient.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        create_bind_group_entry(0, optimizer_uniform_buffer!()),
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *output)
                     ], "OptimizerSgd", 0);
 
                     do_kernel_operation!(Sgd, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &sgd.learning_rate.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4719,16 +4750,13 @@ impl OperationsRecorder
                     debug_assert_eq!(m.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.powersign, &[
-                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        create_bind_group_entry(0, optimizer_uniform_buffer!()),
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *m),
                         bind_group_entry(3, *output)
                     ], "OptimizerPowerSign", 0);
 
                     do_kernel_operation!(PowerSign, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &powersign.b1.to_ne_bytes()); let replace_me = ();
-                    compute_pass.as_mut().unwrap().set_immediates(FLOAT_BYTES as u32, &powersign.learning_rate.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4745,7 +4773,7 @@ impl OperationsRecorder
                     debug_assert_eq!(v.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.adam, &[
-                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        create_bind_group_entry(0, optimizer_uniform_buffer!()),
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *m),
                         bind_group_entry(3, *v),
@@ -4753,11 +4781,6 @@ impl OperationsRecorder
                     ], "OptimizerAdam", 0);
 
                     do_kernel_operation!(Adam, i, 0);
-
-                    [adam.learning_rate, adam.b1, adam.b2, adam.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
-                    {
-                        compute_pass.as_mut().unwrap().set_immediates(index as u32 * FLOAT_BYTES as u32, &value.to_ne_bytes()); let replace_me = ();
-                    });
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -4774,7 +4797,7 @@ impl OperationsRecorder
                     debug_assert_eq!(v.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.adamw, &[
-                        create_bind_group_entry(0, self.raw_array_memory.optimizer_uniform_buffer()),
+                        create_bind_group_entry(0, optimizer_uniform_buffer!()),
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *m),
                         bind_group_entry(3, *v),
@@ -4782,11 +4805,6 @@ impl OperationsRecorder
                     ], "OptimizerAdamW", 0);
 
                     do_kernel_operation!(AdamW, i, 0);
-
-                    [adamw.learning_rate, adamw.b1, adamw.b2, adamw.lambda, adamw.epsilon, t as f32].into_iter().enumerate().for_each(|(index, value)|
-                    {
-                        compute_pass.as_mut().unwrap().set_immediates(index as u32 * FLOAT_BYTES as u32, &value.to_ne_bytes()); let replace_me = ();
-                    });
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -8406,8 +8424,10 @@ impl OperationsRecorder
     pub fn gradient_with<O: Optimizer>(
         &mut self,
         respect: DiffWrapper,
-        optimizer: Option<OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>>
+        optimizer: Option<Rc<RefCell<OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>>>>
     )
+    where
+        OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>: OptimizerInterface
     {
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
@@ -8444,7 +8464,9 @@ impl OperationsRecorder
 
         if let Some(optimizer) = optimizer
         {
-            optimizer.add_operations(self);
+            RefCell::borrow(&optimizer).add_operations(self);
+
+            self.optimizer = Some(optimizer);
         }
 
         self.optimize_operations();

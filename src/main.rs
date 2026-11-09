@@ -337,8 +337,6 @@ fn train_until_best(config: Config)
             network = None;
         }
 
-        return;
-
         test_thread = {
             let losses_path = losses_path.clone();
             let best_path = best_path.clone();
