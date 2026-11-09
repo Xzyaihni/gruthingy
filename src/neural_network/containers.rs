@@ -1447,8 +1447,26 @@ impl OperationsRecorderMemory
     {
         let maybe_uniform: Option<Vec<u8>> = match *gradient_op
         {
-            GradientOp::MatmulOneHotv{output, ..}
-            | GradientOp::MatmulOneHotvAddInplace{output, ..} =>
+            GradientOp::MulScalar{rhs, ..} => Some(rhs.to_ne_bytes().into()),
+            GradientOp::AddScalar{rhs, ..} => Some(rhs.to_ne_bytes().into()),
+            GradientOp::SubFromScalar{lhs, ..} => Some(lhs.to_ne_bytes().into()),
+            GradientOp::SumBatch{scalar, ..} => Some(scalar.to_ne_bytes().into()),
+            GradientOp::Pow{power, ..} => Some((power as u32).to_ne_bytes().into()),
+            GradientOp::MatmulvAdd{output, ..}
+            | GradientOp::Matmulv{output, ..}
+            | GradientOp::MatmulvAddInplace{output, ..}
+            | GradientOp::MatmulOneHotv{output, ..}
+            | GradientOp::MatmulOneHotvAdd{output, ..}
+            | GradientOp::MatmulOneHotvAddInplace{output, ..}
+            | GradientOp::MatmulvTransposedAdd{output, ..}
+            | GradientOp::MatmulvTransposed{output, ..}
+            | GradientOp::MatmulvTransposedAddInplace{output, ..}
+            | GradientOp::OuterProductOneHotAdd{output, ..}
+            | GradientOp::OuterProductOneHot{output, ..}
+            | GradientOp::OuterProductOneHotAddInplace{output, ..}
+            | GradientOp::OuterProductAdd{output, ..}
+            | GradientOp::OuterProduct{output, ..}
+            | GradientOp::OuterProductAddInplace{output, ..} =>
             {
                 Some((self.tensor_shape(output).batch_size as u32).to_ne_bytes().into())
             },
@@ -4360,20 +4378,19 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::MulScalar{lhs, rhs, output} =>
+                GradientOp::MulScalar{lhs, rhs: _, output} =>
                 {
                     debug_calculate_values!(MulScalar, (lhs),());
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *output)
                     ], "MulScalar", 0);
 
                     do_kernel_operation!(MulScalar, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &rhs.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -4406,20 +4423,19 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::AddScalar{lhs, rhs, output} =>
+                GradientOp::AddScalar{lhs, rhs: _, output} =>
                 {
                     debug_calculate_values!(AddScalar, (lhs),(rhs));
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *output)
                     ], "AddScalar", 0);
 
                     do_kernel_operation!(AddScalar, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &rhs.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -4452,20 +4468,19 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::SubFromScalar{lhs, rhs, output} =>
+                GradientOp::SubFromScalar{lhs: _, rhs, output} =>
                 {
                     debug_calculate_values!(SubFromScalar, (rhs),(lhs));
 
                     debug_assert_eq!(rhs.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        bind_group_entry(0, *rhs),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *rhs),
+                        bind_group_entry(2, *output)
                     ], "SubFromScalar", 0);
 
                     do_kernel_operation!(SubFromScalar, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &lhs.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, rhs.size());
 
@@ -4507,7 +4522,7 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::SumBatch{value, scalar, output} =>
+                GradientOp::SumBatch{value, scalar: _, output} =>
                 {
                     debug_calculate_values!(SumBatch, (value),());
 
@@ -4517,13 +4532,12 @@ impl OperationsRecorder
                     debug_assert_eq!(value.shape.columns, output.shape.columns);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *value),
+                        bind_group_entry(2, *output)
                     ], "SumBatch", 0);
 
                     do_kernel_operation!(SumBatch, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &scalar.to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, value.shape.single_size());
 
@@ -4767,20 +4781,19 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((),());
                 },
-                GradientOp::Pow{lhs, power, output} =>
+                GradientOp::Pow{lhs, power: _, output} =>
                 {
                     debug_calculate_values!(Pow, (lhs),());
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *output)
                     ], "Pow", 0);
 
                     do_kernel_operation!(Pow, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(*power as u32).to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, lhs.size());
 
@@ -5135,15 +5148,14 @@ impl OperationsRecorder
                     debug_assert_eq!(output.shape.columns, 1);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r3_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *added),
-                        bind_group_entry(3, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *added),
+                        bind_group_entry(4, *output)
                     ], "MatmulOneHotvAddBatched", 0);
 
                     do_kernel_operation!(MatmulOneHotvAddBatched, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes()); let replace_me = ();
 
                     exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.rows);
 
@@ -5172,7 +5184,7 @@ impl OperationsRecorder
                             bind_group_entry(3, *output)
                         ], "MatmulOneHotv", 0);
 
-                        let GradientOp::MatmulOneHotv{lhs, rhs, output: _} = this_op else {
+                        let GradientOp::MatmulOneHotv{lhs, rhs: _, output: _} = this_op else {
                             unreachable!()
                         };
 
@@ -5235,10 +5247,11 @@ impl OperationsRecorder
                     debug_assert_eq!(added.shape.rows, output.shape.rows);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r3_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *added),
-                        bind_group_entry(3, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *added),
+                        bind_group_entry(4, *output)
                     ], "MatmulvAddBatched", 0);
 
                     if added.shape.batch_size != 1
@@ -5248,8 +5261,6 @@ impl OperationsRecorder
                     {
                         do_kernel_operation!(MatmulvAddBatched, i, 0);
                     }
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                     exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.rows);
 
@@ -5278,14 +5289,13 @@ impl OperationsRecorder
                         };
 
                         try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
+                            create_bind_group_entry(0, current_uniform_buffer!()),
+                            bind_group_entry(1, *lhs),
+                            bind_group_entry(2, *rhs),
+                            bind_group_entry(3, *output)
                         ], "MatmulvBatched", 0);
 
                         do_kernel_operation!(MatmulvBatched, i, 0);
-
-                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                         exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.rows);
                     } else
@@ -5300,9 +5310,10 @@ impl OperationsRecorder
                         debug_assert_eq!(output.shape.columns, 1);
 
                         try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
+                            create_bind_group_entry(0, current_uniform_buffer!()),
+                            bind_group_entry(1, *lhs),
+                            bind_group_entry(2, *rhs),
+                            bind_group_entry(3, *output)
                         ], "Matmulv", 0);
 
                         #[allow(unused_variables)]
@@ -5325,8 +5336,6 @@ impl OperationsRecorder
                             _ => unreachable!()
                         }
 
-                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
-
                         exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                     }
 
@@ -5348,10 +5357,11 @@ impl OperationsRecorder
                     debug_assert_eq!(output.shape.rows, added.shape.rows);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r3_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *added),
-                        bind_group_entry(3, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *added),
+                        bind_group_entry(4, *output)
                     ], "MatmulvTransposedAddBatched", 0);
 
                     if added.shape.batch_size != 1
@@ -5361,8 +5371,6 @@ impl OperationsRecorder
                     {
                         do_kernel_operation!(MatmulvTransposedAddBatched, i, 0);
                     }
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                     exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.columns);
 
@@ -5391,14 +5399,13 @@ impl OperationsRecorder
                         };
 
                         try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
+                            create_bind_group_entry(0, current_uniform_buffer!()),
+                            bind_group_entry(1, *lhs),
+                            bind_group_entry(2, *rhs),
+                            bind_group_entry(3, *output)
                         ], "MatmulvTransposedBatched", 0);
 
                         do_kernel_operation!(MatmulvTransposedBatched, i, 0);
-
-                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                         exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.columns);
                     } else
@@ -5413,9 +5420,10 @@ impl OperationsRecorder
                         debug_assert_eq!(output.shape.columns, 1);
 
                         try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
+                            create_bind_group_entry(0, current_uniform_buffer!()),
+                            bind_group_entry(1, *lhs),
+                            bind_group_entry(2, *rhs),
+                            bind_group_entry(3, *output)
                         ], "MatmulvTransposed", 0);
 
                         #[allow(unused_variables)]
@@ -5437,8 +5445,6 @@ impl OperationsRecorder
                             },
                             _ => unreachable!()
                         }
-
-                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                         exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.columns);
                     }
@@ -5464,14 +5470,13 @@ impl OperationsRecorder
                     copy_tensor(wgpu_info!(), &self.memory, *added, *output);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *output)
                     ], "OuterProductOneHotAddInplace", 0);
 
                     do_kernel_operation!(OuterProductOneHotAddInplace, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -5488,9 +5493,10 @@ impl OperationsRecorder
                     debug_assert_eq!(lhs.shape.rows, output.shape.rows);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *output)
                     ], "OuterProductOneHot", 0);
 
                     #[allow(unused_variables)]
@@ -5517,8 +5523,6 @@ impl OperationsRecorder
                         _ => unreachable!()
                     }
 
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes()); let replace_me = ();
-
                     single_workgroup(&mut compute_pass, lhs.size());
 
                     debug_calculate_values_result!((output),());
@@ -5541,15 +5545,14 @@ impl OperationsRecorder
                     debug_assert_eq!(added.shape.columns, output.shape.columns);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r3_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *added),
-                        bind_group_entry(3, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *added),
+                        bind_group_entry(4, *output)
                     ], "OuterProductAdd", 0);
 
                     do_kernel_operation!(OuterProductAdd, i, 0);
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(output.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -5568,9 +5571,10 @@ impl OperationsRecorder
                     debug_assert_eq!(rhs.shape.rows, output.shape.columns);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                        bind_group_entry(0, *lhs),
-                        bind_group_entry(1, *rhs),
-                        bind_group_entry(2, *output)
+                        create_bind_group_entry(0, current_uniform_buffer!()),
+                        bind_group_entry(1, *lhs),
+                        bind_group_entry(2, *rhs),
+                        bind_group_entry(3, *output)
                     ], "OuterProduct", 0);
 
                     #[allow(unused_variables)]
@@ -5592,8 +5596,6 @@ impl OperationsRecorder
                         },
                         _ => unreachable!()
                     }
-
-                    compute_pass.as_mut().unwrap().set_immediates(0, &(output.shape.batch_size as u32).to_ne_bytes()); let replace_me = ();
 
                     single_workgroup(&mut compute_pass, output.size());
 
@@ -11356,10 +11358,9 @@ mod tests
     {
         check_tensor(|recorder, [a, b]|
         {
-            let one = recorder.set_new_value(1.0);
             let inner_sum = recorder.add(a, b);
 
-            recorder.sub_from_scalar(one, inner_sum)
+            recorder.sub_from_scalar(1.0, inner_sum)
         })
     }
 
@@ -11397,8 +11398,7 @@ mod tests
     {
         check_tensor(|recorder, [a, b]|
         {
-            let s = recorder.set_new_value(13.12);
-            let subbed = recorder.sub_from_scalar(s, b);
+            let subbed = recorder.sub_from_scalar(13.12, b);
 
             recorder.add(a, subbed)
         })
@@ -11538,8 +11538,7 @@ mod tests
             let targets_index = recorder.new_one_hot(1, LAYER_CURR, 1);
             recorder.set_one_hot_data(targets_index, targets.clone());
 
-            let two = recorder.set_new_value(2.0);
-            let atwo = recorder.add_scalar(a, two);
+            let atwo = recorder.add_scalar(a, 2.0);
 
             recorder.softmax_cross_entropy(atwo, targets_index).1
         })
