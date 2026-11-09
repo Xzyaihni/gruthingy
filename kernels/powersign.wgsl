@@ -1,18 +1,19 @@
-@group(0) @binding(0)
-var<storage, read> gradient: array<f32>;
-
-@group(0) @binding(1)
-var<storage, read_write> m: array<f32>;
-
-@group(0) @binding(2)
-var<storage, read_write> weights: array<f32>;
-
 struct Info{
     b1: f32,
     learning_rate: f32
 };
 
-var<immediate> info: Info;
+@group(0) @binding(0)
+var<uniform> info: Info;
+
+@group(0) @binding(1)
+var<storage, read> gradient: array<f32>;
+
+@group(0) @binding(2)
+var<storage, read_write> m: array<f32>;
+
+@group(0) @binding(3)
+var<storage, read_write> weights: array<f32>;
 
 #include "default_workgroup_size.wgsl"
 

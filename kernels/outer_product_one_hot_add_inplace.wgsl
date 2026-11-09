@@ -1,13 +1,14 @@
 @group(0) @binding(0)
-var<storage, read> lhs: array<f32>;
+var<uniform> batch_size: u32;
 
 @group(0) @binding(1)
-var<storage, read> rhs: array<u32>;
+var<storage, read> lhs: array<f32>;
 
 @group(0) @binding(2)
-var<storage, read_write> output: array<f32>;
+var<storage, read> rhs: array<u32>;
 
-var<immediate> one_hot_count: u32;
+@group(0) @binding(3)
+var<storage, read_write> output: array<f32>;
 
 #include "default_workgroup_size.wgsl"
 
@@ -17,12 +18,13 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>)
     let index = global_id.x;
 
     let lhs_length = arrayLength(&lhs);
-    let batch_size = arrayLength(&rhs) / one_hot_count;
 
     if index >= lhs_length
     {
         return;
     }
+
+    let one_hot_count = arrayLength(&rhs) / batch_size;
 
     let lhs_single_length = lhs_length / batch_size;
 

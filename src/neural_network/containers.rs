@@ -19,6 +19,8 @@ use std::{iter, cell::RefCell, marker::PhantomData, cmp::Ordering, collections::
 
 use serde::{Serialize, Deserialize};
 
+use wgpu::util::DeviceExt;
+
 use ywrapper::*;
 use rawarray::*;
 use live_ranges::*;
@@ -1330,6 +1332,148 @@ impl OperationsRecorderMemory
         self.phi_other_selectors_values[selector_index.0].loop_index
     }
 
+    fn create_scratch_buffers(
+        &self,
+        raw_array_memory: &mut RawArrayMemory,
+        gradient_op: &StandardGradientOp,
+        raw_operation_index: usize
+    )
+    {
+        struct ScratchInfo
+        {
+            is_copy_src: bool,
+            size: usize
+        }
+
+        impl From<usize> for ScratchInfo
+        {
+            fn from(size: usize) -> Self
+            {
+                ScratchInfo{is_copy_src: false, size}
+            }
+        }
+
+        let maybe_scratch = match *gradient_op
+        {
+            GradientOp::Dot{lhs: value, ..} => Some(vec![self.tensor_shape(value).size().into()]),
+            GradientOp::Dropout{value, ..} =>
+            {
+                let shape = self.tensor_shape(value);
+                let states = shape.size();
+
+                // u32 stores 32 packed bools
+                Some(vec![(states.div_ceil(32)).into()])
+            },
+            GradientOp::CapMagnitude{value, ..} => Some(vec![self.tensor_shape(value).batch_size.into()]),
+            GradientOp::Softmax{values: value, ..} =>
+            {
+                let shape = self.tensor_shape(value);
+
+                Some(vec![shape.batch_size.into()])
+            },
+            GradientOp::SoftmaxCrossEntropy{values: value, ..} =>
+            {
+                let shape = self.tensor_shape(value);
+
+                Some(vec![shape.batch_size.into(), shape.batch_size.into()])
+            },
+            GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: value, ..} =>
+            {
+                let shape = self.tensor_shape(value);
+
+                let softmaxed_values = ScratchInfo{is_copy_src: true, size: shape.size()};
+                Some(vec![shape.batch_size.into(), shape.batch_size.into(), softmaxed_values])
+            },
+            _ => None
+        };
+
+        let Some(sizes) = maybe_scratch else {
+            return;
+        };
+
+        let mut taken_indices = Vec::new();
+        sizes.iter().enumerate().for_each(|(count_index, ScratchInfo{is_copy_src, size})|
+        {
+            let size = (size * FLOAT_BYTES) as u64;
+
+            let scratch_buffer_index = if let Some(x) = raw_array_memory.scratch_buffers.iter().enumerate().position(|(index, buffer)|
+            {
+                buffer.size() == size && !taken_indices.contains(&ScratchBufferIndex(index))
+            })
+            {
+                ScratchBufferIndex(x)
+            } else
+            {
+                let usage = wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | if *is_copy_src { wgpu::BufferUsages::COPY_SRC } else { wgpu::BufferUsages::empty() };
+
+                let buffer = raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
+                    label: None,
+                    size,
+                    usage,
+                    mapped_at_creation: false
+                });
+
+                let index = ScratchBufferIndex(raw_array_memory.scratch_buffers.len());
+                raw_array_memory.scratch_buffers.push(buffer);
+
+                index
+            };
+
+            taken_indices.push(scratch_buffer_index);
+
+            if count_index > 0
+            {
+                raw_array_memory.scratch_buffers_locations[raw_operation_index].push(scratch_buffer_index);
+            } else
+            {
+                while raw_array_memory.scratch_buffers_locations.len() < raw_operation_index
+                {
+                    raw_array_memory.scratch_buffers_locations.push(Vec::new());
+                }
+
+                raw_array_memory.scratch_buffers_locations.push(vec![scratch_buffer_index]);
+            }
+        });
+    }
+
+    fn setup_uniform_buffers(
+        &self,
+        raw_array_memory: &mut RawArrayMemory,
+        gradient_op: &StandardGradientOp,
+        raw_operation_index: usize
+    )
+    {
+        let maybe_uniform: Option<Vec<u8>> = match *gradient_op
+        {
+            GradientOp::MatmulOneHotv{output, ..}
+            | GradientOp::MatmulOneHotvAddInplace{output, ..} =>
+            {
+                Some((self.tensor_shape(output).batch_size as u32).to_ne_bytes().into())
+            },
+            _ => None
+        };
+
+        let Some(uniform_bytes) = maybe_uniform else {
+            return;
+        };
+
+        let uniform_buffer_id = UniformBufferIndex(raw_array_memory.uniform_buffers.len());
+        raw_array_memory.uniform_buffers.push(raw_array_memory.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+            label: None,
+            contents: &uniform_bytes,
+            usage: wgpu::BufferUsages::UNIFORM
+        }));
+
+        while raw_array_memory.uniform_buffers_locations.len() < raw_operation_index
+        {
+            raw_array_memory.uniform_buffers_locations.push(None);
+        }
+
+        raw_array_memory.uniform_buffers_locations.push(Some(uniform_buffer_id));
+    }
+
     fn raw_ptr_to_diff_value_raw(&self, raw_ptr: LinearRawDataPointer) -> DiffValueRaw
     {
         if let Some(x) = self.try_raw_ptr_to_memory(raw_ptr)
@@ -1549,13 +1693,14 @@ struct KernelLayout
 struct KernelLayouts
 {
     u_r1_w1: KernelLayout,
-    u_r1_w2: KernelLayout,
-    u_r1_w3: KernelLayout,
     u_r2_w1: KernelLayout,
     u_r3_w1: KernelLayout,
     r1_w1: KernelLayout,
     r2_w1: KernelLayout,
-    r2_w2: KernelLayout
+    r2_w2: KernelLayout,
+    powersign: KernelLayout,
+    adam: KernelLayout,
+    adamw: KernelLayout
 }
 
 #[cfg(test)]
@@ -1603,7 +1748,7 @@ impl WgpuInitInfo
             trace: wgpu::Trace::Off
         })).unwrap_or_else(|err| panic!("error creating device: {err}"));
 
-        let float_element_size = NonZeroU64::new(FLOAT_BYTES as u64).unwrap();
+        let float_element_size = FLOAT_BYTES as u64;
 
         enum EntryKind
         {
@@ -1612,7 +1757,7 @@ impl WgpuInitInfo
             BufferReadWrite
         }
 
-        let common_layout_entry = |binding, entry_kind: EntryKind|
+        let common_layout_entry = |binding, entry_kind: EntryKind, min_binding_size: u64|
         {
             let ty = match entry_kind
             {
@@ -1626,7 +1771,7 @@ impl WgpuInitInfo
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer{
                     ty,
-                    min_binding_size: Some(float_element_size),
+                    min_binding_size: Some(NonZeroU64::new(min_binding_size).unwrap()),
                     has_dynamic_offset: false
                 },
                 count: None
@@ -1648,38 +1793,71 @@ impl WgpuInitInfo
                 }
             };
 
-            let u = |binding| common_layout_entry(binding, EntryKind::Uniform);
-            let r = |binding| common_layout_entry(binding, EntryKind::BufferRead);
-            let w = |binding| common_layout_entry(binding, EntryKind::BufferReadWrite);
+            let uniform_sized = |binding, size| common_layout_entry(binding, EntryKind::Uniform, size);
+
+            let u = |binding| uniform_sized(binding, float_element_size);
+            let r = |binding| common_layout_entry(binding, EntryKind::BufferRead, float_element_size);
+            let w = |binding| common_layout_entry(binding, EntryKind::BufferReadWrite, float_element_size);
 
             macro_rules! bind_group_layouts
             {
-                ($($name:ident=$($entry:ident),+);+) =>
+                ($($name:ident=$($entry:ident),+);+;;$($rest:tt)+) =>
                 {
-                    KernelLayouts{$(
-                        $name: {
-                            let mut bind_index: i32 = -1;
+                    KernelLayouts{
+                        $(
+                            $name: {
+                                let mut bind_index: i32 = -1;
 
-                            from_bind_group_layout(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                                label: Some(stringify!($name)),
-                                entries: &[$(
-                                    $entry({bind_index += 1; bind_index as u32}),
-                                )+]
-                            }), stringify!($name))
-                        },
-                    )+}
+                                from_bind_group_layout(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                                    label: Some(stringify!($name)),
+                                    entries: &[$(
+                                        $entry({bind_index += 1; bind_index as u32}),
+                                    )+]
+                                }), stringify!($name))
+                            },
+                        )+
+                        $($rest)+
+                    }
                 }
             }
 
             bind_group_layouts!{
                 u_r1_w1=u,r,w;
-                u_r1_w2=u,r,w,w;
-                u_r1_w3=u,r,w,w,w;
                 u_r2_w1=u,r,r,w;
                 u_r3_w1=u,r,r,r,w;
                 r1_w1=r,w;
                 r2_w1=r,r,w;
-                r2_w2=r,r,w,w
+                r2_w2=r,r,w,w;
+                ;
+                powersign: from_bind_group_layout(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("powersign"),
+                    entries: &[
+                        uniform_sized(0, float_element_size * 2),
+                        r(1),
+                        w(2),
+                        w(3)
+                    ]
+                }), "powersign"),
+                adam: from_bind_group_layout(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("adam"),
+                    entries: &[
+                        uniform_sized(0, float_element_size * 5),
+                        r(1),
+                        w(2),
+                        w(3),
+                        w(4)
+                    ]
+                }), "adam"),
+                adamw: from_bind_group_layout(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+                    label: Some("adamw"),
+                    entries: &[
+                        uniform_sized(0, float_element_size * 6),
+                        r(1),
+                        w(2),
+                        w(3),
+                        w(4)
+                    ]
+                }), "adamw")
             }
         };
 
@@ -1698,7 +1876,7 @@ impl WgpuInitInfo
                 OpKernel::SumBatch => ("kernels/sum_batch.wgsl", &kernel_layouts.u_r1_w1),
                 OpKernel::Fill => ("kernels/fill.wgsl", &kernel_layouts.r1_w1),
                 OpKernel::BatchReplicate => ("kernels/batch_replicate.wgsl", &kernel_layouts.r1_w1),
-                OpKernel::Dropout => ("kernels/dropout.wgsl", &kernel_layouts.u_r2_w1),
+                OpKernel::Dropout => ("kernels/dropout.wgsl", &kernel_layouts.r2_w1),
                 OpKernel::Magnitude => ("kernels/magnitude.wgsl", &kernel_layouts.r1_w1),
                 OpKernel::CapMagnitude => ("kernels/cap_magnitude.wgsl", &kernel_layouts.u_r1_w1),
                 OpKernel::Pow => ("kernels/pow.wgsl", &kernel_layouts.u_r1_w1),
@@ -1736,9 +1914,9 @@ impl WgpuInitInfo
                 OpKernel::SoftmaxCrossEntropyPartB => ("kernels/softmax_cross_entropy_part_b.wgsl", &kernel_layouts.r2_w2),
                 OpKernel::SoftmaxCrossEntropyDiff => ("kernels/softmax_cross_entropy_diff.wgsl", &kernel_layouts.r2_w1),
                 OpKernel::Sgd => ("kernels/sgd.wgsl", &kernel_layouts.u_r1_w1),
-                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.u_r1_w2),
-                OpKernel::Adam => ("kernels/adam.wgsl", &kernel_layouts.u_r1_w3),
-                OpKernel::AdamW => ("kernels/adamw.wgsl", &kernel_layouts.u_r1_w3)
+                OpKernel::PowerSign => ("kernels/powersign.wgsl", &kernel_layouts.powersign),
+                OpKernel::Adam => ("kernels/adam.wgsl", &kernel_layouts.adam),
+                OpKernel::AdamW => ("kernels/adamw.wgsl", &kernel_layouts.adamw)
             };
 
             let parent_dir = Path::new(shader_path).parent().unwrap();
@@ -3578,49 +3756,49 @@ impl OperationsRecorder
                     .unwrap()
             }
 
-                fn dropout_states<'a>(
-                    scratch_buffers: &'a [wgpu::Buffer],
-                    scratch_buffers_locations: &[Vec<ScratchBufferIndex>],
-                    staging_belt: &mut wgpu::util::StagingBelt,
-                    encoder: &mut Option<wgpu::CommandEncoder>,
-                    seed: u64,
-                    probability: f32,
-                    i: usize
-                ) -> &'a wgpu::Buffer
+            fn dropout_states<'a>(
+                scratch_buffers: &'a [wgpu::Buffer],
+                scratch_buffers_locations: &[Vec<ScratchBufferIndex>],
+                staging_belt: &mut wgpu::util::StagingBelt,
+                encoder: &mut Option<wgpu::CommandEncoder>,
+                seed: u64,
+                probability: f32,
+                i: usize
+            ) -> &'a wgpu::Buffer
+            {
+                let scratch_buffer = {
+                    let index: ScratchBufferIndex = scratch_buffers_locations[i][0];
+
+                    &scratch_buffers[index.0]
+                };
+
+                let mut generator = fastrand::Rng::with_seed(seed);
+                let generate_packed_bools = move || -> u8
                 {
-                    let scratch_buffer = {
-                        let index: ScratchBufferIndex = scratch_buffers_locations[i][0];
+                    let mut output: u8 = 0;
 
-                        &scratch_buffers[index.0]
-                    };
-
-                    let mut generator = fastrand::Rng::with_seed(seed);
-                    let generate_packed_bools = move || -> u8
+                    for i in 0..8
                     {
-                        let mut output: u8 = 0;
+                        let bit = if generator.f32() < probability { 0 } else { 1 };
 
-                        for i in 0..8
-                        {
-                            let bit = if generator.f32() < probability { 0 } else { 1 };
+                        output |= bit << i;
+                    }
 
-                            output |= bit << i;
-                        }
+                    output
+                };
 
-                        output
-                    };
+                let size = scratch_buffer.size();
+                let mut view = staging_belt.write_buffer(
+                    encoder.as_mut().unwrap(),
+                    scratch_buffer,
+                    0,
+                    NonZero::new(size).unwrap()
+                );
 
-                    let size = scratch_buffer.size();
-                    let mut view = staging_belt.write_buffer(
-                        encoder.as_mut().unwrap(),
-                        scratch_buffer,
-                        0,
-                        NonZero::new(size).unwrap()
-                    );
+                view.slice(..).write_iter(iter::repeat_with(generate_packed_bools).take(size as usize));
 
-                    view.slice(..).write_iter(iter::repeat_with(generate_packed_bools).take(size as usize));
-
-                    scratch_buffer
-                }
+                scratch_buffer
+            }
 
             macro_rules! wgpu_info
             {
@@ -3631,6 +3809,14 @@ impl OperationsRecorder
                         compute_pass: &mut compute_pass,
                         device: &self.raw_array_memory.device
                     }
+                }
+            }
+
+            macro_rules! current_uniform_buffer
+            {
+                () =>
+                {
+                    &self.raw_array_memory.uniform_buffers[self.raw_array_memory.uniform_buffers_locations[i].unwrap().0]
                 }
             }
 
@@ -4510,7 +4696,7 @@ impl OperationsRecorder
                     debug_assert_eq!(gradient.shape, output.shape);
                     debug_assert_eq!(m.shape, output.shape);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w2, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.powersign, &[
                         bind_group_entry(0, *gradient),
                         bind_group_entry(1, *m),
                         bind_group_entry(2, *output)
@@ -4535,7 +4721,7 @@ impl OperationsRecorder
                     debug_assert_eq!(m.shape, output.shape);
                     debug_assert_eq!(v.shape, output.shape);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w3, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.adam, &[
                         bind_group_entry(0, *gradient),
                         bind_group_entry(1, *m),
                         bind_group_entry(2, *v),
@@ -4563,7 +4749,7 @@ impl OperationsRecorder
                     debug_assert_eq!(m.shape, output.shape);
                     debug_assert_eq!(v.shape, output.shape);
 
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r1_w3, &[
+                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.adamw, &[
                         bind_group_entry(0, *gradient),
                         bind_group_entry(1, *m),
                         bind_group_entry(2, *v),
@@ -4980,9 +5166,10 @@ impl OperationsRecorder
                         debug_assert_eq!(output.shape.columns, 1);
 
                         try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
+                            create_bind_group_entry(0, current_uniform_buffer!()),
+                            bind_group_entry(1, *lhs),
+                            bind_group_entry(2, *rhs),
+                            bind_group_entry(3, *output)
                         ], "MatmulOneHotv", 0);
 
                         let GradientOp::MatmulOneHotv{lhs, rhs, output: _} = this_op else {
@@ -4990,8 +5177,6 @@ impl OperationsRecorder
                         };
 
                         do_kernel_operation!(MatmulOneHotvBatched, i, 0);
-
-                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes()); let replace_me = ();
 
                         exact_workgroup(&mut compute_pass, output.shape.batch_size * lhs.shape.rows);
                     } else
@@ -5004,9 +5189,10 @@ impl OperationsRecorder
                         debug_assert_eq!(output.shape.columns, 1);
 
                         try_create_bind_group!(&self.raw_array_memory.kernel_layouts.u_r2_w1, &[
-                            bind_group_entry(0, *lhs),
-                            bind_group_entry(1, *rhs),
-                            bind_group_entry(2, *output)
+                            create_bind_group_entry(0, current_uniform_buffer!()),
+                            bind_group_entry(1, *lhs),
+                            bind_group_entry(2, *rhs),
+                            bind_group_entry(3, *output)
                         ], "MatmulOneHotv", 0);
 
                         #[allow(unused_variables)]
@@ -5028,8 +5214,6 @@ impl OperationsRecorder
                             },
                             _ => unreachable!()
                         }
-
-                        compute_pass.as_mut().unwrap().set_immediates(0, &(rhs.shape.rows as u32).to_ne_bytes()); let replace_me = ();
 
                         exact_workgroup(&mut compute_pass, lhs.shape.batch_size * lhs.shape.rows);
                     }
@@ -7140,101 +7324,10 @@ impl OperationsRecorder
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
-            struct ScratchInfo
-            {
-                is_copy_src: bool,
-                size: usize
-            }
+            let raw_operation_index = self.raw_operations.len();
 
-            impl From<usize> for ScratchInfo
-            {
-                fn from(size: usize) -> Self
-                {
-                    ScratchInfo{is_copy_src: false, size}
-                }
-            }
-
-            if let Some(sizes) = match gradient_op
-            {
-                GradientOp::Dot{lhs: value, ..} => Some(vec![self.memory.tensor_shape(value).size().into()]),
-                GradientOp::Dropout{value, ..} =>
-                {
-                    let shape = self.memory.tensor_shape(value);
-                    let states = shape.size();
-
-                    // u32 stores 32 packed bools
-                    Some(vec![(states.div_ceil(32)).into()])
-                },
-                GradientOp::CapMagnitude{value, ..} => Some(vec![self.memory.tensor_shape(value).batch_size.into()]),
-                GradientOp::Softmax{values: value, ..} =>
-                {
-                    let shape = self.memory.tensor_shape(value);
-
-                    Some(vec![shape.batch_size.into()])
-                },
-                GradientOp::SoftmaxCrossEntropy{values: value, ..} =>
-                {
-                    let shape = self.memory.tensor_shape(value);
-
-                    Some(vec![shape.batch_size.into(), shape.batch_size.into()])
-                },
-                GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values: value, ..} =>
-                {
-                    let shape = self.memory.tensor_shape(value);
-
-                    let softmaxed_values = ScratchInfo{is_copy_src: true, size: shape.size()};
-                    Some(vec![shape.batch_size.into(), shape.batch_size.into(), softmaxed_values])
-                },
-                _ => None
-            }
-            {
-                let mut taken_indices = Vec::new();
-                sizes.iter().enumerate().for_each(|(count_index, ScratchInfo{is_copy_src, size})|
-                {
-                    let size = (size * FLOAT_BYTES) as u64;
-
-                    let scratch_buffer_index = if let Some(x) = self.raw_array_memory.scratch_buffers.iter().enumerate().position(|(index, buffer)|
-                    {
-                        buffer.size() == size && !taken_indices.contains(&ScratchBufferIndex(index))
-                    })
-                    {
-                        ScratchBufferIndex(x)
-                    } else
-                    {
-                        let usage = wgpu::BufferUsages::STORAGE
-                            | wgpu::BufferUsages::COPY_DST
-                            | if *is_copy_src { wgpu::BufferUsages::COPY_SRC } else { wgpu::BufferUsages::empty() };
-
-                        let buffer = self.raw_array_memory.device.create_buffer(&wgpu::BufferDescriptor{
-                            label: None,
-                            size,
-                            usage,
-                            mapped_at_creation: false
-                        });
-
-                        let index = ScratchBufferIndex(self.raw_array_memory.scratch_buffers.len());
-                        self.raw_array_memory.scratch_buffers.push(buffer);
-
-                        index
-                    };
-
-                    taken_indices.push(scratch_buffer_index);
-
-                    let raw_operation_index = self.raw_operations.len();
-                    if count_index > 0
-                    {
-                        self.raw_array_memory.scratch_buffers_locations[raw_operation_index].push(scratch_buffer_index);
-                    } else
-                    {
-                        while self.raw_array_memory.scratch_buffers_locations.len() < raw_operation_index
-                        {
-                            self.raw_array_memory.scratch_buffers_locations.push(Vec::new());
-                        }
-
-                        self.raw_array_memory.scratch_buffers_locations.push(vec![scratch_buffer_index]);
-                    }
-                });
-            }
+            self.memory.create_scratch_buffers(&mut self.raw_array_memory, &gradient_op, raw_operation_index);
+            self.memory.setup_uniform_buffers(&mut self.raw_array_memory, &gradient_op, raw_operation_index);
 
             let mut push_after = None;
             let new_op = match gradient_op

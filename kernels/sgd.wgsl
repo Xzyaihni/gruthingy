@@ -1,10 +1,11 @@
 @group(0) @binding(0)
-var<storage, read> gradient: array<f32>;
+var<uniform> learning_rate: f32;
 
 @group(0) @binding(1)
-var<storage, read_write> weights: array<f32>;
+var<storage, read> gradient: array<f32>;
 
-var<immediate> learning_rate: f32;
+@group(0) @binding(2)
+var<storage, read_write> weights: array<f32>;
 
 #include "default_workgroup_size.wgsl"
 

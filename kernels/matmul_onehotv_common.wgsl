@@ -1,7 +1,7 @@
 let lhs_length = arrayLength(&lhs);
 let output_length = arrayLength(&output);
 
-let batch_size = arrayLength(&rhs) / one_hot_count;
+let one_hot_count = arrayLength(&rhs) / batch_size;
 
 let lhs_rows = output_length / batch_size;
 let lhs_single_length = select(lhs_length / batch_size, lhs_length, is_lhs_single_batch);

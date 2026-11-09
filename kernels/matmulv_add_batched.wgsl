@@ -1,18 +1,19 @@
 @group(0) @binding(0)
-var<storage, read> lhs: array<f32>;
+var<uniform> batch_size: u32;
 
 @group(0) @binding(1)
-var<storage, read> rhs: array<f32>;
+var<storage, read> lhs: array<f32>;
 
 @group(0) @binding(2)
-var<storage, read> added: array<f32>;
+var<storage, read> rhs: array<f32>;
 
 @group(0) @binding(3)
+var<storage, read> added: array<f32>;
+
+@group(0) @binding(4)
 var<storage, read_write> output: array<f32>;
 
 #include "default_workgroup_size.wgsl"
-
-var<immediate> batch_size: u32;
 
 var<workgroup> workgroup_chunk: array<f32, WORKGROUP_SIZE>;
 
