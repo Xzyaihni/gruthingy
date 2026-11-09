@@ -161,10 +161,7 @@ impl Optimizer for ()
 
 impl OptimizerInterface for ()
 {
-    fn as_bytes(&self, _t: f32) -> Vec<u8>
-    {
-        unreachable!()
-    }
+    fn as_bytes(&self, _t: f32) -> Vec<u8> { Vec::new() }
 }
 
 #[allow(dead_code)]

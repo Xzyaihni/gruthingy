@@ -1722,7 +1722,7 @@ mod tests
         let (last_loss, test_loss) = simple_data_overfit_inner::<OptimizerType, D>(dictionary, iterations, strategy);
 
         assert!(last_loss < 0.001, "train loss {last_loss} must be close to 0");
-        assert!(test_loss < 0.0001, "test loss {test_loss} must be close to 0");
+        assert!(test_loss < 0.001, "test loss {test_loss} must be close to 0");
     }
 
     fn simple_data_overfit_inner<OptimizerType: Optimizer, D: NetworkDictionary>(

@@ -4716,9 +4716,9 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         create_bind_group_entry(1, magnitude_buffer),
                         bind_group_entry(2, *output)
-                    ], "CapMagnitude", 0);
+                    ], "CapMagnitude", 1);
 
-                    do_kernel_operation!(CapMagnitude, i, 0);
+                    do_kernel_operation!(CapMagnitude, i, 1);
 
                     single_workgroup(&mut compute_pass, output.size());
 
