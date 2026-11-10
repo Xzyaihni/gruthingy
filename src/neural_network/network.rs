@@ -2616,11 +2616,13 @@ mod tests
 
         let gradients_count = gradients.iter().flatten().count();
 
+        let mut zeros = Vec::new();
+
         eprintln!("starting loss: {starting_loss}");
         for gradient_index in 0..gradients_count
         {
             let mut check_network = sample_network.clone();
-            let mut momentum = 0.0001;
+            let mut momentum = 0.1;
 
             let name: &'static str = gradients.iter_with_info()
                 .flat_map(|x| x.weights.into_iter().zip(iter::repeat(x.name)))
@@ -2676,19 +2678,32 @@ mod tests
 
                     check_network = check_network_temp;
 
-                    eprintln!("∇loss {}, new gradient: {this_gradient}, new_loss: {new_loss}, momentum: {momentum}", new_loss - starting_loss);
+                    // eprintln!("∇loss {}, new gradient: {this_gradient}, new_loss: {new_loss}, momentum: {momentum}", new_loss - starting_loss);
                 }
 
-                if momentum < 0.00001 || momentum > 100000.0 || new_gradient == 0.0 || new_gradient == -0.0
+                if momentum < 0.0000001 || momentum > 100000.0 || this_gradient == 0.0 || this_gradient == -0.0
                 {
                     break;
                 }
             }
 
+            let loss_change = new_loss - starting_loss;
+            eprintln!("∇loss {loss_change}, new gradient: {this_gradient}, new_loss: {new_loss}, momentum: {momentum}");
+
+            if loss_change == 0.0 || loss_change == -0.0
+            {
+                zeros.push((name, this_gradient));
+            }
+
             assert!(
-                (new_loss - starting_loss) < 0.00001,
+                loss_change < 0.00001,
                 "failed at {gradient_index}, new loss: {new_loss} must be smaller than starting loss: {starting_loss}, name: {name}"
             );
         }
+
+        zeros.into_iter().for_each(|(zero_name, gradient)|
+        {
+            eprintln!("{zero_name} has gradient {gradient} but loss never changes");
+        });
     }
 }

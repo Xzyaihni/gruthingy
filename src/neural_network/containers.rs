@@ -1166,6 +1166,13 @@ impl OperationsRecorderMemory
         view.copy_from_slice(bytes);
     }
 
+    fn zero_tensor_inner(&mut self, raw_array_memory: &mut RawArrayMemory, index: LinearRawDataPointer)
+    {
+        let input_buffer = &self.tensors_raw_data[index.raw_index.0].buffer;
+
+        raw_array_memory.encoder.as_mut().unwrap().clear_buffer(input_buffer, 0, Some(input_buffer.size()));
+    }
+
     fn get_tensor_blocking(
         &self,
         raw_array_memory: &RawArrayMemory,
@@ -2237,9 +2244,21 @@ impl OperationsRecorder
 
     pub fn set_tensor(&mut self, index: impl Into<TensorIndex>, value: LayerTypeRef)
     {
-        debug_assert_eq!(self.state, RecorderState::Ready);
+        let info = self.set_tensor_setup(index.into());
 
-        let index = index.into();
+        self.memory.set_tensor_inner(&mut self.raw_array_memory, info, value.bytes_slice());
+    }
+
+    pub fn zero_tensor(&mut self, index: impl Into<TensorIndex>)
+    {
+        let info = self.set_tensor_setup(index.into());
+
+        self.memory.zero_tensor_inner(&mut self.raw_array_memory, info);
+    }
+
+    fn set_tensor_setup(&mut self, index: TensorIndex) -> LinearRawDataPointer
+    {
+        debug_assert_eq!(self.state, RecorderState::Ready);
 
         #[cfg(debug_assertions)]
         {
@@ -2253,7 +2272,7 @@ impl OperationsRecorder
 
         self.raw_array_memory.ensure_encoder_exists();
 
-        self.memory.set_tensor_inner(&mut self.raw_array_memory, info, value.bytes_slice());
+        info
     }
 
     pub fn set_tensor_ptr_zeroed(&mut self, _index: TensorPtr)
