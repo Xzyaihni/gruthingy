@@ -908,48 +908,47 @@ fn accuracy_data(config: Config)
 
     let mut network = load_network(&config, None, false);
 
-    fn to_data_with<T: Serialize>(
-        config: Config,
-        metadata: Option<(Box<[u8]>, T, Box<[u8]>)>,
-        mut correct_guesses: Vec<(Box<[u8]>, T, Box<[u8]>)>
-    ) -> Result<(), serde_json::Error>
+    let path = config.get_output_with_default(&"output.json");
+
+    let mut guesses = Vec::new();
+
+    let maybe_convert = |x: Box<[u8]>| -> serde_json::Value
     {
-        let path = config.get_output_with_default(&"output.json");
-
-        let file = File::create(path).unwrap();
-        let writer = BufWriter::new(file);
-
-        if let Some(metadata) = metadata
+        if config.replace_invalid
         {
-            correct_guesses.push(metadata);
-        }
-
-        if !config.replace_invalid
-        {
-            serde_json::to_writer_pretty(writer, &correct_guesses)
+            String::from_utf8_lossy(&x).into_owned().into()
         } else
         {
-            serde_json::to_writer_pretty(writer, &correct_guesses.into_iter().map(|(word, value, predicted)|
-            {
-                (String::from_utf8_lossy(&word).into_owned(), value, String::from_utf8_lossy(&predicted).into_owned())
-            }).collect::<Vec<_>>())
+            serde_json::Value::Array(x.into_iter().map(|x| x.into()).collect())
         }
-    }
+    };
 
-    let result = if config.correct_guesses
+    let mut collect_guesses = |word, value: serde_json::Value, predicted|
     {
-        to_data_with(config, None, network.correct_guesses(text_file))
+        guesses.push((maybe_convert(word), value, maybe_convert(predicted)))
+    };
+
+    if config.correct_guesses
+    {
+        network.correct_guesses(text_file, |a, b, c| collect_guesses(a, b.into(), c));
     } else if config.top_guesses
     {
-        to_data_with(
-            config,
-            Some((Box::from(b"_WORDS_AMOUNT".clone()), network.dictionary().words_amount() as u32, Box::new([]))),
-            network.top_guesses(text_file)
-        )
+        network.top_guesses(text_file, |a, b, c| collect_guesses(a, b.into(), c));
+
+        guesses.push((
+            maybe_convert(Box::from(b"_WORDS_AMOUNT".clone())),
+            (network.dictionary().words_amount() as u32).into(),
+            maybe_convert(Box::new([]))
+        ));
     } else
     {
-        to_data_with(config, None, network.certainty_guesses(text_file))
-    };
+        network.certainty_guesses(text_file, |a, b, c| collect_guesses(a, serde_json::to_value(b).unwrap(), c));
+    }
+
+    let file = File::create(path).unwrap();
+    let writer = BufWriter::new(file);
+
+    let result = serde_json::to_writer_pretty(writer, &guesses);
 
     if let Err(err) = result
     {

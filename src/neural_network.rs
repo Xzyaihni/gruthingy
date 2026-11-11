@@ -836,12 +836,14 @@ impl StepsNum
 
 trait FromGuesses<N: UnitFactory, O: Optimizer>
 where
+    Self: Sized,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
-        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, Self)>;
+        input_outputs: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        f: impl FnMut(usize, Self)
+    );
 }
 
 impl<N, O> FromGuesses<N, O> for bool
@@ -861,10 +863,11 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
-        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, Self)>
+        input_outputs: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        f: impl FnMut(usize, Self)
+    )
     {
-        network.correct_guesses(input_outputs)
+        network.correct_guesses(input_outputs, f);
     }
 }
 
@@ -885,10 +888,11 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
-        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, Self)>
+        input_outputs: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        f: impl FnMut(usize, Self)
+    )
     {
-        network.top_guesses(input_outputs)
+        network.top_guesses(input_outputs, f);
     }
 }
 
@@ -909,10 +913,11 @@ where
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
-        input_outputs: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, Self)>
+        input_outputs: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        f: impl FnMut(usize, Self)
+    )
     {
-        network.certainty_guesses(input_outputs)
+        network.certainty_guesses(input_outputs, f);
     }
 }
 
@@ -1158,7 +1163,11 @@ where
         })
     }
 
-    fn with_guesses<R, T: FromGuesses<N, O>>(&mut self, reader: R) -> Vec<(Box<[u8]>, T, Box<[u8]>)>
+    fn with_guesses<R, T: FromGuesses<N, O>>(
+        &mut self,
+        reader: R,
+        mut f: impl FnMut(Box<[u8]>, T, Box<[u8]>)
+    )
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
@@ -1175,51 +1184,51 @@ where
             inputs.len()
         );
 
-        // im only getting the guess info on the output, NOT the inputs, therefore skip the first one cuz it has no prediction for it
-        inputs.iter().cloned().map(Some).zip(inputs.iter().skip(1).cloned()).map(|(previous_word, word)|
+        let mut current_input_index = 0;
+        let mut previous_word = None;
+        T::from_guesses(&mut self.network, input_outputs, |highest_index, certainty|
         {
-            self.dictionary.word_to_bytes(previous_word, word)
-        }).zip(T::from_guesses(&mut self.network, input_outputs.clone()).map(|(highest_index, certainty)|
-        {
-            (certainty, VectorWord::from_raw(highest_index))
-        }).scan(None, |previous_word, (certainty, word)|
-        {
-            let output = Some((certainty, self.dictionary.word_to_bytes(*previous_word, word)));
+            let correct = self.dictionary.word_to_bytes(Some(inputs[current_input_index]), inputs[current_input_index + 1]);
+            current_input_index += 1;
 
-            *previous_word = Some(word);
+            let word = VectorWord::from_raw(highest_index);
 
-            output
-        })).map(|(a, (b, c))| (a, b, c)).collect()
+            let output = self.dictionary.word_to_bytes(previous_word, word);
+
+            previous_word = Some(word);
+
+            f(correct, certainty, output);
+        });
     }
 
-    pub fn correct_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, bool, Box<[u8]>)>
+    pub fn correct_guesses<R>(&mut self, reader: R, f: impl FnMut(Box<[u8]>, bool, Box<[u8]>))
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.with_guesses(reader)
+        self.with_guesses(reader, f)
     }
 
-    pub fn top_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, u32, Box<[u8]>)>
+    pub fn top_guesses<R>(&mut self, reader: R, f: impl FnMut(Box<[u8]>, u32, Box<[u8]>))
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.with_guesses(reader)
+        self.with_guesses(reader, f)
     }
 
-    pub fn certainty_guesses<R>(&mut self, reader: R) -> Vec<(Box<[u8]>, AccuracyCertaintyInfo, Box<[u8]>)>
+    pub fn certainty_guesses<R>(&mut self, reader: R, f: impl FnMut(Box<[u8]>, AccuracyCertaintyInfo, Box<[u8]>))
     where
         R: Read,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.with_guesses(reader)
+        self.with_guesses(reader, f)
     }
 
     pub fn test_loss<R>(

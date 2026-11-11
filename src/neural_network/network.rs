@@ -1889,24 +1889,31 @@ where
         batch_loss.as_ref().average()
     }
 
-    fn with_predict<T, F>(
+    fn with_predict<T>(
         &mut self,
-        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>,
-        f: F
-    ) -> impl Iterator<Item=(usize, T)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        mut output: impl FnMut(usize, T),
+        f: impl Fn(LayerTypeRef, usize, usize, u32) -> T
+    )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        F: Fn(LayerType, usize, usize) -> T
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
 
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-
-        self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted_batch, target)|
+        let current_target = Rc::new(RefCell::new(None));
+        let input_iter = input.map(|(input, target)|
         {
-            assert_eq!(target.batch_size, 1);
+            *current_target.borrow_mut() = Some(target);
 
+            input
+        });
+
+        self.predict(input_iter, |predicted_batch|
+        {
+            let target = current_target.borrow_mut().take().expect("must be set by the input map");
+
+            assert_eq!(target.batch_size, 1);
             assert_eq!(target.positions.len(), 1);
 
             let target_index = target.positions[0];
@@ -1915,65 +1922,31 @@ where
 
             let target_index = target_index as usize;
 
-            let (highest_index, _highest_times) = predicted_batch.as_ref().batch_highest_index();
+            let (highest_index, highest_times) = predicted_batch.as_ref().batch_highest_index();
 
-            (highest_index, f(predicted_batch.as_ref().average_tensor(), highest_index, target_index))
-        })
-    }
-
-    pub fn top_guesses(
-        &mut self,
-        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, u32)>
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
-    {
-        self.with_predict(input, |predicted, _highest_index, target_index|
-        {
-            let mut predicted: Vec<(usize, f32)> = predicted.as_vec().into_iter().enumerate().collect();
-            predicted.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-
-            predicted.into_iter()
-                .enumerate()
-                .find(|(_, (index, _))| *index == target_index)
-                .expect("target index must be within bounds")
-                .0 as u32
-        })
+            output(highest_index, f(predicted_batch.as_ref(), highest_index, target_index, highest_times))
+        });
     }
 
     pub fn certainty_guesses(
         &mut self,
-        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, AccuracyCertaintyInfo)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        output: impl FnMut(usize, AccuracyCertaintyInfo)
+    )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
-
-        let (input, output): (Vec<_>, Vec<_>) = input.unzip();
-
-        self.predict(input.into_iter()).into_iter().zip(output).map(move |(predicted_batch, target)|
+        self.with_predict(input, output, |predicted_batch, highest_index, target_index, wrong_times|
         {
-            assert_eq!(target.batch_size, 1);
-            assert_eq!(target.positions.len(), 1);
-
-            let target_index = target.positions[0];
-
-            assert_ne!(target_index, u32::MAX);
-
-            let target_index = target_index as usize;
-
-            let (highest_index, wrong_times) = predicted_batch.as_ref().batch_highest_index();
-            let predicted = predicted_batch.as_ref().average_tensor();
+            let predicted = predicted_batch.average_tensor();
 
             let batch_size = predicted_batch.shape().batch_size;
 
             let mut correct_times = 0;
             (0..batch_size).for_each(|batch_index|
             {
-                let this_highest = predicted_batch.as_ref().batch_slice_ref(batch_index).highest_index();
+                let this_highest = predicted_batch.batch_slice_ref(batch_index).highest_index();
                 if this_highest == target_index
                 {
                     correct_times += 1;
@@ -1983,69 +1956,92 @@ where
             let correct_certainty = correct_times as f32 / batch_size as f32;
             let wrong_certainty = wrong_times as f32 / batch_size as f32;
 
-            let info = AccuracyCertaintyInfo{
+            AccuracyCertaintyInfo{
                 correct_probability: *predicted.iter().nth(target_index).unwrap(),
                 wrong_probability: *predicted.iter().nth(highest_index).unwrap(),
                 correct_certainty,
                 wrong_certainty
-            };
-
-            (highest_index, info)
-        })
+            }
+        });
     }
 
-    pub fn correct_guesses(
+    pub fn top_guesses(
         &mut self,
-        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
-    ) -> impl Iterator<Item=(usize, bool)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        output: impl FnMut(usize, u32)
+    )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        self.with_predict(input, |_predicted, highest_index, target_index|
+        // this is slightly wrong but i can fix it later if i wanna
+        self.with_predict(input, output, |predicted_batch, _highest_index, target_index, _highest_times|
+        {
+            let predicted = predicted_batch.average_tensor();
+
+            let mut predicted: Vec<(usize, f32)> = predicted.as_vec().into_iter().enumerate().collect();
+            predicted.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+
+            predicted.into_iter()
+                .enumerate()
+                .find(|(_, (index, _))| *index == target_index)
+                .expect("target index must be within bounds")
+                .0 as u32
+        });
+    }
+
+    pub fn correct_guesses(
+        &mut self,
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
+        output: impl FnMut(usize, bool)
+    )
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    {
+        self.with_predict(input, output, |_predicted, highest_index, target_index, _highest_times|
         {
             highest_index == target_index
-        })
+        });
     }
 
     pub fn accuracy(
         &mut self,
-        input: impl Iterator<Item=(OwnedInputType, OneHotLayer)>
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut total = 0;
-        let correct_amount = self.correct_guesses(input).filter(|(_, x)|
+        let mut correct_amount = 0;
+
+        self.correct_guesses(input, |_, x|
         {
             total += 1;
 
-            *x
-        }).count();
+            if x { correct_amount += 1; }
+        });
 
         correct_amount as f32 / total as f32
     }
 
     fn predict(
         &mut self,
-        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator
-    ) -> Vec<LayerType>
+        input: impl ExactSizeIterator<Item=OwnedInputType>,
+        mut consumer: impl FnMut(LayerType)
+    )
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        let mut outputs: Vec<LayerType> = Vec::with_capacity(input.len());
-
-        self.predict_temperature(1.0, input, |output| outputs.push(output));
-
-        outputs
+        self.predict_temperature(1.0, input, move |output| consumer(output));
     }
 
     pub fn predict_temperature(
         &mut self,
         temperature: f32,
-        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator,
+        input: impl ExactSizeIterator<Item=OwnedInputType>,
         mut f_output: impl FnMut(LayerType)
     )
     where
@@ -2061,7 +2057,7 @@ where
     fn predict_temperature_inner(
         &mut self,
         temperature: f32,
-        input: impl Iterator<Item=OwnedInputType> + ExactSizeIterator,
+        input: impl ExactSizeIterator<Item=OwnedInputType>,
         mut f_output: impl FnMut(&LayerType)
     )
     {
