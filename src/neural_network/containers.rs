@@ -7995,7 +7995,7 @@ impl OperationsRecorder
         self.combine_inplace_assignments(&mut input_remaps);
 
         let mut memory_assignments = Vec::new();
-        self.graph_color(&mut memory_assignments, optional_info);
+        self.graph_color(&mut memory_assignments, false);
 
         self.memory.tensors.resize(memory_assignments.len(), LinearRawDataPointer::undefined());
 
