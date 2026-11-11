@@ -45,13 +45,9 @@ impl NetworkUnit for Star<WeightInfoPtr>
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let mut seed_index = 0;
-        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let seed = dropout.seeds.get(recorder, seed_index);
-            let dropped_input = input_dropout(recorder, input, dropout.input_probability, seed);
-
-            seed_index += 1;
+            let dropped_input = input_dropout(recorder, input, dropout.input_probability);
 
             match dropped_input
             {
@@ -69,8 +65,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
         let k_unactivated_lhs = matmul_inputv_add(recorder, self.input_x, input, self.k_bias);
         recorder.name_diff_tensor(k_unactivated_lhs, "k_unactivated_lhs");
 
-        let seed = dropout.seeds.get(recorder, seed_index);
-        let previous_state_dropped = recorder.dropout_with_seed(*previous_state, dropout.hidden_probability, seed);
+        let previous_state_dropped = recorder.dropout(*previous_state, dropout.hidden_probability);
 
         let k_unactivated_rhs = recorder.matmulv(self.hidden.weight, previous_state_dropped);
 

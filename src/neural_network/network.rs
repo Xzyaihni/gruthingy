@@ -40,7 +40,7 @@ use crate::{
         UnitFactory,
         OptimizerInfoPtr,
         USE_EMBEDDING_LAYER,
-        network_unit::{DropoutInfo, SeedsCreator, EmbeddingsableOwned}
+        network_unit::{DropoutInfo, EmbeddingsableOwned}
     }
 };
 
@@ -1768,8 +1768,7 @@ where
         {
             let mut dropout_info = DropoutInfo{
                 input_probability: self.dropouts.input_dropout_probability,
-                hidden_probability: self.dropouts.dropout_probability,
-                seeds: SeedsCreator::new()
+                hidden_probability: self.dropouts.dropout_probability
             };
 
             let input = last_output.unwrap_or_else(||
@@ -1840,23 +1839,23 @@ where
             .record_feedforward_unit(&mut self.recorder, previous_state, input, dropout_info)
             .map(|output|
             {
-                let output_mapped = self.recorder.matmulv(weights.output.weight, output);
-                let output_dropped = self.recorder.dropout(output_mapped, self.dropouts.dropout_probability);
-
-                let output_activated;
+                let output_dropped = self.recorder.dropout(output, self.dropouts.dropout_probability);
+                let output = self.recorder.matmulv(weights.output.weight, output_dropped);
 
                 // this one has way more numerical stability when doing my numerical gradient approximations
                 let activation_function = if cfg!(test) { ActivationFunction::LeakyRelu } else { ACTIVATION_FUNCTION };
 
-                output_activated = match activation_function
+                let output_activated = match activation_function
                 {
-                    ActivationFunction::LeakyRelu => self.recorder.leaky_relu(output_dropped),
-                    ActivationFunction::GaussianRelu => self.recorder.gaussian_relu(output_dropped)
+                    ActivationFunction::LeakyRelu => self.recorder.leaky_relu(output),
+                    ActivationFunction::GaussianRelu => self.recorder.gaussian_relu(output)
                 };
 
                 self.weights_ptr.as_ref().unwrap().embeddings.as_ref().map(|embeddings|
                 {
-                    self.recorder.matmulv(embeddings.output.weight, output_activated)
+                    let output_activated_dropped = self.recorder.dropout(output_activated, self.dropouts.input_dropout_probability);
+
+                    self.recorder.matmulv(embeddings.output.weight, output_activated_dropped)
                 }).unwrap_or(output_activated)
             })
     }

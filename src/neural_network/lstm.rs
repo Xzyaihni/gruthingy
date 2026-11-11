@@ -109,13 +109,9 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
     {
-        let mut seed_index = 0;
-        let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
+        let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let seed = dropout.seeds.get(recorder, seed_index);
-            let dropped_input = input_dropout(recorder, input, dropout.input_probability, seed);
-
-            seed_index += 1;
+            let dropped_input = input_dropout(recorder, input, dropout.input_probability);
 
             match dropped_input
             {
@@ -136,10 +132,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
 
         let mut do_gate = |gate, hidden: WeightInfoPtr, previous_hidden|
         {
-            let seed = dropout.seeds.get(recorder, seed_index);
-            let state_dropped = recorder.dropout_with_seed(previous_hidden, dropout.hidden_probability, seed);
-
-            seed_index += 1;
+            let state_dropped = recorder.dropout(previous_hidden, dropout.hidden_probability);
 
             let rhs = recorder.matmulv(hidden.weight, state_dropped);
 
@@ -199,7 +192,7 @@ mod tests
 {
     use super::*;
 
-    use crate::neural_network::{close_enough, ShapedTensorIndex, LayerType, LayerSizes, network_unit::SeedsCreator};
+    use crate::neural_network::{close_enough, ShapedTensorIndex, LayerType, LayerSizes};
 
 
     fn assert_close_enough(a: f32, b: f32, epsilon: f32)
@@ -279,8 +272,7 @@ mod tests
         let output = {
             let mut dropout_info = DropoutInfo{
                 input_probability: 0.0,
-                hidden_probability: 0.0,
-                seeds: SeedsCreator::new()
+                hidden_probability: 0.0
             };
 
             let output = lstm.record_feedforward_unit(&mut recorder, &state, DiffInputType::Normal(input), &mut dropout_info);

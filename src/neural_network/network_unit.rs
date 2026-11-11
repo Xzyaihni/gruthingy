@@ -8,7 +8,6 @@ use crate::neural_network::{
     OneHotLayer,
     OneHotIndex,
     LayerSizes,
-    SeedIndex,
     network::{WeightsFullInfo, NetworkOutput}
 };
 
@@ -85,46 +84,21 @@ pub trait NetworkUnitNewable
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
 }
 
-pub struct SeedsCreator(Vec<SeedIndex>);
-
-impl SeedsCreator
-{
-    pub fn new() -> Self
-    {
-        Self(Vec::new())
-    }
-
-    pub fn get(&mut self, recorder: &mut OperationsRecorder, index: usize) -> SeedIndex
-    {
-        if index < self.0.len()
-        {
-            self.0[index]
-        } else
-        {
-            self.0.push(recorder.new_dropout_seed());
-
-            self.get(recorder, index)
-        }
-    }
-}
-
 pub struct DropoutInfo
 {
     pub input_probability: f32,
-    pub hidden_probability: f32,
-    pub seeds: SeedsCreator
+    pub hidden_probability: f32
 }
 
 pub fn input_dropout(
     recorder: &mut OperationsRecorder,
     input: DiffInputType,
-    input_probability: f32,
-    seed: SeedIndex
+    input_probability: f32
 ) -> DiffInputType
 {
     match input
     {
-        DiffInputType::Normal(x) => DiffInputType::Normal(recorder.dropout_with_seed(x, input_probability, seed)),
+        DiffInputType::Normal(x) => DiffInputType::Normal(recorder.dropout(x, input_probability)),
         DiffInputType::OneHot(x) => DiffInputType::OneHot(x)
     }
 }
