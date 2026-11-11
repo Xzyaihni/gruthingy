@@ -1696,7 +1696,7 @@ mod tests
             b"12345".iter().copied() // numbers so that the input letters are always bytes
         );
 
-        simple_data_overfit_with::<Sgd, _>(dictionary, 7000, TestStrategy::None);
+        simple_data_overfit_with::<Sgd, _>(dictionary, 9000, TestStrategy::None);
     }
 
     #[test]
