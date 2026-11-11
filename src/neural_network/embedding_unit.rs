@@ -3,11 +3,6 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        TensorShape,
-        NetworkStateCreatable,
-        NetworkStateClearable,
-        NetworkStateSelectable,
-        NetworkStateGettable,
         OperationsRecorder,
         DiffTensorPtr,
         OneHotIndex,
@@ -45,31 +40,6 @@ impl EmbeddingsableOwned for EmbeddingUnit<LayerType>
     }
 }
 
-impl NetworkStateCreatable for ()
-{
-    fn starting_state(_recorder: &mut OperationsRecorder, _shape: TensorShape) -> Self {}
-
-    fn copy_to(&self, _recorder: &mut OperationsRecorder, _other: Self) {}
-}
-
-impl NetworkStateClearable for ()
-{
-    fn clear(&self, _recorder: &mut OperationsRecorder) {}
-    fn clear_batch(&self, _recorder: &mut OperationsRecorder, _batch_index: usize) {}
-}
-
-impl NetworkStateSelectable<()> for ()
-{
-    fn phi_other_selector(&self, _recorder: &mut OperationsRecorder) -> () {}
-}
-
-impl NetworkStateGettable<()> for ()
-{
-    fn select(&self, _recorder: &mut OperationsRecorder) -> () {}
-
-    fn set_phi_other_selector(&self, _recorder: &mut OperationsRecorder, _other: ()) {}
-}
-
 impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>
 {
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
@@ -80,21 +50,21 @@ impl NetworkUnitNewable for EmbeddingUnit<WeightInfoPtr>
 
 impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
 {
-    type State<T> = ();
-
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        _previous_state: &Self::State<DiffTensorPtr>,
+        _previous_state: &[DiffTensorPtr],
         input: DiffInputType,
         _dropout: &mut DropoutInfo
-    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Vec<DiffTensorPtr>, DiffTensorPtr>
     {
         let hidden = self.embeddings(recorder, input.into_one_hot());
 
         NetworkOutput{
-            state: (),
+            state: Vec::new(),
             output: hidden
         }
     }
+
+    fn hidden_states() -> usize { 0 }
 }

@@ -95,14 +95,15 @@ impl<O: Optimizer> OptimizerInfo<O, O::WeightParam<OptimizerInfoPtr>>
             let new_weight = O::add_operations(recorder, param, clipped_gradient);
             recorder.name_tensor(new_weight, "new_weight_override");
 
-            recorder.store_tensor_until_end(new_weight);
-            recorder.memory.allow_after_coalesce_use(new_weight);
-            recorder.memory.allow_after_coalesce_use(weight);
-
             O::map_data_ref(param, |x|
             {
                 recorder.store_tensor_until_end(force_ptr(x));
             });
+
+            recorder.store_tensor_until_end(new_weight);
+            recorder.store_tensor_until_end(weight);
+            recorder.memory.allow_after_coalesce_use(new_weight);
+            recorder.memory.allow_after_coalesce_use(weight);
 
             recorder.force_same_memory(new_weight, weight);
         });

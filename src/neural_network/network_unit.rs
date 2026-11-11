@@ -1,5 +1,4 @@
 use crate::neural_network::{
-    TensorShape,
     OperationsRecorder,
     DiffTensorPtr,
     LayerType,
@@ -62,31 +61,6 @@ pub trait GenericUnit<T>
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
-pub trait NetworkStateCreatable
-{
-    fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self;
-
-    fn copy_to(&self, recorder: &mut OperationsRecorder, other: Self);
-}
-
-pub trait NetworkStateClearable
-{
-    fn clear(&self, recorder: &mut OperationsRecorder);
-    fn clear_batch(&self, recorder: &mut OperationsRecorder, batch_index: usize);
-}
-
-pub trait NetworkStateSelectable<T>
-{
-    fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> T;
-}
-
-pub trait NetworkStateGettable<T>
-{
-    fn select(&self, recorder: &mut OperationsRecorder) -> T;
-
-    fn set_phi_other_selector(&self, recorder: &mut OperationsRecorder, other: T);
-}
-
 pub trait NetworkUnitNewable
 {
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self;
@@ -115,25 +89,25 @@ pub trait NetworkUnit: GenericUnit<WeightInfoPtr> + Clone
 where
     Self: Sized
 {
-    type State<T>;
-
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: &Self::State<DiffTensorPtr>,
+        previous_state: &[DiffTensorPtr],
         input: DiffInputType,
         dropout: &mut DropoutInfo
-    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>;
+    ) -> NetworkOutput<Vec<DiffTensorPtr>, DiffTensorPtr>;
 
     fn record_feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: &Self::State<DiffTensorPtr>,
+        previous_state: &[DiffTensorPtr],
         input: DiffInputType,
         dropout: &mut DropoutInfo
-    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Vec<DiffTensorPtr>, DiffTensorPtr>
     {
         // my backprop thingy struggles too much if i dont do a copy lol
         self.record_feedforward_unit(recorder, previous_state, input, dropout).map(|x| recorder.copy(x))
     }
+
+    fn hidden_states() -> usize;
 }

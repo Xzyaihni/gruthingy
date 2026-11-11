@@ -33,10 +33,6 @@ use crate::{
 };
 
 pub use network_unit::{
-    NetworkStateCreatable,
-    NetworkStateClearable,
-    NetworkStateSelectable,
-    NetworkStateGettable,
     NetworkUnitNewable,
     NetworkUnit,
     GenericUnit,
@@ -699,8 +695,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
-        UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
         for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
@@ -745,8 +739,6 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
         N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
         N::Unit<WeightInfoPtr>: NetworkUnitNewable,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
-        UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
         for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
@@ -856,8 +848,6 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
-    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
     for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
@@ -881,8 +871,6 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
-    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
     for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
@@ -906,8 +894,6 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
-    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
     for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
     for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
@@ -1066,8 +1052,6 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
-    UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
     for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
@@ -1397,8 +1381,6 @@ where
             }
         }).collect();
 
-        self.network.clear_hidden();
-
         for input_index in 0..info.iterations
         {
             self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
@@ -1610,6 +1592,7 @@ mod tests
     enum TestStrategy
     {
         None,
+        Gelu,
         Lstm,
         Gru,
         Bpe,
@@ -1645,6 +1628,12 @@ mod tests
     }
 
     #[test]
+    fn simple_data_overfit_char_sgd_gelu()
+    {
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 15000, TestStrategy::Gelu);
+    }
+
+    #[test]
     fn simple_data_overfit_char_sgd_non_batched()
     {
         simple_data_overfit_with::<Sgd, _>(default_dictionary(), 17000, TestStrategy::NonBatch);
@@ -1653,7 +1642,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(default_dictionary(), 5000, TestStrategy::None);
+        simple_data_overfit_with::<PowerSign, _>(default_dictionary(), 6000, TestStrategy::None);
     }
 
     #[test]
@@ -1860,6 +1849,8 @@ mod tests
 
         let test_batches = 64;
 
+        let activation_function = if let TestStrategy::Gelu = strategy { ActivationFunction::GaussianRelu } else { ActivationFunction::LeakyRelu };
+
         macro_rules! with_unit
         {
             ($unit:ident) =>
@@ -1869,9 +1860,12 @@ mod tests
                         dictionary,
                         layer_sizes,
                         start_config,
-                        input_dropout_probability,
-                        dropout_probability,
-                        clip
+                        NetworkArchitecture{
+                            input_dropout_probability,
+                            dropout_probability,
+                            gradient_clip: clip,
+                            activation_function
+                        }
                     );
 
                     let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();

@@ -2286,9 +2286,9 @@ impl OperationsRecorder
 
         debug_assert!(batch_index < index.shape.batch_size);
 
-        let offset = (single_size * batch_index) as wgpu::BufferAddress;
+        let offset = (single_size * batch_index * FLOAT_BYTES) as wgpu::BufferAddress;
 
-        self.memory.zero_tensor_inner(&mut self.raw_array_memory, info, offset, Some(single_size as wgpu::BufferAddress));
+        self.memory.zero_tensor_inner(&mut self.raw_array_memory, info, offset, Some((single_size * FLOAT_BYTES) as wgpu::BufferAddress));
     }
 
     fn set_tensor_setup(&mut self, index: TensorIndex) -> LinearRawDataPointer
@@ -2737,11 +2737,6 @@ impl OperationsRecorder
         self.add_recording_operation(Op::Copy{src, dst});
 
         dst
-    }
-
-    pub fn copy_to(&mut self, src: DiffTensorPtr, dst: DiffTensorPtr)
-    {
-        self.add_recording_operation(Op::Copy{src, dst});
     }
 
     pub fn always_zero_tensor(&mut self, shape: TensorShape) -> DiffTensorPtr
@@ -6603,7 +6598,12 @@ impl OperationsRecorder
         }
     }
 
-    fn force_same_memory(&mut self, before: TensorPtr, after: TensorPtr)
+    pub fn allow_after_coalesce_use(&mut self, value: TensorPtr)
+    {
+        self.memory.allow_after_coalesce_use(value)
+    }
+
+    pub fn force_same_memory(&mut self, before: TensorPtr, after: TensorPtr)
     {
         self.memory.force_same_memory(before, after)
     }

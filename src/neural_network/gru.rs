@@ -3,16 +3,9 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        TensorShape,
         OperationsRecorder,
-        PhiOtherSelectorRecordingIndex,
-        NetworkStateCreatable,
-        NetworkStateClearable,
-        NetworkStateSelectable,
-        NetworkStateGettable,
         DiffTensorPtr,
         DiffInputType,
-        ShapedTensorIndex,
         LayerSizes,
         WeightInfoPtr,
         NetworkUnitNewable,
@@ -36,56 +29,6 @@ create_weights_container!{
     (activation_bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
-impl NetworkStateCreatable for DiffTensorPtr
-{
-    fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self
-    {
-        recorder.new_tensor_full_shape(shape, shape)
-    }
-
-    fn copy_to(&self, recorder: &mut OperationsRecorder, other: Self)
-    {
-        recorder.copy_to(*self, other);
-    }
-}
-
-impl NetworkStateClearable for ShapedTensorIndex
-{
-    fn clear(&self, recorder: &mut OperationsRecorder)
-    {
-        recorder.zero_tensor(*self);
-    }
-
-    fn clear_batch(&self, recorder: &mut OperationsRecorder, batch_index: usize)
-    {
-        recorder.zero_tensor_batch(*self, batch_index);
-    }
-}
-
-impl NetworkStateSelectable<PhiOtherSelectorRecordingIndex> for DiffTensorPtr
-{
-    fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> PhiOtherSelectorRecordingIndex
-    {
-        recorder.phi_other_selector(*self)
-    }
-}
-
-impl NetworkStateGettable<DiffTensorPtr> for PhiOtherSelectorRecordingIndex
-{
-    fn select(&self, recorder: &mut OperationsRecorder) -> DiffTensorPtr
-    {
-        let state = recorder.select_tensor(*self);
-        recorder.name_diff_tensor(state, "state");
-
-        state
-    }
-
-    fn set_phi_other_selector(&self, recorder: &mut OperationsRecorder, other: DiffTensorPtr)
-    {
-        recorder.set_phi_other_selector(*self, other);
-    }
-}
-
 impl NetworkUnitNewable for Gru<WeightInfoPtr>
 {
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
@@ -96,15 +39,13 @@ impl NetworkUnitNewable for Gru<WeightInfoPtr>
 
 impl NetworkUnit for Gru<WeightInfoPtr>
 {
-    type State<T> = T;
-
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: &Self::State<DiffTensorPtr>,
+        previous_state: &[DiffTensorPtr],
         input: DiffInputType,
         dropout: &mut DropoutInfo
-    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Vec<DiffTensorPtr>, DiffTensorPtr>
     {
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
@@ -127,7 +68,7 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
         let mut do_gate = |gate, hidden: WeightInfoPtr|
         {
-            let state_dropped = recorder.dropout(*previous_state, dropout.hidden_probability);
+            let state_dropped = recorder.dropout(previous_state[0], dropout.hidden_probability);
 
             let rhs = recorder.matmulv(hidden.weight, state_dropped);
 
@@ -143,7 +84,7 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         recorder.name_diff_tensor(update_gate, "update_gate");
         recorder.name_diff_tensor(reset_gate, "reset_gate");
 
-        let activation_reset = recorder.mul_componentwise(reset_gate, *previous_state);
+        let activation_reset = recorder.mul_componentwise(reset_gate, previous_state[0]);
 
         let activation_reset_dropped = recorder.dropout(activation_reset,dropout.hidden_probability);
 
@@ -159,13 +100,15 @@ impl NetworkUnit for Gru<WeightInfoPtr>
 
         let z_m1 = recorder.sub_from_scalar(1.0, update_gate);
 
-        let hidden_lhs = recorder.mul_componentwise(z_m1, *previous_state);
+        let hidden_lhs = recorder.mul_componentwise(z_m1, previous_state[0]);
 
         let state = recorder.add(hidden_lhs, hidden_rhs);
 
         NetworkOutput{
-            state: state.clone(),
+            state: vec![state.clone()],
             output: state
         }
     }
+
+    fn hidden_states() -> usize { 1 }
 }

@@ -35,15 +35,13 @@ impl NetworkUnitNewable for Star<WeightInfoPtr>
 
 impl NetworkUnit for Star<WeightInfoPtr>
 {
-    type State<T> = T;
-
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: &Self::State<DiffTensorPtr>,
+        previous_state: &[DiffTensorPtr],
         input: DiffInputType,
         dropout: &mut DropoutInfo
-    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Vec<DiffTensorPtr>, DiffTensorPtr>
     {
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
@@ -65,7 +63,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
         let k_unactivated_lhs = matmul_inputv_add(recorder, self.input_x, input, self.k_bias);
         recorder.name_diff_tensor(k_unactivated_lhs, "k_unactivated_lhs");
 
-        let previous_state_dropped = recorder.dropout(*previous_state, dropout.hidden_probability);
+        let previous_state_dropped = recorder.dropout(previous_state[0], dropout.hidden_probability);
 
         let k_unactivated_rhs = recorder.matmulv(self.hidden.weight, previous_state_dropped);
 
@@ -81,7 +79,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
         let k_m1 = recorder.sub_from_scalar(1.0, k);
         recorder.name_diff_tensor(k_m1, "k_m1");
 
-        let h_unactivated_lhs = recorder.mul_componentwise(k_m1, *previous_state);
+        let h_unactivated_lhs = recorder.mul_componentwise(k_m1, previous_state[0]);
         recorder.name_diff_tensor(h_unactivated_lhs, "h_unactivated_lhs");
 
         let h_unactivated = recorder.add(h_unactivated_lhs, h_unactivated_rhs);
@@ -93,8 +91,10 @@ impl NetworkUnit for Star<WeightInfoPtr>
         let h = recorder.copy(h);
 
         NetworkOutput{
-            state: h.clone(),
+            state: vec![h.clone()],
             output: h
         }
     }
+
+    fn hidden_states() -> usize { 1 }
 }

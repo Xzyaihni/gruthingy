@@ -3,15 +3,8 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
-        TensorShape,
-        PhiOtherSelectorRecordingIndex,
-        NetworkStateCreatable,
-        NetworkStateClearable,
-        NetworkStateSelectable,
-        NetworkStateGettable,
         DiffTensorPtr,
         DiffInputType,
-        ShapedTensorIndex,
         WeightInfoPtr,
         LayerSizes,
         OperationsRecorder,
@@ -39,79 +32,6 @@ create_weights_container!{
     (memory_bias, false, false, LayerSize::One, LayerSize::Hidden)
 }
 
-#[derive(Debug, Clone)]
-pub struct LSTMState<T>
-{
-    hidden: T,
-    memory: T
-}
-
-impl NetworkStateCreatable for LSTMState<DiffTensorPtr>
-{
-    fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self
-    {
-        LSTMState{
-            hidden: recorder.new_tensor_full_shape(shape, shape),
-            memory: recorder.new_tensor_full_shape(shape, shape)
-        }
-    }
-
-    fn copy_to(&self, recorder: &mut OperationsRecorder, other: Self)
-    {
-        recorder.copy_to(self.hidden, other.hidden);
-        recorder.copy_to(self.memory, other.memory);
-    }
-}
-
-impl NetworkStateClearable for LSTMState<ShapedTensorIndex>
-{
-    fn clear(&self, recorder: &mut OperationsRecorder)
-    {
-        recorder.zero_tensor(self.hidden);
-        recorder.zero_tensor(self.memory);
-    }
-
-    fn clear_batch(&self, recorder: &mut OperationsRecorder, batch_index: usize)
-    {
-        recorder.zero_tensor_batch(self.hidden, batch_index);
-        recorder.zero_tensor_batch(self.memory, batch_index);
-    }
-}
-
-impl NetworkStateSelectable<LSTMState<PhiOtherSelectorRecordingIndex>> for LSTMState<DiffTensorPtr>
-{
-    fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> LSTMState<PhiOtherSelectorRecordingIndex>
-    {
-        LSTMState{
-            hidden: recorder.phi_other_selector(self.hidden),
-            memory: recorder.phi_other_selector(self.memory)
-        }
-    }
-}
-
-impl NetworkStateGettable<LSTMState<DiffTensorPtr>> for LSTMState<PhiOtherSelectorRecordingIndex>
-{
-    fn select(&self, recorder: &mut OperationsRecorder) -> LSTMState<DiffTensorPtr>
-    {
-        let hidden = recorder.select_tensor(self.hidden);
-        recorder.name_diff_tensor(hidden, "hidden_selected");
-
-        let memory = recorder.select_tensor(self.memory);
-        recorder.name_diff_tensor(memory, "memory_selected");
-
-        LSTMState{
-            hidden,
-            memory
-        }
-    }
-
-    fn set_phi_other_selector(&self, recorder: &mut OperationsRecorder, other: LSTMState<DiffTensorPtr>)
-    {
-        recorder.set_phi_other_selector(self.hidden, other.hidden);
-        recorder.set_phi_other_selector(self.memory, other.memory);
-    }
-}
-
 impl NetworkUnitNewable for Lstm<WeightInfoPtr>
 {
     fn new(recorder: &mut OperationsRecorder, sizes: LayerSizes) -> Self
@@ -122,15 +42,13 @@ impl NetworkUnitNewable for Lstm<WeightInfoPtr>
 
 impl NetworkUnit for Lstm<WeightInfoPtr>
 {
-    type State<T> = LSTMState<T>;
-
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: &Self::State<DiffTensorPtr>,
+        previous_state: &[DiffTensorPtr],
         input: DiffInputType,
         dropout: &mut DropoutInfo
-    ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
+    ) -> NetworkOutput<Vec<DiffTensorPtr>, DiffTensorPtr>
     {
         let matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
@@ -162,10 +80,10 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             recorder.add(gate, rhs)
         };
 
-        let update_gate_unactivated = do_gate(update_gate_lhs, self.hidden_update, previous_state.hidden);
-        let forget_gate_unactivated = do_gate(forget_gate_lhs, self.hidden_forget, previous_state.hidden);
-        let output_gate_unactivated = do_gate(output_gate_lhs, self.hidden_output, previous_state.hidden);
-        let memory_gate_unactivated = do_gate(memory_gate_lhs, self.hidden_memory, previous_state.hidden);
+        let update_gate_unactivated = do_gate(update_gate_lhs, self.hidden_update, previous_state[0]);
+        let forget_gate_unactivated = do_gate(forget_gate_lhs, self.hidden_forget, previous_state[0]);
+        let output_gate_unactivated = do_gate(output_gate_lhs, self.hidden_output, previous_state[0]);
+        let memory_gate_unactivated = do_gate(memory_gate_lhs, self.hidden_memory, previous_state[0]);
 
         let update_gate = recorder.sigmoid(update_gate_unactivated);
         let forget_gate = recorder.sigmoid(forget_gate_unactivated);
@@ -180,7 +98,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         let memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
         recorder.name_diff_tensor(memory_rhs, "memory_rhs");
 
-        let memory_lhs = recorder.mul_componentwise(forget_gate, previous_state.memory);
+        let memory_lhs = recorder.mul_componentwise(forget_gate, previous_state[1]);
         recorder.name_diff_tensor(memory_lhs, "memory_lhs");
 
         let memory = recorder.add(memory_lhs, memory_rhs);
@@ -198,16 +116,15 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
         let hidden_copy = recorder.copy(hidden);
         recorder.name_diff_tensor(hidden, "hidden_copy");
 
-        let state = LSTMState{
-            hidden: hidden_copy,
-            memory
-        };
+        let state = vec![hidden_copy, memory];
 
         NetworkOutput{
             state,
             output: hidden_copy
         }
     }
+
+    fn hidden_states() -> usize { 2 }
 }
 
 #[cfg(test)]
@@ -283,10 +200,10 @@ mod tests
             memory_bias: one_weight_info("memory_bias", -0.32)
         };
 
-        let state = LSTMState::<DiffTensorPtr>{
-            memory: one_weight(&mut recorder, 2.0),
-            hidden: one_weight(&mut recorder, 1.0)
-        };
+        let state = vec![
+            one_weight(&mut recorder, 1.0),
+            one_weight(&mut recorder, 2.0)
+        ];
 
         let input = one_weight(&mut recorder, 1.0);
 
@@ -310,8 +227,8 @@ mod tests
 
         recorder.finish();
 
-        let memory = output.state.memory.as_value();
-        let hidden = output.state.hidden.as_value();
+        let memory = output.state[1].as_value();
+        let hidden = output.state[0].as_value();
 
         recorder.store_tensor_as_output(memory);
         recorder.store_tensor_as_output(hidden);
