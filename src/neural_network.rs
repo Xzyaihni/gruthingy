@@ -14,6 +14,8 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
+pub use crate::config::ActivationFunction;
+
 #[allow(unused_imports)]
 use crate::{
     Config,
@@ -42,7 +44,6 @@ pub use network_unit::{
 };
 
 pub use network::{
-    ActivationFunction,
     AccuracyCertaintyInfo,
     PrecomputedRng,
     Network,
@@ -50,7 +51,8 @@ pub use network::{
     UnitState,
     SaveWeightType,
     LayerSizes,
-    NetworkConfigInfo
+    NetworkConfigInfo,
+    NetworkArchitecture
 };
 
 pub use containers::{
@@ -1075,16 +1077,16 @@ where
         dictionary: D,
         sizes: LayerSizes,
         config: NetworkConfigInfo,
-        input_dropout_probability: f32,
-        dropout_probability: f32,
-        gradient_clip: Option<f32>
+        architecture: NetworkArchitecture
     ) -> Self
     where
         O::WeightParam<OptimizerInfoPtr>: NewableLayer,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
-        let network = Network::new(sizes, input_dropout_probability, dropout_probability, config);
+        let gradient_clip = architecture.gradient_clip;
+
+        let network = Network::new(sizes, architecture, config);
 
         let optimizer = O::default();
 

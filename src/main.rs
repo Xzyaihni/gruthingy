@@ -25,6 +25,7 @@ use serde::{Serialize, Deserialize, de::DeserializeOwned};
 #[allow(unused_imports)]
 use neural_network::{
     USE_EMBEDDING_LAYER,
+    NetworkArchitecture,
     NetworkConfigInfo,
     PhiOtherSelectorRecordingIndex,
     NetworkStateCreatable,
@@ -260,9 +261,12 @@ where
             dictionary,
             sizes,
             network_config,
-            config.input_dropout_probability,
-            config.dropout_probability,
-            config.gradient_clip
+            NetworkArchitecture{
+                input_dropout_probability: config.input_dropout_probability,
+                dropout_probability: config.dropout_probability,
+                gradient_clip: config.gradient_clip,
+                activation_function: config.activation_function
+            }
         )
     } else
     {

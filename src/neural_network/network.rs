@@ -39,23 +39,18 @@ use crate::{
         OptimizerInfo,
         UnitFactory,
         OptimizerInfoPtr,
+        ActivationFunction,
         USE_EMBEDDING_LAYER,
         network_unit::{DropoutInfo, EmbeddingsableOwned}
     }
 };
 
 #[allow(unused_imports)]
-use crate::neural_network::{LayerTypeRef, ACTIVATION_FUNCTION};
+use crate::neural_network::LayerTypeRef;
 
 #[allow(unused_imports)]
 use super::close_enough;
 
-
-pub enum ActivationFunction
-{
-    LeakyRelu,
-    GaussianRelu
-}
 
 #[derive(Serialize)]
 pub struct AccuracyCertaintyInfo
@@ -880,6 +875,7 @@ pub struct SaveNetwork<N: UnitFactory, O>
     sizes: LayerSizes,
     input_dropout_probability: f32,
     dropout_probability: f32,
+    activation_function: ActivationFunction,
     optimizer_info: Option<Vec<O>>,
     weights: WeightsFullContainer<N, SaveWeightType>
 }
@@ -895,6 +891,7 @@ where
             sizes: self.sizes.clone(),
             input_dropout_probability: self.input_dropout_probability,
             dropout_probability: self.dropout_probability,
+            activation_function: self.activation_function,
             optimizer_info: self.optimizer_info.clone(),
             weights: self.weights.clone()
         }
@@ -949,6 +946,7 @@ where
             sizes: x.sizes,
             input_dropout_probability: x.dropouts.input_dropout_probability,
             dropout_probability: x.dropouts.dropout_probability,
+            activation_function: x.activation_function,
             optimizer_info,
             weights
         }
@@ -1037,6 +1035,14 @@ pub struct NetworkConfigInfo
     pub is_input_one_hot: bool
 }
 
+pub struct NetworkArchitecture
+{
+    pub input_dropout_probability: f32,
+    pub dropout_probability: f32,
+    pub gradient_clip: Option<f32>,
+    pub activation_function: ActivationFunction
+}
+
 pub struct Network<N: UnitFactory, O>
 where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
@@ -1048,6 +1054,7 @@ where
     dropouts: NetworkDropoutData,
     inputs: NetworkInputsData,
     outputs: NetworkOutputsData,
+    activation_function: ActivationFunction,
     optimizer_info: Option<Vec<O>>,
     weights_ptr: Option<WeightsFullContainer<N, WeightInfoPtr>>,
     weights: Option<WeightsFullContainer<N, WeightInfo>>
@@ -1136,6 +1143,7 @@ where
             dropouts: NetworkDropoutData::new(x.input_dropout_probability, x.dropout_probability),
             inputs: NetworkInputsData::default(),
             outputs: NetworkOutputsData::default(),
+            activation_function: x.activation_function,
             recorder
         };
 
@@ -1168,8 +1176,7 @@ where
 
     fn new_no_init(
         sizes: LayerSizes,
-        input_dropout_probability: f32,
-        dropout_probability: f32,
+        architecture: NetworkArchitecture,
         config: NetworkConfigInfo
     ) -> Self
     {
@@ -1179,9 +1186,10 @@ where
             recorder,
             network_mode: None,
             sizes,
-            dropouts: NetworkDropoutData::new(input_dropout_probability, dropout_probability),
+            dropouts: NetworkDropoutData::new(architecture.input_dropout_probability, architecture.dropout_probability),
             inputs: NetworkInputsData::default(),
             outputs: NetworkOutputsData::default(),
+            activation_function: architecture.activation_function,
             optimizer_info: None,
             weights_ptr: None,
             weights: None,
@@ -1424,14 +1432,13 @@ where
 {
     pub fn new(
         sizes: LayerSizes,
-        input_dropout_probability: f32,
-        dropout_probability: f32,
+        architecture: NetworkArchitecture,
         config: NetworkConfigInfo
     ) -> Self
     where
         O: NewableLayer
     {
-        let mut this = Self::new_no_init(sizes, input_dropout_probability, dropout_probability, config);
+        let mut this = Self::new_no_init(sizes, architecture, config);
 
         this.initialize_with_sizes(sizes);
 
@@ -1842,8 +1849,14 @@ where
                 let output_dropped = self.recorder.dropout(output, self.dropouts.dropout_probability);
                 let output = self.recorder.matmulv(weights.output.weight, output_dropped);
 
-                // this one has way more numerical stability when doing my numerical gradient approximations
-                let activation_function = if cfg!(test) { ActivationFunction::LeakyRelu } else { ACTIVATION_FUNCTION };
+                let activation_function = if cfg!(test)
+                {
+                    // this one has way more numerical stability when doing my numerical gradient approximations
+                    ActivationFunction::LeakyRelu
+                } else
+                {
+                    self.activation_function
+                };
 
                 let output_activated = match activation_function
                 {
@@ -2128,6 +2141,7 @@ where
         SaveNetwork{
             dropout_probability: save_network.dropout_probability,
             input_dropout_probability: save_network.input_dropout_probability,
+            activation_function: save_network.activation_function,
             sizes: save_network.sizes,
             weights: save_network.weights,
             optimizer_info: None

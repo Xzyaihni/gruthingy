@@ -11,6 +11,8 @@ use std::{
 
 use crate::complain;
 
+use serde::{Serialize, Deserialize};
+
 
 enum ArgError
 {
@@ -380,7 +382,7 @@ macro_rules! iterable_enum
         $($key:ident),+
     }) =>
     {
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
         pub enum $enum_name
         {
             $($key,)+
@@ -474,6 +476,23 @@ iterable_enum!
         ClosestEmbeddings,
         WeightsImage,
         AccuracyData
+    }
+}
+
+iterable_enum!
+{
+    enum ActivationFunction
+    {
+        LeakyRelu,
+        GaussianRelu
+    }
+}
+
+impl Default for ActivationFunction
+{
+    fn default() -> Self
+    {
+        Self::GaussianRelu
     }
 }
 
@@ -599,6 +618,7 @@ pub struct Config
     pub correct_guesses: bool,
     pub top_guesses: bool,
     pub infinite_loop: bool,
+    pub activation_function: ActivationFunction,
     pub mode: ProgramMode,
     pub dictionary_path: PathBuf
 }
@@ -641,6 +661,7 @@ impl Config
         let mut correct_guesses = false;
         let mut top_guesses = false;
         let mut infinite_loop = false;
+        let mut activation_function = ActivationFunction::default();
         let mut mode = None;
 
         let mut parser = ArgParser::new();
@@ -678,6 +699,7 @@ impl Config
         parser.push_flag(&mut correct_guesses, None, "correct-guesses", "show bool instead of certainty in accuracy_data mode", true);
         parser.push_flag(&mut top_guesses, None, "top-guesses", "show guess place from the top instead of certainty in accuracy_data mode", true);
         parser.push_flag(&mut infinite_loop, None, "loop", "training never stops, instead saves the network every -I iterations", true);
+        parser.push(&mut activation_function, None, "activation-function", "activation function for the output layer");
         parser.push(&mut mode, 'm', "mode", "program mode");
         parser.push(&mut dictionary_path, 'd', "dictionary", "path to the dictionary");
 
@@ -734,6 +756,7 @@ impl Config
             correct_guesses,
             top_guesses,
             infinite_loop,
+            activation_function,
             mode
         }
     }

@@ -11836,7 +11836,7 @@ mod tests
         let loops_count = 3;
         let is: Vec<OwnedInputType> = (0..loops_count + 2).map(|_| LayerType::new_with(LAYER_CURR, LAYER_PREV, random_value).into()).collect();
 
-        check_tensor_with_epsilon(0.02, |recorder, [a, b]|
+        check_tensor_with_epsilon(0.04, |recorder, [a, b]|
         {
             let s0 = {
                 let s0i = recorder.set_new_tensor(is[0].clone().into_normal()).as_value();
@@ -12316,7 +12316,7 @@ mod tests
             OneHotLayer::new([[fastrand::usize(0..output_size)].into()].into(), 1, output_size, 1)
         }).collect();
 
-        check_tensor_with_dims_with_epsilon(0.2, [(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
+        check_tensor_with_dims_with_epsilon(0.3, [(input_size, hidden_size), (hidden_size, output_size)], |recorder, [a, b]|
         {
             let mut create_input = |input: OwnedInputType| -> TensorPtr
             {
