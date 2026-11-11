@@ -1563,42 +1563,31 @@ mod tests
             });
     }
 
-    #[allow(dead_code)]
-    struct LstmUnitFactory;
-
-    #[allow(dead_code)]
-    impl LstmUnitFactory
+    struct GruUnitFactory;
+    impl UnitFactory for GruUnitFactory
     {
-        fn weight_units() -> usize { 4 }
-        fn hidden_units() -> usize { 4 }
+        type Unit<T> = Gru<T>;
     }
 
+    struct LstmUnitFactory;
     impl UnitFactory for LstmUnitFactory
     {
         type Unit<T> = Lstm<T>;
     }
 
     struct StarUnitFactory;
-
-    #[allow(dead_code)]
-    impl StarUnitFactory
-    {
-        fn weight_units() -> usize { 2 }
-        fn hidden_units() -> usize { 1 }
-    }
-
     impl UnitFactory for StarUnitFactory
     {
         type Unit<T> = Star<T>;
     }
-
-    type Unit = StarUnitFactory;
 
     type ThisDictionary = CharDictionary;
 
     enum TestStrategy
     {
         None,
+        Lstm,
+        Gru,
         Bpe,
         NonBatch,
         LongDistance,
@@ -1608,47 +1597,64 @@ mod tests
         Dropout(f32)
     }
 
+    fn default_dictionary() -> CharDictionary
+    {
+        CharDictionary::new(InputData::String("abcdefg".to_owned()))
+    }
+
     #[test]
     fn simple_data_overfit_char_sgd_simple()
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 15000, TestStrategy::None);
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 15000, TestStrategy::None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_sgd_lstm()
+    {
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 18000, TestStrategy::Lstm);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_sgd_gru()
+    {
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 14000, TestStrategy::Gru);
     }
 
     #[test]
     fn simple_data_overfit_char_sgd_non_batched()
     {
-        simple_data_overfit_with::<Sgd, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 17000, TestStrategy::NonBatch);
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 17000, TestStrategy::NonBatch);
     }
 
     #[test]
     fn simple_data_overfit_char_powersign()
     {
-        simple_data_overfit_with::<PowerSign, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 5000, TestStrategy::None);
+        simple_data_overfit_with::<PowerSign, _>(default_dictionary(), 5000, TestStrategy::None);
     }
 
     #[test]
     fn simple_data_overfit_char_adam_normal()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1500, TestStrategy::None);
+        simple_data_overfit_with::<Adam, _>(default_dictionary(), 1500, TestStrategy::None);
     }
 
     #[test]
     fn simple_data_overfit_char_adam_multi_layer()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 3000, TestStrategy::MultiLayer(3));
+        simple_data_overfit_with::<Adam, _>(default_dictionary(), 3000, TestStrategy::MultiLayer(3));
     }
 
     #[test]
     fn simple_data_overfit_char_adam_clip()
     {
-        simple_data_overfit_with::<Adam, _>(CharDictionary::new(InputData::String("abcdefg".to_owned())), 1000, TestStrategy::Clip(0.1));
+        simple_data_overfit_with::<Adam, _>(default_dictionary(), 1000, TestStrategy::Clip(0.1));
     }
 
     #[test]
     fn simple_data_overfit_char_adam_long_distance()
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
-            CharDictionary::new(InputData::String("abcdefg".to_owned())),
+            default_dictionary(),
             1000,
             TestStrategy::LongDistance
         );
@@ -1660,7 +1666,7 @@ mod tests
     fn simple_data_overfit_char_adam_dropout()
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
-            CharDictionary::new(InputData::String("abcdefg".to_owned())),
+            default_dictionary(),
             500,
             TestStrategy::Dropout(0.25)
         );
@@ -1672,7 +1678,7 @@ mod tests
     fn simple_data_overfit_char_adam_input_dropout()
     {
         let (_last_loss, test_loss) = simple_data_overfit_inner::<Adam, _>(
-            CharDictionary::new(InputData::String("abcdefg".to_owned())),
+            default_dictionary(),
             800,
             TestStrategy::InputDropout(0.25)
         );
@@ -1792,20 +1798,15 @@ mod tests
         let input_dropout_probability = if let TestStrategy::InputDropout(dropout) = strategy { dropout } else { 0.0 };
         let dropout_probability = if let TestStrategy::Dropout(dropout) = strategy { dropout } else { 0.0 };
 
-        type NetworkType<OptimizerType> = Network<Unit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
+        type NetworkType<ThisUnit, OptimizerType> = Network<ThisUnit, <OptimizerType as Optimizer>::WeightParam<OptimizerInfoPtr>>;
 
-        let mut network: NeuralNetwork<NetworkType<OptimizerType>, OptimizerType, _> = NeuralNetwork::new(
-            dictionary,
-            layer_sizes,
-            NetworkConfigInfo{
-                is_input_one_hot,
-                print_batch_losses: true,
-                print_optional_info: true
-            },
-            input_dropout_probability,
-            dropout_probability,
-            if let TestStrategy::Clip(clip) = strategy { Some(clip) } else { None }
-        );
+        let start_config = NetworkConfigInfo{
+            is_input_one_hot,
+            print_batch_losses: true,
+            print_optional_info: true
+        };
+
+        let clip = if let TestStrategy::Clip(clip) = strategy { Some(clip) } else { None };
 
         let steps_num = match strategy
         {
@@ -1827,8 +1828,6 @@ mod tests
 
         let test_input = String::from_utf8_lossy((if let TestStrategy::Bpe = strategy { &inputs[1..] } else { &inputs }).as_bytes()).into_owned();
 
-        let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
-
         let config = NetworkConfigInfo{
             print_optional_info: false,
             print_batch_losses: true,
@@ -1837,16 +1836,42 @@ mod tests
 
         let test_batches = 64;
 
-        network.reset(config.clone(), test_batches);
+        macro_rules! with_unit
+        {
+            ($unit:ident) =>
+            {
+                {
+                    let mut network: NeuralNetwork<NetworkType<$unit, OptimizerType>, OptimizerType, _> = NeuralNetwork::new(
+                        dictionary,
+                        layer_sizes,
+                        start_config,
+                        input_dropout_probability,
+                        dropout_probability,
+                        clip
+                    );
 
-        let test_loss = network.test_loss(Cursor::new(test_input.clone()), None, false);
+                    let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
 
-        network.reset(config, test_batches);
+                    network.reset(config.clone(), test_batches);
 
-        let accuracy = network.test_loss(Cursor::new(test_input), None, true);
+                    let test_loss = network.test_loss(Cursor::new(test_input.clone()), None, false);
 
-        assert!(accuracy > 0.9);
+                    network.reset(config, test_batches);
 
-        (last_train_loss, test_loss as f64)
+                    let accuracy = network.test_loss(Cursor::new(test_input), None, true);
+
+                    assert!(accuracy > 0.9);
+
+                    (last_train_loss, test_loss as f64)
+                }
+            }
+        }
+
+        match strategy
+        {
+            TestStrategy::Lstm => with_unit!(LstmUnitFactory),
+            TestStrategy::Gru => with_unit!(GruUnitFactory),
+            _ => with_unit!(StarUnitFactory)
+        }
     }
 }

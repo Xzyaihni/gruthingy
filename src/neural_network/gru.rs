@@ -15,7 +15,7 @@ use crate::{
         WeightInfoPtr,
         NetworkUnitNewable,
         network::{NetworkOutput, LayerSize},
-        network_unit::{DropoutInfo, NetworkUnit}
+        network_unit::{input_dropout, DropoutInfo, NetworkUnit}
     }
 };
 
@@ -89,44 +89,40 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         let mut seed_index = 0;
         let mut matmul_inputv_add = |recorder: &mut OperationsRecorder, weights: WeightInfoPtr, input, bias: WeightInfoPtr|
         {
-            let value = match input
+            let seed = dropout.seeds.get(recorder, seed_index);
+            let dropped_input = input_dropout(recorder, input, dropout.input_probability, seed);
+
+            seed_index += 1;
+
+            match dropped_input
             {
                 DiffInputType::Normal(x) => recorder.matmulv_add(weights.weight, x, bias.weight),
                 DiffInputType::OneHot(x) => recorder.matmul_onehotv_add(weights.weight, x, bias.weight)
-            };
-
-            let seed = dropout.seeds.get(recorder, seed_index);
-            let value = recorder.dropout_with_seed(value, dropout.input_probability, seed);
-
-            seed_index += 1;
-
-            value
+            }
         };
 
-        let update_gate_pre = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
-        let reset_gate_pre = matmul_inputv_add(recorder, self.input_reset, input, self.reset_bias);
-        let activation_gate_pre = matmul_inputv_add(recorder, self.input_activation, input, self.activation_bias);
+        let update_gate_lhs = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
+        let reset_gate_lhs = matmul_inputv_add(recorder, self.input_reset, input, self.reset_bias);
+        let activation_gate_lhs = matmul_inputv_add(recorder, self.input_activation, input, self.activation_bias);
 
-        recorder.name_diff_tensor(update_gate_pre, "update_gate_pre");
-        recorder.name_diff_tensor(reset_gate_pre, "reset_gate_pre");
-        recorder.name_diff_tensor(activation_gate_pre, "activation_gate_pre");
+        recorder.name_diff_tensor(update_gate_lhs, "update_gate_lhs");
+        recorder.name_diff_tensor(reset_gate_lhs, "reset_gate_lhs");
+        recorder.name_diff_tensor(activation_gate_lhs, "activation_gate_lhs");
 
         let mut do_gate = |gate, hidden: WeightInfoPtr|
         {
-            let value_pre = recorder.matmulv(hidden.weight, *previous_state);
-
             let seed = dropout.seeds.get(recorder, seed_index);
-            let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
-
-            let added = recorder.add(value, gate);
+            let state_dropped = recorder.dropout_with_seed(*previous_state, dropout.hidden_probability, seed);
 
             seed_index += 1;
 
-            added
+            let rhs = recorder.matmulv(hidden.weight, state_dropped);
+
+            recorder.add(gate, rhs)
         };
 
-        let update_gate_unactivated = do_gate(update_gate_pre, self.hidden_update);
-        let reset_gate_unactivated = do_gate(reset_gate_pre, self.hidden_reset);
+        let update_gate_unactivated = do_gate(update_gate_lhs, self.hidden_update);
+        let reset_gate_unactivated = do_gate(reset_gate_lhs, self.hidden_reset);
 
         let update_gate = recorder.sigmoid(update_gate_unactivated);
         let reset_gate = recorder.sigmoid(reset_gate_unactivated);
@@ -134,26 +130,26 @@ impl NetworkUnit for Gru<WeightInfoPtr>
         recorder.name_diff_tensor(update_gate, "update_gate");
         recorder.name_diff_tensor(reset_gate, "reset_gate");
 
-        let activation_v = recorder.mul_componentwise(reset_gate, *previous_state);
-
-        let mm_pre = recorder.matmulv(self.hidden_activation.weight, activation_v);
+        let activation_reset = recorder.mul_componentwise(reset_gate, *previous_state);
 
         let seed = dropout.seeds.get(recorder, seed_index);
-        let mm = recorder.dropout_with_seed(mm_pre, dropout.hidden_probability, seed);
+        let activation_reset_dropped = recorder.dropout_with_seed(activation_reset,dropout.hidden_probability, seed);
 
-        let activation_gate_unactivated = recorder.add(activation_gate_pre, mm);
+        let activation_gate_rhs = recorder.matmulv(self.hidden_activation.weight, activation_reset_dropped);
+
+        let activation_gate_unactivated = recorder.add(activation_gate_lhs, activation_gate_rhs);
 
         let activation_gate = recorder.tanh(activation_gate_unactivated);
 
         recorder.name_diff_tensor(activation_gate, "activation_gate_activated");
 
-        let this_activation = recorder.mul_componentwise(activation_gate, update_gate);
+        let hidden_rhs = recorder.mul_componentwise(update_gate, activation_gate);
 
-        let update = recorder.mul_componentwise(update_gate, *previous_state);
+        let z_m1 = recorder.sub_from_scalar(1.0, update_gate);
 
-        let left = recorder.sub_from_scalar(1.0, update);
+        let hidden_lhs = recorder.mul_componentwise(z_m1, *previous_state);
 
-        let state = recorder.add(left, this_activation);
+        let state = recorder.add(hidden_lhs, hidden_rhs);
 
         NetworkOutput{
             state: state.clone(),

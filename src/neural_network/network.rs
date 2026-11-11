@@ -109,11 +109,13 @@ pub fn print_every_batch_loss(batch_loss: &LayerType)
     }
 }
 
-fn input_dropout(input_dropouts: &[Vec<usize>], input: OwnedInputType) -> OwnedInputType
+pub fn owned_input_dropout(
+    input_dropouts: &[Vec<usize>],
+    input: OwnedInputType
+) -> OwnedInputType
 {
     match input
     {
-        OwnedInputType::Normal(x) => OwnedInputType::Normal(x),
         OwnedInputType::OneHot(mut x) =>
         {
             x.positions.chunks_exact_mut(x.count).enumerate().for_each(|(batch_index, batch_positions)|
@@ -130,7 +132,8 @@ fn input_dropout(input_dropouts: &[Vec<usize>], input: OwnedInputType) -> OwnedI
             });
 
             OwnedInputType::OneHot(x)
-        }
+        },
+        x => x
     }
 }
 
@@ -1395,7 +1398,7 @@ where
 
         self.recorder.set_loop_inputs(steps_loop, input.flat_map(|(input, target)|
         {
-            let dropped_input = input_dropout(&self.dropouts.input_dropouts, input);
+            let dropped_input = owned_input_dropout(&self.dropouts.input_dropouts, input);
 
             [dropped_input, OwnedInputType::OneHot(target)]
         }).collect::<Vec<_>>());
@@ -1764,7 +1767,7 @@ where
         for l_i in 0..self.sizes.layers
         {
             let mut dropout_info = DropoutInfo{
-                input_probability: self.dropouts.dropout_probability,
+                input_probability: self.dropouts.input_dropout_probability,
                 hidden_probability: self.dropouts.dropout_probability,
                 seeds: SeedsCreator::new()
             };
@@ -2085,7 +2088,7 @@ where
 
         let mut input = input.map(|x|
         {
-            input_dropout(&self.dropouts.input_dropouts, x.batch_replicate(self.sizes.batch_size))
+            owned_input_dropout(&self.dropouts.input_dropouts, x.batch_replicate(self.sizes.batch_size))
         });
 
         assert!(inputs_count > 0, "inputs must not be empty");

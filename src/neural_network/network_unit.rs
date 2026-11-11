@@ -115,6 +115,20 @@ pub struct DropoutInfo
     pub seeds: SeedsCreator
 }
 
+pub fn input_dropout(
+    recorder: &mut OperationsRecorder,
+    input: DiffInputType,
+    input_probability: f32,
+    seed: SeedIndex
+) -> DiffInputType
+{
+    match input
+    {
+        DiffInputType::Normal(x) => DiffInputType::Normal(recorder.dropout_with_seed(x, input_probability, seed)),
+        DiffInputType::OneHot(x) => DiffInputType::OneHot(x)
+    }
+}
+
 pub trait NetworkUnit: GenericUnit<WeightInfoPtr> + Clone
 where
     Self: Sized
