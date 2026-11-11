@@ -1,4 +1,5 @@
 use crate::neural_network::{
+    TensorShape,
     OperationsRecorder,
     DiffTensorPtr,
     LayerType,
@@ -62,6 +63,11 @@ pub trait GenericUnit<T>
     fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
+pub trait NetworkStateCreatable
+{
+    fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self;
+}
+
 pub trait NetworkStateSelectable<T>
 {
     fn phi_other_selector(&self, recorder: &mut OperationsRecorder) -> T;
@@ -118,7 +124,7 @@ where
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<DiffTensorPtr>>,
+        previous_state: &Self::State<DiffTensorPtr>,
         input: DiffInputType,
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>;
@@ -126,7 +132,7 @@ where
     fn record_feedforward_unit_nonlast(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<DiffTensorPtr>>,
+        previous_state: &Self::State<DiffTensorPtr>,
         input: DiffInputType,
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>

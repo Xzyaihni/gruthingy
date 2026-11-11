@@ -3,6 +3,8 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
+        TensorShape,
+        NetworkStateCreatable,
         NetworkStateSelectable,
         NetworkStateGettable,
         OperationsRecorder,
@@ -42,6 +44,11 @@ impl EmbeddingsableOwned for EmbeddingUnit<LayerType>
     }
 }
 
+impl NetworkStateCreatable for ()
+{
+    fn starting_state(_recorder: &mut OperationsRecorder, _shape: TensorShape) -> Self {}
+}
+
 impl NetworkStateSelectable<()> for ()
 {
     fn phi_other_selector(&self, _recorder: &mut OperationsRecorder) -> () {}
@@ -69,7 +76,7 @@ impl NetworkUnit for EmbeddingUnit<WeightInfoPtr>
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        _previous_state: Option<&Self::State<DiffTensorPtr>>,
+        _previous_state: &Self::State<DiffTensorPtr>,
         input: DiffInputType,
         _dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>

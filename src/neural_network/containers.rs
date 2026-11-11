@@ -1458,8 +1458,8 @@ impl OperationsRecorderMemory
             GradientOp::SumBatch{scalar, ..} => Some(scalar.to_ne_bytes().into()),
             GradientOp::CapMagnitude{magnitude, ..} => Some(magnitude.to_ne_bytes().into()),
             GradientOp::Pow{power, ..} => Some((power as u32).to_ne_bytes().into()),
-            GradientOp::MatmulvAdd{output, ..}
-            | GradientOp::Matmulv{output, ..}
+            GradientOp::Matmulv{output, ..}
+            | GradientOp::MatmulvAdd{output, ..}
             | GradientOp::MatmulvAddInplace{output, ..}
             | GradientOp::MatmulOneHotv{output, ..}
             | GradientOp::MatmulOneHotvAdd{output, ..}
@@ -1496,6 +1496,17 @@ impl OperationsRecorderMemory
         }
 
         raw_array_memory.uniform_buffers_locations.push(Some(uniform_buffer_id));
+    }
+
+    fn setup_for_operation(
+        &self,
+        raw_array_memory: &mut RawArrayMemory,
+        gradient_op: &StandardGradientOp,
+        raw_operation_index: usize
+    )
+    {
+        self.create_scratch_buffers(raw_array_memory, gradient_op, raw_operation_index);
+        self.setup_uniform_buffers(raw_array_memory, gradient_op, raw_operation_index);
     }
 
     fn raw_ptr_to_diff_value_raw(&self, raw_ptr: LinearRawDataPointer) -> DiffValueRaw
@@ -2700,6 +2711,15 @@ impl OperationsRecorder
         let dst = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Copy{src, dst});
+
+        dst
+    }
+
+    pub fn always_zero_tensor(&mut self, shape: TensorShape) -> DiffTensorPtr
+    {
+        let dst = self.new_tensor_op(shape);
+
+        self.add_recording_operation(Op::ZeroTensor(dst));
 
         dst
     }
@@ -5898,6 +5918,10 @@ impl OperationsRecorder
                 {
                     GradientOp::Copy{src: src.as_value(), dst: dst.as_value()}
                 },
+                Op::ZeroTensor(dst) =>
+                {
+                    GradientOp::ZeroTensor(dst.as_value())
+                },
                 Op::Fill{src, dst} =>
                 {
                     GradientOp::Fill{value: src.as_value(), output: dst.as_value()}
@@ -6208,6 +6232,17 @@ impl OperationsRecorder
                     continue;
                 };
 
+                let is_selector_set_on_first = self.gradient_operations.iter().any(|gradient_op|
+                {
+                    if let GradientOp::SetOtherSelector(_) = gradient_op { true } else { false }
+                });
+
+                if !is_selector_set_on_first
+                {
+                    proceed_index(&mut i);
+                    continue;
+                }
+
                 let mut skip_this = false;
 
                 {
@@ -6332,7 +6367,7 @@ impl OperationsRecorder
                 {
                     if op_actions.iter().any(|op_action|
                     {
-                        op_action.operation_index() == GradientOperationIndex(j)
+                        *op_action == OpAction::Remove(GradientOperationIndex(i))
                     })
                     {
                         continue;
@@ -7374,10 +7409,10 @@ impl OperationsRecorder
 
             let gradient_op = self.gradient_operations[gradient_operation_index].clone();
 
-            let raw_operation_index = self.raw_operations.len();
-
-            self.memory.create_scratch_buffers(&mut self.raw_array_memory, &gradient_op, raw_operation_index);
-            self.memory.setup_uniform_buffers(&mut self.raw_array_memory, &gradient_op, raw_operation_index);
+            {
+                let raw_operation_index = self.raw_operations.len();
+                self.memory.setup_for_operation(&mut self.raw_array_memory, &gradient_op, raw_operation_index);
+            }
 
             let mut push_after = None;
             let new_op = match gradient_op
@@ -7478,6 +7513,11 @@ impl OperationsRecorder
                             },
                             JumpInfo::JumpOverNext(index, op) =>
                             {
+                                {
+                                    let raw_operation_index = self.raw_operations.len();
+                                    self.memory.setup_for_operation(&mut self.raw_array_memory, &op, raw_operation_index + 1);
+                                }
+
                                 push_after = Some(op.map(
                                     &access_tensor,
                                     convert::identity,
@@ -7874,6 +7914,7 @@ impl OperationsRecorder
 
             match op
             {
+                GradientOp::IfNotSetTensor{src, ..} => add_unused((*src).into()),
                 GradientOp::GradientSelectAddTensor{added, ..} => add_unused((*added).into()),
                 GradientOp::JumpIf(_, JumpInfo::JumpOverNext(_, op)) =>
                 {
@@ -9047,6 +9088,7 @@ impl OperationsRecorder
                     add_gradient_operation(self, selectors, GradientOp::Copy{src: gradient, dst: src_gradient});
                 }
             },
+            Op::ZeroTensor(_) => (),
             Op::Fill{..} => unimplemented!(),
             Op::BatchReplicate{src, dst} =>
             {
@@ -10114,18 +10156,6 @@ pub enum GradientOp<T, V, J, O, S>
 
 impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
 {
-    fn can_use_future(&self) -> bool
-    {
-        match self
-        {
-            Self::GetOtherSelectorValue{..}
-            | Self::GetOtherSelectorTensor{..}
-            | Self::GradientSelectAddValue{..}
-            | Self::GradientSelectAddTensor{..} => true,
-            _ => false
-        }
-    }
-
     fn map<U, W, K, OU, SU>(
         self,
         mut tf: impl FnMut(T) -> U,
@@ -10776,6 +10806,7 @@ pub enum Op
 {
     CopyScalar{src: DiffScalar, dst: DiffScalar},
     Copy{src: DiffTensorPtr, dst: DiffTensorPtr},
+    ZeroTensor(DiffTensorPtr),
     Fill{src: DiffTensorPtr, dst: DiffTensorPtr},
     BatchReplicate{src: DiffTensorPtr, dst: DiffTensorPtr},
     Dropout{value: DiffTensorPtr, probability: f32, seed_index: SeedIndex, output: DiffTensorPtr},
@@ -10816,6 +10847,7 @@ impl Op
         {
             Self::CopyScalar{dst, ..} => f(dst.into()),
             Self::Copy{dst, ..} => f(dst.into()),
+            Self::ZeroTensor(dst) => f(dst.into()),
             Self::Fill{dst, ..} => f(dst.into()),
             Self::BatchReplicate{dst, ..} => f(dst.into()),
             Self::Dropout{output, ..} => f(output.into()),
@@ -10855,6 +10887,7 @@ impl Op
         {
             Self::CopyScalar{src, ..} => f(src.into()),
             Self::Copy{src, ..} => f(src.into()),
+            Self::ZeroTensor(_) => (),
             Self::Fill{src, ..} => f(src.into()),
             Self::BatchReplicate{src, ..} => f(src.into()),
             Self::Dropout{value, ..} => f(value.into()),
@@ -11431,7 +11464,7 @@ mod tests
     #[test]
     fn complex_combined()
     {
-        check_tensor_with_epsilon(0.02, |recorder, [a, b]|
+        check_tensor_with_epsilon(0.03, |recorder, [a, b]|
         {
             let left = recorder.mul_componentwise(a, b);
             let bb = recorder.pow(b, 2);

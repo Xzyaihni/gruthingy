@@ -168,7 +168,7 @@ impl LiveRanges
 
             gradient_operations.iter().for_each(|op|
             {
-                let mut set_loop_lifetime = |inside_loop: Option<LoopIndex>, live_range: &mut LiveRange, value: DiffValue|
+                let mut set_loop_lifetime = |inside_loop: Option<LoopIndex>, value: DiffValue|
                 {
                     if let Some(loop_index) = inside_loop
                     {
@@ -176,6 +176,8 @@ impl LiveRanges
 
                         let loop_start = loop_range.start.unwrap();
                         let loop_end = loop_range.end.unwrap();
+
+                        let live_range = self.get_live_range_mut(value).unwrap();
 
                         live_range.start = Some(live_range.start.map(|x| x.min(loop_start)).unwrap_or(loop_start));
                         live_range.end = Some(live_range.end.map(|x| x.max(loop_end)).unwrap_or(loop_end));
@@ -189,35 +191,54 @@ impl LiveRanges
 
                 set_inside_loop_context(&mut inside_loop, op);
 
+                let mut set_loop_lifetime_if_kept = |op: &StandardGradientOp|
+                {
+                    match op
+                    {
+                        GradientOp::GetOtherSelectorValue{..}
+                        | GradientOp::GetOtherSelectorTensor{..}
+                        | GradientOp::GradientSelectAddValue{..}
+                        | GradientOp::GradientSelectAddTensor{..}
+                        | GradientOp::OtherSelectorValueGradient{..}
+                        | GradientOp::OtherSelectorTensorGradient{..}
+                        | GradientOp::IfNotSetTensor{..}
+                        | GradientOp::IfSetTensor{..} =>
+                        {
+                            let value: DiffValue = match *op
+                            {
+                                GradientOp::GetOtherSelectorValue{other, ..}
+                                | GradientOp::OtherSelectorValueGradient{other, ..} => other.into(),
+                                GradientOp::GetOtherSelectorTensor{other, ..}
+                                | GradientOp::OtherSelectorTensorGradient{other, ..}
+                                | GradientOp::IfNotSetTensor{dst: other, ..}
+                                | GradientOp::IfSetTensor{dst: other, ..} => other.into(),
+                                GradientOp::GradientSelectAddValue{other, added, ..} =>
+                                {
+                                    set_loop_lifetime(inside_loop, other.into());
+                                    set_loop_lifetime(inside_loop, added.into());
+
+                                    return;
+                                },
+                                GradientOp::GradientSelectAddTensor{other, added, ..} =>
+                                {
+                                    set_loop_lifetime(inside_loop, other.into());
+                                    set_loop_lifetime(inside_loop, added.into());
+
+                                    return;
+                                },
+                                _ => unreachable!()
+                            };
+
+                            set_loop_lifetime(inside_loop, value);
+                        },
+                        _ => ()
+                    }
+                };
+
                 match op
                 {
-                    GradientOp::GetOtherSelectorValue{..}
-                    | GradientOp::GetOtherSelectorTensor{..} =>
-                    {
-                        let (live_range, value): (_, DiffValue) = match op
-                        {
-                            GradientOp::GetOtherSelectorValue{other, ..} => (&mut self.values[other.0], (*other).into()),
-                            GradientOp::GetOtherSelectorTensor{other, ..} => (&mut self.tensors[other.0], (*other).into()),
-                            _ => unreachable!()
-                        };
-
-                        set_loop_lifetime(inside_loop, live_range, value);
-                    },
-                    GradientOp::OtherSelectorValueGradient{..}
-                    | GradientOp::OtherSelectorTensorGradient{..}
-                    | GradientOp::IfNotSetTensor{..} =>
-                    {
-                        let (live_range, value): (_, DiffValue) = match op
-                        {
-                            GradientOp::OtherSelectorValueGradient{other, ..} => (&mut self.values[other.0], (*other).into()),
-                            GradientOp::OtherSelectorTensorGradient{other, ..}
-                            | GradientOp::IfNotSetTensor{dst: other, ..} => (&mut self.tensors[other.0], (*other).into()),
-                            _ => unreachable!()
-                        };
-
-                        set_loop_lifetime(inside_loop, live_range, value);
-                    },
-                    _ => ()
+                    GradientOp::JumpIf(_, JumpInfo::JumpOverNext(_, op)) => set_loop_lifetime_if_kept(op),
+                    op => set_loop_lifetime_if_kept(op)
                 }
             });
         }
@@ -275,13 +296,11 @@ impl LiveRanges
 
         gradient_operations.iter().enumerate().rev().for_each(|(op_index, op)|
         {
-            let allow_end_before = op.can_use_future();
-
             let handle_arg = |live_range: &mut LiveRange, err_name: String|
             {
                 if let Some(start) = live_range.start
                 {
-                    if !allow_end_before && start >= op_index as i32
+                    if start >= op_index as i32
                     {
                         panic!("{err_name} was defined at {start} after being used at {op_index}");
                     }

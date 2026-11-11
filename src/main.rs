@@ -27,6 +27,7 @@ use neural_network::{
     USE_EMBEDDING_LAYER,
     NetworkConfigInfo,
     PhiOtherSelectorRecordingIndex,
+    NetworkStateCreatable,
     NetworkStateSelectable,
     NetworkStateGettable,
     TrainingInfo,
@@ -131,7 +132,7 @@ fn load_network(
     auto_create: bool
 ) -> CurrentNetworkType
 {
-    load_network_with(config.network_path.as_ref(), Some(config), sizes, true, auto_create)
+    load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
 }
 
 #[cfg(not(test))]
@@ -159,7 +160,7 @@ where
             .as_ref()
     });
 
-    load_network_with(path, config, sizes, false, auto_create)
+    load_network_with(path, config, sizes, auto_create)
 }
 
 #[cfg(not(test))]
@@ -167,7 +168,6 @@ fn load_network_with<N, O, D>(
     path: &Path,
     config: Option<&Config>,
     sizes: Option<SizesInfo>,
-    is_multistep: bool,
     auto_create: bool
 ) -> NeuralNetwork<Network<N, O::WeightParam<OptimizerInfoPtr>>, O, D>
 where
@@ -176,7 +176,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'de> O::WeightParam<LayerType>: Serialize + Deserialize<'de>,
     O::WeightParam<OptimizerInfoPtr>: NewableLayer,
@@ -191,7 +191,6 @@ where
     let print_optional_info = config.as_ref().map(|x| x.optional_info).unwrap_or(false);
 
     let network_config = NetworkConfigInfo{
-        is_multistep,
         is_input_one_hot: D::is_input_one_hot(),
         print_batch_losses: print_optional_info,
         print_optional_info
@@ -767,7 +766,7 @@ where
     N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
     N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    UnitState<N, DiffTensorPtr>: Clone + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
+    UnitState<N, DiffTensorPtr>: Clone + NetworkStateCreatable + NetworkStateSelectable<UnitState<N, PhiOtherSelectorRecordingIndex>>,
     UnitState<N, PhiOtherSelectorRecordingIndex>: NetworkStateGettable<UnitState<N, DiffTensorPtr>>,
     for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
     for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,

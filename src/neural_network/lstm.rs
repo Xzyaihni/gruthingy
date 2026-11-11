@@ -3,7 +3,9 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
+        TensorShape,
         PhiOtherSelectorRecordingIndex,
+        NetworkStateCreatable,
         NetworkStateSelectable,
         NetworkStateGettable,
         DiffTensorPtr,
@@ -40,6 +42,17 @@ pub struct LSTMState<T>
 {
     hidden: T,
     memory: T
+}
+
+impl NetworkStateCreatable for LSTMState<DiffTensorPtr>
+{
+    fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self
+    {
+        LSTMState{
+            hidden: recorder.always_zero_tensor(shape),
+            memory: recorder.always_zero_tensor(shape)
+        }
+    }
 }
 
 impl NetworkStateSelectable<LSTMState<PhiOtherSelectorRecordingIndex>> for LSTMState<DiffTensorPtr>
@@ -91,7 +104,7 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<DiffTensorPtr>>,
+        previous_state: &Self::State<DiffTensorPtr>,
         input: DiffInputType,
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
@@ -113,71 +126,53 @@ impl NetworkUnit for Lstm<WeightInfoPtr>
             value
         };
 
-        let mut update_gate = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
-        let mut output_gate = matmul_inputv_add(recorder, self.input_output, input, self.output_bias);
-        let mut memory_gate = matmul_inputv_add(recorder, self.input_memory, input, self.memory_bias);
+        let update_gate_pre = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
+        let forget_gate_pre = matmul_inputv_add(recorder, self.input_forget, input, self.forget_bias);
+        let output_gate_pre = matmul_inputv_add(recorder, self.input_output, input, self.output_bias);
+        let memory_gate_pre = matmul_inputv_add(recorder, self.input_memory, input, self.memory_bias);
 
-        recorder.name_diff_tensor(update_gate, "update_gate");
-        recorder.name_diff_tensor(output_gate, "output_gate");
-        recorder.name_diff_tensor(memory_gate, "memory_gate");
+        recorder.name_diff_tensor(update_gate_pre, "update_gate_pre");
+        recorder.name_diff_tensor(forget_gate_pre, "forget_gate_pre");
+        recorder.name_diff_tensor(output_gate_pre, "output_gate_pre");
+        recorder.name_diff_tensor(memory_gate_pre, "memory_gate_pre");
 
-        let mut forget_gate = None;
-
-        if let Some(previous_state) = previous_state
+        let mut do_gate = |gate, hidden: WeightInfoPtr, previous_hidden|
         {
-            let forget_gate_pre = matmul_inputv_add(recorder, self.input_forget, input, self.forget_bias);
+            let value_pre = recorder.matmulv(hidden.weight, previous_hidden);
 
             let seed = dropout.seeds.get(recorder, seed_index);
-            let mut forget_gate_inner = recorder.dropout_with_seed(forget_gate_pre, dropout.hidden_probability, seed);
+            let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
 
-            recorder.name_diff_tensor(forget_gate_inner, "forget_gate");
+            let added = recorder.add(value, gate);
 
-            let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr, previous_hidden|
-            {
-                let value_pre = recorder.matmulv(hidden.weight, previous_hidden);
+            seed_index += 1;
 
-                let seed = dropout.seeds.get(recorder, seed_index);
-                let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
+            added
+        };
 
-                *gate = recorder.add(value, *gate);
+        let update_gate_unactivated = do_gate(update_gate_pre, self.hidden_update, previous_state.hidden);
+        let forget_gate_unactivated = do_gate(forget_gate_pre, self.hidden_forget, previous_state.hidden);
+        let output_gate_unactivated = do_gate(output_gate_pre, self.hidden_output, previous_state.hidden);
+        let memory_gate_unactivated = do_gate(memory_gate_pre, self.hidden_memory, previous_state.hidden);
 
-                seed_index += 1;
-            };
+        let update_gate = recorder.sigmoid(update_gate_unactivated);
+        let forget_gate = recorder.sigmoid(forget_gate_unactivated);
+        let output_gate = recorder.sigmoid(output_gate_unactivated);
+        let memory_gate = recorder.tanh(memory_gate_unactivated);
 
-            do_gate(&mut forget_gate_inner, self.hidden_forget, previous_state.hidden);
-            do_gate(&mut update_gate, self.hidden_update, previous_state.hidden);
-            do_gate(&mut output_gate, self.hidden_output, previous_state.hidden);
-            do_gate(&mut memory_gate, self.hidden_memory, previous_state.hidden);
-
-            let forget_gate_new = recorder.sigmoid(forget_gate_inner);
-            recorder.name_diff_tensor(forget_gate_new, "forget_gate_activated");
-
-            forget_gate = Some(forget_gate_new);
-        }
-
-        update_gate = recorder.sigmoid(update_gate);
-        output_gate = recorder.sigmoid(output_gate);
-        memory_gate = recorder.tanh(memory_gate);
-
-        recorder.name_diff_tensor(update_gate, "update_gate_activated");
-        recorder.name_diff_tensor(output_gate, "output_gate_activated");
-        recorder.name_diff_tensor(memory_gate, "memory_gate_activated");
+        recorder.name_diff_tensor(update_gate, "update_gate");
+        recorder.name_diff_tensor(forget_gate, "forget_gate");
+        recorder.name_diff_tensor(output_gate, "output_gate");
+        recorder.name_diff_tensor(memory_gate, "memory_gate");
 
         let this_memory_rhs = recorder.mul_componentwise(update_gate, memory_gate);
 
         recorder.name_diff_tensor(this_memory_rhs, "this_memory_rhs");
 
-        let this_memory = if let Some(previous_state) = previous_state
-        {
-            let left = recorder.mul_componentwise(forget_gate.unwrap(), previous_state.memory);
-            recorder.name_diff_tensor(left, "left");
+        let left = recorder.mul_componentwise(forget_gate, previous_state.memory);
+        recorder.name_diff_tensor(left, "left");
 
-            recorder.add(left, this_memory_rhs)
-        } else
-        {
-            this_memory_rhs
-        };
-
+        let this_memory = recorder.add(left, this_memory_rhs);
         recorder.name_diff_tensor(this_memory, "this_memory");
 
         let hidden = {
@@ -293,7 +288,7 @@ mod tests
                 seeds: SeedsCreator::new()
             };
 
-            let output = lstm.record_feedforward_unit(&mut recorder, Some(&state), DiffInputType::Normal(input), &mut dropout_info);
+            let output = lstm.record_feedforward_unit(&mut recorder, &state, DiffInputType::Normal(input), &mut dropout_info);
 
             NetworkOutput{
                 state: output.state,

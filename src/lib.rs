@@ -73,7 +73,6 @@ pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature:
     let path = path.as_ref();
 
     let network_config = NetworkConfigInfo{
-        is_multistep: true,
         is_input_one_hot: NDictionary::is_input_one_hot(),
         print_batch_losses: false,
         print_optional_info: false

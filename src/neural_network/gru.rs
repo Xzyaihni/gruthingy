@@ -3,8 +3,10 @@ use serde::{Serialize, Deserialize};
 use crate::{
     create_weights_container,
     neural_network::{
+        TensorShape,
         OperationsRecorder,
         PhiOtherSelectorRecordingIndex,
+        NetworkStateCreatable,
         NetworkStateSelectable,
         NetworkStateGettable,
         DiffTensorPtr,
@@ -30,6 +32,14 @@ create_weights_container!{
     (update_bias, false, false, LayerSize::One, LayerSize::Hidden),
     (reset_bias, false, true, LayerSize::One, LayerSize::Hidden),
     (activation_bias, false, false, LayerSize::One, LayerSize::Hidden)
+}
+
+impl NetworkStateCreatable for DiffTensorPtr
+{
+    fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self
+    {
+        recorder.always_zero_tensor(shape)
+    }
 }
 
 impl NetworkStateSelectable<PhiOtherSelectorRecordingIndex> for DiffTensorPtr
@@ -71,7 +81,7 @@ impl NetworkUnit for Gru<WeightInfoPtr>
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<DiffTensorPtr>>,
+        previous_state: &Self::State<DiffTensorPtr>,
         input: DiffInputType,
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
@@ -93,73 +103,57 @@ impl NetworkUnit for Gru<WeightInfoPtr>
             value
         };
 
-        let mut update_gate = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
-        let mut activation_gate = matmul_inputv_add(recorder, self.input_activation, input, self.activation_bias);
+        let update_gate_pre = matmul_inputv_add(recorder, self.input_update, input, self.update_bias);
+        let reset_gate_pre = matmul_inputv_add(recorder, self.input_reset, input, self.reset_bias);
+        let activation_gate_pre = matmul_inputv_add(recorder, self.input_activation, input, self.activation_bias);
 
-        recorder.name_diff_tensor(update_gate, "update_gate");
-        recorder.name_diff_tensor(activation_gate, "activation_gate");
+        recorder.name_diff_tensor(update_gate_pre, "update_gate_pre");
+        recorder.name_diff_tensor(reset_gate_pre, "reset_gate_pre");
+        recorder.name_diff_tensor(activation_gate_pre, "activation_gate_pre");
 
-        let mut reset_gate = None;
-
-        if let Some(previous_state) = previous_state
+        let mut do_gate = |gate, hidden: WeightInfoPtr|
         {
-            let mut reset_gate_inner = matmul_inputv_add(recorder, self.input_reset, input, self.reset_bias);
-            recorder.name_diff_tensor(reset_gate_inner, "reset_gate");
-
-            let mut do_gate = |gate: &mut _, hidden: WeightInfoPtr|
-            {
-                let value_pre = recorder.matmulv(hidden.weight, *previous_state);
-
-                let seed = dropout.seeds.get(recorder, seed_index);
-                let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
-
-                *gate = recorder.add(value, *gate);
-
-                seed_index += 1;
-            };
-
-            do_gate(&mut update_gate, self.hidden_update);
-            do_gate(&mut reset_gate_inner, self.hidden_reset);
-
-            let reset_gate_new = recorder.sigmoid(reset_gate_inner);
-            recorder.name_diff_tensor(reset_gate_new, "reset_gate_activated");
-
-            reset_gate = Some(reset_gate_new);
-        }
-
-        update_gate = recorder.sigmoid(update_gate);
-
-        recorder.name_diff_tensor(update_gate, "update_gate_activated");
-
-        if let Some(previous_state) = previous_state
-        {
-            let activation_v = recorder.mul_componentwise(reset_gate.unwrap(), *previous_state);
-
-            let mm_pre = recorder.matmulv(self.hidden_activation.weight, activation_v);
+            let value_pre = recorder.matmulv(hidden.weight, *previous_state);
 
             let seed = dropout.seeds.get(recorder, seed_index);
-            let mm = recorder.dropout_with_seed(mm_pre, dropout.hidden_probability, seed);
+            let value = recorder.dropout_with_seed(value_pre, dropout.hidden_probability, seed);
 
-            activation_gate = recorder.add(activation_gate, mm);
-        }
+            let added = recorder.add(value, gate);
 
-        activation_gate = recorder.tanh(activation_gate);
+            seed_index += 1;
+
+            added
+        };
+
+        let update_gate_unactivated = do_gate(update_gate_pre, self.hidden_update);
+        let reset_gate_unactivated = do_gate(reset_gate_pre, self.hidden_reset);
+
+        let update_gate = recorder.sigmoid(update_gate_unactivated);
+        let reset_gate = recorder.sigmoid(reset_gate_unactivated);
+
+        recorder.name_diff_tensor(update_gate, "update_gate");
+        recorder.name_diff_tensor(reset_gate, "reset_gate");
+
+        let activation_v = recorder.mul_componentwise(reset_gate, *previous_state);
+
+        let mm_pre = recorder.matmulv(self.hidden_activation.weight, activation_v);
+
+        let seed = dropout.seeds.get(recorder, seed_index);
+        let mm = recorder.dropout_with_seed(mm_pre, dropout.hidden_probability, seed);
+
+        let activation_gate_unactivated = recorder.add(activation_gate_pre, mm);
+
+        let activation_gate = recorder.tanh(activation_gate_unactivated);
 
         recorder.name_diff_tensor(activation_gate, "activation_gate_activated");
 
         let this_activation = recorder.mul_componentwise(activation_gate, update_gate);
 
-        let state = if let Some(previous_state) = previous_state
-        {
-            let update = recorder.mul_componentwise(update_gate, *previous_state);
+        let update = recorder.mul_componentwise(update_gate, *previous_state);
 
-            let left = recorder.sub_from_scalar(1.0, update);
+        let left = recorder.sub_from_scalar(1.0, update);
 
-            recorder.add(left, this_activation)
-        } else
-        {
-            recorder.add_scalar(this_activation, 1.0)
-        };
+        let state = recorder.add(left, this_activation);
 
         NetworkOutput{
             state: state.clone(),

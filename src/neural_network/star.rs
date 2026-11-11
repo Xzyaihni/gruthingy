@@ -40,7 +40,7 @@ impl NetworkUnit for Star<WeightInfoPtr>
     fn record_feedforward_unit(
         &self,
         recorder: &mut OperationsRecorder,
-        previous_state: Option<&Self::State<DiffTensorPtr>>,
+        previous_state: &Self::State<DiffTensorPtr>,
         input: DiffInputType,
         dropout: &mut DropoutInfo
     ) -> NetworkOutput<Self::State<DiffTensorPtr>, DiffTensorPtr>
@@ -68,40 +68,33 @@ impl NetworkUnit for Star<WeightInfoPtr>
         let z = recorder.tanh(z_pre);
         recorder.name_diff_tensor(z, "z");
 
-        let mut k = matmul_inputv_add(recorder, self.input_x, input, self.k_bias);
+        let k_pre_state = matmul_inputv_add(recorder, self.input_x, input, self.k_bias);
+        recorder.name_diff_tensor(k_pre_state, "k_pre_state");
+
+        let state_x = recorder.matmulv(self.hidden.weight, *previous_state);
+
+        let seed = dropout.seeds.get(recorder, seed_index);
+        let k_pre = recorder.dropout_with_seed(state_x, dropout.hidden_probability, seed);
+
+        let k_unactivated = recorder.add(k_pre, k_pre_state);
+        recorder.name_diff_tensor(k_unactivated, "k_unactivated");
+
+        let k = recorder.sigmoid(k_unactivated);
         recorder.name_diff_tensor(k, "k");
 
-        if let Some(previous_state) = previous_state
-        {
-            let state_x = recorder.matmulv(self.hidden.weight, *previous_state);
-
-            let seed = dropout.seeds.get(recorder, seed_index);
-            let k_pre = recorder.dropout_with_seed(state_x, dropout.hidden_probability, seed);
-
-            k = recorder.add(k_pre, k);
-
-            recorder.name_diff_tensor(k, "k_inner");
-        }
-
-        k = recorder.sigmoid(k);
-        recorder.name_diff_tensor(k, "k_activated");
-
-        let mut h_pre = recorder.mul_componentwise(k, z);
+        let h_pre = recorder.mul_componentwise(k, z);
         recorder.name_diff_tensor(h_pre, "h_pre");
 
-        if let Some(previous_state) = previous_state
-        {
-            let lhs = recorder.sub_from_scalar(1.0, k);
-            recorder.name_diff_tensor(lhs, "lhs");
+        let lhs = recorder.sub_from_scalar(1.0, k);
+        recorder.name_diff_tensor(lhs, "lhs");
 
-            let hidden_part = recorder.mul_componentwise(lhs, *previous_state);
-            recorder.name_diff_tensor(hidden_part, "hidden_part");
+        let hidden_part = recorder.mul_componentwise(lhs, *previous_state);
+        recorder.name_diff_tensor(hidden_part, "hidden_part");
 
-            h_pre = recorder.add(hidden_part, h_pre);
-            recorder.name_diff_tensor(h_pre, "h_pre_inner");
-        }
+        let h_unactivated = recorder.add(hidden_part, h_pre);
+        recorder.name_diff_tensor(h_unactivated, "h_unactivated");
 
-        let h = recorder.tanh(h_pre);
+        let h = recorder.tanh(h_unactivated);
         recorder.name_diff_tensor(h, "h");
 
         let h = recorder.copy(h);
