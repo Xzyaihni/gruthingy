@@ -1166,11 +1166,17 @@ impl OperationsRecorderMemory
         view.copy_from_slice(bytes);
     }
 
-    fn zero_tensor_inner(&mut self, raw_array_memory: &mut RawArrayMemory, index: LinearRawDataPointer)
+    fn zero_tensor_inner(
+        &mut self,
+        raw_array_memory: &mut RawArrayMemory,
+        index: LinearRawDataPointer,
+        offset: wgpu::BufferAddress,
+        size: Option<wgpu::BufferAddress>
+    )
     {
         let input_buffer = &self.tensors_raw_data[index.raw_index.0].buffer;
 
-        raw_array_memory.encoder.as_mut().unwrap().clear_buffer(input_buffer, 0, Some(input_buffer.size()));
+        raw_array_memory.encoder.as_mut().unwrap().clear_buffer(input_buffer, offset, Some(size.unwrap_or_else(|| input_buffer.size())));
     }
 
     fn get_tensor_blocking(
@@ -2264,7 +2270,25 @@ impl OperationsRecorder
     {
         let info = self.set_tensor_setup(index.into());
 
-        self.memory.zero_tensor_inner(&mut self.raw_array_memory, info);
+        self.memory.zero_tensor_inner(&mut self.raw_array_memory, info, 0, None);
+    }
+
+    pub fn zero_tensor_batch(&mut self, index: ShapedTensorIndex, batch_index: usize)
+    {
+        debug_assert_eq!(self.state, RecorderState::Ready);
+
+        let info = self.memory.tensors[index.index.0];
+        debug_assert_ne!(info, LinearRawDataPointer::undefined(), "{index:?} location is undefined");
+
+        self.raw_array_memory.ensure_encoder_exists();
+
+        let single_size = index.shape.single_size();
+
+        debug_assert!(batch_index < index.shape.batch_size);
+
+        let offset = (single_size * batch_index) as wgpu::BufferAddress;
+
+        self.memory.zero_tensor_inner(&mut self.raw_array_memory, info, offset, Some(single_size as wgpu::BufferAddress));
     }
 
     fn set_tensor_setup(&mut self, index: TensorIndex) -> LinearRawDataPointer
@@ -2713,6 +2737,11 @@ impl OperationsRecorder
         self.add_recording_operation(Op::Copy{src, dst});
 
         dst
+    }
+
+    pub fn copy_to(&mut self, src: DiffTensorPtr, dst: DiffTensorPtr)
+    {
+        self.add_recording_operation(Op::Copy{src, dst});
     }
 
     pub fn always_zero_tensor(&mut self, shape: TensorShape) -> DiffTensorPtr

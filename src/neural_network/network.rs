@@ -984,7 +984,8 @@ impl NetworkDropoutData
 #[derive(Clone)]
 struct NetworkInputsData
 {
-    steps_loop: Option<LoopIndex>
+    steps_loop: Option<LoopIndex>,
+    starting_states: Vec<Vec<DiffTensorPtr>>
 }
 
 impl Default for NetworkInputsData
@@ -992,7 +993,8 @@ impl Default for NetworkInputsData
     fn default() -> Self
     {
         Self{
-            steps_loop: None
+            steps_loop: None,
+            starting_states: Vec::new()
         }
     }
 }
@@ -1350,6 +1352,16 @@ where
         return (total_loss, gradients);
     }
 
+    pub fn clear_hidden(&mut self)
+    {
+        todo!()
+    }
+
+    pub fn clear_hidden_batch(&mut self, batch_index: usize)
+    {
+        todo!()
+    }
+
     pub fn gradient_step_once<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>, R: DropoutRoll>(
         &mut self,
         mut rng: R,
@@ -1673,9 +1685,12 @@ where
         let final_loss_selector = self.recorder.phi_other_selector(zero_loss);
 
         let state_shape = TensorShape{rows: self.sizes.hidden, columns: 1, batch_size};
-        let starting_state = <UnitState<N, DiffTensorPtr> as NetworkStateCreatable>::starting_state(&mut self.recorder, state_shape);
+        let starting_states: Vec<_> = (0..self.sizes.layers).map(|_|
+        {
+            <UnitState<N, DiffTensorPtr> as NetworkStateCreatable>::starting_state(&mut self.recorder, state_shape)
+        }).collect();
 
-        let state_selectors: Vec<_> = (0..self.sizes.layers).map(|_| starting_state.phi_other_selector(&mut self.recorder)).collect();
+        let state_selectors: Vec<_> = starting_states.iter().map(|starting_state| starting_state.phi_other_selector(&mut self.recorder)).collect();
 
         let loop_index = {
             let inputs = if let Some(this_target_loop) = this_target_loop
@@ -1717,13 +1732,19 @@ where
             new_combined
         });
 
-        state_selectors.iter().zip(final_output.state).for_each(|(selector, final_state)|
+        state_selectors.iter().zip(final_output.state.iter()).for_each(|(selector, final_state)|
         {
-            selector.set_phi_other_selector(&mut self.recorder, final_state)
+            selector.set_phi_other_selector(&mut self.recorder, final_state.clone())
         });
 
         self.recorder.end_loop(loop_index);
 
+        final_output.state.iter().zip(starting_states).for_each(|(final_state, starting_state)|
+        {
+            final_state.copy_to(&mut self.recorder, starting_state)
+        });
+
+        self.inputs.starting_states = starting_states;
         self.inputs.steps_loop = Some(loop_index);
 
         let final_output = final_output.output.0;

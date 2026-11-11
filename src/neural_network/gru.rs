@@ -7,10 +7,12 @@ use crate::{
         OperationsRecorder,
         PhiOtherSelectorRecordingIndex,
         NetworkStateCreatable,
+        NetworkStateClearable,
         NetworkStateSelectable,
         NetworkStateGettable,
         DiffTensorPtr,
         DiffInputType,
+        ShapedTensorIndex,
         LayerSizes,
         WeightInfoPtr,
         NetworkUnitNewable,
@@ -38,7 +40,25 @@ impl NetworkStateCreatable for DiffTensorPtr
 {
     fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self
     {
-        recorder.always_zero_tensor(shape)
+        recorder.new_tensor_full_shape(shape, shape)
+    }
+
+    fn copy_to(&self, recorder: &mut OperationsRecorder, other: Self)
+    {
+        recorder.copy_to(*self, other);
+    }
+}
+
+impl NetworkStateClearable for ShapedTensorIndex
+{
+    fn clear(&self, recorder: &mut OperationsRecorder)
+    {
+        recorder.zero_tensor(*self);
+    }
+
+    fn clear_batch(&self, recorder: &mut OperationsRecorder, batch_index: usize)
+    {
+        recorder.zero_tensor_batch(*self, batch_index);
     }
 }
 

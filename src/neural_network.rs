@@ -1,7 +1,6 @@
 use std::{
     f32,
     fmt,
-    iter,
     sync::mpsc,
     borrow::Cow,
     cell::RefCell,
@@ -35,6 +34,7 @@ use crate::{
 
 pub use network_unit::{
     NetworkStateCreatable,
+    NetworkStateClearable,
     NetworkStateSelectable,
     NetworkStateGettable,
     NetworkUnitNewable,
@@ -1382,28 +1382,29 @@ where
         }
 
         let (last_loss_tx, last_loss_rx) = mpsc::channel();
+
+        let inputs_per_block = (info.steps_num.highest() + EmbeddingType::min_len()) * info.batch_size;
+
+        let max_batch_start = inputs.len().saturating_sub(inputs_per_block);
+        let mut batch_starts: Vec<usize> = (0..info.batch_size).map(|_batch_index|
+        {
+            if max_batch_start == 0
+            {
+                0
+            } else
+            {
+                fastrand::usize(0..max_batch_start)
+            }
+        }).collect();
+
+        self.network.clear_hidden();
+
         for input_index in 0..info.iterations
         {
             self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
 
             time_debug! {
                 let steps_num = info.steps_num.get();
-
-                let min_len: usize = EmbeddingType::min_len();
-                let inputs_per_block = (steps_num + min_len) * info.batch_size;
-
-                let max_batch_start = inputs.len().saturating_sub(inputs_per_block);
-
-                let batch_starts: Vec<usize> = iter::repeat_with(||
-                {
-                    if max_batch_start == 0
-                    {
-                        0
-                    } else
-                    {
-                        fastrand::usize(0..max_batch_start)
-                    }
-                }).take(info.batch_size).collect();
 
                 let values = InputOutput::new(
                     &self.dictionary,
@@ -1449,6 +1450,18 @@ where
                     if is_last_step
                     {
                         last_loss_tx.send(batch_loss).unwrap();
+                    }
+                });
+
+                batch_starts.iter_mut().enumerate().for_each(|(batch_index, batch_start)|
+                {
+                    *batch_start += steps_num;
+
+                    if *batch_start >= max_batch_start
+                    {
+                        *batch_start = 0;
+
+                        self.network.clear_hidden_batch(batch_index);
                     }
                 });
             }

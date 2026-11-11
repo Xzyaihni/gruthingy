@@ -5,6 +5,7 @@ use crate::{
     neural_network::{
         TensorShape,
         NetworkStateCreatable,
+        NetworkStateClearable,
         NetworkStateSelectable,
         NetworkStateGettable,
         OperationsRecorder,
@@ -47,6 +48,14 @@ impl EmbeddingsableOwned for EmbeddingUnit<LayerType>
 impl NetworkStateCreatable for ()
 {
     fn starting_state(_recorder: &mut OperationsRecorder, _shape: TensorShape) -> Self {}
+
+    fn copy_to(&self, _recorder: &mut OperationsRecorder, _other: Self) {}
+}
+
+impl NetworkStateClearable for ()
+{
+    fn clear(&self, _recorder: &mut OperationsRecorder) {}
+    fn clear_batch(&self, _recorder: &mut OperationsRecorder, _batch_index: usize) {}
 }
 
 impl NetworkStateSelectable<()> for ()

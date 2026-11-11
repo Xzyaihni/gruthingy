@@ -65,6 +65,14 @@ pub trait GenericUnit<T>
 pub trait NetworkStateCreatable
 {
     fn starting_state(recorder: &mut OperationsRecorder, shape: TensorShape) -> Self;
+
+    fn copy_to(&self, recorder: &mut OperationsRecorder, other: Self);
+}
+
+pub trait NetworkStateClearable
+{
+    fn clear(&self, recorder: &mut OperationsRecorder);
+    fn clear_batch(&self, recorder: &mut OperationsRecorder, batch_index: usize);
 }
 
 pub trait NetworkStateSelectable<T>
