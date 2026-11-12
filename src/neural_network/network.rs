@@ -2081,6 +2081,27 @@ where
         correct_amount as f32 / total as f32
     }
 
+    pub fn perplexity(
+        &mut self,
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
+    ) -> f32
+    where
+        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    {
+        let mut total = 0;
+        let mut likelyhoods = 0.0;
+
+        self.certainty_guesses(input, |_, x|
+        {
+            total += 1;
+
+            likelyhoods += x.correct_probability.ln();
+        });
+
+        (-likelyhoods / total as f32).exp()
+    }
+
     fn predict(
         &mut self,
         input: impl ExactSizeIterator<Item=OwnedInputType>,

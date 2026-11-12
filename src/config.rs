@@ -596,6 +596,7 @@ pub struct Config
     pub learning_rate: Option<f32>,
     pub lambda: Option<f32>,
     pub calculate_accuracy: bool,
+    pub calculate_perplexity: bool,
     pub network_path: PathBuf,
     pub embeddings_path: PathBuf,
     pub test_path: Option<String>,
@@ -638,6 +639,7 @@ impl Config
         let mut learning_rate = None;
         let mut lambda = None;
         let mut calculate_accuracy = false;
+        let mut calculate_perplexity = false;
         let mut network_path: PathBuf = "network.nn".into();
         let mut embeddings_path = "embeddings.nn".into();
         let mut test_path = None;
@@ -677,6 +679,7 @@ impl Config
         parser.push(&mut learning_rate, 'l', "learning-rate", "learning rate for the optimizer");
         parser.push(&mut lambda, None, "lambda", "lambda for the adamw optimizer");
         parser.push_flag(&mut calculate_accuracy, 'a', "accuracy", "calculate accuracy", true);
+        parser.push_flag(&mut calculate_perplexity, None, "perplexity", "calculate perplexity", true);
         parser.push(&mut network_path, 'p', "path", "path to the network");
         parser.push(&mut embeddings_path, 'E', "embeddings-path", "path to the embeddings network");
         parser.push(&mut input, 'i', "input", "input");
@@ -733,6 +736,7 @@ impl Config
             learning_rate,
             lambda,
             calculate_accuracy,
+            calculate_perplexity,
             network_path,
             embeddings_path,
             test_path,

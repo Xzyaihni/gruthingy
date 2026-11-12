@@ -1221,7 +1221,8 @@ where
         &mut self,
         reader: R,
         inputs_in_flight: Option<usize>,
-        calculate_accuracy: bool
+        calculate_accuracy: bool,
+        calculate_perplexity: bool
     ) -> f32
     where
         R: Read,
@@ -1231,14 +1232,15 @@ where
     {
         let inputs = self.vectorized(reader);
 
-        self.test_loss_inner(&inputs, inputs_in_flight, calculate_accuracy)
+        self.test_loss_inner(&inputs, inputs_in_flight, calculate_accuracy, calculate_perplexity)
     }
 
     fn test_loss_inner(
         &mut self,
         inputs: &[VectorWord],
         inputs_in_flight: Option<usize>,
-        calculate_accuracy: bool
+        calculate_accuracy: bool,
+        calculate_perplexity: bool
     ) -> f32
     where
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
@@ -1256,6 +1258,15 @@ where
             println!("accuracy: {}%", accuracy * 100.0);
 
             accuracy
+        } else if calculate_perplexity
+        {
+            self.network.set_predict_mode();
+
+            let perplexity = self.network.perplexity(input_outputs.clone());
+
+            println!("perplexity: {perplexity}");
+
+            perplexity
         } else
         {
             self.network.set_test_mode();
@@ -1872,11 +1883,11 @@ mod tests
 
                     network.reset(config.clone(), test_batches);
 
-                    let test_loss = network.test_loss(Cursor::new(test_input.clone()), None, false);
+                    let test_loss = network.test_loss(Cursor::new(test_input.clone()), None, false, false);
 
                     network.reset(config, test_batches);
 
-                    let accuracy = network.test_loss(Cursor::new(test_input), None, true);
+                    let accuracy = network.test_loss(Cursor::new(test_input), None, true, false);
 
                     assert!(accuracy > 0.9);
 

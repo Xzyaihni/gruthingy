@@ -344,7 +344,12 @@ fn train_until_best(config: Config)
             {
                 let mut network = load_network(&test_config, None, false);
 
-                let loss = network.test_loss(test_file, test_config.inputs_in_flight, test_config.calculate_accuracy);
+                let loss = network.test_loss(
+                    test_file,
+                    test_config.inputs_in_flight,
+                    test_config.calculate_accuracy,
+                    test_config.calculate_perplexity
+                );
 
                 let file = match File::create_new(&losses_path)
                 {
@@ -433,7 +438,7 @@ fn test_loss(config: Config)
 
     let mut network = load_network(&config, None, false);
 
-    network.test_loss(text_file, config.inputs_in_flight, config.calculate_accuracy);
+    network.test_loss(text_file, config.inputs_in_flight, config.calculate_accuracy, config.calculate_perplexity);
 }
 
 #[cfg(not(test))]
