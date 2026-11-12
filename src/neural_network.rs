@@ -917,6 +917,7 @@ pub struct TrainingInfo
     pub steps_num: StepsNum,
     pub learning_rate: Option<f32>,
     pub lambda: Option<f32>,
+    pub reset_state: bool,
     pub calculate_accuracy: bool,
     pub less_info: bool
 }
@@ -931,6 +932,7 @@ impl From<&Config> for TrainingInfo
             steps_num: StepsNum::new(config.steps_num, config.steps_deviation),
             learning_rate: config.learning_rate,
             lambda: config.lambda,
+            reset_state: !config.keep_state,
             calculate_accuracy: config.calculate_accuracy,
             less_info: config.less_info
         }
@@ -1111,7 +1113,7 @@ where
             dictionary: self.dictionary.clone(),
             network: SaveNetwork::from_network::<O, O::WeightParam<OptimizerInfoPtr>>(&self.network),
             optimizer: self.optimizer.clone(),
-            gradient_clip: self.gradient_clip.clone(),
+            gradient_clip: self.gradient_clip,
             extra_info: self.extra_info.clone(),
             sizes: self.sizes.clone()
         };
@@ -1430,6 +1432,11 @@ where
                     });
                 }
 
+                if info.reset_state
+                {
+                    self.network.clear_hidden();
+                }
+
                 let rng = fastrand::Rng::new();
                 self.network.gradient_step_once(rng, total_iterations, is_last_step, values.iter(), move |loss|
                 {
@@ -1603,6 +1610,7 @@ mod tests
     enum TestStrategy
     {
         None,
+        KeepState,
         Gelu,
         Lstm,
         Gru,
@@ -1624,6 +1632,12 @@ mod tests
     fn simple_data_overfit_char_sgd_simple()
     {
         simple_data_overfit_with::<Sgd, _>(default_dictionary(), 15000, TestStrategy::None);
+    }
+
+    #[test]
+    fn simple_data_overfit_char_sgd_keep_state()
+    {
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 15000, TestStrategy::KeepState);
     }
 
     #[test]
@@ -1846,6 +1860,7 @@ mod tests
             iterations,
             learning_rate: Some(0.01),
             lambda: None,
+            reset_state: !(matches!(strategy, TestStrategy::KeepState)),
             less_info: false,
             steps_num: StepsNum::Steps(steps_num)
         };

@@ -602,6 +602,7 @@ pub struct Config
     pub test_path: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
+    pub keep_state: bool,
     pub tokens_amount: usize,
     pub temperature: f32,
     pub inputs_in_flight: Option<usize>,
@@ -645,6 +646,7 @@ impl Config
         let mut test_path = None;
         let mut input = None;
         let mut output = None;
+        let mut keep_state = true;
         let mut tokens_amount = 100;
         let mut temperature = 1.0;
         let mut inputs_in_flight = 100;
@@ -684,6 +686,7 @@ impl Config
         parser.push(&mut embeddings_path, 'E', "embeddings-path", "path to the embeddings network");
         parser.push(&mut input, 'i', "input", "input");
         parser.push(&mut output, 'o', "output", "output path");
+        parser.push_flag(&mut keep_state, None, "reset-state", "reset hidden state after each minibatch", false);
         parser.push(&mut test_path, None, "test-path", "path to validation file");
         parser.push(&mut tokens_amount, 'n', "number", "number of tokens to generate");
         parser.push(&mut temperature, 'T', "temperature", "softmax temperature");
@@ -742,6 +745,7 @@ impl Config
             test_path,
             input,
             output,
+            keep_state,
             tokens_amount,
             temperature,
             inputs_in_flight,

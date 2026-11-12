@@ -1767,8 +1767,11 @@ where
             {
                 self.recorder.store_tensor_until_end(x.as_value());
                 self.recorder.store_tensor_until_end(other.as_value());
+
                 self.recorder.allow_after_coalesce_use(x.as_value());
                 self.recorder.allow_after_coalesce_use(other.as_value());
+
+                self.recorder.allow_reassign(other.as_value());
 
                 self.recorder.force_same_memory(x.as_value(), other.as_value());
             });
