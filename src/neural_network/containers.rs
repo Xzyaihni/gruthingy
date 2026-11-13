@@ -5,7 +5,6 @@ use std::{
     rc::Rc,
     path::Path,
     num::NonZero,
-    sync::mpsc,
     num::NonZeroU64,
     convert,
     debug_assert_matches,
@@ -76,45 +75,60 @@ fn get_raw_array(data: &[RawArray], raw_data_pointer: TensorRawDataPointer) -> &
     &data[raw_data_pointer.raw_index.0]
 }
 
-fn map_callback_getter<T: bytemuck::Pod + Send>(
-    output_buffer: wgpu::Buffer,
-    f: impl FnOnce(Box<[T]>) + Send + 'static
-) -> impl FnOnce(Result<(), wgpu::BufferAsyncError>) + Send + 'static
+struct SendBuffer(wgpu::Buffer);
+unsafe impl Send for SendBuffer {}
+
+fn get_mapped_data<T: bytemuck::Pod + wgpu::WasmNotSend>(
+    output_buffer: SendBuffer,
+    result: Result<(), wgpu::BufferAsyncError>
+) -> Box<[T]>
 {
-    move |result|
+    if let Err(err) = result
+    {
+        panic!("error mapping tensor: {err}");
+    }
+
+    let output = {
+        let view: wgpu::BufferView = output_buffer.0.get_mapped_range(..).unwrap();
+
+        let data: &[u8] = &view;
+        let data: &[T] = bytemuck::cast_slice(data);
+
+        data.into()
+    };
+
+    output_buffer.0.unmap();
+
+    output
+}
+
+fn get_buffer_blocking<T: bytemuck::Pod + wgpu::WasmNotSend>(
+    device: &wgpu::Device,
+    output_buffer: &wgpu::Buffer
+) -> Box<[T]>
+{
+    output_buffer.map_async(wgpu::MapMode::Read, .., |result|
     {
         if let Err(err) = result
         {
             panic!("error mapping tensor: {err}");
         }
-
-        let output = {
-            let view: wgpu::BufferView = output_buffer.get_mapped_range(..).unwrap();
-
-            let data: &[u8] = &view;
-            let data: &[T] = bytemuck::cast_slice(data);
-
-            data.into()
-        };
-
-        output_buffer.unmap();
-
-        f(output);
-    }
-}
-
-fn get_buffer_blocking<T: bytemuck::Pod + Send>(
-    device: &wgpu::Device,
-    output_buffer: &wgpu::Buffer
-) -> Box<[T]>
-{
-    let (sender, receiver) = mpsc::channel();
-
-    output_buffer.map_async(wgpu::MapMode::Read, .., map_callback_getter(output_buffer.clone(), move |x| sender.send(x).unwrap()));
+    });
 
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
-    receiver.recv().unwrap()
+    let output = {
+        let view: wgpu::BufferView = output_buffer.get_mapped_range(..).unwrap();
+
+        let data: &[u8] = &view;
+        let data: &[T] = bytemuck::cast_slice(data);
+
+        data.into()
+    };
+
+    output_buffer.unmap();
+
+    output
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1271,7 +1285,7 @@ impl OperationsRecorderMemory
         &self,
         raw_array_memory: &mut RawArrayMemory,
         index: ShapedTensorIndex,
-        f: impl FnOnce(LayerType) + Send + 'static
+        f: impl FnOnce(LayerType) + wgpu::WasmNotSend + 'static
     )
     {
         let info = self.resolve_shaped_tensor_index(index);
@@ -1757,6 +1771,9 @@ pub struct WgpuInitInfo
     kernel_layouts: KernelLayouts,
     kernels: [wgpu::ComputePipeline; KERNELS_COUNT]
 }
+
+unsafe impl Send for WgpuInitInfo {}
+unsafe impl Sync for WgpuInitInfo {}
 
 impl WgpuInitInfo
 {
@@ -2701,6 +2718,8 @@ impl OperationsRecorder
 
     fn add_recording_operation(&mut self, op: Op)
     {
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+
         let ops_target = match self.operations_target
         {
             OperationsTarget::Normal => &mut self.recording_operations,
@@ -2735,6 +2754,17 @@ impl OperationsRecorder
         let dst = self.new_tensor_op(shape);
 
         self.add_recording_operation(Op::Copy{src, dst});
+
+        dst
+    }
+
+    pub fn copy_no_diff(&mut self, src: TensorPtr) -> TensorPtr
+    {
+        let shape = self.tensor_shape(src);
+
+        let dst = self.memory.new_tensor_index(shape.into());
+
+        self.gradient_operations.push(GradientOp::Copy{src, dst});
 
         dst
     }
@@ -3192,7 +3222,7 @@ impl OperationsRecorder
 
     pub fn store_tensor_until_end(&mut self, index_ptr: TensorPtr)
     {
-        debug_assert!(self.state.before_or_at(RecorderState::AwaitingGradient));
+        debug_assert!(self.state.before_or_at(RecorderState::AwaitingResolve));
 
         self.memory.live_ranges.outputs.push(index_ptr.into());
     }
@@ -3304,12 +3334,12 @@ impl OperationsRecorder
     {
         let count = self.feedforward_operations_count;
 
-        self.calculate_steps(|_| { unimplemented!() }, count, 0, true, inputs_in_flight);
+        self.calculate_steps(&mut |_| { unimplemented!() }, count, 0, true, inputs_in_flight);
     }
 
     pub fn calculate_feedforward_with_dependent(
         &mut self,
-        dependent_inputs: impl FnMut(InputsSpecifier) -> OwnedInputType
+        dependent_inputs: &mut dyn FnMut(InputsSpecifier) -> OwnedInputType
     )
     {
         let count = self.feedforward_operations_count;
@@ -3321,19 +3351,17 @@ impl OperationsRecorder
     {
         let total = self.raw_operations.len();
 
-        self.calculate_steps(|_| { unimplemented!() }, total, t, is_last_step, None);
+        self.calculate_steps(&mut |_| { unimplemented!() }, total, t, is_last_step, None);
     }
 
-    fn calculate_steps<DependentInputs>(
+    fn calculate_steps(
         &mut self,
-        mut dependent_inputs: DependentInputs,
+        dependent_inputs: &mut dyn FnMut(InputsSpecifier) -> OwnedInputType,
         end: usize,
         t: u64,
         is_last_step: bool,
         inputs_in_flight: Option<usize>
     )
-    where
-        DependentInputs: FnMut(InputsSpecifier) -> OwnedInputType
     {
         debug_assert_eq!(self.state, RecorderState::Ready);
 
@@ -3556,8 +3584,7 @@ impl OperationsRecorder
         let mut i = 0;
         while i < end
         {
-            #[cfg(feature="timedebug")]
-            let this_operation_name: &'static str;
+            let name: &'static str = self.raw_operations[i].debug_name();
 
             #[cfg(feature="printcalculations")]
             let print_this: bool;
@@ -3621,16 +3648,12 @@ impl OperationsRecorder
 
             macro_rules! debug_calculate_values
             {
-                ($name:ident, ($($t_name:ident),*),($($v_name:ident),*)) =>
+                (($($t_name:ident),*),($($v_name:ident),*)) =>
                 {
-                    let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
-
                     #[cfg(feature="timedebug")]
                     {
-                        this_operation_name = stringify!($name);
-
                         try_end_compute_pass(&mut compute_pass);
-                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name, i);
+                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, name, i);
                     }
 
                     #[cfg(debug_assertions)]
@@ -3642,13 +3665,15 @@ impl OperationsRecorder
 
                     #[cfg(feature="printcalculations")]
                     {
-                        print_this = print_this_calculation(stringify!($name));
+                        print_this = print_this_calculation(name);
 
-                        self.raw_array_memory.encoder.as_mut().unwrap().push_debug_group(stringify!($name));
+                        self.raw_array_memory.encoder.as_mut().unwrap().push_debug_group(name);
 
                         if print_this
                         {
-                            eprint!("{}", stringify!($name));
+                            let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
+
+                            eprint!("{}", name);
 
                             if _count > 0
                             {
@@ -3670,12 +3695,10 @@ impl OperationsRecorder
             {
                 (($($t_name:ident),*),($($v_name:ident),*)) =>
                 {
-                    let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
-
                     #[cfg(feature="timedebug")]
                     {
                         try_end_compute_pass(&mut compute_pass);
-                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, this_operation_name, i);
+                        record_timestamp(&self.raw_array_memory.device, &mut self.raw_array_memory.encoder, name, i);
                     }
 
                     #[cfg(feature="printcalculations")]
@@ -3686,6 +3709,8 @@ impl OperationsRecorder
 
                         if print_this
                         {
+                            let _count: usize = {let _a: [(); _] = [$({ let _ = stringify!($t_name); () },)* $({ let _ = stringify!($v_name); () },)*]; _a}.len();
+
                             if _count > 0
                             {
                                 eprint!(" (AFTER ");
@@ -3755,7 +3780,7 @@ impl OperationsRecorder
 
             macro_rules! try_create_bind_group
             {
-                ($kernel_layout:expr, $bind_group_entries:expr, $kernel:literal, $group_index:literal) =>
+                ($kernel_layout:expr, $bind_group_entries:expr, $kernel:expr, $group_index:literal) =>
                 {
                     if self.raw_array_memory.bind_groups[i].len() == $group_index
                     {
@@ -3802,15 +3827,17 @@ impl OperationsRecorder
             {
                 ($kernel:ident, $operation_index:expr, $group_index:literal) =>
                 {
-                    do_kernel_operation(
-                        &mut compute_pass,
-                        &mut self.raw_array_memory.encoder,
-                        &self.raw_array_memory.kernels,
-                        &self.raw_array_memory.bind_groups,
-                        OpKernel::$kernel,
-                        $operation_index,
-                        $group_index
-                    );
+                    {
+                        do_kernel_operation(
+                            &mut compute_pass,
+                            &mut self.raw_array_memory.encoder,
+                            &self.raw_array_memory.kernels,
+                            &self.raw_array_memory.bind_groups,
+                            OpKernel::$kernel,
+                            $operation_index,
+                            $group_index
+                        );
+                    }
                 }
             }
 
@@ -3948,7 +3975,7 @@ impl OperationsRecorder
                 | GradientOp::FeedforwardEndMarker => unreachable!(),
                 GradientOp::Copy{src, dst} =>
                 {
-                    debug_calculate_values!(Copy, (src),());
+                    debug_calculate_values!((src),());
 
                     copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
@@ -3956,7 +3983,7 @@ impl OperationsRecorder
                 },
                 GradientOp::CopyScalar{src, dst} =>
                 {
-                    debug_calculate_values!(CopyScalar, (),(src));
+                    debug_calculate_values!((),(src));
 
                     self.memory.values[dst.0] = self.memory.values[src.0];
 
@@ -3964,7 +3991,7 @@ impl OperationsRecorder
                 },
                 GradientOp::ZeroValue(dst) =>
                 {
-                    debug_calculate_values!(ZeroValue, (),());
+                    debug_calculate_values!((),());
 
                     self.memory.values[dst.0] = 0.0;
 
@@ -3972,7 +3999,7 @@ impl OperationsRecorder
                 },
                 GradientOp::ZeroTensor(dst) =>
                 {
-                    debug_calculate_values!(ZeroTensor, (),());
+                    debug_calculate_values!((),());
 
                     try_end_compute_pass(&mut compute_pass);
 
@@ -3983,7 +4010,7 @@ impl OperationsRecorder
                 },
                 GradientOp::PushStackValue{loop_index, value} =>
                 {
-                    debug_calculate_values!(PushStackValue, (),(value));
+                    debug_calculate_values!((),(value));
 
                     let loop_stack_index = self.loops[loop_index.0].stack_values;
 
@@ -3997,7 +4024,7 @@ impl OperationsRecorder
                 },
                 GradientOp::PushStackTensor{loop_index, tensor} =>
                 {
-                    debug_calculate_values!(PushStackTensor, (tensor),());
+                    debug_calculate_values!((tensor),());
 
                     let loop_stack_index = self.loops[loop_index.0].stack_values;
 
@@ -4038,7 +4065,7 @@ impl OperationsRecorder
                 },
                 GradientOp::PopStackValue{loop_index, output} =>
                 {
-                    debug_calculate_values!(PopStackValue, (),());
+                    debug_calculate_values!((),());
 
                     let loop_stack_index = self.loops[loop_index.0].stack_values;
 
@@ -4051,7 +4078,7 @@ impl OperationsRecorder
                 },
                 GradientOp::PopStackTensor{loop_index, output} =>
                 {
-                    debug_calculate_values!(PopStackTensor, (),());
+                    debug_calculate_values!((),());
 
                     let loop_stack_index = self.loops[loop_index.0].stack_values;
 
@@ -4194,12 +4221,12 @@ impl OperationsRecorder
 
                     let src = if this_selector.is_set
                     {
-                        debug_calculate_values!(GetOtherSelectorValue, (),(other));
+                        debug_calculate_values!((),(other));
 
                         other
                     } else
                     {
-                        debug_calculate_values!(GetOtherSelectorValue, (),(first));
+                        debug_calculate_values!((),(first));
 
                         first
                     };
@@ -4217,12 +4244,12 @@ impl OperationsRecorder
 
                     let src = if this_selector.is_set
                     {
-                        debug_calculate_values!(GetOtherSelectorTensor, (other),());
+                        debug_calculate_values!((other),());
 
                         other
                     } else
                     {
-                        debug_calculate_values!(GetOtherSelectorTensor, (first),());
+                        debug_calculate_values!((first),());
 
                         first
                     };
@@ -4233,7 +4260,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OtherSelectorValueGradient{index, first, other, src} =>
                 {
-                    debug_calculate_values!(OtherSelectorValueGradient, (),(src));
+                    debug_calculate_values!((),(src));
 
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
@@ -4257,7 +4284,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OtherSelectorTensorGradient{index, first, other, src} =>
                 {
-                    debug_calculate_values!(OtherSelectorTensorGradient, (src),());
+                    debug_calculate_values!((src),());
 
                     let this_selector = &mut self.memory.phi_other_selectors_values[index.0];
 
@@ -4294,12 +4321,12 @@ impl OperationsRecorder
 
                     if is_set
                     {
-                        debug_calculate_values!(GradientSelectAddValue, (),(src, added));
+                        debug_calculate_values!((),(src, added));
 
                         self.memory.values[other.0] = src_value + self.memory.values[added.0];
                     } else
                     {
-                        debug_calculate_values!(GradientSelectAddValue, (),(src));
+                        debug_calculate_values!((),(src));
 
                         self.memory.values[first.0] = src_value;
                     }
@@ -4320,7 +4347,7 @@ impl OperationsRecorder
 
                     if is_set
                     {
-                        debug_calculate_values!(GradientSelectAddTensor, (src, added),());
+                        debug_calculate_values!((src, added),());
 
                         debug_assert_eq!(src.shape, added.shape);
                         debug_assert_eq!(added.shape, other.shape);
@@ -4329,14 +4356,14 @@ impl OperationsRecorder
                             bind_group_entry(0, *src),
                             bind_group_entry(1, *added),
                             bind_group_entry(2, *other)
-                        ], "GradientSelectAddTensor", 0);
+                        ], name, 0);
 
                         do_kernel_operation!(Add, i, 0);
 
                         single_workgroup(&mut compute_pass, src.size());
                     } else
                     {
-                        debug_calculate_values!(GradientSelectAddTensor, (src),());
+                        debug_calculate_values!((src),());
 
                         copy_tensor(wgpu_info!(), &self.memory, *src, *first);
                     }
@@ -4353,7 +4380,7 @@ impl OperationsRecorder
                 {
                     if self.memory.phi_other_selectors_values[index.0].is_set
                     {
-                        debug_calculate_values!(IfSetTensor, (src),());
+                        debug_calculate_values!((src),());
 
                         copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
@@ -4364,7 +4391,7 @@ impl OperationsRecorder
                 {
                     if !self.memory.phi_other_selectors_values[index.0].is_set
                     {
-                        debug_calculate_values!(IfNotSetTensor, (src),());
+                        debug_calculate_values!((src),());
 
                         copy_tensor(wgpu_info!(), &self.memory, *src, *dst);
 
@@ -4422,7 +4449,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MulComponentwiseAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MulComponentwiseAdd, (lhs, rhs, added),());
+                    debug_calculate_values!((lhs, rhs, added),());
 
                     debug_assert_eq!(lhs.shape, rhs.shape);
                     debug_assert_eq!(rhs.shape, output.shape);
@@ -4433,7 +4460,7 @@ impl OperationsRecorder
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
-                    ], "MulComponentwiseAdd", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(MulComponentwiseAddInplace, i, 0);
 
@@ -4451,19 +4478,19 @@ impl OperationsRecorder
                     {
                         GradientOp::MulComponentwise{lhs, rhs, output} =>
                         {
-                            debug_calculate_values!(MulComponentwise, (lhs, rhs),());
+                            debug_calculate_values!((lhs, rhs),());
 
                             try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1, &[
                                 bind_group_entry(0, *lhs),
                                 bind_group_entry(1, *rhs),
                                 bind_group_entry(2, *output)
-                            ], "MulComponentwise", 0);
+                            ], name, 0);
 
                             do_kernel_operation!(MulComponentwise, i, 0);
                         },
                         GradientOp::MulComponentwiseAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(MulComponentwiseAddInplace, (lhs, rhs, added),());
+                            debug_calculate_values!((lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
@@ -4471,7 +4498,7 @@ impl OperationsRecorder
                                 bind_group_entry(0, *lhs),
                                 bind_group_entry(1, *rhs),
                                 bind_group_entry(2, *output)
-                            ], "MulComponentwiseAdd", 0);
+                            ], name, 0);
 
                             do_kernel_operation!(MulComponentwiseAddInplace, i, 0);
                         },
@@ -4484,7 +4511,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MulScalar{lhs, rhs: _, output} =>
                 {
-                    debug_calculate_values!(MulScalar, (lhs),());
+                    debug_calculate_values!((lhs),());
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
@@ -4492,7 +4519,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         bind_group_entry(1, *lhs),
                         bind_group_entry(2, *output)
-                    ], "MulScalar", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(MulScalar, i, 0);
 
@@ -4502,7 +4529,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MulScalars{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(MulScalars, (),(lhs, rhs));
+                    debug_calculate_values!((),(lhs, rhs));
 
                     self.memory.values[output.0] = self.memory.values[lhs.0] * self.memory.values[rhs.0];
 
@@ -4510,7 +4537,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Add{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Add, (lhs, rhs),());
+                    debug_calculate_values!((lhs, rhs),());
 
                     debug_assert_eq!(lhs.shape, rhs.shape);
                     debug_assert_eq!(rhs.shape, output.shape);
@@ -4519,7 +4546,7 @@ impl OperationsRecorder
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
-                    ], "Add", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Add, i, 0);
 
@@ -4529,7 +4556,7 @@ impl OperationsRecorder
                 },
                 GradientOp::AddScalar{lhs, rhs: _, output} =>
                 {
-                    debug_calculate_values!(AddScalar, (lhs),(rhs));
+                    debug_calculate_values!((lhs),(rhs));
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
@@ -4537,7 +4564,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         bind_group_entry(1, *lhs),
                         bind_group_entry(2, *output)
-                    ], "AddScalar", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(AddScalar, i, 0);
 
@@ -4547,7 +4574,7 @@ impl OperationsRecorder
                 },
                 GradientOp::AddScalars{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(AddScalars, (),(lhs, rhs));
+                    debug_calculate_values!((),(lhs, rhs));
 
                     self.memory.values[output.0] = self.memory.values[lhs.0] + self.memory.values[rhs.0];
 
@@ -4555,7 +4582,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Sub{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Sub, (lhs, rhs),());
+                    debug_calculate_values!((lhs, rhs),());
 
                     debug_assert_eq!(lhs.shape, rhs.shape);
                     debug_assert_eq!(rhs.shape, output.shape);
@@ -4564,7 +4591,7 @@ impl OperationsRecorder
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
-                    ], "Sub", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Sub, i, 0);
 
@@ -4574,7 +4601,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SubFromScalar{lhs: _, rhs, output} =>
                 {
-                    debug_calculate_values!(SubFromScalar, (rhs),(lhs));
+                    debug_calculate_values!((rhs),(lhs));
 
                     debug_assert_eq!(rhs.shape, output.shape);
 
@@ -4582,7 +4609,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         bind_group_entry(1, *rhs),
                         bind_group_entry(2, *output)
-                    ], "SubFromScalar", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(SubFromScalar, i, 0);
 
@@ -4592,7 +4619,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SumTensor{value, output} =>
                 {
-                    debug_calculate_values!(SumTensor, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
                     debug_assert!(output.shape.is_batched_scalar());
@@ -4600,7 +4627,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
-                    ], "SumTensor", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(SumTensor, i, 0);
 
@@ -4610,7 +4637,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MaxTensor{value, output} =>
                 {
-                    debug_calculate_values!(MaxTensor, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
                     debug_assert!(output.shape.is_batched_scalar());
@@ -4618,7 +4645,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
-                    ], "MaxTensor", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(MaxTensor, i, 0);
 
@@ -4628,7 +4655,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SumBatch{value, scalar: _, output} =>
                 {
-                    debug_calculate_values!(SumBatch, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(output.shape.batch_size, 1);
 
@@ -4639,7 +4666,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         bind_group_entry(1, *value),
                         bind_group_entry(2, *output)
-                    ], "SumBatch", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(SumBatch, i, 0);
 
@@ -4649,7 +4676,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Dot{lhs, rhs, output} =>
                 {
-                    debug_calculate_values!(Dot, (lhs, rhs),());
+                    debug_calculate_values!((lhs, rhs),());
 
                     debug_assert_eq!(lhs.shape, rhs.shape);
 
@@ -4667,7 +4694,7 @@ impl OperationsRecorder
                         bind_group_entry(0, *lhs),
                         bind_group_entry(1, *rhs),
                         create_bind_group_entry(2, scratch_buffer)
-                    ], "DotMul", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(MulComponentwise, i, 0);
 
@@ -4676,7 +4703,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         create_bind_group_entry(0, scratch_buffer),
                         bind_group_entry(1, *output)
-                    ], "DotSum", 1);
+                    ], name, 1);
 
                     do_kernel_operation!(SumTensor, i, 1);
 
@@ -4686,7 +4713,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Fill{value, output} =>
                 {
-                    debug_calculate_values!(Fill, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape.batch_size, output.shape.batch_size);
                     debug_assert!(value.shape.is_batched_scalar());
@@ -4694,7 +4721,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
-                    ], "Fill", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Fill, i, 0);
 
@@ -4704,7 +4731,7 @@ impl OperationsRecorder
                 },
                 GradientOp::BatchReplicate{value, output} =>
                 {
-                    debug_calculate_values!(BatchReplicate, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape.batch_size, 1);
 
@@ -4714,7 +4741,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
-                    ], "BatchReplicate", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(BatchReplicate, i, 0);
 
@@ -4724,7 +4751,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Dropout{value, probability, seed_index, output} =>
                 {
-                    debug_calculate_values!(Dropout, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape, output.shape);
 
@@ -4744,7 +4771,7 @@ impl OperationsRecorder
                         bind_group_entry(0, *value),
                         create_bind_group_entry(1, states),
                         bind_group_entry(2, *output)
-                    ], "Dropout", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Dropout, i, 0);
 
@@ -4754,7 +4781,7 @@ impl OperationsRecorder
                 },
                 GradientOp::CapMagnitude{value, magnitude: _, output} =>
                 {
-                    debug_calculate_values!(CapMagnitude, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape, output.shape);
 
@@ -4769,7 +4796,7 @@ impl OperationsRecorder
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         bind_group_entry(0, *value),
                         create_bind_group_entry(1, magnitude_buffer)
-                    ], "Magnitude", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Magnitude, i, 0);
 
@@ -4779,7 +4806,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         create_bind_group_entry(1, magnitude_buffer),
                         bind_group_entry(2, *output)
-                    ], "CapMagnitude", 1);
+                    ], name, 1);
 
                     do_kernel_operation!(CapMagnitude, i, 1);
 
@@ -4789,7 +4816,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OptimizerSgd{gradient, output} =>
                 {
-                    debug_calculate_values!(OptimizerSgd, (gradient),());
+                    debug_calculate_values!((gradient),());
 
                     debug_assert_eq!(gradient.shape, output.shape);
 
@@ -4797,7 +4824,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, optimizer_uniform_buffer!()),
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *output)
-                    ], "OptimizerSgd", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Sgd, i, 0);
 
@@ -4807,7 +4834,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OptimizerPowerSign{gradient, m, output} =>
                 {
-                    debug_calculate_values!(OptimizerPowerSign, (gradient, m),());
+                    debug_calculate_values!((gradient, m),());
 
                     debug_assert_eq!(gradient.shape, output.shape);
                     debug_assert_eq!(m.shape, output.shape);
@@ -4817,7 +4844,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *m),
                         bind_group_entry(3, *output)
-                    ], "OptimizerPowerSign", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(PowerSign, i, 0);
 
@@ -4827,7 +4854,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OptimizerAdam{gradient, m, v, output} =>
                 {
-                    debug_calculate_values!(OptimizerAdam, (gradient, m, v),());
+                    debug_calculate_values!((gradient, m, v),());
 
                     debug_assert!(t > 0);
 
@@ -4841,7 +4868,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *m),
                         bind_group_entry(3, *v),
                         bind_group_entry(4, *output)
-                    ], "OptimizerAdam", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Adam, i, 0);
 
@@ -4851,7 +4878,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OptimizerAdamW{gradient, m, v, output} =>
                 {
-                    debug_calculate_values!(OptimizerAdamW, (gradient, m, v),());
+                    debug_calculate_values!((gradient, m, v),());
 
                     debug_assert!(t > 0);
 
@@ -4865,7 +4892,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *m),
                         bind_group_entry(3, *v),
                         bind_group_entry(4, *output)
-                    ], "OptimizerAdamW", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(AdamW, i, 0);
 
@@ -4875,7 +4902,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Pow{lhs, power: _, output} =>
                 {
-                    debug_calculate_values!(Pow, (lhs),());
+                    debug_calculate_values!((lhs),());
 
                     debug_assert_eq!(lhs.shape, output.shape);
 
@@ -4883,7 +4910,7 @@ impl OperationsRecorder
                         create_bind_group_entry(0, current_uniform_buffer!()),
                         bind_group_entry(1, *lhs),
                         bind_group_entry(2, *output)
-                    ], "Pow", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(Pow, i, 0);
 
@@ -4891,26 +4918,39 @@ impl OperationsRecorder
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::Tanh{value, output} =>
+                this_op@GradientOp::Tanh{value, output}
+                | this_op@GradientOp::Sigmoid{value, output}
+                | this_op@GradientOp::LeakyRelu{value, output}
+                | this_op@GradientOp::GaussianRelu{value, output} =>
                 {
-                    debug_calculate_values!(Tanh, (value),());
+                    debug_calculate_values!((value),());
 
                     debug_assert_eq!(value.shape, output.shape);
 
                     try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *output)
-                    ], "Tanh", 0);
+                    ], name, 0);
 
-                    do_kernel_operation!(Tanh, i, 0);
+                    match this_op
+                    {
+                        GradientOp::Tanh{..} => do_kernel_operation!(Tanh, i, 0),
+                        GradientOp::Sigmoid{..} => do_kernel_operation!(Sigmoid, i, 0),
+                        GradientOp::LeakyRelu{..} => do_kernel_operation!(LeakyRelu, i, 0),
+                        GradientOp::GaussianRelu{..} => do_kernel_operation!(GaussianRelu, i, 0),
+                        _ => unreachable!()
+                    }
 
                     single_workgroup(&mut compute_pass, value.size());
 
                     debug_calculate_values_result!((output),());
                 },
-                GradientOp::TanhDiff{value, gradient, output} =>
+                this_op@GradientOp::TanhDiff{value, gradient, output}
+                | this_op@GradientOp::SigmoidDiff{value, gradient, output}
+                | this_op@GradientOp::LeakyReluDiff{value, gradient, output}
+                | this_op@GradientOp::GaussianReluDiff{value, gradient, output} =>
                 {
-                    debug_calculate_values!(TanhDiff, (value, gradient),());
+                    debug_calculate_values!((value, gradient),());
 
                     debug_assert_eq!(value.shape, output.shape);
                     debug_assert_eq!(gradient.shape, output.shape);
@@ -4919,117 +4959,16 @@ impl OperationsRecorder
                         bind_group_entry(0, *value),
                         bind_group_entry(1, *gradient),
                         bind_group_entry(2, *output)
-                    ], "TanhDiff", 0);
+                    ], name, 0);
 
-                    do_kernel_operation!(TanhDiff, i, 0);
-
-                    single_workgroup(&mut compute_pass, value.size());
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::Sigmoid{value, output} =>
-                {
-                    debug_calculate_values!(Sigmoid, (value),());
-
-                    debug_assert_eq!(value.shape, output.shape);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *output)
-                    ], "Sigmoid", 0);
-
-                    do_kernel_operation!(Sigmoid, i, 0);
-
-                    single_workgroup(&mut compute_pass, value.size());
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::SigmoidDiff{value, gradient, output} =>
-                {
-                    debug_calculate_values!(SigmoidDiff, (value, gradient),());
-
-                    debug_assert_eq!(value.shape, output.shape);
-                    debug_assert_eq!(gradient.shape, output.shape);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *gradient),
-                        bind_group_entry(2, *output)
-                    ], "SigmoidDiff", 0);
-
-                    do_kernel_operation!(SigmoidDiff, i, 0);
-
-                    single_workgroup(&mut compute_pass, value.size());
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::LeakyRelu{value, output} =>
-                {
-                    debug_calculate_values!(LeakyRelu, (value),());
-
-                    debug_assert_eq!(value.shape, output.shape);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *output)
-                    ], "LeakyRelu", 0);
-
-                    do_kernel_operation!(LeakyRelu, i, 0);
-
-                    single_workgroup(&mut compute_pass, value.size());
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::LeakyReluDiff{value, gradient, output} =>
-                {
-                    debug_calculate_values!(LeakyReluDiff, (value, gradient),());
-
-                    debug_assert_eq!(value.shape, output.shape);
-                    debug_assert_eq!(gradient.shape, output.shape);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *gradient),
-                        bind_group_entry(2, *output)
-                    ], "LeakyReluDiff", 0);
-
-                    do_kernel_operation!(LeakyReluDiff, i, 0);
-
-                    single_workgroup(&mut compute_pass, value.size());
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::GaussianRelu{value, output} =>
-                {
-                    debug_calculate_values!(GaussianRelu, (value),());
-
-                    debug_assert_eq!(value.shape, output.shape);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r1_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *output)
-                    ], "GaussianRelu", 0);
-
-                    do_kernel_operation!(GaussianRelu, i, 0);
-
-                    single_workgroup(&mut compute_pass, value.size());
-
-                    debug_calculate_values_result!((output),());
-                },
-                GradientOp::GaussianReluDiff{value, gradient, output} =>
-                {
-                    debug_calculate_values!(GaussianReluDiff, (value, gradient),());
-
-                    debug_assert_eq!(value.shape, output.shape);
-                    debug_assert_eq!(gradient.shape, output.shape);
-
-                    try_create_bind_group!(&self.raw_array_memory.kernel_layouts.r2_w1, &[
-                        bind_group_entry(0, *value),
-                        bind_group_entry(1, *gradient),
-                        bind_group_entry(2, *output)
-                    ], "GaussianReluDiff", 0);
-
-                    do_kernel_operation!(GaussianReluDiff, i, 0);
+                    match this_op
+                    {
+                        GradientOp::TanhDiff{..} => do_kernel_operation!(TanhDiff, i, 0),
+                        GradientOp::SigmoidDiff{..} => do_kernel_operation!(SigmoidDiff, i, 0),
+                        GradientOp::LeakyReluDiff{..} => do_kernel_operation!(LeakyReluDiff, i, 0),
+                        GradientOp::GaussianReluDiff{..} => do_kernel_operation!(GaussianReluDiff, i, 0),
+                        _ => unreachable!()
+                    }
 
                     single_workgroup(&mut compute_pass, value.size());
 
@@ -5037,7 +4976,7 @@ impl OperationsRecorder
                 },
                 GradientOp::Softmax{values, softmaxed_output} =>
                 {
-                    debug_calculate_values!(Softmax, (values),());
+                    debug_calculate_values!((values),());
 
                     debug_assert_eq!(values.shape, softmaxed_output.shape);
 
@@ -5098,13 +5037,13 @@ impl OperationsRecorder
                     {
                         GradientOp::SoftmaxCrossEntropy{values, targets, softmaxed_output, ..} =>
                         {
-                            debug_calculate_values!(SoftmaxCrossEntropy, (values, targets),());
+                            debug_calculate_values!((values, targets),());
 
                             debug_assert_eq!(values.shape, softmaxed_output.shape);
                         },
                         GradientOp::SoftmaxCrossEntropyNoSoftmaxed{values, targets, ..} =>
                         {
-                            debug_calculate_values!(SoftmaxCrossEntropyNoSoftmaxed, (values, targets),());
+                            debug_calculate_values!((values, targets),());
                         },
                         _ => unreachable!()
                     }
@@ -5200,7 +5139,7 @@ impl OperationsRecorder
                 },
                 GradientOp::SoftmaxCrossEntropyDiff{softmaxed_values, gradient, targets, output} =>
                 {
-                    debug_calculate_values!(SoftmaxCrossEntropyDiff, (softmaxed_values, gradient, targets),());
+                    debug_calculate_values!((softmaxed_values, gradient, targets),());
 
                     debug_assert_eq!(softmaxed_values.shape, output.shape);
 
@@ -5217,7 +5156,7 @@ impl OperationsRecorder
                         bind_group_entry(0, *gradient),
                         bind_group_entry(1, *targets),
                         bind_group_entry(2, *output)
-                    ], "SoftmaxCrossEntropyDiff", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(SoftmaxCrossEntropyDiff, i, 0);
 
@@ -5227,7 +5166,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulOneHotvAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MatmulOneHotvAddBatched, (lhs, rhs, added),());
+                    debug_calculate_values!((lhs, rhs, added),());
 
                     debug_assert_eq!(lhs.shape.batch_size, 1);
                     debug_assert_eq!(added.shape.batch_size, 1);
@@ -5245,7 +5184,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *added),
                         bind_group_entry(4, *output)
-                    ], "MatmulOneHotvAddBatched", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(MatmulOneHotvAddBatched, i, 0);
 
@@ -5260,7 +5199,7 @@ impl OperationsRecorder
 
                     if is_batched
                     {
-                        debug_calculate_values!(MatmulOneHotvBatched, (lhs, rhs),());
+                        debug_calculate_values!((lhs, rhs),());
 
                         debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
 
@@ -5274,7 +5213,7 @@ impl OperationsRecorder
                             bind_group_entry(1, *lhs),
                             bind_group_entry(2, *rhs),
                             bind_group_entry(3, *output)
-                        ], "MatmulOneHotv", 0);
+                        ], name, 0);
 
                         let GradientOp::MatmulOneHotv{lhs, rhs: _, output: _} = this_op else {
                             unreachable!()
@@ -5297,20 +5236,20 @@ impl OperationsRecorder
                             bind_group_entry(1, *lhs),
                             bind_group_entry(2, *rhs),
                             bind_group_entry(3, *output)
-                        ], "MatmulOneHotv", 0);
+                        ], name, 0);
 
                         #[allow(unused_variables)]
                         match this_op
                         {
                             GradientOp::MatmulOneHotv{lhs, rhs, output: _} =>
                             {
-                                debug_calculate_values!(MatmulOneHotv, (lhs, rhs),());
+                                debug_calculate_values!((lhs, rhs),());
 
                                 do_kernel_operation!(MatmulOneHotv, i, 0);
                             },
                             GradientOp::MatmulOneHotvAddInplace{lhs, rhs, added, output} =>
                             {
-                                debug_calculate_values!(MatmulOneHotvAddInplace, (lhs, rhs, added),());
+                                debug_calculate_values!((lhs, rhs, added),());
 
                                 debug_assert_eq!(added, output);
 
@@ -5326,7 +5265,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulvAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MatmulvAddBatched, (lhs, rhs, added),());
+                    debug_calculate_values!((lhs, rhs, added),());
 
                     debug_assert_eq!(lhs.shape.batch_size, 1);
 
@@ -5344,7 +5283,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *added),
                         bind_group_entry(4, *output)
-                    ], "MatmulvAddBatched", 0);
+                    ], name, 0);
 
                     if added.shape.batch_size != 1
                     {
@@ -5365,7 +5304,7 @@ impl OperationsRecorder
 
                     if is_batched
                     {
-                        debug_calculate_values!(MatmulvBatched, (lhs, rhs),());
+                        debug_calculate_values!((lhs, rhs),());
 
                         debug_assert_eq!(lhs.shape.batch_size, 1);
                         debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
@@ -5385,7 +5324,7 @@ impl OperationsRecorder
                             bind_group_entry(1, *lhs),
                             bind_group_entry(2, *rhs),
                             bind_group_entry(3, *output)
-                        ], "MatmulvBatched", 0);
+                        ], name, 0);
 
                         do_kernel_operation!(MatmulvBatched, i, 0);
 
@@ -5406,20 +5345,20 @@ impl OperationsRecorder
                             bind_group_entry(1, *lhs),
                             bind_group_entry(2, *rhs),
                             bind_group_entry(3, *output)
-                        ], "Matmulv", 0);
+                        ], name, 0);
 
                         #[allow(unused_variables)]
                         match this_op
                         {
                             GradientOp::Matmulv{lhs: _, rhs, output: _} =>
                             {
-                                debug_calculate_values!(Matmulv, (lhs, rhs),());
+                                debug_calculate_values!((lhs, rhs),());
 
                                 do_kernel_operation!(Matmulv, i, 0);
                             },
                             GradientOp::MatmulvAddInplace{lhs: _, rhs, added, output} =>
                             {
-                                debug_calculate_values!(MatmulvAddInplace, (lhs, rhs, added),());
+                                debug_calculate_values!((lhs, rhs, added),());
 
                                 debug_assert_eq!(added, output);
 
@@ -5435,7 +5374,7 @@ impl OperationsRecorder
                 },
                 GradientOp::MatmulvTransposedAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(MatmulvTransposedAdd, (lhs, rhs, added),());
+                    debug_calculate_values!((lhs, rhs, added),());
 
                     debug_assert_eq!(lhs.shape.batch_size, 1);
 
@@ -5454,7 +5393,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *added),
                         bind_group_entry(4, *output)
-                    ], "MatmulvTransposedAddBatched", 0);
+                    ], name, 0);
 
                     if added.shape.batch_size != 1
                     {
@@ -5475,7 +5414,7 @@ impl OperationsRecorder
 
                     if is_batched
                     {
-                        debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
+                        debug_calculate_values!((lhs, rhs),());
 
                         debug_assert_eq!(lhs.shape.batch_size, 1);
                         debug_assert_eq!(rhs.shape.batch_size, output.shape.batch_size);
@@ -5495,7 +5434,7 @@ impl OperationsRecorder
                             bind_group_entry(1, *lhs),
                             bind_group_entry(2, *rhs),
                             bind_group_entry(3, *output)
-                        ], "MatmulvTransposedBatched", 0);
+                        ], name, 0);
 
                         do_kernel_operation!(MatmulvTransposedBatched, i, 0);
 
@@ -5516,20 +5455,20 @@ impl OperationsRecorder
                             bind_group_entry(1, *lhs),
                             bind_group_entry(2, *rhs),
                             bind_group_entry(3, *output)
-                        ], "MatmulvTransposed", 0);
+                        ], name, 0);
 
                         #[allow(unused_variables)]
                         match this_op
                         {
                             GradientOp::MatmulvTransposed{lhs: _, rhs, output: _} =>
                             {
-                                debug_calculate_values!(MatmulvTransposed, (lhs, rhs),());
+                                debug_calculate_values!((lhs, rhs),());
 
                                 do_kernel_operation!(MatmulvTransposed, i, 0);
                             },
                             GradientOp::MatmulvTransposedAddInplace{lhs: _, rhs, added, output} =>
                             {
-                                debug_calculate_values!(MatmulvTransposedAddInplace, (lhs, rhs, added),());
+                                debug_calculate_values!((lhs, rhs, added),());
 
                                 debug_assert_eq!(added, output);
 
@@ -5545,7 +5484,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OuterProductOneHotAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(OuterProductOneHotAdd, (lhs, rhs, added),());
+                    debug_calculate_values!((lhs, rhs, added),());
 
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, added.shape.batch_size);
@@ -5566,7 +5505,7 @@ impl OperationsRecorder
                         bind_group_entry(1, *lhs),
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *output)
-                    ], "OuterProductOneHotAddInplace", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(OuterProductOneHotAddInplace, i, 0);
 
@@ -5589,14 +5528,14 @@ impl OperationsRecorder
                         bind_group_entry(1, *lhs),
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *output)
-                    ], "OuterProductOneHot", 0);
+                    ], name, 0);
 
                     #[allow(unused_variables)]
                     match this_op
                     {
                         GradientOp::OuterProductOneHot{lhs, rhs, output: _} =>
                         {
-                            debug_calculate_values!(OuterProductOneHot, (lhs, rhs),());
+                            debug_calculate_values!((lhs, rhs),());
 
                             try_end_compute_pass(&mut compute_pass);
 
@@ -5606,7 +5545,7 @@ impl OperationsRecorder
                         },
                         GradientOp::OuterProductOneHotAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(OuterProductOneHotAddInplace, (lhs, rhs, added),());
+                            debug_calculate_values!((lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
@@ -5621,7 +5560,7 @@ impl OperationsRecorder
                 },
                 GradientOp::OuterProductAdd{lhs, rhs, added, output} =>
                 {
-                    debug_calculate_values!(OuterProductAdd, (lhs, rhs, added),());
+                    debug_calculate_values!((lhs, rhs, added),());
 
                     debug_assert_eq!(lhs.shape.batch_size, rhs.shape.batch_size);
                     debug_assert_eq!(lhs.shape.batch_size, added.shape.batch_size);
@@ -5642,7 +5581,7 @@ impl OperationsRecorder
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *added),
                         bind_group_entry(4, *output)
-                    ], "OuterProductAdd", 0);
+                    ], name, 0);
 
                     do_kernel_operation!(OuterProductAdd, i, 0);
 
@@ -5667,20 +5606,20 @@ impl OperationsRecorder
                         bind_group_entry(1, *lhs),
                         bind_group_entry(2, *rhs),
                         bind_group_entry(3, *output)
-                    ], "OuterProduct", 0);
+                    ], name, 0);
 
                     #[allow(unused_variables)]
                     match this_op
                     {
                         GradientOp::OuterProduct{lhs, rhs, output: _} =>
                         {
-                            debug_calculate_values!(OuterProduct, (lhs, rhs),());
+                            debug_calculate_values!((lhs, rhs),());
 
                             do_kernel_operation!(OuterProduct, i, 0);
                         },
                         GradientOp::OuterProductAddInplace{lhs, rhs, added, output} =>
                         {
-                            debug_calculate_values!(OuterProductAddInplace, (lhs, rhs, added),());
+                            debug_calculate_values!((lhs, rhs, added),());
 
                             debug_assert_eq!(added, output);
 
@@ -5735,7 +5674,8 @@ impl OperationsRecorder
                     self.memory.verify_raw_ptr_use_index(*_index);
                 }
 
-                let callback = map_callback_getter(buffer.clone(), callback);
+                let callback_buffer = SendBuffer(buffer.clone());
+                let callback = move |result| callback(get_mapped_data(callback_buffer, result));
 
                 self.raw_array_memory.encoder.as_mut().unwrap().map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., callback);
 
@@ -7212,6 +7152,15 @@ impl OperationsRecorder
 
             usage_for_op(op.clone())
         });
+
+        self.memory.forced_same_memory.iter().for_each(|same_memories|
+        {
+            let mut total_usages = wgpu::BufferUsages::empty();
+
+            same_memories.iter().for_each(|ptr| total_usages |= tensor_usages[t(*ptr).0]);
+
+            same_memories.iter().for_each(|ptr| tensor_usages[t(*ptr).0] = total_usages);
+        });
     }
 
     fn check_one_hot_buffers_used(&self, one_hot_buffers_used: &mut Vec<bool>)
@@ -8009,6 +7958,8 @@ impl OperationsRecorder
         debug_assert_eq!(self.state, RecorderState::AwaitingResolve);
         self.state = RecorderState::Ready;
 
+        self.optimize_operations();
+
         self.calculate_live_ranges();
 
         self.skip_last_selectors();
@@ -8163,8 +8114,6 @@ impl OperationsRecorder
         debug_assert_eq!(self.state, RecorderState::AwaitingGradient);
 
         self.calculate_kept_inside();
-
-        self.optimize_operations();
 
         self.recording_operations = Vec::new();
 
@@ -8557,8 +8506,6 @@ impl OperationsRecorder
 
             self.optimizer = Some(optimizer);
         }
-
-        self.optimize_operations();
 
         self.recording_operations = Vec::new();
 
@@ -10185,6 +10132,109 @@ pub enum GradientOp<T, V, J, O, S>
 
 impl<T, V, J, O, S> GradientOp<T, V, J, O, S>
 {
+    fn debug_name(&self) -> &'static str
+    {
+        if cfg!(debug_assertions)
+        {
+            self.name()
+        } else
+        {
+            ""
+        }
+    }
+
+    fn name(&self) -> &'static str
+    {
+        macro_rules! names
+        {
+            ($($name:ident),+) =>
+            {
+                match self
+                {
+                    $(
+                    GradientOp::$name{..} => stringify!($name),
+                    )+
+                }
+            }
+        }
+
+        names!{
+            None,
+            FeedforwardEndMarker,
+            SetInputs,
+            Jump,
+            JumpIf,
+            SetOtherSelector,
+            GetOtherSelectorValue,
+            GetOtherSelectorTensor,
+            OtherSelectorValueGradient,
+            OtherSelectorTensorGradient,
+            GradientSelectAddValue,
+            GradientSelectAddTensor,
+            IfSetTensor,
+            IfNotSetTensor,
+            SetOtherSelectorIfLast,
+            PushStackValue,
+            PushStackTensor,
+            PopStackValue,
+            PopStackTensor,
+            ZeroValue,
+            ZeroTensor,
+            Copy,
+            CopyScalar,
+            AddScalar,
+            AddScalars,
+            Add,
+            Sub,
+            SubFromScalar,
+            MulScalar,
+            MulScalars,
+            MulComponentwise,
+            MulComponentwiseAdd,
+            MulComponentwiseAddInplace,
+            SumTensor,
+            MaxTensor,
+            SumBatch,
+            Fill,
+            BatchReplicate,
+            Dropout,
+            CapMagnitude,
+            OptimizerSgd,
+            OptimizerPowerSign,
+            OptimizerAdam,
+            OptimizerAdamW,
+            Pow,
+            LeakyRelu,
+            LeakyReluDiff,
+            GaussianRelu,
+            GaussianReluDiff,
+            Sigmoid,
+            SigmoidDiff,
+            Tanh,
+            TanhDiff,
+            Dot,
+            SoftmaxCrossEntropy,
+            SoftmaxCrossEntropyNoSoftmaxed,
+            Softmax,
+            SoftmaxCrossEntropyDiff,
+            Matmulv,
+            MatmulvAddInplace,
+            MatmulvAdd,
+            MatmulOneHotv,
+            MatmulOneHotvAddInplace,
+            MatmulOneHotvAdd,
+            MatmulvTransposed,
+            MatmulvTransposedAdd,
+            MatmulvTransposedAddInplace,
+            OuterProduct,
+            OuterProductAdd,
+            OuterProductAddInplace,
+            OuterProductOneHot,
+            OuterProductOneHotAdd,
+            OuterProductOneHotAddInplace
+        }
+    }
+
     fn map<U, W, K, OU, SU>(
         self,
         mut tf: impl FnMut(T) -> U,

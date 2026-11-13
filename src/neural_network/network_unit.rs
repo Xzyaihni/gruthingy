@@ -40,10 +40,6 @@ pub trait GenericUnit<T>
     where
         F: FnMut(T) -> U;
 
-    fn map_inplace_with_info<F>(&mut self, f: F)
-    where
-        F: FnMut(WeightsFullInfo<&mut T>);
-
     fn map_with_info<U, F>(self, f: F) -> Self::Unit<U>
     where
         F: FnMut(WeightsFullInfo<T>) -> U;
@@ -55,10 +51,6 @@ pub trait GenericUnit<T>
     fn map_ref_with_info<U, F>(&self, f: F) -> Self::Unit<U>
     where
         F: FnMut(WeightsFullInfo<&T>) -> U;
-
-    fn for_each_weight<F: FnMut(T)>(self, f: F);
-    fn for_each_weight_ref<F: FnMut(&T)>(&self, f: F);
-    fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, f: F);
 }
 
 pub trait NetworkUnitNewable

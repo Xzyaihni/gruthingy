@@ -347,46 +347,7 @@ macro_rules! create_weights_container
         {
             pub const fn len() -> usize
             {
-                [$(
-                    stringify!($name),
-                )+].len()
-            }
-
-            pub fn iter_mut_with_info(&mut self) -> impl Iterator<Item=WeightsFullInfo<&mut T>>
-            {
-                [
-                    $(
-                        WeightsFullInfo{
-                            weights: &mut self.$name,
-                            this_size: $this_size.into_number(self.sizes),
-                            previous_size: $previous_size.into_number(self.sizes),
-                            name: stringify!($name),
-                            is_hidden: $is_hidden,
-                            is_bias: matches!($previous_size, LayerSize::One),
-                            is_state_reliant: $is_state_reliant
-                        },
-                    )+
-                ].into_iter()
-            }
-
-            pub fn as_mut(&mut self) -> WeightsContainer<&mut T>
-            {
-                WeightsContainer{
-                    sizes: self.sizes,
-                    $(
-                        $name: &mut self.$name,
-                    )+
-                }
-            }
-
-            pub fn zip<U>(self, other: WeightsContainer<U>) -> WeightsContainer<(T, U)>
-            {
-                WeightsContainer{
-                    sizes: self.sizes,
-                    $(
-                        $name: (self.$name, other.$name),
-                    )+
-                }
+                0 $(+ { stringify!($name); 1 })+
             }
         }
 
@@ -470,23 +431,6 @@ macro_rules! create_weights_container
                 }
             }
 
-            fn map_inplace_with_info<F>(&mut self, mut f: F)
-            where
-                F: FnMut(WeightsFullInfo<&mut T>)
-            {
-                $(
-                    f(WeightsFullInfo{
-                        weights: &mut self.$name,
-                        this_size: $this_size.into_number(self.sizes),
-                        previous_size: $previous_size.into_number(self.sizes),
-                        name: stringify!($name),
-                        is_hidden: $is_hidden,
-                        is_bias: matches!($previous_size, LayerSize::One),
-                        is_state_reliant: $is_state_reliant
-                    });
-                )+
-            }
-
             fn map_with_info<U, F>(self, mut f: F) -> WeightsContainer<U>
             where
                 F: FnMut(WeightsFullInfo<T>) -> U
@@ -537,34 +481,6 @@ macro_rules! create_weights_container
                         }),
                     )+
                 }
-            }
-
-            fn for_each_weight<F: FnMut(T)>(self, mut f: F)
-            {
-                let Self{
-                    sizes: _,
-                    $(
-                        $name,
-                    )+
-                } = self;
-
-                $(
-                    f($name);
-                )+
-            }
-
-            fn for_each_weight_ref<F: FnMut(&T)>(&self, mut f: F)
-            {
-                $(
-                    f(&self.$name);
-                )+
-            }
-
-            fn for_each_weight_mut<F: FnMut(&mut T)>(&mut self, mut f: F)
-            {
-                $(
-                    f(&mut self.$name);
-                )+
             }
         }
 
@@ -981,6 +897,7 @@ impl NetworkDropoutData
 struct NetworkInputsData
 {
     steps_loop: Option<LoopIndex>,
+    final_states_ptr: Vec<Vec<DiffTensorPtr>>,
     starting_states_ptr: Vec<Vec<DiffTensorPtr>>,
     starting_states: Vec<Vec<ShapedTensorIndex>>
 }
@@ -991,6 +908,7 @@ impl Default for NetworkInputsData
     {
         Self{
             steps_loop: None,
+            final_states_ptr: Vec::new(),
             starting_states_ptr: Vec::new(),
             starting_states: Vec::new()
         }
@@ -1062,15 +980,8 @@ where
 
 impl<N: UnitFactory, StoreO> Network<N, StoreO>
 where
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
-    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
-    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>,
-    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
+    N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
 {
     pub fn load<O, SaveO>(
         mut x: SaveNetwork<N, SaveO>,
@@ -1161,15 +1072,34 @@ where
     N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
 {
     fn initialize_no_gradient(&mut self)
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.recorder.finish();
 
         self.recorder.no_gradient();
 
+        self.state_init();
+
         self.recorder.resolve_memory(false);
+    }
+
+    fn state_init(&mut self)
+    {
+        self.inputs.final_states_ptr.iter().zip(self.inputs.starting_states_ptr.iter()).for_each(|(final_state, starting_state)|
+        {
+            final_state.iter().zip(starting_state).for_each(|(final_state, other)|
+            {
+                let x = self.recorder.copy_no_diff(final_state.as_value());
+
+                self.recorder.store_tensor_until_end(x);
+
+                self.recorder.allow_after_coalesce_use(x);
+                self.recorder.allow_after_coalesce_use(other.as_value());
+
+                self.recorder.allow_reassign(other.as_value());
+
+                self.recorder.force_same_memory(x, other.as_value());
+            });
+        });
     }
 
     fn new_no_init(
@@ -1241,12 +1171,9 @@ where
         &self.sizes
     }
 
-    #[cfg(not(test))]
     pub fn weights_info<'b>(
         &'b self
     ) -> Vec<WeightsFullInfo<LayerType>>
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr>
     {
         let weights = self.weights_ptr.as_ref().unwrap();
 
@@ -1255,8 +1182,6 @@ where
             .collect::<Vec<_>>()
     }
 
-    #[allow(dead_code)]
-    #[cfg(not(test))]
     pub fn parameters_amount(&self) -> u128
     where
         for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>
@@ -1283,24 +1208,16 @@ where
 
 impl<N: UnitFactory, O> Network<N, O>
 where
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-    for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
 {
     #[cfg(test)]
-    pub fn gradients<I: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>, R: DropoutRoll>(
+    pub fn gradients<R: DropoutRoll>(
         &mut self,
         mut rng: R,
-        input: I
+        input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> (f32, WeightsFullContainer<N, LayerType>)
     where
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
-        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
-        for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
+        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>
     {
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.begin_capture();
@@ -1372,10 +1289,6 @@ where
         input: I,
         loss_consume: impl FnOnce(f32) + Send + 'static
     )
-    where
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>>,
-        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
-        for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>
     {
         #[cfg(feature = "renderdocapi")]
         crate::RENDERDOC_API.begin_capture();
@@ -1433,14 +1346,9 @@ where
 
 impl<N: UnitFactory, O> Network<N, O>
 where
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-    for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+    for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
 {
     pub fn new(
         sizes: LayerSizes,
@@ -1606,6 +1514,8 @@ where
 
     fn prepare_shared(&mut self, store_gradient: bool, _has_optimizer: bool)
     {
+        self.state_init();
+
         self.recorder.resolve_memory(self.config.as_ref().unwrap().print_optional_info);
 
         let weights = self.weights_ptr.take().unwrap().map(|mut weight_info|
@@ -1694,7 +1604,13 @@ where
         let state_shape = TensorShape{rows: self.sizes.hidden, columns: 1, batch_size};
         let starting_states: Vec<_> = (0..self.sizes.layers).map(|_|
         {
-            (0..N::Unit::hidden_states()).map(|_| self.recorder.new_tensor_full_shape(state_shape, state_shape)).collect::<Vec<_>>()
+            (0..N::Unit::hidden_states()).map(|_|
+            {
+                let starting_state = self.recorder.new_tensor_full_shape(state_shape, state_shape);
+                self.recorder.store_tensor_until_end(starting_state.as_value());
+
+                starting_state
+            }).collect::<Vec<_>>()
         }).collect();
 
         let state_selectors: Vec<_> = starting_states.iter().map(|starting_state|
@@ -1761,22 +1677,7 @@ where
 
         self.recorder.end_loop(loop_index);
 
-        final_output.state.iter().zip(starting_states.iter()).for_each(|(final_state, starting_state)|
-        {
-            final_state.iter().zip(starting_state).for_each(|(x, other)|
-            {
-                self.recorder.store_tensor_until_end(x.as_value());
-                self.recorder.store_tensor_until_end(other.as_value());
-
-                self.recorder.allow_after_coalesce_use(x.as_value());
-                self.recorder.allow_after_coalesce_use(other.as_value());
-
-                self.recorder.allow_reassign(other.as_value());
-
-                self.recorder.force_same_memory(x.as_value(), other.as_value());
-            });
-        });
-
+        self.inputs.final_states_ptr = final_output.state;
         self.inputs.starting_states_ptr = starting_states;
         self.inputs.steps_loop = Some(loop_index);
 
@@ -1924,9 +1825,6 @@ where
         inputs_in_flight: Option<usize>,
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.prepare_no_gradient(one_hot_count);
 
@@ -1953,9 +1851,6 @@ where
         mut output: impl FnMut(usize, T),
         f: impl Fn(LayerTypeRef, usize, usize, u32) -> T
     )
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         debug_assert_eq!(self.network_mode, Some(NetworkMode::Predict));
 
@@ -1991,9 +1886,6 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
         output: impl FnMut(usize, AccuracyCertaintyInfo)
     )
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_predict(input, output, |predicted_batch, highest_index, target_index, wrong_times|
         {
@@ -2028,9 +1920,6 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
         output: impl FnMut(usize, u32)
     )
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         // this is slightly wrong but i can fix it later if i wanna
         self.with_predict(input, output, |predicted_batch, _highest_index, target_index, _highest_times|
@@ -2053,9 +1942,6 @@ where
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>,
         output: impl FnMut(usize, bool)
     )
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.with_predict(input, output, |_predicted, highest_index, target_index, _highest_times|
         {
@@ -2067,9 +1953,6 @@ where
         &mut self,
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut total = 0;
         let mut correct_amount = 0;
@@ -2088,9 +1971,6 @@ where
         &mut self,
         input: impl ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     ) -> f32
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut total = 0;
         let mut likelyhoods = 0.0;
@@ -2110,9 +1990,6 @@ where
         input: impl ExactSizeIterator<Item=OwnedInputType>,
         mut consumer: impl FnMut(LayerType)
     )
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.predict_temperature(1.0, input, move |output| consumer(output));
     }
@@ -2123,9 +2000,6 @@ where
         input: impl ExactSizeIterator<Item=OwnedInputType>,
         mut f_output: impl FnMut(LayerType)
     )
-    where
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         self.predict_temperature_inner(temperature, input, |output: &LayerType|
         {
@@ -2176,7 +2050,7 @@ where
         self.recorder.set_loop_times(steps_loop, inputs_count);
 
         let mut is_first_input = true;
-        self.recorder.calculate_feedforward_with_dependent(|inputs_specifier|
+        self.recorder.calculate_feedforward_with_dependent(&mut (|inputs_specifier|
         {
             if !is_first_input
             {
@@ -2188,7 +2062,7 @@ where
             is_first_input = false;
 
             input.next().expect("must be called the same amount of times as there are inputs")
-        });
+        }));
 
         f_output(self.recorder.get_tensor_blocking(output_value));
     }

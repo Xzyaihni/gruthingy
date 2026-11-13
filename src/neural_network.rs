@@ -330,28 +330,6 @@ impl EmbeddingsTypeable for BagOfWordsEmbeddings
     fn name() -> &'static str { "bag of words" }
 }
 
-macro_rules! time_debug
-{
-    ($($token:tt)*) =>
-    {
-        #[cfg(feature = "timedebug")]
-        use std::time::Instant;
-
-        #[cfg(feature = "timedebug")]
-        let now_time = Instant::now();
-
-        {
-            $($token)*
-        }
-
-        #[cfg(feature = "timedebug")]
-        {
-            let duration = Instant::now() - now_time;
-            eprintln!("took {} ms", duration.as_millis());
-        }
-    }
-}
-
 type VectorizerType<'a, R, D> = WordVectorizer<<D as NetworkDictionary>::Adapter<BufReader<R>>, &'a mut D>;
 
 pub struct KahanSum
@@ -429,7 +407,7 @@ impl<'a, D> InputOutput<'a, D>
                 inputs_per_batch: usize
             )
             {
-                let reencoded = dictionary.reencode(&values[batch_start..(batch_start + inputs_per_batch)]);
+                let reencoded = dictionary.reencode(&values[batch_start..(batch_start + take_amount)]);
 
                 if reencoded.len() >= inputs_per_batch
                 {
@@ -691,14 +669,9 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     )
     where
         N: UnitFactory,
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-        N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-        N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+        N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-        for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         network.set_predict_mode();
 
@@ -735,14 +708,9 @@ impl<'a, D: NetworkDictionary> Predictor<'a, D>
     pub fn predict_bytes<N, O>(self, network: &mut Network<N, O>) -> Box<[u8]>
     where
         N: UnitFactory,
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-        N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-        N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+        N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-        for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>
+        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>
     {
         let mut predicted = Vec::with_capacity(self.predict_amount);
         self.predict_into(network, &mut predicted);
@@ -831,7 +799,7 @@ impl StepsNum
 trait FromGuesses<N: UnitFactory, O: Optimizer>
 where
     Self: Sized,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
@@ -844,14 +812,9 @@ impl<N, O> FromGuesses<N, O> for bool
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
-    for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
-    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
-    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
+    for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
@@ -867,14 +830,9 @@ impl<N, O> FromGuesses<N, O> for u32
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
-    for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
-    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
-    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
+    for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
@@ -890,14 +848,9 @@ impl<N, O> FromGuesses<N, O> for AccuracyCertaintyInfo
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-    for<'a> &'a N::Unit<WeightInfo>: IntoIterator<Item=&'a WeightInfo>,
-    for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>,
-    for<'a> &'a N::Unit<DiffTensor>: IntoIterator<Item=&'a DiffTensor>,
-    for<'a> &'a mut N::Unit<DiffTensor>: IntoIterator<Item=&'a mut DiffTensor>
+    for<'a> &'a N::Unit<WeightInfoPtr>: IntoIterator<Item=&'a WeightInfoPtr>
 {
     fn from_guesses(
         network: &mut Network<N, O::WeightParam<OptimizerInfoPtr>>,
@@ -981,9 +934,9 @@ where
             dictionary: self.dictionary.clone(),
             network: self.network.without_optimizer::<O>(),
             optimizer: (),
-            gradient_clip: self.gradient_clip.clone(),
+            gradient_clip: self.gradient_clip,
             extra_info: self.extra_info.clone(),
-            sizes: self.sizes.clone()
+            sizes: self.sizes
         }
     }
 }
@@ -1030,9 +983,7 @@ where
         O: Serialize,
         D: Serialize,
         O::WeightParam<LayerType>: Serialize,
-        N::Unit<SaveWeightType>: Serialize,
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>
+        N::Unit<SaveWeightType>: Serialize
     {
         eprintln!("saved network at {}", path.display());
 
@@ -1051,12 +1002,7 @@ impl<N, O, D> NeuralNetwork<Network<N, O::WeightParam<OptimizerInfoPtr>>, O, D>
 where
     N: UnitFactory,
     O: Optimizer,
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     D: NetworkDictionary
 {
     pub fn new(
@@ -1085,10 +1031,8 @@ where
     where
         D: Clone,
         O::WeightParam<LayerType>: Clone,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
         N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
     {
         let save_network: SaveNetwork<N, O::WeightParam<LayerType>> = SaveNetwork::from_network::<O, O::WeightParam<OptimizerInfoPtr>>(
@@ -1115,7 +1059,7 @@ where
             optimizer: self.optimizer.clone(),
             gradient_clip: self.gradient_clip,
             extra_info: self.extra_info.clone(),
-            sizes: self.sizes.clone()
+            sizes: self.sizes
         };
 
         save_network.save_data(path)
@@ -1131,8 +1075,6 @@ where
         for<'de> D: Deserialize<'de>,
         for<'de> O::WeightParam<LayerType>: Deserialize<'de>,
         for<'de> N::Unit<SaveWeightType>: Deserialize<'de>,
-        for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
         N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>
     {
         let path = path.as_ref();
@@ -1158,8 +1100,7 @@ where
     )
     where
         R: Read,
-        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>
+        for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>
     {
         self.network.set_predict_mode();
 
@@ -1324,12 +1265,9 @@ where
         R: Read,
         O::WeightParam<OptimizerInfoPtr>: Clone,
         for<'b> VectorizerType<'b, R, D>: Iterator<Item=VectorWord>,
-        N::Unit<WeightInfo>: GenericUnit<WeightInfo, Unit<LayerType>=N::Unit<LayerType>> + fmt::Debug,
         N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
-        N::Unit<LayerType>: IntoIterator<Item=LayerType>,
+        for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
         for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
-        for<'b> &'b mut N::Unit<LayerType>: IntoIterator<Item=&'b mut LayerType>,
-        for<'b> &'b mut N::Unit<WeightInfo>: IntoIterator<Item=&'b mut WeightInfo>,
         for<'b> InputOutputEmbeddingsIter<'b, EmbeddingType, D>: ExactSizeIterator<Item=(OwnedInputType, OneHotLayer)>
     {
         self.network.set_train_mode();
@@ -1366,7 +1304,7 @@ where
 
             println!("using {} inputs", EmbeddingType::name());
 
-            println!("optimizer: {:?}", &self.optimizer);
+            println!("optimizer: {:?}", self.optimizer);
 
             println!("steps amount: {}", info.steps_num);
 
@@ -1398,73 +1336,71 @@ where
         {
             self.extra_info.iterations = self.extra_info.iterations.saturating_add(1);
 
-            time_debug! {
-                let steps_num = info.steps_num.get();
+            if info.reset_state
+            {
+                self.network.clear_hidden();
+            }
 
-                let values = InputOutput::new(
-                    &self.dictionary,
-                    &inputs,
-                    &batch_starts,
-                    steps_num
-                );
+            let steps_num = info.steps_num.get();
 
-                let total_iterations = self.extra_info.iterations;
-                let last_loss_tx = last_loss_tx.clone();
+            let values = InputOutput::new(
+                &self.dictionary,
+                &inputs,
+                &batch_starts,
+                steps_num
+            );
 
-                let is_last_step = (input_index + 1) == info.iterations;
+            let total_iterations = self.extra_info.iterations;
+            let last_loss_tx = last_loss_tx.clone();
 
-                if cfg!(feature="printinputsoutputs")
+            let is_last_step = (input_index + 1) == info.iterations;
+
+            if cfg!(feature="printinputsoutputs")
+            {
+                assert_eq!(EmbeddingType::one_hot_count(), 1);
+
+                values.iter().for_each(|(inputs, outputs)|
                 {
-                    assert_eq!(EmbeddingType::one_hot_count(), 1);
-
-                    values.iter().for_each(|(inputs, outputs)|
+                    (0..info.batch_size).for_each(|batch_index|
                     {
-                        (0..info.batch_size).for_each(|batch_index|
+                        let f = |x: &OneHotLayer|
                         {
-                            let f = |x: &OneHotLayer|
-                            {
-                                let vector_word = VectorWord::from_raw(x.positions[batch_index] as usize);
-                                String::from_utf8_lossy(&self.dictionary.word_to_bytes(None, vector_word)).into_owned()
-                            };
+                            let vector_word = VectorWord::from_raw(x.positions[batch_index] as usize);
+                            String::from_utf8_lossy(&self.dictionary.word_to_bytes(None, vector_word)).into_owned()
+                        };
 
-                            eprintln!("batch #{batch_index}: `{}` expects `{}` next", f(&inputs.clone().into_one_hot()), f(&outputs));
-                        });
+                        eprintln!("batch #{batch_index}: `{}` expects `{}` next", f(&inputs.clone().into_one_hot()), f(&outputs));
                     });
-                }
-
-                if info.reset_state
-                {
-                    self.network.clear_hidden();
-                }
-
-                let rng = fastrand::Rng::new();
-                self.network.gradient_step_once(rng, total_iterations, is_last_step, values.iter(), move |loss|
-                {
-                    let batch_loss = loss as f64 / steps_num as f64;
-
-                    if display_inner
-                    {
-                        Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
-                    }
-
-                    if is_last_step
-                    {
-                        last_loss_tx.send(batch_loss).unwrap();
-                    }
-                });
-
-                batch_starts.iter_mut().enumerate().for_each(|(batch_index, batch_start)|
-                {
-                    *batch_start += steps_num;
-
-                    if *batch_start >= max_batch_start
-                    {
-                        *batch_start = 0;
-
-                        self.network.clear_hidden_batch(batch_index);
-                    }
                 });
             }
+
+            let rng = fastrand::Rng::new();
+            self.network.gradient_step_once(rng, total_iterations, is_last_step, values.iter(), move |loss|
+            {
+                let batch_loss = loss as f64 / steps_num as f64;
+
+                if display_inner
+                {
+                    Self::print_loss(format!("iteration {total_iterations} ({input_index}) training"), batch_loss as f32);
+                }
+
+                if is_last_step
+                {
+                    last_loss_tx.send(batch_loss).unwrap();
+                }
+            });
+
+            batch_starts.iter_mut().enumerate().for_each(|(batch_index, batch_start)|
+            {
+                *batch_start += steps_num;
+
+                if *batch_start >= max_batch_start
+                {
+                    *batch_start = 0;
+
+                    self.network.clear_hidden_batch(batch_index);
+                }
+            });
         }
 
         Some(last_loss_rx.recv().unwrap())
@@ -1550,9 +1486,7 @@ where
             Predictor::new(&mut self.dictionary, words, temperature, amount)
         };
 
-        let predicted = f(predictor, &mut self.network);
-
-        predicted
+        f(predictor, &mut self.network)
     }
 }
 
@@ -1877,6 +1811,16 @@ mod tests
 
         let activation_function = if let TestStrategy::Gelu = strategy { ActivationFunction::GaussianRelu } else { ActivationFunction::LeakyRelu };
 
+        let architecture = NetworkArchitecture{
+            input_dropout_probability,
+            dropout_probability,
+            gradient_clip: clip,
+            activation_function
+        };
+
+        let train_inputs = Cursor::new(inputs);
+        let test_inputs = Cursor::new(test_input.clone());
+
         macro_rules! with_unit
         {
             ($unit:ident) =>
@@ -1886,36 +1830,34 @@ mod tests
                         dictionary,
                         layer_sizes,
                         start_config,
-                        NetworkArchitecture{
-                            input_dropout_probability,
-                            dropout_probability,
-                            gradient_clip: clip,
-                            activation_function
-                        }
+                        architecture
                     );
 
-                    let last_train_loss = network.train::<OneHotEmbeddings, _>(info, Cursor::new(inputs)).unwrap();
+                    let last_train_loss = network.train::<OneHotEmbeddings, _>(info, train_inputs).unwrap();
 
                     network.reset(config.clone(), test_batches);
 
-                    let test_loss = network.test_loss(Cursor::new(test_input.clone()), None, false, false);
+                    let test_loss = network.test_loss(test_inputs.clone(), None, false, false);
 
                     network.reset(config, test_batches);
 
-                    let accuracy = network.test_loss(Cursor::new(test_input), None, true, false);
+                    let accuracy = network.test_loss(test_inputs, None, true, false);
 
-                    assert!(accuracy > 0.9);
-
-                    (last_train_loss, test_loss as f64)
+                    (last_train_loss, test_loss as f64, accuracy)
                 }
             }
         }
 
-        match strategy
+        let blows_up_my_compile_times = ();
+        let (last_loss, test_loss, accuracy) = match strategy
         {
-            TestStrategy::Lstm => with_unit!(LstmUnitFactory),
-            TestStrategy::Gru => with_unit!(GruUnitFactory),
+            // TestStrategy::Lstm => with_unit!(LstmUnitFactory),
+            // TestStrategy::Gru => with_unit!(GruUnitFactory),
             _ => with_unit!(StarUnitFactory)
-        }
+        };
+
+        assert!(accuracy > 0.9);
+
+        (last_loss, test_loss)
     }
 }

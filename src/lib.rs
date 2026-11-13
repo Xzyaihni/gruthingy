@@ -68,6 +68,7 @@ where
     process::exit(1)
 }
 
+#[cfg(not(test))]
 pub fn predict(path: impl AsRef<Path>, text: String, amount: usize, temperature: f32) -> String
 {
     let path = path.as_ref();

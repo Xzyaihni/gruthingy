@@ -123,7 +123,6 @@ impl UnitFactory for NUnitFactory
 #[allow(dead_code)]
 type CurrentNetworkType = NeuralNetwork<Network<NUnitFactory, <NOptimizer as Optimizer>::WeightParam<OptimizerInfoPtr>>, NOptimizer, NDictionary>;
 
-#[cfg(not(test))]
 fn load_network(
     config: &Config,
     sizes: Option<SizesInfo>,
@@ -133,7 +132,6 @@ fn load_network(
     load_network_with(config.network_path.as_ref(), Some(config), sizes, auto_create)
 }
 
-#[cfg(not(test))]
 pub fn load_embeddings<O>(
     path: Option<&Path>,
     mut config: Option<&mut Config>,
@@ -161,7 +159,6 @@ where
     load_network_with(path, config, sizes, auto_create)
 }
 
-#[cfg(not(test))]
 fn load_network_with<N, O, D>(
     path: &Path,
     config: Option<&Config>,
@@ -171,15 +168,10 @@ fn load_network_with<N, O, D>(
 where
     for<'de> O: Optimizer + Deserialize<'de>,
     for<'de> N: UnitFactory,
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     for<'de> O::WeightParam<LayerType>: Serialize + Deserialize<'de>,
     O::WeightParam<OptimizerInfoPtr>: NewableLayer,
     for<'de> N::Unit<SaveWeightType>: GenericUnit<SaveWeightType, Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + Deserialize<'de>,
-    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<WeightInfo>=N::Unit<WeightInfo>>,
     for<'b> &'b N::Unit<WeightInfoPtr>: IntoIterator<Item=&'b WeightInfoPtr>,
     for<'de> D: NetworkDictionary + Deserialize<'de>
@@ -194,7 +186,7 @@ where
 
     if path.exists()
     {
-        let batch_size = sizes.or_else(|| config.map(|config| SizesInfo::from(config))).map(|x| x.batch_size).unwrap_or(1);
+        let batch_size = sizes.or_else(|| config.map(SizesInfo::from)).map(|x| x.batch_size).unwrap_or(1);
 
         NeuralNetwork::load(network_config, batch_size, path).unwrap_or_else(|err|
         {
@@ -269,7 +261,6 @@ where
     }
 }
 
-#[cfg(not(test))]
 fn train_until_best(config: Config)
 {
     let mut test_config = config.clone();
@@ -288,7 +279,7 @@ fn train_until_best(config: Config)
     loop
     {
         let text_file = config.get_input_file();
-        let test_file = config.get_test_file().unwrap_or_else(|| complain(format!("--test-path must be provided")));
+        let test_file = config.get_test_file().unwrap_or_else(|| complain("--test-path must be provided"));
 
         network.as_mut().unwrap().train::<NEmbeddings, _>(training_info.clone(), text_file);
 
@@ -431,7 +422,6 @@ fn train_until_best(config: Config)
     }
 }
 
-#[cfg(not(test))]
 fn test_loss(config: Config)
 {
     let text_file = config.get_input_file();
@@ -441,7 +431,6 @@ fn test_loss(config: Config)
     network.test_loss(text_file, config.inputs_in_flight, config.calculate_accuracy, config.calculate_perplexity);
 }
 
-#[cfg(not(test))]
 fn train(config: Config)
 {
     let mut network = load_network(&config, None, true);
@@ -469,7 +458,6 @@ fn train(config: Config)
     }
 }
 
-#[cfg(not(test))]
 fn run(config: Config)
 {
     let mut network = load_network(&config, None, false);
@@ -605,14 +593,13 @@ impl IndexMut<(usize, usize)> for PPMImage
     }
 }
 
-#[cfg(not(test))]
 fn weight_color(value: f32) -> Color
 {
     let negative_color = Color{r: 255, g: 0, b: 0};
     let none_color = Color{r: 0, g: 0, b: 0};
     let positive_color = Color{r: 0, g: 0, b: 255};
 
-    let a = ((value + 1.0) / 2.0).max(0.0).min(1.0);
+    let a = ((value + 1.0) / 2.0).clamp(0.0, 1.0);
 
     Color::gradient_lerp(
         &[negative_color, none_color, positive_color],
@@ -620,14 +607,13 @@ fn weight_color(value: f32) -> Color
     )
 }
 
-#[cfg(not(test))]
 fn weights_image(config: Config)
 {
     let network = load_network(&config, None, false);
 
     let weights = network.inner_network().weights_info();
 
-    let output_folder = PathBuf::from(config.get_output_with_default("output"));
+    let output_folder = config.get_output_with_default("output");
 
     let layer_name = |index|
     {
@@ -673,7 +659,6 @@ fn weights_image(config: Config)
     }
 }
 
-#[cfg(not(test))]
 fn create_word_dictionary(config: Config)
 {
     let text_file = BufReader::new(File::open(config.get_input()).unwrap());
@@ -699,7 +684,7 @@ fn create_word_dictionary(config: Config)
     {
         if index != 0
         {
-            dictionary_file.write_all(&[b'\n']).unwrap();
+            dictionary_file.write_all(b"\n").unwrap();
         }
 
         dictionary_file.write_all(word.as_bytes()).unwrap();
@@ -710,7 +695,6 @@ fn create_word_dictionary(config: Config)
     eprintln!("created word dictionary at {}", config.dictionary_path.display());
 }
 
-#[allow(dead_code)]
 fn create_bpe(config: &Config)
 {
     let mut text_file_reader = BufReader::new(File::open(config.get_input()).unwrap());
@@ -758,7 +742,6 @@ impl UnitFactory for EmbeddingsUnitFactory
     type Unit<T> = EmbeddingUnit<T>;
 }
 
-#[cfg(not(test))]
 fn try_save_network<N, O, D>(
     network: &NeuralNetwork<Network<N, O::WeightParam<OptimizerInfoPtr>>, O, D>,
     path: &PathBuf
@@ -767,12 +750,7 @@ where
     N: UnitFactory,
     O: Optimizer + Serialize,
     D: NetworkDictionary + Serialize + Clone,
-    N::Unit<WeightInfo>: GenericUnit<WeightInfo>,
-    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>>,
-    N::Unit<WeightInfoPtr>: NetworkUnitNewable,
-    for<'b> &'b N::Unit<WeightInfo>: IntoIterator<Item=&'b WeightInfo>,
-    for<'b> &'b N::Unit<DiffTensor>: IntoIterator<Item=&'b DiffTensor>,
-    for<'b> &'b mut N::Unit<DiffTensor>: IntoIterator<Item=&'b mut DiffTensor>,
+    N::Unit<WeightInfoPtr>: NetworkUnit<Unit<WeightInfoPtr>=N::Unit<WeightInfoPtr>> + NetworkUnitNewable,
     O::WeightParam<LayerType>: Serialize + Clone,
     N::Unit<SaveWeightType>: Serialize,
     N::Unit<WeightInfoPtr>: GenericUnit<WeightInfoPtr, Unit<SaveWeightType>=N::Unit<SaveWeightType>>,
@@ -784,7 +762,6 @@ where
     }
 }
 
-#[cfg(not(test))]
 fn train_embeddings(mut config: Config)
 {
     let mut network = load_embeddings::<NOptimizer>(
@@ -834,7 +811,6 @@ fn train_embeddings(mut config: Config)
     }
 }
 
-#[cfg(not(test))]
 fn closest_embeddings(config: Config)
 {
     let mut network: NeuralNetwork<SaveNetwork<_, ()>, (), _> = {
@@ -897,7 +873,6 @@ fn closest_embeddings(config: Config)
     }
 }
 
-#[cfg(not(test))]
 fn accuracy_data(config: Config)
 {
     if config.correct_guesses && config.top_guesses
@@ -910,7 +885,7 @@ fn accuracy_data(config: Config)
 
     let mut network = load_network(&config, None, false);
 
-    let path = config.get_output_with_default(&"output.json");
+    let path = config.get_output_with_default("output.json");
 
     let mut guesses = Vec::new();
 
@@ -938,7 +913,7 @@ fn accuracy_data(config: Config)
         network.top_guesses(text_file, |a, b, c| collect_guesses(a, b.into(), c));
 
         guesses.push((
-            maybe_convert(Box::from(b"_WORDS_AMOUNT".clone())),
+            maybe_convert(Box::from(*b"_WORDS_AMOUNT")),
             (network.dictionary().words_amount() as u32).into(),
             maybe_convert(Box::new([]))
         ));
@@ -958,7 +933,6 @@ fn accuracy_data(config: Config)
     }
 }
 
-#[cfg(not(test))]
 fn main()
 {
     #[cfg(debug_assertions)]
