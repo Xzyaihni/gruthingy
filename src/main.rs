@@ -938,8 +938,6 @@ fn main()
     #[cfg(debug_assertions)]
     {
         fastrand::seed(7777);
-
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     }
 
     let config = Config::parse(env::args().skip(1));

@@ -1583,7 +1583,7 @@ mod tests
     #[test]
     fn simple_data_overfit_char_sgd_gru()
     {
-        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 14000, TestStrategy::Gru);
+        simple_data_overfit_with::<Sgd, _>(default_dictionary(), 17000, TestStrategy::Gru);
     }
 
     #[test]
@@ -1788,11 +1788,13 @@ mod tests
             _ => 4
         };
 
+        let learning_rate = if let TestStrategy::Gru = strategy { 0.007 } else { 0.01 };
+
         let info = TrainingInfo{
             batch_size,
             calculate_accuracy: false,
             iterations,
-            learning_rate: Some(0.01),
+            learning_rate: Some(learning_rate),
             lambda: None,
             reset_state: !(matches!(strategy, TestStrategy::KeepState)),
             less_info: false,

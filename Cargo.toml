@@ -10,12 +10,12 @@ postcard = { version = "1.1", features = ["use-std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 unicode_reader = "1.0"
-oxiblas-blas = "0.2"
-oxiblas-matrix = "0.2"
 wgpu = "30.0.1"
-env_logger = "0.11.11"
 pollster = "1.0.1"
 bytemuck = "1.25.2"
+
+[dev-dependencies]
+env_logger = "0.11.11"
 
 [profile.debug-optimized]
 inherits = "dev"

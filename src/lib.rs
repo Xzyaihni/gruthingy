@@ -2,10 +2,12 @@
 #![allow(clippy::len_without_is_empty)]
 #![allow(clippy::match_like_matches_macro)]
 
+#[allow(unused_imports)]
 use std::{process, io::Cursor, path::Path};
 
 use serde::{Serialize, Deserialize};
 
+#[allow(unused_imports)]
 use neural_network::{
     NetworkConfigInfo,
     NeuralNetwork,
@@ -19,6 +21,7 @@ use neural_network::{
     Network
 };
 
+#[allow(unused_imports)]
 use word_vectorizer::{NetworkDictionary, WordDictionary};
 
 pub use config::Config;
@@ -34,6 +37,7 @@ mod renderdocapi;
 pub mod neural_network;
 
 
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize)]
 struct NUnitFactory;
 

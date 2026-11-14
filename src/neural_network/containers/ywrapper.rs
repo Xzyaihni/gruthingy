@@ -9,8 +9,6 @@ use std::{
 
 use serde::{Serialize, Deserialize};
 
-use oxiblas_matrix::{MatRef, MatMut};
-
 use super::{
     TensorShape,
     Softmaxer,
@@ -101,7 +99,7 @@ pub struct YVectorWrapperMut<'a>
 
 fn dot(lhs: &[f32], rhs: &[f32]) -> f32
 {
-    oxiblas_blas::level1::dot_f32(lhs, rhs)
+    lhs.iter().copied().zip(rhs.iter().copied()).map(|(a, b)| a * b).sum()
 }
 
 #[allow(dead_code)]
@@ -364,7 +362,7 @@ impl<'a> YWrapperRef<'a>
     {
         debug_assert_eq!(self.shape.batch_size, 1);
 
-        oxiblas_blas::level1::nrm2_f32(self.values)
+        nalgebra::DVectorView::from(self.values).norm()
     }
 
     pub fn average(&self) -> f32
@@ -478,22 +476,15 @@ impl<'a> YWrapperRef<'a>
         debug_assert_eq!(self.shape.batch_size, 1);
         debug_assert_eq!(other.shape.batch_size, 1);
 
-        use oxiblas_blas::level3::Trans;
-
         let mut output = YWrapper::new(
             if is_a_transpose { self.shape.columns } else { self.shape.rows },
             if is_b_transpose { other.shape.rows } else { other.shape.columns }
         );
 
-        oxiblas_blas::level3::gemm::gemm_transposed(
-            if is_a_transpose { Trans::Trans } else { Trans::NoTrans },
-            if is_b_transpose { Trans::Trans } else { Trans::NoTrans },
-            1.0,
-            self.as_mat_ref(),
-            other.as_mat_ref(),
-            0.0,
-            output.as_mut().as_mat_mut()
-        );
+        let a = if is_a_transpose { self.as_nmat_ref().transpose() } else { self.as_nmat_ref().clone_owned() };
+        let b = if is_b_transpose { other.as_nmat_ref().transpose() } else { other.as_nmat_ref().clone_owned() };
+
+        output.as_mut().as_nmat_mut().gemm(1.0, &a, &b, 0.0);
 
         output
     }
@@ -527,11 +518,6 @@ impl<'a> YWrapperRef<'a>
             values: &self.values[self.shape.batch_range(batch_index)],
             shape: TensorShape{batch_size: 1, ..self.shape}
         }
-    }
-
-    fn as_mat_ref(&self) -> MatRef<'_, f32>
-    {
-        MatRef::from_column_major(self.values, self.shape.rows, self.shape.columns).expect("dimensions must match")
     }
 
     pub fn rows(&self) -> usize
@@ -658,7 +644,7 @@ impl<'a> YWrapperMut<'a>
     {
         debug_assert_eq!(self.shape, rhs.shape);
 
-        oxiblas_blas::level1::axpy_f32(-1.0, rhs.values, self.values)
+        nalgebra::DVectorViewMut::from(self.values).axpy(-1.0, &nalgebra::DVectorView::from(rhs.values), 1.0);
     }
 
     pub fn add_inplace(self, rhs: YWrapperRef)
@@ -670,7 +656,7 @@ impl<'a> YWrapperMut<'a>
     {
         debug_assert_eq!(self.shape, rhs.shape);
 
-        oxiblas_blas::level1::axpy_f32(scale, rhs.values, self.values)
+        nalgebra::DVectorViewMut::from(self.values).axpy(scale, &nalgebra::DVectorView::from(rhs.values), 1.0);
     }
 
     pub fn sub_scalar_inplace(&mut self, other: f32)
@@ -1093,9 +1079,9 @@ impl<'a> YWrapperMut<'a>
         }
     }
 
-    fn as_mat_mut(&mut self) -> MatMut<'_, f32>
+    pub fn as_nmat_mut(&mut self) -> nalgebra::DMatrixViewMut<'_, f32>
     {
-        MatMut::from_column_major(self.values, self.shape.rows, self.shape.columns).expect("dimensions must match")
+        nalgebra::DMatrixViewMut::from_slice(self.values, self.shape.rows, self.shape.columns)
     }
 
     pub fn rows(&self) -> usize
@@ -1290,9 +1276,9 @@ impl<'a> YVectorWrapperMut<'a>
             for i in 0..columns
             {
                 let lhs_column_start = i * rows;
-                let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+                let lhs_column = nalgebra::DVectorView::from(&lhs.values[lhs_column_start..(lhs_column_start + rows)]);
 
-                oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.values.get_unchecked(i) }, lhs_column, output.values);
+                nalgebra::DVectorViewMut::from(&mut *output.values).axpy(rhs.values[i], &lhs_column, 1.0)
             }
         }
 
@@ -1341,9 +1327,9 @@ impl<'a> YVectorWrapperMut<'a>
             for i in 0..columns
             {
                 let lhs_column_start = i * rows;
-                let lhs_column = unsafe{ lhs.values.get_unchecked(lhs_column_start..(lhs_column_start + rows)) };
+                let lhs_column = nalgebra::DVectorView::from(&lhs.values[lhs_column_start..(lhs_column_start + rows)]);
 
-                oxiblas_blas::level1::axpy_f32(unsafe{ *rhs.values.get_unchecked(i) }, lhs_column, output.values);
+                nalgebra::DVectorViewMut::from(&mut *output.values).axpy(rhs.values[i], &lhs_column, 1.0)
             }
         }
 
